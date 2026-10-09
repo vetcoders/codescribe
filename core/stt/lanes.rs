@@ -34,10 +34,13 @@ impl SttLane {
             Self::Live => "Live transcript",
         }
     }
+    /// Transport arguments the lane accepts: API paths, encodings and protocol
+    /// ids, separated by `·`. Arguments only — the sentence that frames them is
+    /// the interface's, so it can be written in the interface language.
     pub fn accepts(self) -> &'static str {
         match self {
-            Self::File => "https multipart /v1/audio/transcriptions or NDJSON …:stream",
-            Self::Live => "wss live socket (stt-ws-v1 or xAI /v1/stt)",
+            Self::File => "multipart /v1/audio/transcriptions · NDJSON …:stream",
+            Self::Live => "stt-ws-v1 · xAI /v1/stt",
         }
     }
     pub fn placeholder(self) -> &'static str {

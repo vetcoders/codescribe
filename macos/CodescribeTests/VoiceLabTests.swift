@@ -551,6 +551,43 @@ final class VoiceLabTests: XCTestCase {
     )
   }
 
+  /// My rules say where a rule came from in words, and VoiceOver hears the
+  /// same words. The stored provenance code is identity: it never reaches the
+  /// screen, so the row cannot read "source: correction" to a screen reader.
+  func testLexiconRowOriginReadsAsWordsNotAStoredCode() throws {
+    let origins = [
+      "correction": "From a correction",
+      "manual": "Added by hand",
+      "import": "From an import",
+      "": "Origin not recorded",
+      "vocabulary_seed": "Origin not recorded",
+    ]
+    for (source, expected) in origins {
+      let row = VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree", source: source)
+      XCTAssertEqual(row.localizedOrigin, expected, source)
+      XCTAssertFalse(row.localizedOrigin.contains("_"), "a stored code reached the screen")
+    }
+
+    let panel = try voiceLabPanelSource()
+    XCTAssertTrue(panel.contains("Text(row.localizedOrigin)"))
+    XCTAssertTrue(
+      panel.contains(
+        "accessibilityLabel(\"\\(row.variant) to \\(row.canonical), source \\(row.localizedOrigin)\")"
+      ))
+    XCTAssertFalse(
+      panel.contains("source \\(row.source)"), "VoiceOver never reads the stored code")
+  }
+
+  /// The panel as written on disk; the compiler is embargoed for this cut, so
+  /// the label shape is pinned to the source instead of a rendered view.
+  private func voiceLabPanelSource() throws -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/VoiceLabPanel.swift")
+    return try String(contentsOf: url, encoding: .utf8)
+  }
+
   func testTeachDictionarySurfacesHonestMessage() throws {
     // Product: Teach is a real Settings surface, not a decorative button.
     // Mock returns a zero-delta teach result; ViewModel still writes a

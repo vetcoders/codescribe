@@ -259,8 +259,13 @@ recoverable. A failed save is reported with the same current-source check.
 
 ### Agent → Workspace
 
-**Folders available to the Agent** lists where the Agent may read and write;
-everything outside the list is out of reach. The same list is where the Agent
+**Folders available to the Agent** lists where the Agent's built-in file and
+terminal tools may read and write; a path outside the list is refused. The same
+list bounds the paths Codescribe hands to MCP tools it knows how to check
+(Desktop Commander's file and process tools go through the same validator),
+so adding or removing a folder here also changes what those tools may touch
+through Codescribe. What an MCP server does on its own, outside a call
+Codescribe validates, is not bounded by this list. The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
@@ -385,8 +390,11 @@ asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
   server, names verbatim), the selected source's tools on the right. Each row
   shows a readable name above the raw identity, the source and localized risk
   class, and where the level comes from: "Individual rule", "Server rule" or
-  "Category default". "Remove rule" drops an individual rule; the row then
-  shows the server rule or the category default again.
+  "Category default". Codescribe's own tools are named in the interface
+  language; an MCP server's tools keep the vendor's spelling. Both lines stay
+  on one line, so the row's tooltip carries the full name and the full
+  identifier. "Remove rule" drops an individual rule; the row then shows the
+  server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.

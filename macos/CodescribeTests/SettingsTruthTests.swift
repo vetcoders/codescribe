@@ -545,6 +545,40 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
 
+    // Our own tools are named in the interface language; an MCP server's tools
+    // keep the vendor's wording, spelled out of the registry name.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "get_selected_text", identity: "native:get_selected_text"),
+      "Read selected text")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "fetch_github_file", identity: "native:fetch_github_file"),
+      "Fetch GitHub file", "a proper name is not mangled by the speller")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "write_file", identity: "desktop-commander:write_file"),
+      "Write file", "an MCP tool is not renamed by our own table")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "future_native", identity: "native:future_native"),
+      "Future native", "a tool the table does not name yet falls back to the speller")
+    XCTAssertNil(ToolPermissionLabels.nativeDisplayName(for: "write_file_v2"))
+
+    // Every tool the native registry installs has interface copy. The list is
+    // `app/agent/tools/mod.rs::register_native_tools`.
+    let nativeTools = [
+      "apply_patch", "fetch_github_file", "get_frontmost_app", "get_selected_text", "git_commit",
+      "git_diff", "git_log", "git_status", "list_directory", "list_projects", "monitor_run",
+      "move_path", "observe_process", "project_build", "project_test", "read_clipboard",
+      "read_file", "run_process", "search_files", "search_threads", "stop_process",
+      "take_screenshot", "transcribe_audio", "type_text", "write_clipboard", "write_file",
+    ]
+    XCTAssertEqual(nativeTools.count, 26)
+    for tool in nativeTools {
+      let name = ToolPermissionLabels.nativeDisplayName(for: tool)
+      XCTAssertNotNil(name, tool)
+      XCTAssertFalse(name?.contains("_") ?? true, "\(tool) still reads as an identifier")
+    }
+
     XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
     XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
     XCTAssertEqual(ToolPermissionLabels.origin("mcp:brave-search"), "MCP")
@@ -1522,7 +1556,15 @@ final class SettingsTruthTests: XCTestCase {
       facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
     XCTAssertEqual(ready.localizedLabel, "Overall status")
     XCTAssertEqual(
-      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+      ready.localizedValue,
+      "Ready — xAI (Grok) configured, can send requests, 26 native tools",
+      "the verdict reports request readiness, never a successful provider request")
+
+    let available = CsMcpStatusRow(
+      label: "Provider:", value: "raw english", tone: .good,
+      facet: .provider, state: .accessAvailable, count: nil, subject: "xAI (Grok)",
+      detail: "XAI_API_KEY")
+    XCTAssertEqual(available.localizedValue, "xAI (Grok) — can send requests")
 
     let provider = CsMcpStatusRow(
       label: "Provider:", value: "", tone: .bad,

@@ -74,6 +74,30 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
   let variant: String
   let canonical: String
   let source: String
+
+  /// Where the rule came from, in the interface language. `source` is the
+  /// stored provenance code and stays identity (R6); this is the only form
+  /// that reaches the screen or VoiceOver, so both say the same thing.
+  var localizedOrigin: String {
+    switch source {
+    case "correction":
+      return String(
+        localized: "dictionary.rule.origin.correction", defaultValue: "From a correction",
+        comment: "Dictionary rule origin: learned from an accepted correction")
+    case "manual":
+      return String(
+        localized: "dictionary.rule.origin.manual", defaultValue: "Added by hand",
+        comment: "Dictionary rule origin: typed by the user")
+    case "import":
+      return String(
+        localized: "dictionary.rule.origin.import", defaultValue: "From an import",
+        comment: "Dictionary rule origin: brought in from a dictionary file")
+    default:
+      return String(
+        localized: "dictionary.rule.origin.unknown", defaultValue: "Origin not recorded",
+        comment: "Dictionary rule origin: the row was stored before provenance was kept")
+    }
+  }
 }
 
 /// Whitespace runs collapse to single spaces so a rewrap is not a change.
@@ -939,9 +963,10 @@ struct VoiceLabPanel: View {
     } else if model.customLexiconEntries.count <= dictionaryRuleListLimit {
       // A few rules read better as a list than as a pager.
       VStack(spacing: 0) {
-        ForEach(Array(model.customLexiconEntries.enumerated()), id: \.offset) { index, row in
+        let rows = customLexiconRows(model.customLexiconEntries)
+        ForEach(rows) { row in
           lexiconRow(row)
-          if index < model.customLexiconEntries.count - 1 {
+          if row.id < rows.count - 1 {
             Divider().opacity(0.4)
           }
         }
@@ -952,10 +977,10 @@ struct VoiceLabPanel: View {
     } else {
       VStack(spacing: 8) {
         let safeIndex = min(lexiconIndex, model.customLexiconEntries.count - 1)
-        lexiconRow(model.customLexiconEntries[safeIndex])
+        lexiconRow(customLexiconRows(model.customLexiconEntries)[safeIndex])
           .settingsGroupedInset()
-          .accessibilityElement(children: .contain)
-          .accessibilityIdentifier("dictionary-lexicon-card")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dictionary-lexicon-card")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
@@ -973,7 +998,7 @@ struct VoiceLabPanel: View {
     }
   }
 
-  private func lexiconRow(_ row: CsLexiconEntry) -> some View {
+  private func lexiconRow(_ row: VoiceLabLexiconRow) -> some View {
     HStack(spacing: 10) {
       Text(row.variant)
         .font(CSFont.mono(11.5, .medium))
@@ -987,10 +1012,10 @@ struct VoiceLabPanel: View {
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       Spacer(minLength: 0)
-      Text(LexiconSourceLabel.text(for: row.source))
+      Text(row.localizedOrigin)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
-        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.localizedOrigin)")
         .accessibilityIdentifier("dictionary-lexicon-summary")
     }
     .padding(.vertical, 6)
