@@ -13,9 +13,9 @@ import XCTest
 final class ShortcutsSaveReceiptTests: XCTestCase {
 
   /// Records writes and persists only what it accepts, mirroring the bridge:
-  /// `set_mode_binding` rejects Assistive + any Hold gesture outright
-  /// (bridge/src/hotkeys.rs), so a save spanning several modes can land
-  /// partially.
+  /// `set_mode_binding` refuses every mode/gesture cell the detector never
+  /// routes, Assistive + any Hold gesture among them (bridge/src/hotkeys.rs),
+  /// so a save spanning several modes can land partially.
   private final class RecordingHotkeysEngine: HotkeysEngine {
     struct Rejected: Error { let reason: String }
 
@@ -262,6 +262,69 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     XCTAssertNotEqual(presented.message, conflict.message)
     XCTAssertEqual(presented.technical, "\(conflict.gestureLabel) · \(conflict.message)")
     XCTAssertEqual(presented.gesture, CsShortcutBinding.doubleLeftOption.visibleName)
+  }
+
+  /// P2-007 (linked: hotkeys-dead-binding-cells): every reachability sentence
+  /// the core emits for an unrouted cell — the duplicate left Option among
+  /// them — is a blocking entry with its own localized sentence and the wire
+  /// strings kept underneath. No two cells share a sentence, so the screen
+  /// always says which mode the gesture would start instead.
+  func testUnroutedGestureSentencesAreBlockingDistinctAndLocalized() {
+    let wire = [
+      "This gesture only starts Dictation, so Formatting would never start from it.",
+      "This gesture only starts Dictation, so Assistive would never start from it.",
+      "This gesture only starts Formatting, so Dictation would never start from it.",
+      "This gesture only starts Formatting, so Assistive would never start from it.",
+      "This gesture only starts Assistive, so Dictation would never start from it.",
+      "This gesture only starts Assistive, so Formatting would never start from it.",
+    ]
+
+    let presented = wire.map { message in
+      CsHotkeyConflict(
+        gestureLabel: "Double-tap Left Option", message: message, blocking: true
+      ).presentation(options: CsBindingOption.sampleOptions)
+    }
+
+    XCTAssertEqual(Set(presented.map(\.message)).count, wire.count)
+    for (entry, message) in zip(presented, wire) {
+      XCTAssertTrue(entry.blocking, message)
+      XCTAssertNotEqual(entry.message, message, "the wire sentence must be localized")
+      XCTAssertEqual(entry.technical, "Double-tap Left Option · \(message)")
+      XCTAssertEqual(entry.gesture, CsShortcutBinding.doubleLeftOption.visibleName)
+    }
+  }
+
+  /// The audited duplicate blocks Save before anything is written, and the
+  /// default profile with only the Fn-tap note stays saveable.
+  func testDuplicateLeftOptionBlocksSaveWhileTheFnNoteDoesNot() {
+    let duplicate = CsHotkeyConflict(
+      gestureLabel: "Double-tap Left Option",
+      message: "This gesture only starts Formatting, so Dictation would never start from it.",
+      blocking: true)
+    let fnNote = CsHotkeyConflict(
+      gestureLabel: "Hold Fn/Globe",
+      message:
+        "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+      blocking: false)
+    let engine = RecordingHotkeysEngine(conflicts: { candidate in
+      let dictation = candidate.first { $0.mode == .dictation }?.binding
+      return dictation == .doubleLeftOption ? [duplicate, fnNote] : [fnNote]
+    })
+    let model = model(engine)
+
+    model.editDraftBinding(mode: .dictation, binding: .doubleLeftOption)
+    XCTAssertTrue(model.hasBlockingBindingConflicts)
+    XCTAssertFalse(model.canSaveBindings)
+    model.saveBindings()
+    XCTAssertTrue(engine.writes.isEmpty, "a blocked draft must not write")
+    XCTAssertNil(model.bindingSaveReceipt)
+
+    model.editDraftBinding(mode: .dictation, binding: .holdCtrl)
+    XCTAssertFalse(model.hasBlockingBindingConflicts, "the Fn note alone never blocks")
+    XCTAssertTrue(model.canSaveBindings)
+    model.saveBindings()
+    XCTAssertEqual(engine.writes.map { $0.binding }, [.holdCtrl])
+    XCTAssertEqual(model.bindingSaveReceipt?.saved, [.dictation])
   }
 
   /// An unmapped wire sentence is shown verbatim rather than mistranslated, and
