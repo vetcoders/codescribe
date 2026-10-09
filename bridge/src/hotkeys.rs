@@ -1364,6 +1364,55 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Format one revision of a transcript reopened from history with the
+    /// production formatter and an optional one-shot level. The source text is
+    /// read in Rust from the archive's revision chain; an applied result is
+    /// committed to that archive only, never to the reducer, the Bus or the
+    /// latest take.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: String,
+        source_revision: u64,
+        level: Option<String>,
+    ) -> Result<CsArchivedFormat, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for archived transcript formatting".to_string(),
+                })?;
+            let receipt = controller
+                .format_archived_transcript(archive_path.clone(), source_revision, level)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("{error:#}"),
+                })?;
+            let document = match receipt.revision {
+                Some(_) => Some(
+                    tokio::task::spawn_blocking(move || {
+                        crate::threads::CsArchivedDocument::read(archive_path)
+                    })
+                    .await
+                    .map_err(|error| CsError::Recording {
+                        msg: error.to_string(),
+                    })??,
+                ),
+                None => None,
+            };
+            Ok(CsArchivedFormat {
+                outcome: (&receipt.outcome).into(),
+                document,
+            })
+        })
+        .await?
+    }
+
     /// Inspect retained source input even when unresolved work prevents Max from
     /// starting. No controller, microphone, provider or execution lease is opened.
     pub async fn inspect_selected_max_consultation(
@@ -1577,6 +1626,22 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    /// The live take's pending assistive context is never taken by this send.
+    pub async fn send_archived_transcript(&self, text: String) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .deliver_archived_transcript_to_agent(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
@@ -1780,6 +1845,36 @@ impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevis
             revision: value.revision,
             rendered_text: value.rendered_text,
             provenance_receipt: value.provenance_receipt,
+        }
+    }
+}
+
+/// How the production formatter settled a reopened archive transcript.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchivedFormatOutcome {
+    Applied,
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+/// Formatter outcome for one archived transcript. `document` is the archive
+/// as its history owner holds it after an applied format committed a new
+/// revision; it is `None` for every other outcome, which changed nothing.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsArchivedFormat {
+    pub outcome: CsArchivedFormatOutcome,
+    pub document: Option<crate::threads::CsArchivedDocument>,
+}
+
+impl From<&codescribe::controller::ArchivedFormatOutcome> for CsArchivedFormatOutcome {
+    fn from(value: &codescribe::controller::ArchivedFormatOutcome) -> Self {
+        use codescribe::controller::ArchivedFormatOutcome;
+        match value {
+            ArchivedFormatOutcome::Applied(_) => Self::Applied,
+            ArchivedFormatOutcome::Failed => Self::Failed,
+            ArchivedFormatOutcome::Unavailable => Self::Unavailable,
+            ArchivedFormatOutcome::Unchanged => Self::Unchanged,
         }
     }
 }

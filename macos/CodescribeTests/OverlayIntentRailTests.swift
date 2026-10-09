@@ -620,10 +620,12 @@ final class OverlayIntentRailTests: XCTestCase {
   }
 
   func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
-    // All cases deliberately over-approximate co-visibility, so adding an
-    // intent cannot silently evade the census. Close is a custom brand dot.
+    // Undo format and undo retranscribe are the same action on alternative
+    // archive heads. They never coexist and deliberately share the Undo icon.
+    XCTAssertEqual(OverlayIntent.undoFormat.systemImage, OverlayIntent.undoRetranscribe.systemImage)
+    // Other cases over-approximate co-visibility. Close is a custom brand dot.
     let symbols =
-      OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
+      OverlayIntent.allCases.filter { $0 != .close && $0 != .undoFormat }.map(\.systemImage)
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,

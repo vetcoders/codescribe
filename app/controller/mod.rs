@@ -139,6 +139,94 @@ fn formatter_revision_level(
     ))
 }
 
+/// What the production formatter did with a reopened archive transcript.
+/// Mirrors the reducer's formatter refusals without a reducer revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchivedFormatOutcome {
+    Applied(String),
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+impl ArchivedFormatOutcome {
+    fn from_result(
+        source: &str,
+        result: codescribe_core::llm::ai_formatting::AiFormatResult,
+    ) -> Self {
+        use codescribe_core::llm::ai_formatting::AiFormatStatus;
+        match result.status {
+            AiFormatStatus::Applied if result.text != source && !result.text.trim().is_empty() => {
+                Self::Applied(result.text)
+            }
+            AiFormatStatus::Applied | AiFormatStatus::AiNoop => Self::Unchanged,
+            AiFormatStatus::Failed => Self::Failed,
+            AiFormatStatus::Skipped => Self::Unavailable,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Applied(_) => "applied",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// The formatter's verdict for one archived transcript and, when it applied,
+/// the revision the history owner accepted for exactly that archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedFormatReceipt {
+    pub outcome: ArchivedFormatOutcome,
+    pub revision: Option<codescribe_core::state::history::ArchiveRevision>,
+}
+
+#[cfg(test)]
+mod archived_format_outcome_tests {
+    use super::ArchivedFormatOutcome;
+    use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
+
+    fn result(text: &str, status: AiFormatStatus) -> AiFormatResult {
+        AiFormatResult {
+            text: text.to_string(),
+            reasoning_text: None,
+            status,
+        }
+    }
+
+    /// A failed provider hands back the cleaned input; that echo must never
+    /// read as an applied archive format.
+    #[test]
+    fn only_a_changed_applied_result_reaches_the_archive_canvas() {
+        let source = "ala ma kota";
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(
+                source,
+                result("Ala ma kota.", AiFormatStatus::Applied)
+            ),
+            ArchivedFormatOutcome::Applied("Ala ma kota.".to_string())
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Applied)),
+            ArchivedFormatOutcome::Unchanged
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::AiNoop)),
+            ArchivedFormatOutcome::Unchanged
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Failed)),
+            ArchivedFormatOutcome::Failed
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Skipped)),
+            ArchivedFormatOutcome::Unavailable
+        );
+    }
+}
+
 fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
     info!(
         session_id = %receipt.session_id,
@@ -2319,6 +2407,101 @@ impl RecordingController {
         Ok(receipt)
     }
 
+    /// Format one revision of an archived transcript through the same settings
+    /// generation, level resolution, Max consultation and production formatter
+    /// as [`Self::apply_formatter_revision_from_overlay`].
+    ///
+    /// The archive path and its revision are the compare-and-swap boundary,
+    /// exactly as session and revision are for a live take: the source text is
+    /// read here from the history owner, never accepted from Swift, and an
+    /// applied result is committed to that archive's revision chain only. The
+    /// reducer, the Bus and the latest take are not touched, so nothing is
+    /// re-delivered and a later take can never receive this result.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: String,
+        source_revision: u64,
+        requested_level: Option<FormattingPolicy>,
+    ) -> Result<ArchivedFormatReceipt> {
+        use codescribe_core::state::history;
+        anyhow::ensure!(
+            self.current_state().await == State::Idle,
+            "archived transcript formatting refused while recording is active"
+        );
+        let read_path = archive_path.clone();
+        let document = tokio::task::spawn_blocking(move || {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any read.
+            history::read_archived_document(std::path::Path::new(&read_path))
+        })
+        .await??;
+        anyhow::ensure!(
+            document.head_revision() == source_revision,
+            "stale archived transcript revision: current {}, requested {}",
+            document.head_revision(),
+            source_revision
+        );
+        let source = document.head_text().to_string();
+        anyhow::ensure!(
+            !source.trim().is_empty(),
+            "archived transcript has no text to format"
+        );
+        let runtime_settings = self.formatter_revision_settings(requested_level).await;
+        let (format_level, level_source) =
+            formatter_revision_level(requested_level, runtime_settings.as_ref())?;
+        let language = runtime_settings.values().whisper_language;
+        let consultation = self
+            .selected_max_consultation(runtime_settings.as_ref())
+            .await?;
+        // The archive and its revision name the source, as session and revision
+        // do for a live take; the uuid keeps a retry from reusing a Max turn.
+        let turn_id = format!(
+            "archive:{archive_path}:revision:{source_revision}:{}",
+            Uuid::new_v4()
+        );
+        let result = format_text_with_status_for_policy(
+            &source,
+            language.whisper_hint(),
+            runtime_settings.as_ref(),
+            consultation.as_deref().map(|agent| {
+                codescribe_core::ai_formatting::FormattingConsultation {
+                    agent,
+                    turn_id: &turn_id,
+                }
+            }),
+        )
+        .await;
+        let outcome = ArchivedFormatOutcome::from_result(&source, result);
+        let revision = match &outcome {
+            ArchivedFormatOutcome::Applied(text) => {
+                let text = text.clone();
+                let level = format_level.as_str().to_string();
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        history::commit_archived_revision(
+                            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any write.
+                            std::path::Path::new(&archive_path),
+                            source_revision,
+                            &text,
+                            history::ArchiveRevisionProvenance::Formatter,
+                            Some(level),
+                        )
+                    })
+                    .await??,
+                )
+            }
+            _ => None,
+        };
+        info!(
+            format_level = format_level.as_str(),
+            source = level_source,
+            outcome = outcome.label(),
+            source_revision,
+            revision = revision.as_ref().map(|revision| revision.revision),
+            "archived transcript formatting settled"
+        );
+        Ok(ArchivedFormatReceipt { outcome, revision })
+    }
+
     async fn formatter_revision_settings(
         &self,
         requested_level: Option<FormattingPolicy>,
@@ -2588,6 +2771,80 @@ impl RecordingController {
         info!(
             elapsed_secs = delivery_started.elapsed().as_secs_f64(),
             "assistive delivery completed"
+        );
+        Ok(true)
+    }
+
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    ///
+    /// The text is the archive's accepted revision, chosen by the overlay for
+    /// one named archive. Unlike the live take's send this never takes
+    /// `pending_assistive_context`, `assistive_context` or the context bucket:
+    /// those belong to whichever take is live or pending now, and an archive
+    /// send must leave them exactly as they were. The route resolution, the
+    /// delivery tagger and the Agent runtime lane (current selected thread,
+    /// configuration and permissions) are the same production seams.
+    pub async fn deliver_archived_transcript_to_agent(&self, transcript: String) -> Result<bool> {
+        let runtime_settings = self.runtime_settings_arc().await;
+        self.deliver_archived_transcript_to_agent_with(
+            transcript,
+            move |wire, language, max_tokens, persona| {
+                Box::pin(send_assistive_with_agent_runtime_lane(
+                    runtime_settings,
+                    wire,
+                    language,
+                    max_tokens,
+                    persona,
+                ))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
+        )
+        .await
+    }
+
+    /// Archive-send body with an injectable send adapter, the twin of
+    /// [`Self::deliver_pending_assistive_transcript_with`] minus every live
+    /// context take.
+    pub(crate) async fn deliver_archived_transcript_to_agent_with<F>(
+        &self,
+        transcript: String,
+        send: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(
+            String,
+            crate::config::Language,
+            i32,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    {
+        let delivery_started = std::time::Instant::now();
+        if transcript.trim().is_empty() {
+            info!("archived transcript delivery skipped: empty transcript");
+            return Ok(false);
+        }
+        let to_agent = resolve_delivery_route(
+            DeliveryIntent::OverlayToAgent,
+            overlay_insert_facts(true, false),
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(DeliveryIntent::OverlayToAgent, to_agent, None,)
+        );
+        let config = self.get_config().await;
+        let delivery_text = self
+            .delivery_tagger
+            .render(&transcript, &config, Some("agent"));
+        send(
+            delivery_text,
+            config.whisper_language,
+            config.ai_assistive_max_tokens,
+            true,
+        )
+        .await;
+        info!(
+            elapsed_secs = delivery_started.elapsed().as_secs_f64(),
+            "archived transcript delivery completed"
         );
         Ok(true)
     }
@@ -11900,6 +12157,87 @@ mod explicit_startup_tests {
             root.to_path_buf(),
             1_700_000_000_000,
         ))
+    }
+
+    #[tokio::test]
+    async fn archive_send_cannot_consume_live_context_or_delivery_disposition() {
+        let root = tempfile::tempdir().unwrap();
+        let probe = StartupAcquisitionProbe::forbid();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        *controller.assistive_context.write().await = Some(AssistiveContext {
+            frontmost_app: Some("Live B app".into()),
+            selected_text: Some("Live B selection".into()),
+        });
+        *controller.pending_assistive_context.write().await = Some(AssistiveContext {
+            frontmost_app: Some("Next C app".into()),
+            selected_text: Some("Next C selection".into()),
+        });
+        controller
+            .context_bucket
+            .lock()
+            .await
+            .add_selection(0, "Live bucket B".into())
+            .unwrap();
+        let bucket_before = format!("{:?}", controller.context_bucket.lock().await);
+        *controller.delivery_disposition.write().await = TranscriptDelivery::ComposerPending;
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+        assert!(
+            controller
+                .deliver_archived_transcript_to_agent_with(
+                    "Archive A words".into(),
+                    |text, language, tokens, explicit| {
+                        Box::pin(async move {
+                            sent_tx.send((text, language, tokens, explicit)).unwrap();
+                        })
+                    }
+                )
+                .await
+                .unwrap()
+        );
+        let (text, language, tokens, explicit) = sent_rx.await.unwrap();
+        assert!(text.contains("Archive A words"));
+        assert!(!text.contains("Live B selection"));
+        assert!(!text.contains("Next C selection"));
+        assert!(!text.contains("Live bucket B"));
+        let config = controller.get_config().await;
+        assert_eq!(language, config.whisper_language);
+        assert_eq!(tokens, config.ai_assistive_max_tokens);
+        assert!(explicit);
+        assert_eq!(
+            controller
+                .assistive_context
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .selected_text
+                .as_deref(),
+            Some("Live B selection")
+        );
+        assert_eq!(
+            controller
+                .pending_assistive_context
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .selected_text
+                .as_deref(),
+            Some("Next C selection")
+        );
+        assert_eq!(
+            format!("{:?}", controller.context_bucket.lock().await),
+            bucket_before
+        );
+        assert_eq!(
+            *controller.delivery_disposition.read().await,
+            TranscriptDelivery::ComposerPending
+        );
+        assert!(probe.attempts().is_empty());
     }
 
     #[tokio::test]

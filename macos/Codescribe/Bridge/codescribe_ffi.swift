@@ -661,7 +661,7 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     /**
      * True when the assistive lane can reach its provider under the CURRENT
      * settings (fresh reload). A key-optional local endpoint counts as
-     * available.
+     * available; a lane without a model or provider does not.
      */
     func isAvailable()  -> Bool
 
@@ -886,7 +886,7 @@ open func generateThreadTitle(text: String)async throws  -> String?  {
     /**
      * True when the assistive lane can reach its provider under the CURRENT
      * settings (fresh reload). A key-optional local endpoint counts as
-     * available.
+     * available; a lane without a model or provider does not.
      */
 open func isAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -2666,6 +2666,15 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func documentHistory(sessionId: String) async throws  -> [CsDocumentHistoryEntry]
 
     /**
+     * Format one revision of a transcript reopened from history with the
+     * production formatter and an optional one-shot level. The source text is
+     * read in Rust from the archive's revision chain; an applied result is
+     * committed to that archive only, never to the reducer, the Bus or the
+     * latest take.
+     */
+    func formatArchivedTranscript(archivePath: String, sourceRevision: UInt64, level: String?) async throws  -> CsArchivedFormat
+
+    /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
      * against defaults so every mode is always present. Reads on-disk truth.
      */
@@ -2683,8 +2692,9 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func isActive()  -> Bool
 
     /**
-     * True when the configured formatting provider can handle a user-triggered
-     * overlay format action.
+     * True when a user-triggered overlay format action has an engine: Max
+     * needs the Agent lane; Smart/Corrections need Apple on-device (when
+     * selected) or the configured formatting lane.
      */
     func isFormattingAvailable()  -> Bool
 
@@ -2772,6 +2782,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * existing session/revision compare-and-swap corridor.
      */
     func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64) async throws  -> CsUserRevisionResult
+
+    /**
+     * Send a transcript reopened from history to Agent on an explicit click.
+     * The live take's pending assistive context is never taken by this send.
+     */
+    func sendArchivedTranscript(text: String) async throws  -> Bool
 
     /**
      * Deliver an assistive transcript from the editable overlay. The
@@ -3304,6 +3320,30 @@ open func documentHistory(sessionId: String)async throws  -> [CsDocumentHistoryE
 }
 
     /**
+     * Format one revision of a transcript reopened from history with the
+     * production formatter and an optional one-shot level. The source text is
+     * read in Rust from the archive's revision chain; an applied result is
+     * committed to that archive only, never to the reducer, the Bus or the
+     * latest take.
+     */
+open func formatArchivedTranscript(archivePath: String, sourceRevision: UInt64, level: String?)async throws  -> CsArchivedFormat  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_archived_transcript(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(archivePath),FfiConverterUInt64.lower(sourceRevision),FfiConverterOptionString.lower(level)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsArchivedFormat_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
      * against defaults so every mode is always present. Reads on-disk truth.
      */
@@ -3348,8 +3388,9 @@ open func isActive() -> Bool  {
 }
 
     /**
-     * True when the configured formatting provider can handle a user-triggered
-     * overlay format action.
+     * True when a user-triggered overlay format action has an engine: Max
+     * needs the Agent lane; Smart/Corrections need Apple on-device (when
+     * selected) or the configured formatting lane.
      */
 open func isFormattingAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -3595,6 +3636,27 @@ open func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, res
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Send a transcript reopened from history to Agent on an explicit click.
+     * The live take's pending assistive context is never taken by this send.
+     */
+open func sendArchivedTranscript(text: String)async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_send_archived_transcript(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -4559,6 +4621,15 @@ public func FfiConverterTypeCodescribeNotes_lower(_ value: CodescribeNotes) -> U
 public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
 
     /**
+     * Commit an explicit edit or retranscription of the archived transcript
+     * at `path` against `source_revision`. `detail` names the generating
+     * pass of a retranscription and travels with it through any retry. The
+     * archived text and audio stay untouched; a moved head refuses instead
+     * of overwriting newer work.
+     */
+    func commitHistoryRevision(path: String, sourceRevision: UInt64, renderedText: String, kind: CsArchiveRevisionKind, detail: String?) throws  -> CsArchivedDocument
+
+    /**
      * Delete a thread (file + index entry) by id. Wraps
      * `ThreadStore::delete_thread` (`thread_store.rs:159`).
      */
@@ -4579,6 +4650,19 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
      * `ThreadStore::generate_id` (`thread_store.rs:191`).
      */
     func generateThreadId()  -> String
+
+    /**
+     * Audio the daily archive wrote with the transcript at `path`, if it is
+     * still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+     * means the take cannot be transcribed again, never "use another take".
+     */
+    func historyAudioPath(path: String)  -> String?
+
+    /**
+     * The archived transcript at `path` with the accepted head of its
+     * revision chain. Wraps `history::read_archived_document`.
+     */
+    func historyDocument(path: String) throws  -> CsArchivedDocument
 
     /**
      * List indexed thread summaries, newest first, optionally filtered.
@@ -4610,6 +4694,12 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
      * Wraps `ThreadStore::set_thread_title` (`thread_store.rs`).
      */
     func renameThread(id: String, title: String) throws  -> Bool
+
+    /**
+     * Restore an earlier version of the archived transcript at `path` as a
+     * new revision (Undo). The restored bytes are selected here, in Rust.
+     */
+    func restoreHistoryRevision(path: String, sourceRevision: UInt64, restoreRevision: UInt64) throws  -> CsArchivedDocument
 
     /**
      * Full-text search over indexed threads (all query words must match),
@@ -4697,6 +4787,26 @@ public convenience init() {
 
 
     /**
+     * Commit an explicit edit or retranscription of the archived transcript
+     * at `path` against `source_revision`. `detail` names the generating
+     * pass of a retranscription and travels with it through any retry. The
+     * archived text and audio stay untouched; a moved head refuses instead
+     * of overwriting newer work.
+     */
+open func commitHistoryRevision(path: String, sourceRevision: UInt64, renderedText: String, kind: CsArchiveRevisionKind, detail: String?)throws  -> CsArchivedDocument  {
+    return try  FfiConverterTypeCsArchivedDocument_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_commit_history_revision(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),
+        FfiConverterUInt64.lower(sourceRevision),
+        FfiConverterString.lower(renderedText),
+        FfiConverterTypeCsArchiveRevisionKind_lower(kind),
+        FfiConverterOptionString.lower(detail),$0
+    )
+})
+}
+
+    /**
      * Delete a thread (file + index entry) by id. Wraps
      * `ThreadStore::delete_thread` (`thread_store.rs:159`).
      */
@@ -4734,6 +4844,33 @@ open func generateThreadId() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribethreads_generate_thread_id(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Audio the daily archive wrote with the transcript at `path`, if it is
+     * still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+     * means the take cannot be transcribed again, never "use another take".
+     */
+open func historyAudioPath(path: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_history_audio_path(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),$0
+    )
+})
+}
+
+    /**
+     * The archived transcript at `path` with the accepted head of its
+     * revision chain. Wraps `history::read_archived_document`.
+     */
+open func historyDocument(path: String)throws  -> CsArchivedDocument  {
+    return try  FfiConverterTypeCsArchivedDocument_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_history_document(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),$0
     )
 })
 }
@@ -4801,6 +4938,21 @@ open func renameThread(id: String, title: String)throws  -> Bool  {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
         FfiConverterString.lower(title),$0
+    )
+})
+}
+
+    /**
+     * Restore an earlier version of the archived transcript at `path` as a
+     * new revision (Undo). The restored bytes are selected here, in Rust.
+     */
+open func restoreHistoryRevision(path: String, sourceRevision: UInt64, restoreRevision: UInt64)throws  -> CsArchivedDocument  {
+    return try  FfiConverterTypeCsArchivedDocument_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_restore_history_revision(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),
+        FfiConverterUInt64.lower(sourceRevision),
+        FfiConverterUInt64.lower(restoreRevision),$0
     )
 })
 }
@@ -8670,6 +8822,161 @@ public func FfiConverterTypeCsApplicationRuntimeSnapshot_lift(_ buf: RustBuffer)
 #endif
 public func FfiConverterTypeCsApplicationRuntimeSnapshot_lower(_ value: CsApplicationRuntimeSnapshot) -> RustBuffer {
     return FfiConverterTypeCsApplicationRuntimeSnapshot.lower(value)
+}
+
+
+/**
+ * An archived transcript as its history owner holds it: the untouched
+ * original plus the accepted head of its revision chain. Swift paints this
+ * and addresses the next request with `path` + `revision`; it never decides
+ * which text is current.
+ */
+public struct CsArchivedDocument: Equatable, Hashable {
+    public var path: String
+    public var originalText: String
+    public var revision: UInt64
+    public var renderedText: String
+    /**
+     * `original` for revision 0, otherwise the head revision's provenance.
+     */
+    public var provenance: String
+    /**
+     * Durable receipt of the head revision; empty for the original.
+     */
+    public var receiptId: String
+    /**
+     * The version Undo restores (what the last format or retranscription
+     * replaced); `None` when there is nothing to undo.
+     */
+    public var undoRevision: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, originalText: String, revision: UInt64, renderedText: String,
+        /**
+         * `original` for revision 0, otherwise the head revision's provenance.
+         */provenance: String,
+        /**
+         * Durable receipt of the head revision; empty for the original.
+         */receiptId: String,
+        /**
+         * The version Undo restores (what the last format or retranscription
+         * replaced); `None` when there is nothing to undo.
+         */undoRevision: UInt64?) {
+        self.path = path
+        self.originalText = originalText
+        self.revision = revision
+        self.renderedText = renderedText
+        self.provenance = provenance
+        self.receiptId = receiptId
+        self.undoRevision = undoRevision
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsArchivedDocument: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchivedDocument: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchivedDocument {
+        return
+            try CsArchivedDocument(
+                path: FfiConverterString.read(from: &buf),
+                originalText: FfiConverterString.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf),
+                provenance: FfiConverterString.read(from: &buf),
+                receiptId: FfiConverterString.read(from: &buf),
+                undoRevision: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsArchivedDocument, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterString.write(value.originalText, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterString.write(value.provenance, into: &buf)
+        FfiConverterString.write(value.receiptId, into: &buf)
+        FfiConverterOptionUInt64.write(value.undoRevision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedDocument_lift(_ buf: RustBuffer) throws -> CsArchivedDocument {
+    return try FfiConverterTypeCsArchivedDocument.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedDocument_lower(_ value: CsArchivedDocument) -> RustBuffer {
+    return FfiConverterTypeCsArchivedDocument.lower(value)
+}
+
+
+/**
+ * Formatter outcome for one archived transcript. `document` is the archive
+ * as its history owner holds it after an applied format committed a new
+ * revision; it is `None` for every other outcome, which changed nothing.
+ */
+public struct CsArchivedFormat: Equatable, Hashable {
+    public var outcome: CsArchivedFormatOutcome
+    public var document: CsArchivedDocument?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outcome: CsArchivedFormatOutcome, document: CsArchivedDocument?) {
+        self.outcome = outcome
+        self.document = document
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsArchivedFormat: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchivedFormat: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchivedFormat {
+        return
+            try CsArchivedFormat(
+                outcome: FfiConverterTypeCsArchivedFormatOutcome.read(from: &buf),
+                document: FfiConverterOptionTypeCsArchivedDocument.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsArchivedFormat, into buf: inout [UInt8]) {
+        FfiConverterTypeCsArchivedFormatOutcome.write(value.outcome, into: &buf)
+        FfiConverterOptionTypeCsArchivedDocument.write(value.document, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormat_lift(_ buf: RustBuffer) throws -> CsArchivedFormat {
+    return try FfiConverterTypeCsArchivedFormat.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormat_lower(_ value: CsArchivedFormat) -> RustBuffer {
+    return FfiConverterTypeCsArchivedFormat.lower(value)
 }
 
 
@@ -15316,6 +15623,157 @@ public func FfiConverterTypeCsApiKeyProbeStatus_lower(_ value: CsApiKeyProbeStat
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Which explicit action a Swift-submitted archive revision came from. The
+ * formatter and restore commit inside Rust and are not offered here.
+ */
+
+public enum CsArchiveRevisionKind: Equatable, Hashable {
+
+    case userEdit
+    case retranscribe
+
+
+
+}
+
+#if compiler(>=6)
+extension CsArchiveRevisionKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchiveRevisionKind: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchiveRevisionKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchiveRevisionKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .userEdit
+
+        case 2: return .retranscribe
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsArchiveRevisionKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .userEdit:
+            writeInt(&buf, Int32(1))
+
+
+        case .retranscribe:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchiveRevisionKind_lift(_ buf: RustBuffer) throws -> CsArchiveRevisionKind {
+    return try FfiConverterTypeCsArchiveRevisionKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchiveRevisionKind_lower(_ value: CsArchiveRevisionKind) -> RustBuffer {
+    return FfiConverterTypeCsArchiveRevisionKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How the production formatter settled a reopened archive transcript.
+ */
+
+public enum CsArchivedFormatOutcome: Equatable, Hashable {
+
+    case applied
+    case failed
+    case unavailable
+    case unchanged
+
+
+
+}
+
+#if compiler(>=6)
+extension CsArchivedFormatOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchivedFormatOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchivedFormatOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchivedFormatOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .applied
+
+        case 2: return .failed
+
+        case 3: return .unavailable
+
+        case 4: return .unchanged
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsArchivedFormatOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .applied:
+            writeInt(&buf, Int32(1))
+
+
+        case .failed:
+            writeInt(&buf, Int32(2))
+
+
+        case .unavailable:
+            writeInt(&buf, Int32(3))
+
+
+        case .unchanged:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormatOutcome_lift(_ buf: RustBuffer) throws -> CsArchivedFormatOutcome {
+    return try FfiConverterTypeCsArchivedFormatOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchivedFormatOutcome_lower(_ value: CsArchivedFormatOutcome) -> RustBuffer {
+    return FfiConverterTypeCsArchivedFormatOutcome.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Typed outcome of a conditional stop. Every variant is a state the caller can
  * act on; none of them is an error string to match. A failed transport may
  * retry the same handle to join/retrieve the retained controller operation.
@@ -17926,6 +18384,30 @@ fileprivate struct FfiConverterOptionTypeCsWhisperDownloadListener: FfiConverter
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsArchivedDocument: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchivedDocument?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsArchivedDocument.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsArchivedDocument.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsDocumentProvider: FfiConverterRustBuffer {
     typealias SwiftType = CsDocumentProvider?
 
@@ -19573,7 +20055,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_generate_thread_title() != 6378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 42455) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 36957) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_pending_tool_approvals() != 52256) {
@@ -19843,6 +20325,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_document_history() != 45148) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_archived_transcript() != 42195) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19852,7 +20337,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_active() != 58930) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_formatting_available() != 1844) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_formatting_available() != 2137) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_recording() != 25239) {
@@ -19889,6 +20374,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_restore_document_revision() != 52565) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_archived_transcript() != 30118) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {
@@ -20002,6 +20490,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribenotes_today_note_path() != 1897) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_commit_history_revision() != 60163) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_delete_thread() != 59579) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20009,6 +20500,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_generate_thread_id() != 7905) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_history_audio_path() != 56280) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_history_document() != 62873) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_list_threads() != 47480) {
@@ -20024,6 +20521,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_rename_thread() != 27435) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_restore_history_revision() != 58712) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_search_threads() != 18770) {
