@@ -74,6 +74,13 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
   let variant: String
   let canonical: String
   let source: String
+
+  /// Where the rule came from, in the interface language. `source` is the
+  /// stored provenance code and stays identity (R6); this is the only form
+  /// that reaches the screen or VoiceOver, so both say the same thing.
+  var localizedOrigin: String {
+    LexiconSourceLabel.text(for: source)
+  }
 }
 
 /// Whitespace runs collapse to single spaces so a rewrap is not a change.
@@ -527,10 +534,10 @@ struct VoiceLabPanel: View {
               )
               .textCase(.uppercase)
               .font(CSFont.mono(9.5, .semibold))
-                .foregroundStyle(CSColor.chromeAccent)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(CSColor.chromeAccent.opacity(0.12)))
+              .foregroundStyle(CSColor.chromeAccent)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 3)
+              .background(Capsule().fill(CSColor.chromeAccent.opacity(0.12)))
             }
             Spacer(minLength: 0)
             Button {
@@ -674,7 +681,7 @@ struct VoiceLabPanel: View {
               )
               .textCase(.uppercase)
               .font(CSFont.mono(10, .semibold))
-                .foregroundStyle(CSColor.chromeAccent)
+              .foregroundStyle(CSColor.chromeAccent)
               TextEditor(text: $editor.canonical)
                 .focused($focusedCorrectionID, equals: row.id)
                 .font(CSFont.ui(13))
@@ -974,7 +981,8 @@ struct VoiceLabPanel: View {
   }
 
   private func lexiconRow(_ row: CsLexiconEntry) -> some View {
-    HStack(spacing: 10) {
+    let origin = LexiconSourceLabel.text(for: row.source)
+    return HStack(spacing: 10) {
       Text(row.variant)
         .font(CSFont.mono(11.5, .medium))
         .foregroundStyle(Color.secondary)
@@ -987,10 +995,10 @@ struct VoiceLabPanel: View {
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       Spacer(minLength: 0)
-      Text(LexiconSourceLabel.text(for: row.source))
+      Text(origin)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
-        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(origin)")
         .accessibilityIdentifier("dictionary-lexicon-summary")
     }
     .padding(.vertical, 6)

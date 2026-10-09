@@ -304,13 +304,13 @@
         }
       }
     },
-    "%@ — access available" : {
-      "comment" : "Placeholder is the provider name",
+    "%@ — can send requests" : {
+      "comment" : "Placeholder is the provider name; a request may go out under the credentials that exist now (a key-optional provider counts), no request was made",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ — dostęp dostępny"
+            "state" : "needs_review",
+            "value" : "%@ — może wysyłać żądania"
           }
         }
       }
@@ -4301,6 +4301,16 @@
         }
       }
     },
+    "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Codescribe sprawdza względem tych folderów ścieżki plików oraz katalogi robocze i argumenty ścieżkowe poleceń terminala. Procesy i serwery MCP mogą korzystać z innych ścieżek zgodnie z własnymi uprawnieniami."
+          }
+        }
+      }
+    },
     "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it." : {
       "comment" : "Language restart unavailable; saved preference remains valid",
       "localizations" : {
@@ -6980,16 +6990,6 @@
         }
       }
     },
-    "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie wymaga klucza API tego dostawcy; połączone konto go nie obejmuje. Dodaj klucz w sekcji Dostawcy."
-          }
-        }
-      }
-    },
     "Formatting revision…" : {
       "localizations" : {
         "pl" : {
@@ -7227,6 +7227,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połączenie HTTP"
+          }
+        }
+      }
+    },
+    "HTTP(S): %@" : {
+      "comment" : "Cloud transcription transport; plain HTTP is allowed on loopback only; the placeholder lists API paths and encodings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "HTTP(S): %@"
           }
         }
       }
@@ -8069,6 +8080,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie Apple na żywo z lokalnym doprecyzowaniem Whispera."
+          }
+        }
+      }
+    },
+    "Live WebSocket connection (ws(s); %@)" : {
+      "comment" : "Cloud transcription transport; plain ws is allowed on loopback only; the placeholder lists protocol ids",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Połączenie na żywo przez WebSocket (ws(s); %@)"
           }
         }
       }
@@ -11290,13 +11312,13 @@
         }
       }
     },
-    "Ready — %@ configured, access available, %@" : {
+    "Ready — %@ configured, can send requests, %@" : {
       "comment" : "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@"
+            "state" : "needs_review",
+            "value" : "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@"
           }
         }
       }
@@ -14734,16 +14756,6 @@
         }
       }
     },
-    "The Agent can read and write only inside these folders. It has no access outside them." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent może odczytywać i zapisywać dane tylko w tych folderach. Poza nimi nie ma dostępu."
-          }
-        }
-      }
-    },
     "The Agent has not run yet — server status is checked on its first turn." : {
       "localizations" : {
         "pl" : {
@@ -14900,12 +14912,12 @@
         }
       }
     },
-    "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
+    "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Połączone konto obsługuje żądania Agenta, ale lista modeli wymaga klucza API tego dostawcy. Zostaw bieżący model albo wpisz identyfikator modelu poniżej."
+            "value" : "Połączone konto obsługuje żądania do modelu, ale lista modeli wymaga klucza API tego dostawcy. Zachowaj obecny model albo wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -16968,17 +16980,6 @@
         }
       }
     },
-    "added by hand" : {
-      "comment" : "Dictionary: lexicon rule source",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodano ręcznie"
-          }
-        }
-      }
-    },
     "allow %@" : {
       "localizations" : {
         "pl" : {
@@ -17359,6 +17360,78 @@
         }
       }
     },
+    "dictionary.rule.origin.correction" : {
+      "comment" : "Dictionary rule origin: learned from an accepted correction",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "From a correction"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Na podstawie poprawki"
+          }
+        }
+      }
+    },
+    "dictionary.rule.origin.import" : {
+      "comment" : "Dictionary rule origin: brought in from a dictionary file",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "From an import"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Z importu"
+          }
+        }
+      }
+    },
+    "dictionary.rule.origin.manual" : {
+      "comment" : "Dictionary rule origin: typed by the user",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Added by hand"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dodana ręcznie"
+          }
+        }
+      }
+    },
+    "dictionary.rule.origin.unknown" : {
+      "comment" : "Dictionary rule origin: the row was stored before provenance was kept",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Origin not recorded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Źródło nieznane"
+          }
+        }
+      }
+    },
     "disabled · AI formatting off" : {
       "comment" : "Formatting status: the AI formatting master switch is off",
       "localizations" : {
@@ -17388,6 +17461,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "czas"
+          }
+        }
+      }
+    },
+    "e.g. Libraxis" : {
+      "comment" : "Name field placeholder; Libraxis is a company name used as the example",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "np. Libraxis"
           }
         }
       }
@@ -17533,17 +17617,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "formatowanie…"
-          }
-        }
-      }
-    },
-    "from a correction" : {
-      "comment" : "Dictionary: lexicon rule source",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Na podstawie poprawki"
           }
         }
       }
@@ -19555,6 +19628,474 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "narzędzie: %1$@ · źródło: %2$@"
+          }
+        }
+      }
+    },
+    "tools.native.apply_patch" : {
+      "comment" : "Native tool name: apply a patch to a file",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Apply patch"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zastosuj poprawkę"
+          }
+        }
+      }
+    },
+    "tools.native.fetch_github_file" : {
+      "comment" : "Native tool name: read one file out of a GitHub repository",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Fetch GitHub file"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pobierz plik z GitHuba"
+          }
+        }
+      }
+    },
+    "tools.native.get_frontmost_app" : {
+      "comment" : "Native tool name: observe which application is in front",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read the active app"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odczytaj aktywną aplikację"
+          }
+        }
+      }
+    },
+    "tools.native.get_selected_text" : {
+      "comment" : "Native tool name: observe the text selected in the active app",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read selected text"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odczytaj zaznaczony tekst"
+          }
+        }
+      }
+    },
+    "tools.native.git_commit" : {
+      "comment" : "Native tool name: record a Git commit",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Commit in Git"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatwierdź zmiany w Git"
+          }
+        }
+      }
+    },
+    "tools.native.git_diff" : {
+      "comment" : "Native tool name: read the Git diff",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Show Git changes"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pokaż zmiany w Git"
+          }
+        }
+      }
+    },
+    "tools.native.git_log" : {
+      "comment" : "Native tool name: read the Git log",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Show Git history"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pokaż historię Git"
+          }
+        }
+      }
+    },
+    "tools.native.git_status" : {
+      "comment" : "Native tool name: read the Git status",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Check Git state"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprawdź stan Git"
+          }
+        }
+      }
+    },
+    "tools.native.list_directory" : {
+      "comment" : "Native tool name: list what a folder holds",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "List a folder"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wypisz zawartość folderu"
+          }
+        }
+      }
+    },
+    "tools.native.list_projects" : {
+      "comment" : "Native tool name: enumerate the projects in the allowed folders",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "List projects"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wypisz projekty"
+          }
+        }
+      }
+    },
+    "tools.native.monitor_run" : {
+      "comment" : "Native tool name: watch a long-running job",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Monitor a run"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Monitoruj przebieg"
+          }
+        }
+      }
+    },
+    "tools.native.move_path" : {
+      "comment" : "Native tool name: move or rename a path",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Move a file or folder"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przenieś plik lub folder"
+          }
+        }
+      }
+    },
+    "tools.native.observe_process" : {
+      "comment" : "Native tool name: read the output of a running process",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Observe a process"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Obserwuj proces"
+          }
+        }
+      }
+    },
+    "tools.native.project_build" : {
+      "comment" : "Native tool name: run the project's build",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Build the project"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zbuduj projekt"
+          }
+        }
+      }
+    },
+    "tools.native.project_test" : {
+      "comment" : "Native tool name: run the project's tests",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Run the project tests"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Uruchom testy projektu"
+          }
+        }
+      }
+    },
+    "tools.native.read_clipboard" : {
+      "comment" : "Native tool name: read what the clipboard holds",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read the clipboard"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odczytaj schowek"
+          }
+        }
+      }
+    },
+    "tools.native.read_file" : {
+      "comment" : "Native tool name: read a file's contents",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read a file"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odczytaj plik"
+          }
+        }
+      }
+    },
+    "tools.native.run_process" : {
+      "comment" : "Native tool name: start a command",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Run a process"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Uruchom proces"
+          }
+        }
+      }
+    },
+    "tools.native.search_files" : {
+      "comment" : "Native tool name: search the contents of files",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Search in files"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Szukaj w plikach"
+          }
+        }
+      }
+    },
+    "tools.native.search_threads" : {
+      "comment" : "Native tool name: search the Agent's own threads",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Search in threads"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Szukaj w wątkach"
+          }
+        }
+      }
+    },
+    "tools.native.stop_process" : {
+      "comment" : "Native tool name: end a running command",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Stop a process"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj proces"
+          }
+        }
+      }
+    },
+    "tools.native.take_screenshot" : {
+      "comment" : "Native tool name: capture the screen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Take a screenshot"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zrób zrzut ekranu"
+          }
+        }
+      }
+    },
+    "tools.native.transcribe_audio" : {
+      "comment" : "Native tool name: turn an audio recording into text",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcribe a recording"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Transkrybuj nagranie"
+          }
+        }
+      }
+    },
+    "tools.native.type_text" : {
+      "comment" : "Native tool name: insert text into the active app",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Type text"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wpisz tekst"
+          }
+        }
+      }
+    },
+    "tools.native.write_clipboard" : {
+      "comment" : "Native tool name: put text on the clipboard",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Write to the clipboard"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisz do schowka"
+          }
+        }
+      }
+    },
+    "tools.native.write_file" : {
+      "comment" : "Native tool name: write a file's contents",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Write a file"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisz plik"
           }
         }
       }

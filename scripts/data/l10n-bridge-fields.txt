@@ -240,7 +240,7 @@ data  CsSettings.asrGatewayUrl
 data  CsSpeechResult.outcome
 data  CsSttLane.id
 prose CsSttLane.title
-prose CsSttLane.accepts
+data  CsSttLane.accepts
 prose CsSttLane.placeholder
 data  CsSttLane.endpoint
 data  CsSttLane.endpointWireKey

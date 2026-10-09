@@ -115,6 +115,32 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertTrue(cached.usesDiscoveredPicker, "usable cached catalogs retain model selection")
   }
 
+  func testFormattingRespectsResponsesAccountWithoutInventingAnAPIKey() {
+    var provider = CsProviderOption.sampleProviders[1]
+    provider.accountSignedIn = true
+    provider.apiKeySet = false
+    let runtime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: provider.displayName,
+      wire: provider.wire, endpoint: provider.endpoint, model: "formatter-model",
+      keyAccount: provider.apiKeyAccount, keyPresent: false, accountAuth: true,
+      available: true, unavailableReason: nil)
+    let lane = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "formatter-model",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "no_key", message: nil, models: []))
+    XCTAssertEqual(lane.availabilityDescription, "Connected account")
+    XCTAssertEqual(lane.availabilityTint, CSColor.oliveLight)
+    XCTAssertEqual(
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.oliveLight)
+    XCTAssertTrue(lane.discoveryDescription.contains("connected account covers model requests"))
+    XCTAssertTrue(lane.discoveryDescription.contains("model list needs"))
+    XCTAssertFalse(lane.discoveryDescription.contains("Formatting needs"))
+    XCTAssertFalse(lane.usesDiscoveredPicker)
+    provider.accountSignedIn = false
+    XCTAssertEqual(
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.terracotta)
+  }
+
   /// A stored key is presence, not validity: the lane says "Stored API key"
   /// while discovery, independently, may still report the key as rejected.
   func testStoredKeyLabelDoesNotClaimValidity() {

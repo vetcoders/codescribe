@@ -505,15 +505,16 @@ final class VoiceLabTests: XCTestCase {
 
   func testCorrectionLabelsReadAsVersionsAndCharacters() {
     XCTAssertEqual(
-      fullComparisonLabel(rawCount: 120, editedCount: 118), "Full comparison · 120 → 118 characters")
+      fullComparisonLabel(rawCount: 120, editedCount: 118), "Full comparison · 120 → 118 characters"
+    )
     XCTAssertEqual(
       correctionFooter(action: "revision", revision: 3, timestamp: "8 Oct 2026, 13:50"),
       "Version 3 · 8 Oct 2026, 13:50")
     XCTAssertEqual(
       correctionFooter(action: "copy", revision: 1, timestamp: "8 Oct 2026, 13:50"),
       "copied · Version 1 · 8 Oct 2026, 13:50")
-    XCTAssertEqual(LexiconSourceLabel.text(for: "correction"), "from a correction")
-    XCTAssertEqual(LexiconSourceLabel.text(for: "manual"), "added by hand")
+    XCTAssertEqual(LexiconSourceLabel.text(for: "correction"), "From a correction")
+    XCTAssertEqual(LexiconSourceLabel.text(for: "manual"), "Added by hand")
   }
 
   func testLearnMessagesNameTheScopeAndTheRealGrowth() {
@@ -549,6 +550,43 @@ final class VoiceLabTests: XCTestCase {
       retranscribeUnavailableReason(asrMode: "cloud", lookup: .ambiguous(2), pending: false),
       "2 archived recordings share this exact transcript, so Codescribe cannot tell which one is this take."
     )
+  }
+
+  /// My rules say where a rule came from in words, and VoiceOver hears the
+  /// same words. The stored provenance code is identity: it never reaches the
+  /// screen, so the row cannot read "source: correction" to a screen reader.
+  func testLexiconRowOriginReadsAsWordsNotAStoredCode() throws {
+    let origins = [
+      "correction": "From a correction",
+      "manual": "Added by hand",
+      "import": "From an import",
+      "": "Origin not recorded",
+      "vocabulary_seed": "Origin not recorded",
+    ]
+    for (source, expected) in origins {
+      let row = VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree", source: source)
+      XCTAssertEqual(row.localizedOrigin, expected, source)
+      XCTAssertFalse(row.localizedOrigin.contains("_"), "a stored code reached the screen")
+    }
+
+    let panel = try voiceLabPanelSource()
+    XCTAssertTrue(panel.contains("Text(origin)"))
+    XCTAssertTrue(
+      panel.contains(
+        "accessibilityLabel(\"\\(row.variant) to \\(row.canonical), source \\(origin)\")"
+      ))
+    XCTAssertFalse(
+      panel.contains("source \\(row.source)"), "VoiceOver never reads the stored code")
+  }
+
+  /// Complements the executable origin-label assertions with the rendered
+  /// view's shared text and accessibility wiring.
+  private func voiceLabPanelSource() throws -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/VoiceLabPanel.swift")
+    return try String(contentsOf: url, encoding: .utf8)
   }
 
   func testTeachDictionarySurfacesHonestMessage() throws {

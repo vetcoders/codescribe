@@ -35,11 +35,21 @@ enum LexiconSourceLabel {
   static func text(for source: String) -> String {
     switch source {
     case "correction":
-      return String(localized: "from a correction", comment: "Dictionary: lexicon rule source")
+      return String(
+        localized: "dictionary.rule.origin.correction", defaultValue: "From a correction",
+        comment: "Dictionary: lexicon rule source")
     case "manual":
-      return String(localized: "added by hand", comment: "Dictionary: lexicon rule source")
+      return String(
+        localized: "dictionary.rule.origin.manual", defaultValue: "Added by hand",
+        comment: "Dictionary: lexicon rule source")
+    case "import":
+      return String(
+        localized: "dictionary.rule.origin.import", defaultValue: "From an import",
+        comment: "Dictionary: lexicon rule source")
     default:
-      return source
+      return String(
+        localized: "dictionary.rule.origin.unknown", defaultValue: "Origin not recorded",
+        comment: "Dictionary: lexicon rule source")
     }
   }
 }

@@ -122,9 +122,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn apple_formats_text_without_cloud_audio_or_seal_and_off_refuses_missing_cloud() {
-        use crate::config::{Config, UserSettings};
+        use crate::config::{CapturedRuntimeInputs, Config};
         use crate::llm::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
-        use crate::test_isolation::EnvGuard;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct Host(Arc<AtomicUsize>);
@@ -148,31 +147,31 @@ mod tests {
             }
         }
         let root = tempfile::tempdir().unwrap();
-        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
-        let _keychain = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _selectors = [
-            "LLM_FORMATTING_PROVIDER",
-            "LLM_FORMATTING_MODEL",
-            "LLM_ASSISTIVE_PROVIDER",
-            "LLM_ASSISTIVE_MODEL",
-        ]
-        .map(EnvGuard::remove);
-        let _apple = EnvGuard::remove(FORMAT_ON_DEVICE_ENV);
         let _restore = Restore(shared_formatter().write().unwrap().take());
         let calls = Arc::new(AtomicUsize::new(0));
         register_on_device_formatter(Arc::new(Host(calls.clone())));
-        let mut settings = UserSettings {
-            llm_formatting_provider: Some("custom:unconfigured-formatter".into()),
-            llm_assistive_provider: Some("custom:unconfigured-agent".into()),
-            ..Default::default()
-        };
+        // The routing contract consumes an immutable captured snapshot. Avoid
+        // a process-global settings/env read racing other loader fixtures.
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 0);
+        input.user_settings.llm_formatting_provider = Some("custom:unconfigured-formatter".into());
+        input.user_settings.llm_assistive_provider = Some("custom:unconfigured-agent".into());
         let raw = "please preserve every word in this sentence";
         for policy in ["correction", "smart"] {
-            settings.format_on_device = Some(true);
-            settings.save().unwrap();
-            let _policy = EnvGuard::set("FORMATTING_LEVEL", policy);
-            let snapshot = Config::load_runtime_snapshot().unwrap();
-            assert!(!snapshot.llm_lanes().formatting().request_available());
+            input.user_settings.formatting_level = Some(policy.into());
+            input.user_settings.format_on_device = Some(true);
+            input.values.format_on_device = true;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            // Credential availability can refresh from other test fixtures;
+            // this deliberately missing provider makes cloud requests refuse
+            // regardless of any key present in the process.
+            assert!(!snapshot.llm_lanes().formatting().available());
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .request_unavailable_reason()
+                    .is_some()
+            );
             assert!(
                 snapshot
                     .llm_lanes()
@@ -187,9 +186,9 @@ mod tests {
             let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
             assert_eq!(output.status, AiFormatStatus::Applied);
             assert_eq!(output.text, "Please preserve every word in this sentence.");
-            settings.format_on_device = Some(false);
-            settings.save().unwrap();
-            let snapshot = Config::load_runtime_snapshot().unwrap();
+            input.user_settings.format_on_device = Some(false);
+            input.values.format_on_device = false;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
             let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
             assert_eq!(output.status, AiFormatStatus::Failed);
             assert!(output.text.to_lowercase().contains(raw));

@@ -100,7 +100,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(
         localized:
-          "The Agent can read and write only inside these folders. It has no access outside them."
+          "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions."
       )
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
