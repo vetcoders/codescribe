@@ -244,6 +244,30 @@ fn wrong_apple_is_not_a_veto_against_a_confirmed_trial() {
 }
 
 #[test]
+fn expanded_word_requires_decode_coverage_of_its_current_pin() {
+    let (mut ledger, owner) = fixture();
+    for (generation, end, decode) in [(1, 64_000, (0, 128_000)), (2, 96_000, (0, 144_000))] {
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 8, generation, owner.clone());
+        ledger.admit_word_slots(
+            &observation,
+            &[WordPin::new(48_000, end, "1286").with_decode_window(decode.0, decode.1)],
+        );
+    }
+    let sources = ledger.slots_of(&owner).unwrap().to_vec();
+    assert_eq!(sources[0].sample_end, 96_000);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 8, 3, owner.clone());
+    let pins = [WordPin::new(48_000, 64_000, "56").with_decode_window(0, 80_000)];
+    ledger.prepare_word_evidence(&observation, &pins);
+    assert!(
+        !ledger.asr_source_scope_complete(&observation, &sources),
+        "covering the original shorter pin cannot authorize cutting off the expanded word"
+    );
+    ledger.admit_word_slots(&observation, &pins);
+    assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+}
+
+#[test]
 fn late_correct_apple_survives_rank_refusal_and_can_win_a_trial() {
     let (mut ledger, owner) = fixture();
     offer(
@@ -774,4 +798,44 @@ fn first_placement_from_a_window_edge_still_lands() {
         Some((44_000, 188_000)),
     );
     assert_eq!(ledger.text_of(&owner), Some("początek"));
+}
+
+/// Measured 2026-10-08 on a pl-PL replay: Apple's word pins ran 0.1-0.4 s
+/// early against Whisper's, so a midpoint grouping paired Whisper "Niczego"
+/// with Apple "Niczego nie" and Whisper "nie" with Apple "testował". A policy
+/// letting that complete window rewrite the Apple group published "Niczego
+/// testował" — the negation gone. Whatever fusion lands next must keep it.
+#[test]
+fn an_offset_whisper_window_cannot_drop_a_negation_apple_heard() {
+    let (mut ledger, owner) = fixture();
+    ledger.admit_word_slots(
+        &ObservationIdentity::new(ObservationProducer::Apple, 8, 0, owner.clone()),
+        &[
+            WordPin::new(11_520, 20_640, "Niczego"),
+            WordPin::new(20_640, 23_040, "nie"),
+            WordPin::new(23_040, 35_040, "testował"),
+        ],
+    );
+    let pins = [
+        WordPin::new(8_000, 22_080, "Niczego"),
+        WordPin::new(22_080, 27_200, "nie"),
+        WordPin::new(27_200, 41_600, "testował,"),
+    ]
+    .map(|pin| pin.with_decode_window(0, 144_000));
+    ledger.admit_word_slots(
+        &ObservationIdentity::new(ObservationProducer::Whisper, 9, 1, owner.clone()),
+        &pins,
+    );
+    let text = ledger.text_of(&owner).unwrap().to_owned();
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(
+        words
+            .iter()
+            .filter(|word| word.to_lowercase() == "nie")
+            .count(),
+        1,
+        "{text}"
+    );
+    let negation = words.iter().position(|word| *word == "nie").unwrap();
+    assert!(words[negation + 1].starts_with("testował"), "{text}");
 }
