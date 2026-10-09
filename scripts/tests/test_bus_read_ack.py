@@ -226,9 +226,14 @@ class ReadAckTests(unittest.TestCase):
         self.assertIn(self.pending[0]["text"], notice)
         self.assertIn("--read-pending", notice)
         self.assertIn("--ack", notice)
-        self.assertIn(self.session, notice)
-        self.assertIn(str(self.root), notice)
-        self.assertIn("2026-10-07T13:37:33Z", notice)
+        self.assertIn(self.ids[0], notice)
+        self.assertLess(len(notice) - len(self.pending[0]["text"]), 220)
+        self.assertNotIn("Delivery provenance", notice)
+        # Full owner/timestamp coordinates remain in the authoritative read,
+        # rather than repeating the envelope around every queue copy.
+        received = self.read()["deliveries"][0]
+        self.assertEqual(received["provider_session_id"], self.session)
+        self.assertEqual(received["emitted_at"], "2026-10-07T13:37:33Z")
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease, self.ids[0]))
 
     def test_short_message_with_large_pcm_diagnostics_fits_default_read_budget(self):
