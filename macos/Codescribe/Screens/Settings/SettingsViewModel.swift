@@ -891,13 +891,7 @@ struct LLMLaneModel {
       if runtime.accountAuth {
         return String(
           localized:
-            "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
-        )
-      }
-      if lane == .formatting, provider?.accountSignedIn == true {
-        return String(
-          localized:
-            "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers."
+            "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
         )
       }
       return String(
@@ -1982,7 +1976,8 @@ final class SettingsViewModel: ObservableObject {
         + String(
           localized:
             "Vendor API keys (OpenAI, Anthropic, xAI, Libraxis) are shared with Formatting: if Formatting uses one of them, enter that key again afterwards.",
-          comment: "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane"
+          comment:
+            "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane"
         )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
@@ -3090,7 +3085,7 @@ final class SettingsViewModel: ObservableObject {
   static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color
   {
     provider.apiKeySet
-      || (lane == .assistive && provider.wire == "responses" && provider.accountSignedIn)
+      || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
       ? CSColor.oliveLight : CSColor.terracotta
   }

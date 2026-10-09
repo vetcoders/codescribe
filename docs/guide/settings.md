@@ -211,7 +211,8 @@ ws:// or wss://.** Secrets are stored separately from account sign-in.
 
 Open **Settings → Agent → AI models** to select a provider and model separately
 for **Assistive** (the model behind the Agent and the voice assistant) and
-**Formatting** (transcript cleanup). Each card shows the provider, the model
+**Formatting** (Correction and Smart cleanup when using the cloud). Max uses the
+Agent provider, endpoint, model, account and prompt exactly. Each card shows the provider, the model
 field and one line about the lane's access: **Connected account**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a connected account does not open
@@ -259,8 +260,12 @@ recoverable. A failed save is reported with the same current-source check.
 
 ### Agent → Workspace
 
-**Folders available to the Agent** lists where the Agent may read and write;
-everything outside the list is out of reach. The same list is where the Agent
+**Folders available to the Agent** lists the roots Codescribe uses to validate
+file paths, terminal working directories and path-shaped command arguments.
+It also validates paths handed to MCP tools it knows how to check, including
+Desktop Commander's file and process tools. This is path validation, not a
+filesystem sandbox around the child process: a process or MCP server can access
+other paths under its own permissions. The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
@@ -310,15 +315,16 @@ not a confirmed “not connected” result.
 
 Setup, its completion summary and the provider cards distinguish these states:
 
-| Configuration     | Account       | API key        | Enabled access                                                                           |
-| ----------------- | ------------- | -------------- | ---------------------------------------------------------------------------------------- |
-| Account only      | Connected     | Not configured | Supported Assistive requests; no provider model discovery or cloud Formatting credential |
-| API key only      | Not connected | Configured     | Supported API requests, including Formatting and model discovery                         |
-| Both              | Connected     | Configured     | Account access for supported Assistive requests plus the provider API-key paths          |
-| Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                                 |
+| Configuration     | Account       | API key        | Enabled access                                                              |
+| ----------------- | ------------- | -------------- | --------------------------------------------------------------------------- |
+| Account only      | Connected     | Not configured | Supported Agent and Formatting requests; no provider model discovery        |
+| API key only      | Not connected | Configured     | Supported API requests, including Formatting and model discovery            |
+| Both              | Connected     | Configured     | Account access for supported model requests plus the provider API-key paths |
+| Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                    |
 
-A connected ChatGPT account is not an OpenAI API key. It does not authorize the
-Formatting lane. Setup can continue with account-only access. Use **Add/Change**
+A connected ChatGPT account supplies account credentials for supported Responses
+requests in both Agent and Formatting. It does not supply a provider API key for
+model discovery. Setup can continue with account-only access. Use **Add/Change**
 in the API-key row to edit a key, or **Connect/Manage** in the Agent-account row
 to open Providers. A lane
 is usable only when its resolved runtime snapshot reports it available.
@@ -330,10 +336,10 @@ the account/key snapshot when it regains focus.
 ### Model discovery
 
 Model discovery queries the provider's model API with its provider API key.
-Account sign-in alone does not supply that key. With account-only Assistive
+Account sign-in alone does not supply that key. With account-only model
 access, `/model` shows the currently resolved model and explains the missing
 catalog access. Keep that model, or enter a supported model ID in **Agent →
-AI models**. Adding an API key is optional for Assistive account requests.
+AI models**. Adding an API key is optional for supported account requests.
 
 Fresh and cached catalogs offer selectable models. A provider returning no
 models or a discovery failure gives one plain sentence and the next action:
@@ -386,7 +392,9 @@ asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
   shows a readable name above the raw identity, the source and localized risk
   class, and where the level comes from: "Individual rule", "Server rule" or
   "Category default". "Remove rule" drops an individual rule; the row then
-  shows the server rule or the category default again.
+  shows the server rule or the category default again. Codescribe's own tools
+  are named in the interface language; MCP tools keep the vendor's spelling.
+  Each row's tooltip carries its full name and identifier.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
