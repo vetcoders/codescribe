@@ -445,14 +445,17 @@ impl CodescribeThreads {
     }
 
     /// Commit an explicit edit or retranscription of the archived transcript
-    /// at `path` against `source_revision`. The archived text and audio stay
-    /// untouched; a moved head refuses instead of overwriting newer work.
+    /// at `path` against `source_revision`. `detail` names the generating
+    /// pass of a retranscription and travels with it through any retry. The
+    /// archived text and audio stay untouched; a moved head refuses instead
+    /// of overwriting newer work.
     pub fn commit_history_revision(
         &self,
         path: String,
         source_revision: u64,
         rendered_text: String,
         kind: CsArchiveRevisionKind,
+        detail: Option<String>,
     ) -> Result<CsArchivedDocument, CsError> {
         let provenance = match kind {
             CsArchiveRevisionKind::UserEdit => history::ArchiveRevisionProvenance::UserEdit,
@@ -465,7 +468,7 @@ impl CodescribeThreads {
             source_revision,
             &rendered_text,
             provenance,
-            None,
+            detail,
         )
         .map_err(|error| CsError::Recording {
             msg: format!("{error:#}"),

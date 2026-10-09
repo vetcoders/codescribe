@@ -2421,6 +2421,7 @@ impl RecordingController {
         );
         let read_path = archive_path.clone();
         let document = tokio::task::spawn_blocking(move || {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any read.
             history::read_archived_document(std::path::Path::new(&read_path))
         })
         .await??;
@@ -2468,6 +2469,7 @@ impl RecordingController {
                 Some(
                     tokio::task::spawn_blocking(move || {
                         history::commit_archived_revision(
+                            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any write.
                             std::path::Path::new(&archive_path),
                             source_revision,
                             &text,
@@ -2760,6 +2762,80 @@ impl RecordingController {
         info!(
             elapsed_secs = delivery_started.elapsed().as_secs_f64(),
             "assistive delivery completed"
+        );
+        Ok(true)
+    }
+
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    ///
+    /// The text is the archive's accepted revision, chosen by the overlay for
+    /// one named archive. Unlike the live take's send this never takes
+    /// `pending_assistive_context`, `assistive_context` or the context bucket:
+    /// those belong to whichever take is live or pending now, and an archive
+    /// send must leave them exactly as they were. The route resolution, the
+    /// delivery tagger and the Agent runtime lane (current selected thread,
+    /// configuration and permissions) are the same production seams.
+    pub async fn deliver_archived_transcript_to_agent(&self, transcript: String) -> Result<bool> {
+        let runtime_settings = self.runtime_settings_arc().await;
+        self.deliver_archived_transcript_to_agent_with(
+            transcript,
+            move |wire, language, max_tokens, persona| {
+                Box::pin(send_assistive_with_agent_runtime_lane(
+                    runtime_settings,
+                    wire,
+                    language,
+                    max_tokens,
+                    persona,
+                ))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
+        )
+        .await
+    }
+
+    /// Archive-send body with an injectable send adapter, the twin of
+    /// [`Self::deliver_pending_assistive_transcript_with`] minus every live
+    /// context take.
+    pub(crate) async fn deliver_archived_transcript_to_agent_with<F>(
+        &self,
+        transcript: String,
+        send: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(
+            String,
+            crate::config::Language,
+            i32,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    {
+        let delivery_started = std::time::Instant::now();
+        if transcript.trim().is_empty() {
+            info!("archived transcript delivery skipped: empty transcript");
+            return Ok(false);
+        }
+        let to_agent = resolve_delivery_route(
+            DeliveryIntent::OverlayToAgent,
+            overlay_insert_facts(true, false),
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(DeliveryIntent::OverlayToAgent, to_agent, None,)
+        );
+        let config = self.get_config().await;
+        let delivery_text = self
+            .delivery_tagger
+            .render(&transcript, &config, Some("agent"));
+        send(
+            delivery_text,
+            config.whisper_language,
+            config.ai_assistive_max_tokens,
+            true,
+        )
+        .await;
+        info!(
+            elapsed_secs = delivery_started.elapsed().as_secs_f64(),
+            "archived transcript delivery completed"
         );
         Ok(true)
     }

@@ -1626,6 +1626,22 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    /// The live take's pending assistive context is never taken by this send.
+    pub async fn send_archived_transcript(&self, text: String) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .deliver_archived_transcript_to_agent(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
