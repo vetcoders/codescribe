@@ -316,6 +316,26 @@ fn existing_audio_for_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+/// The audio the daily archive wrote together with one transcript.
+///
+/// `daily_archive::save` publishes `<base>.{m4a,wav}` and `<base>.txt` from
+/// one stem, so the stem IS the durable take identity. Only a `.txt` inside
+/// the transcriptions bag qualifies; anything else, or a transcript whose
+/// paired audio is gone, yields `None` — never a neighbour, never the last
+/// recording.
+pub fn paired_audio_for_transcript(transcript: &Path) -> Option<PathBuf> {
+    if transcript.extension().and_then(|ext| ext.to_str()) != Some("txt") {
+        return None;
+    }
+    let resolved = transcript.canonicalize().ok()?;
+    let root = transcriptions_base_dir().canonicalize().ok()?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+        return None;
+    }
+    let stem = resolved.file_stem()?.to_str()?;
+    existing_audio_for_stem(resolved.parent()?, stem)
+}
+
 /// Get the transcriptions base directory
 fn transcriptions_base_dir() -> PathBuf {
     // Use config_dir as the single source of truth for filesystem roots.
@@ -1725,6 +1745,43 @@ mod tests {
         let dir = transcriptions_dir(&Local::now());
         assert!(dir.to_string_lossy().contains("transcriptions"));
         assert!(dir.starts_with(&tmp_canon));
+    }
+
+    /// Archived audio is the same-stem pair only: a sibling take, a formatted
+    /// artifact of another stem, or a path outside the bag never resolves.
+    #[test]
+    #[serial]
+    fn paired_audio_resolves_only_the_same_stem_take() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
+        let day = transcriptions_dir(&Local::now());
+        let take_a = day.join("101500_alpha-take_raw.txt");
+        let take_b = day.join("101600_bravo-take_raw.txt");
+        let formatted_a = day.join("101500_alpha-take_formatted.txt");
+        fs::write(&take_a, "alpha").expect("text a");
+        fs::write(day.join("101500_alpha-take_raw.m4a"), b"a").expect("audio a");
+        fs::write(&take_b, "bravo").expect("text b");
+        fs::write(day.join("101600_bravo-take_raw.wav"), b"b").expect("audio b");
+        fs::write(&formatted_a, "Alpha.").expect("formatted a");
+
+        let audio_a = paired_audio_for_transcript(&take_a).expect("take a audio");
+        assert!(audio_a.ends_with("101500_alpha-take_raw.m4a"));
+        let audio_b = paired_audio_for_transcript(&take_b).expect("take b audio");
+        assert!(audio_b.ends_with("101600_bravo-take_raw.wav"));
+        assert_eq!(paired_audio_for_transcript(&formatted_a), None);
+
+        fs::remove_file(day.join("101500_alpha-take_raw.m4a")).expect("drop audio a");
+        assert_eq!(paired_audio_for_transcript(&take_a), None);
+        assert_eq!(
+            paired_audio_for_transcript(&day.join("101600_bravo-take_raw.wav")),
+            None
+        );
+
+        let outside = TempDir::new().expect("outside");
+        let foreign = outside.path().join("101600_bravo-take_raw.txt");
+        fs::write(&foreign, "bravo").expect("foreign text");
+        fs::write(outside.path().join("101600_bravo-take_raw.m4a"), b"x").expect("foreign");
+        assert_eq!(paired_audio_for_transcript(&foreign), None);
     }
 
     /// save_entry writes a .txt raw artifact with preview equal to the stored text.

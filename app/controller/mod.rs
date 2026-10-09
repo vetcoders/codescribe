@@ -139,6 +139,86 @@ fn formatter_revision_level(
     ))
 }
 
+/// What the production formatter did with a reopened archive transcript.
+/// Mirrors the reducer's formatter refusals without a reducer revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchivedFormatOutcome {
+    Applied(String),
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+impl ArchivedFormatOutcome {
+    fn from_result(
+        source: &str,
+        result: codescribe_core::llm::ai_formatting::AiFormatResult,
+    ) -> Self {
+        use codescribe_core::llm::ai_formatting::AiFormatStatus;
+        match result.status {
+            AiFormatStatus::Applied if result.text != source && !result.text.trim().is_empty() => {
+                Self::Applied(result.text)
+            }
+            AiFormatStatus::Applied | AiFormatStatus::AiNoop => Self::Unchanged,
+            AiFormatStatus::Failed => Self::Failed,
+            AiFormatStatus::Skipped => Self::Unavailable,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Applied(_) => "applied",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+#[cfg(test)]
+mod archived_format_outcome_tests {
+    use super::ArchivedFormatOutcome;
+    use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
+
+    fn result(text: &str, status: AiFormatStatus) -> AiFormatResult {
+        AiFormatResult {
+            text: text.to_string(),
+            reasoning_text: None,
+            status,
+        }
+    }
+
+    /// A failed provider hands back the cleaned input; that echo must never
+    /// read as an applied archive format.
+    #[test]
+    fn only_a_changed_applied_result_reaches_the_archive_canvas() {
+        let source = "ala ma kota";
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(
+                source,
+                result("Ala ma kota.", AiFormatStatus::Applied)
+            ),
+            ArchivedFormatOutcome::Applied("Ala ma kota.".to_string())
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Applied)),
+            ArchivedFormatOutcome::Unchanged
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::AiNoop)),
+            ArchivedFormatOutcome::Unchanged
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Failed)),
+            ArchivedFormatOutcome::Failed
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Skipped)),
+            ArchivedFormatOutcome::Unavailable
+        );
+    }
+}
+
 fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
     info!(
         session_id = %receipt.session_id,
@@ -2308,6 +2388,58 @@ impl RecordingController {
             .map_err(anyhow::Error::new)?;
         log_formatter_revision(&receipt, format_level, level_source);
         Ok(receipt)
+    }
+
+    /// Format a reopened archive transcript through the same settings
+    /// generation, level resolution, Max consultation and production formatter
+    /// as [`Self::apply_formatter_revision_from_overlay`]. An archive has no
+    /// live session, so nothing is minted into the reducer, published on the
+    /// Bus or written back over the archived text: the caller receives the
+    /// outcome for the one source it asked about.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: &str,
+        text: String,
+        requested_level: Option<FormattingPolicy>,
+    ) -> Result<ArchivedFormatOutcome> {
+        anyhow::ensure!(
+            self.current_state().await == State::Idle,
+            "archived transcript formatting refused while recording is active"
+        );
+        anyhow::ensure!(
+            !text.trim().is_empty(),
+            "archived transcript has no text to format"
+        );
+        let runtime_settings = self.formatter_revision_settings(requested_level).await;
+        let (format_level, level_source) =
+            formatter_revision_level(requested_level, runtime_settings.as_ref())?;
+        let language = runtime_settings.values().whisper_language;
+        let consultation = self
+            .selected_max_consultation(runtime_settings.as_ref())
+            .await?;
+        // One turn per request: the archive path names the source, the uuid
+        // keeps a second pass over the same archive from reusing a Max turn.
+        let turn_id = format!("archive:{archive_path}:{}", Uuid::new_v4());
+        let result = format_text_with_status_for_policy(
+            &text,
+            language.whisper_hint(),
+            runtime_settings.as_ref(),
+            consultation.as_deref().map(|agent| {
+                codescribe_core::ai_formatting::FormattingConsultation {
+                    agent,
+                    turn_id: &turn_id,
+                }
+            }),
+        )
+        .await;
+        let outcome = ArchivedFormatOutcome::from_result(&text, result);
+        info!(
+            format_level = format_level.as_str(),
+            source = level_source,
+            outcome = outcome.label(),
+            "archived transcript formatting settled"
+        );
+        Ok(outcome)
     }
 
     async fn formatter_revision_settings(
