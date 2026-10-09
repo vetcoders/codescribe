@@ -24,7 +24,7 @@ pub use client::{
 };
 pub use config_store::{
     McpProbeSummary, McpServerSpec, McpServerSummary, add_server, list_servers, list_servers_at,
-    probe_server_blocking, remove_server, test_server_blocking, update_server,
+    probe_server_config_blocking, remove_server, update_server,
 };
 pub use secret_migration::{
     SecretMigrationReport, format_report as format_secret_migration_report,
