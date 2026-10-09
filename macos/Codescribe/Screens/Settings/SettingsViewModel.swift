@@ -1171,6 +1171,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var keyProbePending: Set<String> = []
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
+  /// Every saved correction, not just the page `refreshVoiceLab()` loads:
+  /// Learn replays the whole store and the counters describe the corpus.
+  @Published private(set) var totalQualityCorrections: UInt64 = 0
   @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
   @Published private(set) var ruleCandidates: [CsRuleCandidate] = []
   @Published private(set) var voiceLabReadError: String?
@@ -2572,12 +2575,14 @@ final class SettingsViewModel: ObservableObject {
       let listing = try engine.loadQualityRecentListing(limit: 50)
       qualityRecords = listing.records
       unchangedQualityTakes = listing.unchangedTakes
+      totalQualityCorrections = listing.totalCorrections
       customLexiconEntries = try engine.loadLexiconCustomEntries()
       ruleCandidates = try engine.loadRuleCandidates(minOccurrences: 2)
       voiceLabReadError = nil
     } catch {
       qualityRecords = []
       unchangedQualityTakes = 0
+      totalQualityCorrections = 0
       customLexiconEntries = []
       ruleCandidates = []
       voiceLabReadError = String(describing: error)

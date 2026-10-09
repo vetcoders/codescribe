@@ -12635,17 +12635,20 @@ public func FfiConverterTypeCsQualityCommitResult_lower(_ value: CsQualityCommit
 /**
  * Dictionary listing over the bridge: real corrections plus the count of
  * takes that changed nothing and recorded no telemetry (Founder report
- * 2026-09-30 — whole untouched takes padded the corrections list).
+ * 2026-09-30 — whole untouched takes padded the corrections list), plus
+ * the corpus size so a capped page is never quoted as the whole store.
  */
 public struct CsQualityListing: Equatable, Hashable {
     public var records: [CsQualityRecord]
     public var unchangedTakes: UInt64
+    public var totalCorrections: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(records: [CsQualityRecord], unchangedTakes: UInt64) {
+    public init(records: [CsQualityRecord], unchangedTakes: UInt64, totalCorrections: UInt64) {
         self.records = records
         self.unchangedTakes = unchangedTakes
+        self.totalCorrections = totalCorrections
     }
 
 
@@ -12663,13 +12666,15 @@ public struct FfiConverterTypeCsQualityListing: FfiConverterRustBuffer {
         return
             try CsQualityListing(
                 records: FfiConverterSequenceTypeCsQualityRecord.read(from: &buf),
-                unchangedTakes: FfiConverterUInt64.read(from: &buf)
+                unchangedTakes: FfiConverterUInt64.read(from: &buf),
+                totalCorrections: FfiConverterUInt64.read(from: &buf)
         )
     }
 
     public static func write(_ value: CsQualityListing, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeCsQualityRecord.write(value.records, into: &buf)
         FfiConverterUInt64.write(value.unchangedTakes, into: &buf)
+        FfiConverterUInt64.write(value.totalCorrections, into: &buf)
     }
 }
 

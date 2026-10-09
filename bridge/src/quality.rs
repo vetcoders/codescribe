@@ -275,11 +275,13 @@ pub fn commit_overlay_quality_record(
 
 /// Dictionary listing over the bridge: real corrections plus the count of
 /// takes that changed nothing and recorded no telemetry (Founder report
-/// 2026-09-30 — whole untouched takes padded the corrections list).
+/// 2026-09-30 — whole untouched takes padded the corrections list), plus
+/// the corpus size so a capped page is never quoted as the whole store.
 #[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct CsQualityListing {
     pub records: Vec<CsQualityRecord>,
     pub unchanged_takes: u64,
+    pub total_corrections: u64,
 }
 
 /// Read the newest persisted corrections, newest first, with the
@@ -294,6 +296,7 @@ pub fn quality_recent_listing(limit: u64) -> Result<CsQualityListing, CsError> {
         .map(|listing| CsQualityListing {
             records: listing.corrections.into_iter().map(Into::into).collect(),
             unchanged_takes: listing.unchanged_takes,
+            total_corrections: listing.total_corrections,
         })
         .map_err(|error| CsError::Quality {
             msg: format!("quality records read failed: {error}"),
