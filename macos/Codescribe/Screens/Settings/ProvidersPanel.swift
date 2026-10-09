@@ -579,12 +579,16 @@ struct SttLaneCard: View {
     switch lane.id {
     case "file":
       return String(
-        localized: "HTTPS: \(lane.accepts)",
-        comment: "Cloud transcription transport; the placeholder lists API paths and encodings")
+        localized: "HTTP(S): \(lane.accepts)",
+        comment:
+          "Cloud transcription transport; plain HTTP is allowed on loopback only; the placeholder lists API paths and encodings"
+      )
     case "live":
       return String(
-        localized: "Live WebSocket connection (wss; \(lane.accepts))",
-        comment: "Cloud transcription transport; the placeholder lists protocol ids")
+        localized: "Live WebSocket connection (ws(s); \(lane.accepts))",
+        comment:
+          "Cloud transcription transport; plain ws is allowed on loopback only; the placeholder lists protocol ids"
+      )
     default:
       return lane.accepts
     }

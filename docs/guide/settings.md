@@ -210,10 +210,12 @@ recoverable. A failed save is reported with the same current-source check.
 ### Agent → Workspace
 
 **Folders available to the Agent** lists where the Agent's built-in file and
-terminal tools may read and write; a path outside the list is refused. The list
-bounds Codescribe's own tools. An MCP server is a separate process with its own
-access rules, so adding a folder here neither grants nor withdraws what a server
-can reach. The same list is where the Agent
+terminal tools may read and write; a path outside the list is refused. The same
+list bounds the paths Codescribe hands to MCP tools it knows how to check
+(Desktop Commander's file and process tools go through the same validator),
+so adding or removing a folder here also changes what those tools may touch
+through Codescribe. What an MCP server does on its own, outside a call
+Codescribe validates, is not bounded by this list. The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of

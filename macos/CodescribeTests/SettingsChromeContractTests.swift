@@ -271,8 +271,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertLessThan(
       accepts.lowerBound.utf16Offset(in: panel) - gate.lowerBound.utf16Offset(in: panel), 80)
     XCTAssertFalse(panel.contains("Text(lane.accepts)"), "bridge prose never reaches the UI")
-    XCTAssertTrue(panel.contains("localized: \"Live WebSocket connection (wss; \\(lane.accepts))\""))
-    XCTAssertTrue(panel.contains("localized: \"HTTPS: \\(lane.accepts)\""))
+    // The validator admits plain http/ws on loopback, so the frame says so.
+    XCTAssertTrue(panel.contains("localized: \"Live WebSocket connection (ws(s); \\(lane.accepts))\""))
+    XCTAssertTrue(panel.contains("localized: \"HTTP(S): \\(lane.accepts)\""))
+    XCTAssertFalse(panel.contains("\"HTTPS: "))
 
     // The example in the name field is copy, not a sample value: `e.g.` has to
     // reach the catalog (PL-041).
@@ -337,10 +339,12 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
     // Lowercase on purpose: an abbreviation and a protocol name start these.
     XCTAssertEqual(polish["e.g. Libraxis"], "np. Libraxis")
-    XCTAssertEqual(polish["HTTPS: %@"], "HTTPS: %@")
+    XCTAssertEqual(polish["HTTP(S): %@"], "HTTP(S): %@")
     XCTAssertEqual(
-      polish["Live WebSocket connection (wss; %@)"],
-      "Połączenie na żywo przez WebSocket (wss; %@)")
+      polish["Live WebSocket connection (ws(s); %@)"],
+      "Połączenie na żywo przez WebSocket (ws(s); %@)")
+    XCTAssertNil(polish["HTTPS: %@"])
+    XCTAssertNil(polish["Live WebSocket connection (wss; %@)"])
     for retired in [
       "Providers.", "Refresh provider access", "factory endpoint",
       "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
@@ -441,7 +445,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(
       tab.contains(
-        "\"The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules.\""
+        "\"The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.\""
       ))
     XCTAssertFalse(
       tab.contains("It has no access outside them."),
@@ -465,8 +469,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Folders available to the Agent": "Foldery dostępne dla Agenta",
-      "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules.":
-        "Wbudowane narzędzia plikowe Agenta czytają i zapisują tylko w tych folderach. Serwery MCP mają osobne zasady dostępu.",
+      "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.":
+        "Wbudowane narzędzia plikowe i terminalowe Agenta czytają i zapisują tylko w tych folderach; w nich zostają też ścieżki, które Codescribe przekazuje sprawdzanym narzędziom MCP. To, co serwer MCP robi samodzielnie, jest poza tą listą.",
       "Allowed folders": "Dozwolone foldery",
       "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories.":
         "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build.",
@@ -484,6 +488,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Workspace roots.", "Agent workspace roots", "Add root", "Save roots",
       "The Agent can read and write only inside these folders. It has no access outside them.",
+      "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules.",
       "Directories the Agent may read and write. Everything outside them is out of reach.",
       "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.",
     ] {
@@ -696,10 +701,13 @@ final class SettingsChromeContractTests: XCTestCase {
     let presentation = try XCTUnwrap(sources["AgentStatusPresentation.swift"])
     XCTAssertTrue(
       presentation.contains(
-        "\"Ready — \\(subject) configured, credentials available, \\(nativeToolCount)\""))
-    XCTAssertTrue(presentation.contains("\"\\(subject) — credentials available\""))
+        "\"Ready — \\(subject) configured, can send requests, \\(nativeToolCount)\""))
+    XCTAssertTrue(presentation.contains("\"\\(subject) — can send requests\""))
     XCTAssertFalse(
-      presentation.contains("access available"), "a stored credential is never reported as access")
+      presentation.contains("access available"), "readiness is never reported as a made request")
+    XCTAssertFalse(
+      presentation.contains("credentials available"),
+      "a key-optional provider is request-ready without stored credentials")
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
@@ -711,9 +719,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Native tools": "Narzędzia natywne",
       "VibeCrafted runtime": "Runtime VibeCrafted",
       "PRView integration": "Integracja PRView",
-      "Ready — %@ configured, credentials available, %@":
-        "Gotowy — skonfigurowano %1$@, poświadczenia dostępne, %2$@",
-      "%@ — credentials available": "%@ — poświadczenia dostępne",
+      "Ready — %@ configured, can send requests, %@":
+        "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@",
+      "%@ — can send requests": "%@ — może wysyłać żądania",
       "Configured — agent not started yet": "Skonfigurowano — agent nie został jeszcze uruchomiony",
       "Not configured (optional)": "Nieskonfigurowane (opcjonalne)",
       "Detected installations and runtime": "Wykryte instalacje i runtime",
@@ -738,6 +746,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Connection details", "Connection details.", "Capability matrix", "Per-server probe",
       "%lld configured", "not tested", "testing…", "fail: %@",
       "Ready — %@ configured, access available, %@", "%@ — access available",
+      "Ready — %@ configured, credentials available, %@", "%@ — credentials available",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

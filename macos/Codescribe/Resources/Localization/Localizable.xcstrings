@@ -314,13 +314,13 @@
         }
       }
     },
-    "%@ — credentials available" : {
+    "%@ — can send requests" : {
       "comment" : "Placeholder is the provider name; the credentials are stored, no request was made",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "%@ — poświadczenia dostępne"
+            "value" : "%@ — może wysyłać żądania"
           }
         }
       }
@@ -6855,13 +6855,13 @@
         }
       }
     },
-    "HTTPS: %@" : {
+    "HTTP(S): %@" : {
       "comment" : "Cloud transcription transport; the placeholder lists API paths and encodings",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "HTTPS: %@"
+            "value" : "HTTP(S): %@"
           }
         }
       }
@@ -7654,13 +7654,13 @@
         }
       }
     },
-    "Live WebSocket connection (wss; %@)" : {
+    "Live WebSocket connection (ws(s); %@)" : {
       "comment" : "Cloud transcription transport; the placeholder lists protocol ids",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Połączenie na żywo przez WebSocket (wss; %@)"
+            "value" : "Połączenie na żywo przez WebSocket (ws(s); %@)"
           }
         }
       }
@@ -10844,13 +10844,13 @@
         }
       }
     },
-    "Ready — %@ configured, credentials available, %@" : {
+    "Ready — %@ configured, can send requests, %@" : {
       "comment" : "Diagnostics verdict; first placeholder is the provider name, second a tool count phrase",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Gotowy — skonfigurowano %1$@, poświadczenia dostępne, %2$@"
+            "value" : "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@"
           }
         }
       }
@@ -14260,12 +14260,12 @@
         }
       }
     },
-    "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules." : {
+    "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Wbudowane narzędzia plikowe Agenta czytają i zapisują tylko w tych folderach. Serwery MCP mają osobne zasady dostępu."
+            "value" : "Wbudowane narzędzia plikowe i terminalowe Agenta czytają i zapisują tylko w tych folderach; w nich zostają też ścieżki, które Codescribe przekazuje sprawdzanym narzędziom MCP. To, co serwer MCP robi samodzielnie, jest poza tą listą."
           }
         }
       }

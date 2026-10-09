@@ -1554,14 +1554,14 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ready.localizedLabel, "Overall status")
     XCTAssertEqual(
       ready.localizedValue,
-      "Ready — xAI (Grok) configured, credentials available, 26 native tools",
-      "the verdict reports stored credentials, never a successful provider request")
+      "Ready — xAI (Grok) configured, can send requests, 26 native tools",
+      "the verdict reports request readiness, never a successful provider request")
 
     let available = CsMcpStatusRow(
       label: "Provider:", value: "raw english", tone: .good,
       facet: .provider, state: .accessAvailable, count: nil, subject: "xAI (Grok)",
       detail: "XAI_API_KEY")
-    XCTAssertEqual(available.localizedValue, "xAI (Grok) — credentials available")
+    XCTAssertEqual(available.localizedValue, "xAI (Grok) — can send requests")
 
     let provider = CsMcpStatusRow(
       label: "Provider:", value: "", tone: .bad,

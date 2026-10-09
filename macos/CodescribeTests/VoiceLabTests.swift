@@ -492,7 +492,7 @@ final class VoiceLabTests: XCTestCase {
     )
   }
 
-  /// My rules says where a rule came from in words, and VoiceOver hears the
+  /// My rules say where a rule came from in words, and VoiceOver hears the
   /// same words. The stored provenance code is identity: it never reaches the
   /// screen, so the row cannot read "source: correction" to a screen reader.
   func testLexiconRowOriginReadsAsWordsNotAStoredCode() throws {

@@ -100,7 +100,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(
         localized:
-          "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules."
+          "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list."
       )
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
