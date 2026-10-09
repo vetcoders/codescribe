@@ -658,7 +658,25 @@ final class OverlayState {
     if automaticExpansion {
       autoCollapse.suspend()
       noteAutoCollapseActivity()
+    } else {
+      releaseAutoHideAwaitingCollapse()
     }
+  }
+
+  /// An automatic expansion still owes its return to the remembered compact
+  /// form: the terminal hide must not close the full panel before it.
+  private var autoCollapsePending: Bool {
+    autoCollapse.restoreMode != nil && presentationMode == .expanded
+  }
+
+  /// The return happened, or a manual choice or a lost memo cancelled it. A
+  /// hide that waited for it gets an ordinary countdown, with every auto-hide
+  /// guard re-checked, unless a successor capture took over meanwhile.
+  private func releaseAutoHideAwaitingCollapse() {
+    guard let generation = autoHideAwaitingCollapse else { return }
+    autoHideAwaitingCollapse = nil
+    guard generation == captureGeneration else { return }
+    restartAutoHideCountdown()
   }
 
   /// Fresh transcript, presentation activity or the end of an interaction.
@@ -698,6 +716,7 @@ final class OverlayState {
   private func autoCollapseDeadlineReached() {
     guard presentationMode == .expanded, let restore = autoCollapse.restoreMode else {
       autoCollapse.forget()
+      releaseAutoHideAwaitingCollapse()
       return
     }
     guard !autoCollapseInteractionHeld else {
@@ -908,6 +927,10 @@ final class OverlayState {
 
   /// Idle return of an automatic expansion; see `OverlayAutoCollapse`.
   @ObservationIgnored private let autoCollapse: OverlayAutoCollapse
+  /// Capture generation whose terminal hide came due while an automatic
+  /// expansion still owed its return to mini/midi. The hide waits for that
+  /// return, then gets an ordinary countdown. Cleared with the auto-hide.
+  @ObservationIgnored private var autoHideAwaitingCollapse: UInt64?
 
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -3036,6 +3059,15 @@ final class OverlayState {
       }
       return
     }
+    // The 5 s hide can come due before an automatic expansion's 10 s return.
+    // Closing then would take the full panel off screen, so the hide waits for
+    // the return. A deadline dropped without a later signal is re-armed here,
+    // otherwise neither timer would ever run.
+    if autoCollapsePending {
+      autoHideAwaitingCollapse = generation
+      if autoCollapse.deadline == nil { noteAutoCollapseActivity() }
+      return
+    }
     onClose?()
   }
 
@@ -3068,7 +3100,12 @@ final class OverlayState {
     autoHideTask?.cancel()
     autoHideTask = nil
     autoHideDeadline = nil
+    autoHideAwaitingCollapse = nil
   }
+
+  /// Whether a terminal hide that came due is waiting for the automatic
+  /// collapse; see `evaluateAutoHideDeadline`.
+  var autoHideAwaitsAutoCollapse: Bool { autoHideAwaitingCollapse != nil }
 
   @discardableResult
   private func deliverAgentTranscript() -> Task<Void, Never>? {
