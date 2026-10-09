@@ -65,6 +65,145 @@ final class OverlayAutoCollapseTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  /// One automatic take that ends sealed: the terminal outcome arms the usual
+  /// 5 s auto-hide next to the 10 s automatic return.
+  private func runTerminalTake(_ state: OverlayState, sessionId: String = "collapse-take") {
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    let receipt = projectedAcousticReceipt(
+      serial: "\(sessionId)-acoustic-1", sessionId: sessionId, sampleStart: 0,
+      sampleEnd: 16_000, wordEvidence: ["\(sessionId)-word-1"],
+      layerDecisions: ["\(sessionId)-layer-1"], sealReceipt: "\(sessionId)-seal-1")
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1, emittedAt: "2026-10-10T00:00:00Z", sessionId: sessionId,
+        renderedText: "sealed words", phase: "formatted", terminal: true,
+        reducerAction: "record_ledger_terminal_seal", sampleStart: 0, sampleEnd: 16_000,
+        canPaste: true, canInsert: true, canRetranscribe: true, acousticReceipts: [receipt]))
+    state.finishControllerRecording()
+  }
+
+  /// The 5 s hide comes due first. It must not take the full panel off screen
+  /// before its 10 s return; once the panel is back in mini, the hide gets an
+  /// ordinary 5 s countdown.
+  func testTerminalHideWaitsForTheAutomaticReturnThenCountsItsUsualFiveSeconds() throws {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
+
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 0, "the full panel still owes its return")
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+    XCTAssertEqual(state.presentationMode, .expanded)
+
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - OverlayState.autoHideDelaySeconds)
+    XCTAssertEqual(state.presentationMode, .mini, "the 10 s return happened on screen")
+    XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
+
+    clock.advance(by: OverlayState.autoHideDelaySeconds - 0.5)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 0)
+    clock.advance(by: 0.5)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1, "the compact panel leaves on its usual countdown")
+  }
+
+  /// Without an automatic expansion the 5 s hide is unchanged.
+  func testTerminalHideOfACompactTakeStaysFiveSeconds() {
+    let (state, clock) = makeState(expandedByDefault: false)
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state)
+    XCTAssertNil(state.autoCollapseRestoreMode)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+    XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
+  }
+
+  /// A manual Transcription choice while the hide waits cancels the return; the
+  /// manually chosen full panel stays full and leaves on the usual countdown.
+  func testManualChoiceWhileTheHideWaitsKeepsTheFormAndRestoresTheCountdown() throws {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.midi)
+    runTerminalTake(state)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+
+    state.setPresentationMode(.expanded)
+    XCTAssertNil(state.autoCollapseRestoreMode)
+    XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+    XCTAssertEqual(state.presentationMode, .expanded, "a manual full panel is never collapsed")
+  }
+
+  /// Hover while the hide waits holds both timers; leaving re-arms both, and
+  /// the hide again waits for the return instead of closing the full panel.
+  func testHoverWhileTheHideWaitsRearmsBothAndKeepsTheOrder() {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+
+    state.setPointerHovering(true)
+    XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
+    XCTAssertNil(state.autoHideDeadline)
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded)
+
+    state.setPointerHovering(false)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 0)
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - OverlayState.autoHideDelaySeconds)
+    XCTAssertEqual(state.presentationMode, .mini)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
+  /// A waiting hide belongs to its take. A successor capture drops it, so the
+  /// predecessor's return cannot start a countdown against the live take.
+  func testSuccessorCaptureDropsTheWaitingHide() {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state, sessionId: "first-take")
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded, "the live capture holds the panel")
+    XCTAssertNil(state.autoHideDeadline)
+    XCTAssertEqual(closes, 0)
+  }
+
   func testAutomaticTakeExpansionReturnsToMiniAfterTenIdleSeconds() {
     let (state, clock) = makeState()
     state.setPresentationMode(.mini)
