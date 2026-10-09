@@ -343,10 +343,6 @@ pub fn paired_audio_for_transcript(transcript: &Path) -> Option<PathBuf> {
 const ARCHIVE_REVISION_SCHEMA: &str = "codescribe.archive-revision.v1";
 const ARCHIVE_REVISION_SUFFIX: &str = ".revisions.jsonl";
 
-/// One writer per process: the compare-and-swap below reads the chain head and
-/// appends under this lock, so two requests against one head cannot both land.
-static ARCHIVE_REVISION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// What produced one revision of an archived transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -460,129 +456,161 @@ fn admit_archived_transcript(transcript: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-fn archive_revisions_path(transcript: &Path) -> PathBuf {
-    let mut name = transcript.as_os_str().to_os_string();
-    name.push(ARCHIVE_REVISION_SUFFIX);
-    PathBuf::from(name)
-}
-
 fn evidence_digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-#[cfg(unix)]
-fn no_follow(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
-    use std::os::unix::fs::OpenOptionsExt;
-    options.custom_flags(libc::O_NOFOLLOW)
+/// The persisted chain is JSON Lines with one complete-record rule: a record
+/// is accepted only together with its terminating newline. Bytes after the
+/// last newline were never acknowledged to any caller (an interrupted legacy
+/// append, a split UTF-8 character, even a whole JSON object): they are not
+/// part of the chain, they are never parsed as a record, and a writer removes
+/// them before it appends. Every complete record must be valid, in order and
+/// bound to the same raw evidence, or the whole chain is refused untouched.
+struct ParsedChain {
+    revisions: Vec<ArchiveRevision>,
+    accepted_len: usize,
 }
 
-#[cfg(not(unix))]
-fn no_follow(options: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
-    options
-}
-
-/// Read the archived transcript and every accepted revision of it.
-fn read_admitted_document(transcript: &Path) -> Result<ArchivedDocument> {
-    let original_text = fs::read_to_string(transcript)
-        .with_context(|| format!("Failed to read {}", transcript.display()))?;
-    let evidence = evidence_digest(&original_text);
-    let chain_path = archive_revisions_path(transcript);
-    let chain = match no_follow(fs::OpenOptions::new().read(true)).open(&chain_path) {
-        Ok(mut file) => {
-            let mut raw = String::new();
-            std::io::Read::read_to_string(&mut file, &mut raw)
-                .with_context(|| format!("Failed to read {}", chain_path.display()))?;
-            raw
+fn parse_revision_chain(chain: &[u8], evidence: &str, label: &Path) -> Result<ParsedChain> {
+    let accepted_len = chain
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let mut revisions: Vec<ArchiveRevision> = Vec::new();
+    if let Some(body) = chain[..accepted_len].strip_suffix(b"\n") {
+        for (index, line) in body.split(|byte| *byte == b'\n').enumerate() {
+            let revision = std::str::from_utf8(line)
+                .ok()
+                .and_then(|line| serde_json::from_str::<ArchiveRevision>(line).ok())
+                .with_context(|| format!("corrupt revision {} in {}", index + 1, label.display()))?;
+            let expected = revisions.len() as u64 + 1;
+            anyhow::ensure!(
+                revision.schema == ARCHIVE_REVISION_SCHEMA
+                    && revision.revision == expected
+                    && revision.source_revision.checked_add(1) == Some(expected),
+                "revision chain out of order in {}",
+                label.display()
+            );
+            anyhow::ensure!(
+                revision.evidence_sha256 == evidence,
+                "archived transcript changed under its revision chain: {}",
+                label.display()
+            );
+            revisions.push(revision);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(error).with_context(|| format!("Failed to open {}", chain_path.display()));
-        }
-    };
-    let complete = chain.ends_with('\n');
-    let lines: Vec<&str> = chain.lines().filter(|line| !line.trim().is_empty()).collect();
-    let mut revisions: Vec<ArchiveRevision> = Vec::with_capacity(lines.len());
-    for (index, line) in lines.iter().enumerate() {
-        let revision: ArchiveRevision = match serde_json::from_str(line) {
-            Ok(revision) => revision,
-            // A torn final append (crash mid-write) never became a receipt.
-            Err(_) if index + 1 == lines.len() && !complete => break,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("corrupt revision {} in {}", index + 1, chain_path.display())
-                });
-            }
-        };
-        let expected = revisions.len() as u64 + 1;
-        anyhow::ensure!(
-            revision.schema == ARCHIVE_REVISION_SCHEMA
-                && revision.revision == expected
-                && revision.source_revision.checked_add(1) == Some(expected),
-            "revision chain out of order in {}",
-            chain_path.display()
-        );
-        anyhow::ensure!(
-            revision.evidence_sha256 == evidence,
-            "archived transcript changed under its revision chain: {}",
-            transcript.display()
-        );
-        revisions.push(revision);
     }
-    Ok(ArchivedDocument {
-        original_text,
+    Ok(ParsedChain {
         revisions,
+        accepted_len,
     })
 }
 
-/// The archived transcript at `transcript` with its accepted revisions.
-pub fn read_archived_document(transcript: &Path) -> Result<ArchivedDocument> {
-    let transcript = admit_archived_transcript(transcript)?;
-    read_admitted_document(&transcript)
+fn archived_document_from(
+    transcript: &[u8],
+    chain: &[u8],
+    label: &Path,
+) -> Result<(ArchivedDocument, usize)> {
+    let original_text = String::from_utf8(transcript.to_vec())
+        .with_context(|| format!("archived transcript is not UTF-8: {}", label.display()))?;
+    let parsed = parse_revision_chain(chain, &evidence_digest(&original_text), label)?;
+    Ok((
+        ArchivedDocument {
+            original_text,
+            revisions: parsed.revisions,
+        },
+        parsed.accepted_len,
+    ))
 }
 
-fn append_admitted_revision(
-    transcript: &Path,
-    document: &ArchivedDocument,
+/// One planned rewrite of a revision chain: the full accepted contents, the
+/// unacknowledged tail it drops (kept aside as evidence) and the receipt.
+struct ChainWrite<T> {
+    contents: Vec<u8>,
+    uncommitted_tail: Vec<u8>,
+    value: T,
+}
+
+/// The archived transcript at `transcript` with its accepted revisions.
+/// Readers hold the shared directory lease, so they see one whole chain.
+pub fn read_archived_document(transcript: &Path) -> Result<ArchivedDocument> {
+    let transcript = admit_archived_transcript(transcript)?;
+    let (raw, chain) = daily_archive::read_revision_chain(&transcript)?;
+    let (document, accepted_len) = archived_document_from(&raw, &chain, &transcript)?;
+    if accepted_len < chain.len() {
+        warn!(
+            "archived transcript {} has {} unacknowledged revision bytes; the next accepted revision sets them aside",
+            transcript.display(),
+            chain.len() - accepted_len
+        );
+    }
+    Ok(document)
+}
+
+/// What an accepted revision says, decided against the current document.
+struct PlannedRevision {
     provenance: ArchiveRevisionProvenance,
-    rendered_text: &str,
+    rendered_text: String,
     restored_revision: Option<u64>,
     detail: Option<String>,
+}
+
+/// Accept one revision under the exclusive directory lease: validate the raw
+/// evidence and the accepted prefix, compare the head, then rewrite the chain
+/// as that prefix plus exactly one new record. The receipt exists only after
+/// the rewrite and its directory entry are durable.
+fn accept_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    plan: impl FnOnce(&ArchivedDocument) -> Result<PlannedRevision>,
 ) -> Result<ArchiveRevision> {
-    use std::io::Write;
-    let source_revision = document.head_revision();
-    let revision = ArchiveRevision {
-        schema: ARCHIVE_REVISION_SCHEMA.to_string(),
-        revision: source_revision
-            .checked_add(1)
-            .context("archived transcript revision exhausted")?,
-        source_revision,
-        provenance,
-        rendered_text: rendered_text.to_string(),
-        receipt_id: format!("archive-{}-{}", provenance.as_str(), uuid::Uuid::new_v4()),
-        emitted_at: chrono::Utc::now().to_rfc3339(),
-        evidence_sha256: evidence_digest(&document.original_text),
-        restored_revision,
-        detail,
-    };
-    let mut line = serde_json::to_string(&revision)?;
-    line.push('\n');
-    let chain_path = archive_revisions_path(transcript);
-    let mut file = no_follow(fs::OpenOptions::new().create(true).append(true))
-        .open(&chain_path)
-        .with_context(|| format!("Failed to open {}", chain_path.display()))?;
-    file.write_all(line.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("Failed to write {}", chain_path.display()))?;
-    Ok(revision)
+    let transcript = admit_archived_transcript(transcript)?;
+    daily_archive::update_revision_chain(&transcript, |raw, chain| {
+        let (document, accepted_len) = archived_document_from(raw, chain, &transcript)?;
+        anyhow::ensure!(
+            document.head_revision() == source_revision,
+            "stale archived transcript revision: current {}, requested {}",
+            document.head_revision(),
+            source_revision
+        );
+        let PlannedRevision {
+            provenance,
+            rendered_text,
+            restored_revision,
+            detail,
+        } = plan(&document)?;
+        let revision = ArchiveRevision {
+            schema: ARCHIVE_REVISION_SCHEMA.to_string(),
+            revision: source_revision
+                .checked_add(1)
+                .context("archived transcript revision exhausted")?,
+            source_revision,
+            provenance,
+            rendered_text,
+            receipt_id: format!("archive-{}-{}", provenance.as_str(), uuid::Uuid::new_v4()),
+            emitted_at: chrono::Utc::now().to_rfc3339(),
+            evidence_sha256: evidence_digest(&document.original_text),
+            restored_revision,
+            detail,
+        };
+        let mut contents = chain[..accepted_len].to_vec();
+        contents.extend_from_slice(&serde_json::to_vec(&revision)?);
+        contents.push(b'\n');
+        Ok(ChainWrite {
+            contents,
+            uncommitted_tail: chain[accepted_len..].to_vec(),
+            value: revision,
+        })
+    })
 }
 
 /// Accept one revision of an archived transcript against `source_revision`.
 ///
 /// The archived `.txt` and its audio are raw evidence and stay untouched; the
-/// revision is appended to `<base>.txt.revisions.jsonl` beside them, which no
-/// history listing treats as a transcript. A head that moved since the caller
-/// read it refuses the request instead of overwriting newer work.
+/// chain lives in `<base>.txt.revisions.jsonl` beside them, which no history
+/// listing treats as a transcript. A head that moved since the caller read it
+/// refuses the request instead of overwriting newer work, across processes.
 pub fn commit_archived_revision(
     transcript: &Path,
     source_revision: u64,
@@ -598,22 +626,18 @@ pub fn commit_archived_revision(
         !rendered_text.trim().is_empty(),
         "A transcript revision cannot be empty"
     );
-    let transcript = admit_archived_transcript(transcript)?;
-    let _writer = ARCHIVE_REVISION_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let document = read_admitted_document(&transcript)?;
-    anyhow::ensure!(
-        document.head_revision() == source_revision,
-        "stale archived transcript revision: current {}, requested {}",
-        document.head_revision(),
-        source_revision
-    );
-    anyhow::ensure!(
-        document.head_text() != rendered_text,
-        "the revision does not change the transcript"
-    );
-    append_admitted_revision(&transcript, &document, provenance, rendered_text, None, detail)
+    accept_archived_revision(transcript, source_revision, |document| {
+        anyhow::ensure!(
+            document.head_text() != rendered_text,
+            "the revision does not change the transcript"
+        );
+        Ok(PlannedRevision {
+            provenance,
+            rendered_text: rendered_text.to_string(),
+            restored_revision: None,
+            detail,
+        })
+    })
 }
 
 /// Restore an earlier version of an archived transcript as a new revision.
@@ -622,37 +646,26 @@ pub fn restore_archived_revision(
     source_revision: u64,
     restore_revision: u64,
 ) -> Result<ArchiveRevision> {
-    let transcript = admit_archived_transcript(transcript)?;
-    let _writer = ARCHIVE_REVISION_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let document = read_admitted_document(&transcript)?;
-    anyhow::ensure!(
-        document.head_revision() == source_revision,
-        "stale archived transcript revision: current {}, requested {}",
-        document.head_revision(),
-        source_revision
-    );
     anyhow::ensure!(
         restore_revision < source_revision,
         "only an earlier version can be restored"
     );
-    let restored = document
-        .text_at(restore_revision)
-        .context("restored version is not in this transcript's history")?
-        .to_string();
-    anyhow::ensure!(
-        restored != document.head_text(),
-        "the restored version matches the current transcript"
-    );
-    append_admitted_revision(
-        &transcript,
-        &document,
-        ArchiveRevisionProvenance::Restore,
-        &restored,
-        Some(restore_revision),
-        None,
-    )
+    accept_archived_revision(transcript, source_revision, |document| {
+        let restored = document
+            .text_at(restore_revision)
+            .context("restored version is not in this transcript's history")?
+            .to_string();
+        anyhow::ensure!(
+            restored != document.head_text(),
+            "the restored version matches the current transcript"
+        );
+        Ok(PlannedRevision {
+            provenance: ArchiveRevisionProvenance::Restore,
+            rendered_text: restored,
+            restored_revision: Some(restore_revision),
+            detail: None,
+        })
+    })
 }
 
 /// Get the transcriptions base directory
@@ -1392,8 +1405,19 @@ mod daily_archive {
         file: File,
     }
 
+    impl Entry<'_> {
+        /// The stage was renamed onto its final leaf: its name now belongs to
+        /// a published file and must not be unlinked.
+        fn disarm(&mut self) {
+            self.name = CString::default();
+        }
+    }
+
     impl Drop for Entry<'_> {
         fn drop(&mut self) {
+            if self.name.as_bytes().is_empty() {
+                return;
+            }
             // SAFETY: remove only this guard's single staging/reservation entry.
             if unsafe { libc::unlinkat(self.dir.as_raw_fd(), self.name.as_ptr(), 0) } < 0 {
                 warn!(
@@ -1489,6 +1513,168 @@ mod daily_archive {
         Ok(())
     }
 
+    /// `flock` on a fresh description of a pinned directory: the same lease
+    /// shape as the truth sidecar writer, held by every process that reads or
+    /// revises an archived transcript's revision chain in that directory.
+    struct DirLease(File);
+
+    impl DirLease {
+        fn acquire(dir: &File, operation: libc::c_int) -> Result<Self> {
+            // SAFETY: `.` names the pinned directory itself; a successful
+            // openat transfers exactly one owned descriptor.
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    0,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision lease refused");
+            }
+            // SAFETY: `fd` came from a successful openat and has one owner.
+            let lease = unsafe { File::from_raw_fd(fd) };
+            // SAFETY: the descriptor stays open for the life of this lease.
+            if unsafe { libc::flock(lease.as_raw_fd(), operation) } < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision lease refused");
+            }
+            Ok(Self(lease))
+        }
+    }
+
+    impl Drop for DirLease {
+        fn drop(&mut self) {
+            // SAFETY: release only the lock this lease acquired.
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    fn identity(file: &File) -> Result<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    /// The day directory the transcript path names right now must still be
+    /// the one this lease covers; a swapped directory never becomes a second
+    /// writer authority.
+    fn ensure_same_directory(dir: &File, transcript: &Path) -> Result<()> {
+        let (current, _) = parent(transcript)?;
+        anyhow::ensure!(
+            identity(dir)? == identity(&current)?,
+            "archive directory changed under its revision lease: {}",
+            transcript.display()
+        );
+        Ok(())
+    }
+
+    fn pin_leased(transcript: &Path, operation: libc::c_int) -> Result<(File, CString, DirLease)> {
+        let (dir, leaf) = parent(transcript)?;
+        let lease = DirLease::acquire(&dir, operation)?;
+        ensure_same_directory(&dir, transcript)?;
+        Ok((dir, leaf, lease))
+    }
+
+    fn chain_leaf(leaf: &CStr) -> Result<CString> {
+        let mut name = leaf.to_bytes().to_vec();
+        name.extend_from_slice(ARCHIVE_REVISION_SUFFIX.as_bytes());
+        Ok(CString::new(name)?)
+    }
+
+    /// Read one regular leaf through the pinned directory. A symlink or a
+    /// special file is refused; an absent optional leaf reads as empty.
+    fn read_leaf(dir: &File, name: &CStr, optional: bool) -> Result<Vec<u8>> {
+        use std::io::Read;
+        let mut file = match open_at(dir, name, libc::O_RDONLY | libc::O_NONBLOCK) {
+            Ok(file) => file,
+            Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            file.metadata()?.is_file(),
+            "archive leaf is not a regular file"
+        );
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// The raw transcript and its revision chain, read as one coherent pair
+    /// under the shared lease.
+    pub(super) fn read_revision_chain(transcript: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (dir, leaf, _lease) = pin_leased(transcript, libc::LOCK_SH)?;
+        let chain = chain_leaf(&leaf)?;
+        Ok((read_leaf(&dir, &leaf, false)?, read_leaf(&dir, &chain, true)?))
+    }
+
+    /// Keep bytes after the last record boundary beside the chain before a
+    /// rewrite drops them. They were never acknowledged, but they are the
+    /// only evidence of an interrupted writer.
+    fn quarantine_tail(dir: &File, chain: &CStr, tail: &[u8]) -> Result<()> {
+        let leaf = std::str::from_utf8(chain.to_bytes()).unwrap_or("archive.revisions.jsonl");
+        let name = format!("{leaf}.torn-{}", uuid::Uuid::new_v4());
+        let mut entry = stage(dir)?;
+        entry.file.write_all(tail)?;
+        publish(&entry, &name)?;
+        warn!(
+            "archive revision chain had {} unacknowledged bytes; kept as {name}",
+            tail.len()
+        );
+        Ok(())
+    }
+
+    /// Revise one chain under the exclusive lease. `plan` sees the raw
+    /// transcript and the current chain bytes and returns the complete new
+    /// chain; it runs only while the lease is held, so the head it compares
+    /// is the head it replaces. The new chain is staged, synced and renamed
+    /// over the old one, then the directory is synced: readers see the old
+    /// chain or the new one, never a partial append.
+    pub(super) fn update_revision_chain<T>(
+        transcript: &Path,
+        plan: impl FnOnce(&[u8], &[u8]) -> Result<ChainWrite<T>>,
+    ) -> Result<T> {
+        let (dir, leaf, _lease) = pin_leased(transcript, libc::LOCK_EX)?;
+        let chain = chain_leaf(&leaf)?;
+        let raw = read_leaf(&dir, &leaf, false)?;
+        let current = read_leaf(&dir, &chain, true)?;
+        let write = plan(&raw, &current)?;
+        if !write.uncommitted_tail.is_empty() {
+            quarantine_tail(&dir, &chain, &write.uncommitted_tail)?;
+        }
+        let mut entry = stage(&dir)?;
+        entry.file.write_all(&write.contents)?;
+        entry.file.sync_all()?;
+        // SAFETY: both names live in the leased directory; renameat replaces
+        // the chain leaf itself and never follows it.
+        if unsafe {
+            libc::renameat(
+                dir.as_raw_fd(),
+                entry.name.as_ptr(),
+                dir.as_raw_fd(),
+                chain.as_ptr(),
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("archive revision publication refused");
+        }
+        entry.disarm();
+        // SAFETY: fsync of the leased directory makes the rename durable.
+        if unsafe { libc::fsync(dir.as_raw_fd()) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("archive revision not confirmed durable");
+        }
+        ensure_same_directory(&dir, transcript)?;
+        Ok(write.value)
+    }
+
     pub(super) fn save_text(
         root: &Path,
         now: &DateTime<Local>,
@@ -1571,6 +1757,15 @@ mod daily_archive {
 mod daily_archive {
     use super::*;
     pub(super) fn admit_source(_path: &Path) -> Result<fs::File> {
+        anyhow::bail!("secure daily archive requires Unix directory descriptors")
+    }
+    pub(super) fn read_revision_chain(_transcript: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+        anyhow::bail!("secure daily archive requires Unix directory descriptors")
+    }
+    pub(super) fn update_revision_chain<T>(
+        _transcript: &Path,
+        _plan: impl FnOnce(&[u8], &[u8]) -> Result<ChainWrite<T>>,
+    ) -> Result<T> {
         anyhow::bail!("secure daily archive requires Unix directory descriptors")
     }
     pub(super) fn save_text(
