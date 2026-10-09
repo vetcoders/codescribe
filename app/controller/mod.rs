@@ -2047,12 +2047,20 @@ impl RecordingController {
 
     /// Resolve the controller's retained Max consultation without another
     /// recorder or a process-global conversation selection.
+    ///
+    /// Max exists only on a usable Agent lane. Without one this refuses with
+    /// the Agent's actionable reason; it never falls back to the formatting
+    /// lane or Apple. A retained consultation stays selected and resumes once
+    /// the Agent is configured again.
     async fn selected_max_consultation(
         &self,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<Option<Arc<crate::agent::max_consultation::MaxConsultation>>> {
         if settings.formatting_policy() != codescribe_core::config::FormattingPolicy::Max {
             return Ok(None);
+        }
+        if let Some(reason) = crate::agent::max_unavailable_reason(settings) {
+            anyhow::bail!("{reason}");
         }
         let mut selected = self.max_consultation.lock().await;
         if selected.is_none() {
@@ -2100,7 +2108,8 @@ impl RecordingController {
         attachments: Vec<codescribe_core::agent::ImageAttachment>,
     ) -> Result<String> {
         let settings = self.runtime_settings_arc().await;
-        let lane = settings.llm_lanes().formatting();
+        // Max answers on the Agent lane, so the Agent model decides images.
+        let lane = settings.llm_lanes().assistive();
         anyhow::ensure!(
             attachments.is_empty() || lane.supports_vision(lane.model()),
             "The selected Max model does not support images"

@@ -6,14 +6,12 @@
 
 use anyhow::Result;
 use codescribe_core::agent::{AgentProvider, ContentBlock, Message, Role};
-use codescribe_core::config::{
-    FormattingPolicy, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeSettingsSnapshot,
-};
+use codescribe_core::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
-/// Formatting-lane host admission for the connected Max consultation.
+/// Max consultation host admission on the Agent lane.
 pub mod max_consultation;
 /// Resident agent-run monitor (progress, cancel, status surfaces).
 pub mod monitor;
@@ -28,30 +26,18 @@ pub mod tools;
 pub use anthropic_provider::AnthropicProvider;
 pub use openai_provider::OpenAiProvider;
 
-/// Build an Agent provider from an explicitly selected sealed lane.
-/// Formatting may enter the tool-capable runtime only under Max; ordinary
-/// Agent chat keeps its independent assistive lane.
-pub fn create_provider_for_lane(
+/// Build the tool-capable Agent provider from the sealed Agent (assistive)
+/// lane. Chat and Max share this one constructor, so Max runs on exactly the
+/// Agent's provider, endpoint, model and account; the formatting lane never
+/// enters the tool-capable runtime.
+pub fn create_agent_provider(
     runtime_settings: &RuntimeSettingsSnapshot,
-    lane_kind: RuntimeLlmLaneKind,
 ) -> Result<Box<dyn AgentProvider>> {
-    anyhow::ensure!(
-        lane_kind == RuntimeLlmLaneKind::Assistive
-            || runtime_settings.formatting_policy() == FormattingPolicy::Max,
-        "tool-capable formatting requires Max policy"
-    );
-    let lane = match lane_kind {
-        RuntimeLlmLaneKind::Assistive => runtime_settings.llm_lanes().assistive(),
-        RuntimeLlmLaneKind::Formatting => runtime_settings.llm_lanes().formatting(),
-    };
-    let request_timing = runtime_settings.ai_execution().request_timing();
-    if !lane.request_available() {
-        anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("selected agent runtime lane is unavailable")
-        );
+    let lane = runtime_settings.llm_lanes().assistive();
+    if let Some(reason) = assistive_unavailable_reason(lane) {
+        anyhow::bail!("{reason}");
     }
+    let request_timing = runtime_settings.ai_execution().request_timing();
     // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family
     // client and carries the lane's provider identity, so xAI rides it without a
     // second implementation.
@@ -66,15 +52,32 @@ pub fn create_provider_for_lane(
     }
 }
 
-/// User-facing reason the assistive lane cannot reach a model right now
-/// (`None` when a send can proceed). Kept beside [`create_provider_for_lane`]
+/// User-facing reason the Agent lane cannot reach a model right now
+/// (`None` when a send can proceed). Kept beside [`create_agent_provider`]
 /// so the availability gate and provider construction can never drift.
 pub fn assistive_unavailable_reason(lane: &RuntimeLlmLane) -> Option<String> {
-    (!lane.request_available()).then(|| {
-        lane.unavailable_reason()
-            .unwrap_or("assistive runtime lane is unavailable")
-            .to_string()
-    })
+    lane.request_unavailable_reason()
+}
+
+/// Whether the selected formatting level has an engine under this
+/// generation. Max is the Agent: it is available only when the Agent lane is,
+/// and never borrows the formatting lane or Apple. Smart/Corrections are text
+/// passes: Apple on-device (when selected) or the formatting lane.
+pub fn formatting_unavailable_reason(runtime_settings: &RuntimeSettingsSnapshot) -> Option<String> {
+    match runtime_settings.formatting_policy() {
+        FormattingPolicy::Off => Some("Formatting is off".to_string()),
+        FormattingPolicy::Max => max_unavailable_reason(runtime_settings),
+        FormattingPolicy::Correction | FormattingPolicy::Smart => {
+            codescribe_core::ai_formatting::text_formatting_unavailable_reason(runtime_settings)
+        }
+    }
+}
+
+/// Max needs a usable Agent configuration. The reason names the Agent lane so
+/// the user fixes the Agent endpoint rather than the formatter.
+pub fn max_unavailable_reason(runtime_settings: &RuntimeSettingsSnapshot) -> Option<String> {
+    assistive_unavailable_reason(runtime_settings.llm_lanes().assistive())
+        .map(|reason| format!("Max uses the Agent model. {reason}"))
 }
 
 /// In-memory user turn carrying one tool result.

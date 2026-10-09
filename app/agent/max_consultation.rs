@@ -1,6 +1,10 @@
 //! Host admission for Max, using the same concrete provider clients and the
 //! existing Agent tool registry. This owns settings selection, not a second
 //! conversation history or model/tool loop.
+//!
+//! Max is the Agent: provider, endpoint, model, account and token cap all come
+//! from the sealed Agent (assistive) lane. The formatting lane and Apple serve
+//! Smart/Corrections only, and their settings never reach this module.
 
 use anyhow::{Context, Result, ensure};
 use codescribe_core::agent::consultation::{
@@ -11,7 +15,7 @@ use codescribe_core::agent::{
     AgentSession, ImageAttachment, StreamOptions, ThreadDeliveryGateway, ToolApprovalHandler,
     ToolRegistry,
 };
-use codescribe_core::config::{FormattingPolicy, RuntimeLlmLaneKind, RuntimeSettingsSnapshot};
+use codescribe_core::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -110,7 +114,7 @@ impl MaxConsultation {
         events: ConsultationEvents,
         install_lease_path: std::path::PathBuf,
     ) -> Result<ConsultationRuntime> {
-        let provider = super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?;
+        let provider = super::create_agent_provider(settings)?;
         let (tx, rx) = mpsc::channel(64);
         let mut session = AgentSession::new(provider, tools, tx);
         if let Some(approval) = approval {
@@ -188,8 +192,8 @@ impl MaxConsultation {
             .await
     }
 
-    /// All request knobs and provenance come from one immutable formatting
-    /// snapshot. A chat provider selection cannot leak into this request.
+    /// All request knobs and provenance come from one immutable snapshot's
+    /// Agent lane. A formatter provider selection cannot leak into this request.
     pub fn enqueue(
         &self,
         turn_id: String,
@@ -224,7 +228,7 @@ impl MaxConsultation {
             options,
             provider_name: settings
                 .llm_lanes()
-                .formatting()
+                .assistive()
                 .provider()
                 .as_str()
                 .to_string(),
@@ -233,12 +237,31 @@ impl MaxConsultation {
     }
 }
 
+/// The provider seal covers only what Max actually executes on: the Agent
+/// lane's provider, wire, endpoint, model, credential account and account
+/// mode, the Max prompt, the Agent token cap and request timing. A formatter
+/// edit leaves it unchanged, so the prepared provider and its chain survive;
+/// an Agent edit changes it and the FIFO owner re-prepares before the next turn.
 fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsultationProvider> {
     use std::hash::{Hash, Hasher};
-    let lane = settings.llm_lanes().formatting();
+    let lane = settings.llm_lanes().assistive();
+    let options = stream_options(settings)?;
+    let timing = settings.ai_execution().request_timing();
+    let mut identity = std::collections::hash_map::DefaultHasher::new();
+    lane.provider().as_str().hash(&mut identity);
+    lane.wire_family().as_str().hash(&mut identity);
+    lane.endpoint().hash(&mut identity);
+    lane.model().hash(&mut identity);
+    lane.credential().key_account().hash(&mut identity);
+    lane.credential().account_auth().hash(&mut identity);
+    options.system_prompt.hash(&mut identity);
+    options.max_tokens.hash(&mut identity);
+    timing.attempt_timeout().hash(&mut identity);
+    timing.inter_chunk_timeout().hash(&mut identity);
     // Credentials stay at the request boundary. This in-memory fingerprint
     // invalidates a prepared chain when the key behind the sealed account is
-    // rotated; neither the key nor this fingerprint is persisted or logged.
+    // rotated or another account signs in; neither the key nor this
+    // fingerprint is persisted or logged.
     let mut credential = std::collections::hash_map::DefaultHasher::new();
     lane.credential().request_api_key().hash(&mut credential);
     if let Some(vendor) = lane.vendor() {
@@ -246,11 +269,11 @@ fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsu
     }
     Ok(AdmittedConsultationProvider {
         seal: format!(
-            "{}:{:016x}",
-            settings.digest().as_str(),
+            "agent:{:016x}:{:016x}",
+            identity.finish(),
             credential.finish()
         ),
-        provider: super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?,
+        provider: super::create_agent_provider(settings)?,
     })
 }
 
@@ -278,10 +301,11 @@ impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
         );
         // Preserve the selected model budget: reasoning models may consume
         // their allowance before emitting the short classification verdict.
+        options.max_tokens = None;
         options.reset_chain = true;
         // A fresh request client cannot alter the retained consultation's
         // provider chain or history. It has no tool registry or approval broker.
-        let provider = super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?;
+        let provider = super::create_agent_provider(settings)?;
         let messages = [Message::new(
             Role::User,
             vec![ContentBlock::Text(
@@ -334,13 +358,10 @@ fn stream_options(settings: &RuntimeSettingsSnapshot) -> Result<StreamOptions> {
         settings.formatting_policy() == FormattingPolicy::Max,
         "Max consultation is not selected"
     );
-    let lane = settings.llm_lanes().formatting();
-    ensure!(
-        lane.request_available(),
-        "{}",
-        lane.unavailable_reason()
-            .unwrap_or("formatting provider unavailable")
-    );
+    if let Some(reason) = super::max_unavailable_reason(settings) {
+        anyhow::bail!("{reason}");
+    }
+    let lane = settings.llm_lanes().assistive();
     let prompt = settings
         .ai_execution()
         .formatter()
@@ -349,7 +370,10 @@ fn stream_options(settings: &RuntimeSettingsSnapshot) -> Result<StreamOptions> {
     Ok(StreamOptions {
         model: lane.model().to_string(),
         system_prompt: Some(prompt.composed_content().to_string()),
-        max_tokens: None,
+        // The Agent's own token cap; non-positive means the provider default.
+        max_tokens: u32::try_from(settings.values().ai_assistive_max_tokens)
+            .ok()
+            .filter(|tokens| *tokens > 0),
         temperature: None,
         reset_chain: false,
     })
