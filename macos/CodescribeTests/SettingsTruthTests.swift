@@ -1835,22 +1835,97 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(admin.updates, ["loctree-mcp"])
   }
 
-  /// A rejected add hands the store's message back to the form, which keeps
-  /// the typed fields; a successful add returns nil.
+  /// A rejected add hands the store's refusal back to the form translated: the
+  /// user sentence under the field it names, the store's words as detail; a
+  /// successful add returns nil.
   func testAddMcpServerReportsTheStoreFailure() {
-    let admin = ScriptedMcpAdmin(servers: [], addFailure: "server name already exists")
+    let admin = ScriptedMcpAdmin(
+      servers: [], addFailure: "MCP server \"prview\" already exists")
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
 
+    let failure = model.addMcpServer(name: "prview", command: "prview", args: ["mcp"])
+    XCTAssertEqual(failure?.field, .name)
+    XCTAssertEqual(failure?.detail, "MCP server \"prview\" already exists")
     XCTAssertEqual(
-      model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]),
-      "server name already exists")
-    XCTAssertEqual(model.lastError, "server name already exists")
+      failure?.message, "A server with this name already exists. Choose another name.")
+    XCTAssertEqual(model.lastError, "MCP server \"prview\" already exists")
     XCTAssertTrue(model.mcpServers.isEmpty)
 
     admin.addFailure = nil
     XCTAssertNil(model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]))
     XCTAssertEqual(model.mcpServers.map(\.name), ["prview"])
+  }
+
+  /// The store's typed refusals (`core/mcp/config_store.rs` validate_*) map to
+  /// one sentence each and to the field they are about; the bridge's
+  /// `Config(msg: …)` wrapper never reaches the form. An unknown message keeps
+  /// the store's words and no field.
+  func testMcpAddFailureTranslatesTheStoreMessages() {
+    let endpoint = MCPAddFailure(CsError.Config(msg: "Invalid remote MCP endpoint: https://"))
+    XCTAssertEqual(endpoint.field, .endpoint)
+    XCTAssertEqual(
+      endpoint.message,
+      "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname.")
+    XCTAssertEqual(endpoint.detail, "Invalid remote MCP endpoint: https://")
+    XCTAssertFalse(endpoint.message.contains("Config(msg"))
+
+    XCTAssertEqual(
+      MCPAddFailure(storeMessage: "Remote MCP endpoint must use http or https").field, .endpoint)
+    XCTAssertEqual(
+      MCPAddFailure(
+        storeMessage: "Remote MCP credentials must be stored in Keychain, not in the endpoint URL"
+      ).field, .endpoint)
+    XCTAssertEqual(MCPAddFailure(storeMessage: "MCP server command is empty").field, .command)
+    XCTAssertEqual(
+      MCPAddFailure(storeMessage: "MCP server name must not have surrounding whitespace").field,
+      .name)
+    XCTAssertEqual(
+      MCPAddFailure(
+        storeMessage:
+          "MCP server name \"a b\" contains unsupported characters (use letters, digits, '_' or '-')"
+      ).field, .name)
+
+    let unknown = MCPAddFailure(storeMessage: "Failed to read MCP config /tmp/mcp.json")
+    XCTAssertNil(unknown.field)
+    XCTAssertEqual(unknown.message, unknown.detail)
+  }
+
+  /// Remove only asks. The request sets the candidate and deletes nothing;
+  /// cancelling leaves every server in place; confirming removes the named
+  /// server and only that one, and drops its cached handshake.
+  func testMcpServerRemovalWaitsForConfirmation() async {
+    let admin = ScriptedMcpAdmin(servers: [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "desktop-commander", command: "dc", args: [], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: ""),
+    ])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer("desktop-commander")
+    for _ in 0..<100 where model.mcpTestPending.contains("desktop-commander") {
+      await Task.yield()
+    }
+    XCTAssertEqual(model.mcpTestResults["desktop-commander"]?.ok, true)
+
+    model.requestMcpServerRemoval("desktop-commander")
+    XCTAssertEqual(model.mcpRemovalCandidate, "desktop-commander")
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp", "desktop-commander"])
+
+    model.cancelMcpServerRemoval()
+    XCTAssertNil(model.mcpRemovalCandidate)
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp", "desktop-commander"])
+    XCTAssertEqual(model.mcpTestResults["desktop-commander"]?.ok, true)
+
+    model.requestMcpServerRemoval("desktop-commander")
+    model.confirmMcpServerRemoval("desktop-commander")
+    XCTAssertNil(model.mcpRemovalCandidate)
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp"])
+    XCTAssertNil(model.mcpTestResults["desktop-commander"])
   }
 
   /// The card reads the server rule from the live policy instead of a literal.
