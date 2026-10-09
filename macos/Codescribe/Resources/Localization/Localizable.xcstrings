@@ -4259,6 +4259,17 @@
         }
       }
     },
+    "Cloud transcription is not set up. Use the local pass or configure it in Settings." : {
+      "comment" : "Cloud retranscription requested without a configured cloud provider",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja w chmurze nie jest skonfigurowana. Użyj transkrypcji lokalnej albo skonfiguruj chmurę w Ustawieniach."
+          }
+        }
+      }
+    },
     "Codescribe - %@" : {
       "comment" : "Menu bar tooltip; Codescribe is the product name, %@ is a status phrase",
       "localizations" : {
@@ -4556,6 +4567,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Commit"
+          }
+        }
+      }
+    },
+    "Commit or discard your edit before opening a saved transcript." : {
+      "comment" : "History is disabled while the canvas holds an unsaved edit",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdź lub odrzuć edycję, zanim otworzysz zapisaną transkrypcję."
           }
         }
       }
@@ -6208,6 +6230,17 @@
         }
       }
     },
+    "Edit applied. The saved transcript is unchanged." : {
+      "comment" : "Footer after editing a transcript reopened from history",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edycja zastosowana. Zapisana transkrypcja pozostaje bez zmian."
+          }
+        }
+      }
+    },
     "Edit correction for %@" : {
       "localizations" : {
         "pl" : {
@@ -6672,6 +6705,17 @@
         }
       }
     },
+    "Finish the current take before opening a saved transcript." : {
+      "comment" : "History is disabled while a take is being recorded or finished",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dokończ bieżące nagranie, zanim otworzysz zapisaną transkrypcję."
+          }
+        }
+      }
+    },
     "Finish the current turn before changing the thread search." : {
       "localizations" : {
         "pl" : {
@@ -6800,12 +6844,34 @@
         }
       }
     },
+    "Formatting failed. The transcript is unchanged." : {
+      "comment" : "The formatting provider failed for a transcript reopened from history",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie powiodło się. Transkrypcja pozostaje bez zmian."
+          }
+        }
+      }
+    },
     "Formatting is disabled. This lane is not required for readiness." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie jest wyłączone. Nie wpływa to na pracę Agenta."
+          }
+        }
+      }
+    },
+    "Formatting is not available for this level. The transcript is unchanged." : {
+      "comment" : "The formatter skipped the request, for example formatting is off",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie jest dostępne dla tego poziomu. Transkrypcja pozostaje bez zmian."
           }
         }
       }
@@ -6826,6 +6892,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie ograniczone do poprawek."
+          }
+        }
+      }
+    },
+    "Formatting made no changes." : {
+      "comment" : "The formatter returned the transcript unchanged",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie niczego nie zmieniło."
           }
         }
       }
@@ -6868,6 +6945,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Swobodne przesuwanie"
+          }
+        }
+      }
+    },
+    "From history · %@" : {
+      "comment" : "Footer under a transcript reopened from history; the placeholder is its date",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z historii · %@"
           }
         }
       }
@@ -9964,6 +10052,16 @@
         }
       }
     },
+    "Opens this transcript on the overlay to edit, format, transcribe again or insert" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera tę transkrypcję w nakładce, aby ją edytować, sformatować, retranskrybować lub wstawić"
+          }
+        }
+      }
+    },
     "Operating lane" : {
       "comment" : "Setup step eyebrow",
       "localizations" : {
@@ -12388,6 +12486,16 @@
         }
       }
     },
+    "Saved transcript from history. Click to edit; the saved file stays unchanged." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisana transkrypcja z historii. Kliknij, aby edytować; zapisany plik pozostaje bez zmian."
+          }
+        }
+      }
+    },
     "Saved · %@" : {
       "comment" : "Download callback completed; the placeholder is a file path",
       "localizations" : {
@@ -13060,16 +13168,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż ikonę"
-          }
-        }
-      }
-    },
-    "Show in Finder" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż w Finderze"
           }
         }
       }
@@ -14560,6 +14658,17 @@
         }
       }
     },
+    "The audio for this saved transcript is no longer available." : {
+      "comment" : "Transcribe again is impossible: the archived take has no audio file",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk tej zapisanej transkrypcji nie jest już dostępny."
+          }
+        }
+      }
+    },
     "The bundled agent bridge failed checksum verification: %@" : {
       "comment" : "The placeholder is a technical diagnostic produced by the installer",
       "localizations" : {
@@ -14821,6 +14930,17 @@
         }
       }
     },
+    "The overlay is busy. Try again when the current take is done." : {
+      "comment" : "History entry could not be placed on the overlay canvas",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nakładka jest zajęta. Spróbuj ponownie po zakończeniu bieżącego nagrania."
+          }
+        }
+      }
+    },
     "The provider returned no models. Enter a model ID below." : {
       "localizations" : {
         "pl" : {
@@ -15075,6 +15195,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta odpowiedź nie zawiera tekstu do odczytania."
+          }
+        }
+      }
+    },
+    "This saved transcript is empty." : {
+      "comment" : "History entry whose archived text file has no words",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta zapisana transkrypcja jest pusta."
           }
         }
       }
@@ -15985,6 +16116,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Głośność"
+          }
+        }
+      }
+    },
+    "Wait for the current change to finish before opening a saved transcript." : {
+      "comment" : "History is disabled while a revision, format or retranscription runs",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poczekaj na zakończenie bieżącej zmiany, zanim otworzysz zapisaną transkrypcję."
           }
         }
       }

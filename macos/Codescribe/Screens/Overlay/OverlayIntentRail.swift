@@ -129,6 +129,12 @@ struct OverlayIntentRail: View {
   let palette: OverlayAppearancePalette
   var formatLevel: FormattingPolicyOption = .correction
   var cloudRetranscribeConfigured = false
+  /// Specific reason the shown take cannot be transcribed again (an archived
+  /// take whose audio is gone). Nil keeps the engine buttons.
+  var retranscribeUnavailableReason: String?
+  /// Why history cannot be opened onto the canvas right now; nil allows it.
+  var historyOpenRefusal: String?
+  var onOpenArchive: (OverlayArchivedTranscript) -> Bool = { _ in false }
   let onIntent: (OverlayIntent) -> Void
   var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
   var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
@@ -144,8 +150,14 @@ struct OverlayIntentRail: View {
         presented: $presented
       ) {
         Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
-      } detail: { _ in
-        OverlayTranscriptHistory()
+      } detail: { close in
+        OverlayTranscriptHistory(
+          openRefusal: historyOpenRefusal,
+          onOpen: { archived in
+            onInteraction()
+            return onOpenArchive(archived)
+          },
+          onOpened: close)
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
@@ -199,20 +211,26 @@ struct OverlayIntentRail: View {
             } else if intent == .retranscribe {
               VStack(alignment: .leading, spacing: 8) {
                 Text(String(localized: "Transcribe this take again"))
-                Text(String(localized: "Uses audio from the take currently shown in the overlay."))
-                  .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                  Button(OverlayRetranscribeCopy.local) {
-                    close()
-                    retranscribe(.fullHq)
-                  }
-                  .accessibilityIdentifier("overlay-retranscribe-hq")
-                  if cloudRetranscribeConfigured {
-                    Button(OverlayRetranscribeCopy.cloud) {
+                Text(
+                  retranscribeUnavailableReason
+                    ?? String(localized: "Uses audio from the take currently shown in the overlay.")
+                )
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("overlay-retranscribe-source")
+                if retranscribeUnavailableReason == nil {
+                  HStack(spacing: 10) {
+                    Button(OverlayRetranscribeCopy.local) {
                       close()
-                      retranscribe(.cloud)
+                      retranscribe(.fullHq)
                     }
-                    .accessibilityIdentifier("overlay-retranscribe-cloud")
+                    .accessibilityIdentifier("overlay-retranscribe-hq")
+                    if cloudRetranscribeConfigured {
+                      Button(OverlayRetranscribeCopy.cloud) {
+                        close()
+                        retranscribe(.cloud)
+                      }
+                      .accessibilityIdentifier("overlay-retranscribe-cloud")
+                    }
                   }
                 }
               }
@@ -244,8 +262,11 @@ struct OverlayIntentRail: View {
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
-    if state.revisionCommitPending || state.formatterCommitPending {
+    if state.revisionCommitPending || state.formatterCommitPending || state.archiveActionPending {
       return []
+    }
+    if state.archivedTranscript != nil {
+      return archivedIntents(for: state)
     }
     if state.isRevisionDraftDirty {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
@@ -261,6 +282,21 @@ struct OverlayIntentRail: View {
         canFormat: state.canFormat,
         canSendToAgent: state.canSendToAgent
       )
+  }
+
+  /// An archive reopened from history has no reducer projection, so its rail
+  /// is the formatted table with the archive's own facts: Insert still passes
+  /// the Rust paste route's target checks, Retranscribe states its own
+  /// unavailability, and nothing is sent to Agent from history.
+  static func archivedIntents(for state: OverlayState) -> [OverlayIntent] {
+    if state.isRevisionDraftDirty {
+      return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
+    }
+    return recoveryIntents(for: state)
+      + (state.canUndoRetranscribe ? [.undoRetranscribe] : [])
+      + [.insertPaste, .copy, .retranscribe]
+      + (state.engine == nil ? [] : [.format])
+      + [.close]
   }
 
   /// The two commands the reducer does not project, and the only ones sourced

@@ -5,57 +5,38 @@ struct OverlayTranscriptHistory: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.locale) private var locale
   @State private var model = OverlayTranscriptHistoryModel()
-  @State private var copied = false
+  /// Why the canvas cannot take an archive right now (live take, unsaved
+  /// edit, revision in flight). Nil when opening is allowed.
+  var openRefusal: String?
+  /// Hands the archive to the overlay canvas; false when the canvas refused.
+  var onOpen: (OverlayArchivedTranscript) -> Bool = { _ in false }
+  /// Dismisses the history popover after a successful open.
+  var onOpened: () -> Void = {}
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if let selected = model.selected {
-        HStack {
-          Button("Back", systemImage: "chevron.left") { model.back() }
-          Spacer()
-          Text(date(selected), format: .dateTime.month(.abbreviated).day().hour().minute())
-            .foregroundStyle(.secondary)
+      HStack {
+        Text("Transcription history").font(.headline)
+        Spacer()
+        Button("Refresh", systemImage: "arrow.clockwise") {
+          Task { await model.load() }
         }
-        if model.reading {
-          ProgressView().frame(maxWidth: .infinity)
-        } else if let error = model.error {
-          Text(error)
-        } else if let text = model.text {
-          ScrollView {
-            Text(text)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(height: 220)
-          HStack {
-            Button(copied ? "Copied" : "Copy transcript", systemImage: "doc.on.doc") {
-              NSPasteboard.general.clearContents()
-              copied = NSPasteboard.general.setString(text, forType: .string)
-            }
-            Spacer()
-            Button("Show in Finder", systemImage: "folder") {
-              NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.path)])
-            }
-            .labelStyle(.iconOnly)
-          }
-        }
+        .labelStyle(.iconOnly)
+        .disabled(model.loading)
+      }
+      if let reason = openRefusal ?? model.error {
+        Text(reason)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("overlay-history-notice")
+      }
+      if model.loading && model.entries.isEmpty {
+        ProgressView().frame(maxWidth: .infinity)
+      } else if model.entries.isEmpty {
+        Text("No saved transcriptions yet.").foregroundStyle(.secondary)
       } else {
-        HStack {
-          Text("Transcription history").font(.headline)
-          Spacer()
-          Button("Refresh", systemImage: "arrow.clockwise") {
-            Task { await model.load() }
-          }
-          .labelStyle(.iconOnly)
-          .disabled(model.loading)
-        }
-        if model.loading && model.entries.isEmpty {
-          ProgressView().frame(maxWidth: .infinity)
-        } else if model.entries.isEmpty {
-          Text("No saved transcriptions yet.").foregroundStyle(.secondary)
-        } else {
-          historyList(model.entries)
-        }
+        historyList(model.entries)
       }
     }
     .frame(width: 260)
@@ -63,16 +44,33 @@ struct OverlayTranscriptHistory: View {
     .accessibilityIdentifier("overlay-transcription-history")
   }
 
+  private func open(_ entry: CsHistoryEntry) {
+    Task {
+      guard let archived = await model.open(entry) else { return }
+      if onOpen(archived) {
+        onOpened()
+      } else {
+        model.refuseOpen(
+          openRefusal
+            ?? String(
+              localized: "The overlay is busy. Try again when the current take is done.",
+              comment: "History entry could not be placed on the overlay canvas"))
+      }
+    }
+  }
+
   func historyList(_ entries: [TranscriptHistoryRecord]) -> some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 4) {
         ForEach(entries, id: \.path) { entry in
           Button {
-            copied = false
-            Task { await model.select(entry.entry) }
+            open(entry.entry)
           } label: {
             VStack(alignment: .leading, spacing: 4) {
               HStack(spacing: 4) {
+                if model.opening == entry.path {
+                  ProgressView().controlSize(.mini)
+                }
                 Text(date(entry.entry), format: .dateTime.month(.abbreviated).day().hour().minute())
                   .foregroundStyle(.secondary)
                 Text(
@@ -89,6 +87,9 @@ struct OverlayTranscriptHistory: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .disabled(openRefusal != nil)
+          .accessibilityHint(
+            Text("Opens this transcript on the overlay to edit, format, transcribe again or insert"))
           .accessibilityLabel(
             "\(date(entry.entry).formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(locale))), "
               + "\(Self.characterCountLabel(entry.characterCount, locale: locale)), "
