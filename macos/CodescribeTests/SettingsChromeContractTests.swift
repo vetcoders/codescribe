@@ -850,57 +850,97 @@ final class SettingsChromeContractTests: XCTestCase {
   }
 
   /// Settings → About: the app, its data and the resets, in English and in
-  /// Polish. The resets keep their safeguards; only the copy got shorter.
+  /// Polish. Everyday facts stay visible; the build details, the configuration
+  /// notice details, the template editor and both resets open on demand. The
+  /// resets keep their safeguards; only the chrome around them got quieter.
   func testAboutPaneReadsAsTheAppAndItsData() throws {
     let panel = try XCTUnwrap(try settingsSources()["UserPanel.swift"])
     XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\""))
-    XCTAssertTrue(
-      panel.contains(
-        "\"Check the Codescribe version, where your data lives and the privacy settings.\""))
-    XCTAssertTrue(panel.contains("infoRow(\"Built\", readableBuildDate)"))
-    XCTAssertTrue(panel.contains("\"Build timestamp: \\(model.buildInfo.builtAt)\""))
+    XCTAssertTrue(panel.contains("\"Codescribe version, local data and privacy.\""))
+    // One version line; commit and build date only under Version details.
+    XCTAssertTrue(panel.contains("Text(verbatim: \"Codescribe \\(model.buildInfo.version)\")"))
+    XCTAssertTrue(panel.contains("\"Build \\(model.buildInfo.build)\""))
+    XCTAssertTrue(panel.contains("@State private var showingVersionDetails = false"))
+    XCTAssertTrue(panel.contains("if showingVersionDetails {"))
+    XCTAssertTrue(panel.contains("detailRow(String(localized: \"Commit\"), model.buildInfo.commit, mono: true)"))
+    XCTAssertTrue(panel.contains("detailRow(String(localized: \"Built\"), readableBuildDate, mono: false)"))
+    XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Running build\"))"))
+    XCTAssertFalse(panel.contains("Build timestamp:"), "the raw timestamp is not a second date")
+    // The configuration notice stays visible and opens to key, effect and action.
     XCTAssertTrue(panel.contains("configRepairSummary().map(ConfigRepairNotice.init(raw:))"))
-    XCTAssertFalse(panel.contains("Text(summary)"), "the raw repair line is no longer the headline")
+    XCTAssertTrue(panel.contains("configNoticeCard(repairNotice)"))
+    XCTAssertTrue(panel.contains("notice.reviewItems(envFile: envFileDisplay)"))
+    XCTAssertTrue(panel.contains("Text(verbatim: notice.raw)"))
     XCTAssertTrue(panel.contains("String(localized: \"App data\""))
     XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
-    XCTAssertTrue(panel.contains("String(localized: \"First dictation confirmation\""))
-    XCTAssertTrue(panel.contains(".disabled(!availability.serviceEnabled)"))
-    XCTAssertTrue(panel.contains("String(localized: \"Transcript source markers\""))
-    XCTAssertTrue(panel.contains("String(localized: \"Add markers to transcripts\""))
+    XCTAssertTrue(panel.contains("(path as NSString).abbreviatingWithTildeInPath"))
+    // No switch that cannot do anything: the opt-in shows only with a live service.
+    XCTAssertTrue(panel.contains("if ActivationPingConfiguration.production.isEnabled {\n        activationPingSection"))
+    XCTAssertTrue(panel.contains("@AppStorage(ActivationPing.optInDefaultsKey)"))
+    XCTAssertFalse(panel.contains(".disabled(!availability.serviceEnabled)"))
+    // Markers: one switch, the editor closed by default, every tool kept.
+    XCTAssertTrue(panel.contains("String(localized: \"Transcript markers\""))
+    XCTAssertTrue(panel.contains("String(localized: \"Add markers to text\""))
+    XCTAssertTrue(panel.contains("\"Mark text delivered to other apps\""))
+    XCTAssertTrue(panel.contains("@State private var showingTemplate = false"))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
+    XCTAssertTrue(panel.contains("\"Edit template and preview\""))
     XCTAssertTrue(panel.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
     XCTAssertTrue(panel.contains("Button(String(localized: \"Restore default template\""))
-    XCTAssertTrue(panel.contains("\"Terms of Use and License\""))
-    XCTAssertTrue(panel.contains("\"Codescribe documentation\""))
+    XCTAssertTrue(panel.contains("model.transcriptTagTemplateWarning"))
+    XCTAssertTrue(panel.contains("Text(model.transcriptTagPreview)"))
+    XCTAssertTrue(panel.contains("String(localized: \"Information and documentation\""))
+    XCTAssertTrue(panel.contains("String(localized: \"Terms of Use\""))
+    XCTAssertTrue(panel.contains("String(localized: \"Documentation\""))
+    // Resets: one closed section, two separate actions, red only on the buttons.
+    XCTAssertTrue(panel.contains("@State private var showingResets = false"))
+    XCTAssertTrue(panel.contains("if showingResets {"))
+    XCTAssertTrue(panel.contains("Text(\"Reset data\""))
+    XCTAssertTrue(panel.contains("Text(\"Reset Agent data\""))
+    XCTAssertTrue(panel.contains("Text(\"Reset app data\""))
+    XCTAssertFalse(panel.contains("String(localized: \"Danger zone\")"))
+    XCTAssertFalse(panel.contains(".strokeBorder(CSColor.danger.opacity(0.55)"), "no red card borders")
     XCTAssertTrue(
       panel.contains(
         "\"Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)\""
       ))
+    XCTAssertTrue(
+      panel.contains("\"Also remove API keys from Keychain (not recoverable from Trash)\""))
     // Safeguards stay: typed words, both checkboxes, the alerts.
     XCTAssertTrue(panel.contains("Type \\(resetConfirmationWord) to continue"))
     XCTAssertTrue(panel.contains("Type \\(resetAgentConfirmationWord) to continue"))
     XCTAssertTrue(panel.contains("model.resetImpactDescription"))
     XCTAssertTrue(panel.contains("model.resetAgentImpactDescription"))
+    XCTAssertTrue(panel.contains(".disabled(!resetConfirmationMatches(confirmationText))"))
+    XCTAssertTrue(panel.contains(".disabled(!resetAgentConfirmationMatches(confirmationText))"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "About": "O aplikacji",
       "About the app and your data": "O aplikacji i danych",
-      "Check the Codescribe version, where your data lives and the privacy settings.":
-        "Sprawdź wersję Codescribe, lokalizację danych i ustawienia prywatności.",
-      "An outdated configuration setting was detected. It needs a review.":
-        "Wykryto przestarzałe ustawienie konfiguracji. Wymaga sprawdzenia.",
-      "Setting to review: %@": "Ustawienie do sprawdzenia: %@",
+      "Codescribe version, local data and privacy.":
+        "Wersja Codescribe, lokalne dane i prywatność.",
+      "Build %@": "Build %@",
+      "Version details": "Szczegóły wersji",
+      "The configuration needs a review": "Konfiguracja wymaga sprawdzenia",
+      "See which setting is out of date": "Zobacz, które ustawienie jest nieaktualne",
+      "Local data": "Dane lokalne",
       "App data": "Dane aplikacji",
       "Transcripts": "Transkrypcje",
-      "First dictation confirmation": "Potwierdzenie pierwszego dyktowania",
-      "Transcript source markers": "Znaczniki źródła transkrypcji",
-      "Add markers to transcripts": "Dodawaj znaczniki do transkrypcji",
+      "Transcript markers": "Znaczniki transkrypcji",
+      "Add markers to text": "Dodawaj znaczniki do tekstu",
+      "Mark text delivered to other apps": "Oznacz tekst przekazywany do innych aplikacji",
+      "Edit template and preview": "Edytuj szablon i podgląd",
       "Template preview": "Podgląd szablonu",
       "Restore default template": "Przywróć domyślny szablon",
+      "Information and documentation": "Informacje i dokumentacja",
       "Privacy Policy": "Polityka prywatności",
-      "Terms of Use and License": "Warunki korzystania i licencja",
-      "Codescribe documentation": "Dokumentacja Codescribe",
+      "Terms of Use": "Warunki korzystania",
+      "Documentation": "Dokumentacja",
+      "Reset data": "Resetowanie danych",
+      "Expand": "Rozwiń",
+      "Reset Agent data": "Resetuj dane Agenta",
+      "Reset app data": "Resetuj dane aplikacji",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
