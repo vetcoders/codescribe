@@ -277,12 +277,12 @@ extension CsPasteMode {
     case .safe:
       return String(
         localized:
-          "Pastes into a verified editable text field. Unreadable fields and terminal commands stay copied."
+          "Pastes into a verified editable text field. Unreadable fields and terminal commands go to Deferred Paste; your clipboard stays unchanged."
       )
     case .comfort:
       return String(
         localized:
-          "Pastes into a verified editable text field. Without one, the transcript is copied for you to paste."
+          "Pastes into a verified editable text field. Without one, Deferred Paste holds the transcript without changing your clipboard."
       )
     case .off:
       return String(localized: "Never pastes automatically; the transcript stays on the overlay.")

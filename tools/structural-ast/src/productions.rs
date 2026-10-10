@@ -101,15 +101,19 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
         (parse_quote!(let mut deferred_insert_shortcut = None;), "initialize shortcut"),
         (parse_quote!(let mut deferred_insert_failure = None;), "initialize failure"),
         (parse_quote!(let delivery = if decision.route == DeliveryRoute::ClipboardHold {
-            clipboard::set_clipboard(&paste_text)?;
-            OverlayPasteDelivery::CopiedToClipboard
+            self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
+                &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
         } else if focus_confirmed && preflight.can_post_events() {
-            let receipt = clipboard::paste_to_stop_target(&paste_text, &target)
-                .with_context(|| format!("{context}: failed to request paste"))?;
-            match receipt.delivery {
-                clipboard::StopPasteDelivery::Pasted => OverlayPasteDelivery::PasteRequested,
-                clipboard::StopPasteDelivery::CopiedTargetChanged => {
-                    OverlayPasteDelivery::CopiedToClipboard
+            match clipboard::paste_to_stop_target(&paste_text, &target) {
+                Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
+                    OverlayPasteDelivery::PasteRequested
+                }
+                outcome => {
+                    if let Err(error) = outcome {
+                        warn!(%error, "{context}: paste failed; arming deferred insert");
+                    }
+                    self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
+                        &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
                 }
             }
         } else {

@@ -156,6 +156,25 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             .collect();
         markers.sort();
         for marker_path in markers {
+            let Some(delivery_id) = marker_delivery_id(&marker_path) else {
+                continue;
+            };
+            // A persisted or bus-recovered ack is already final.
+            if cursor.emitted.contains(delivery_id) {
+                if cursor.known_seals.remove(delivery_id) {
+                    dirty = true;
+                }
+                continue;
+            }
+            // Bus and pending delivery proof were folded into known_seals
+            // before traversal. The marker body cannot authorize an ack alone.
+            if !cursor.known_seals.contains(delivery_id) {
+                // This counts canonical candidates lacking delivery proof.
+                stats.skipped_unproven += 1;
+                continue;
+            }
+            // Proof only permits inspection. A new marker must still pass
+            // its file, body, lease, envelope, and recipient checks.
             let Some(marker) = read_marker(&marker_path, lease, fallback_bus)? else {
                 continue;
             };
@@ -172,17 +191,6 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 if cursor.known_seals.remove(&delivery_id) {
                     dirty = true;
                 }
-                continue;
-            }
-            let pending_kind = lease
-                .pending
-                .iter()
-                .find(|pending| pending.id == delivery_id)
-                .and_then(|pending| pending.kind.as_deref());
-            let proven = matches!(pending_kind, Some("seal" | "message"))
-                || cursor.known_seals.contains(&delivery_id);
-            if !proven {
-                stats.skipped_unproven += 1;
                 continue;
             }
             let row = json!({
@@ -714,25 +722,26 @@ struct AckMarker {
     has_envelope: bool,
 }
 
+fn marker_delivery_id(path: &Path) -> Option<&str> {
+    let stem = path.file_name()?.to_str()?.strip_suffix(".json")?;
+    is_delivery_id(stem).then_some(stem)
+}
+
 fn read_marker(
     path: &Path,
     lease: &LeaseRecord,
     fallback_bus: &Path,
 ) -> io::Result<Option<AckMarker>> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(stem) = marker_delivery_id(path) else {
         return Ok(None);
     };
-    let Some(stem) = name.strip_suffix(".json") else {
-        return Ok(None);
-    };
-    if !is_delivery_id(stem) {
-        return Ok(None);
-    }
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.len() > 1 << 20 {
         return Ok(None);
     }
     let file = fs::File::open(path)?;
+    #[cfg(test)]
+    tests::MARKER_BODY_READS.with(|reads| reads.set(reads.get() + 1));
     // Keep the physical read bound inside the buffer. Serde's reader otherwise
     // turns the recurring marker scan into one file syscall for every byte.
     let value: Value = match serde_json::from_reader(BufReader::new(file.take(1 << 20))) {
@@ -893,6 +902,10 @@ fn note_spoken_reply(cursor: &mut Cursor, dirty: &mut bool, reply_id: &str) {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    thread_local! {
+        pub(super) static MARKER_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     const SEAL_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaa";
     const DRAFT_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -1179,7 +1192,8 @@ mod tests {
         );
         let stats = scan(&bridge, &bus).unwrap();
         assert_eq!(stats.appended, 0, "{stats:?}");
-        assert_eq!(stats.skipped_unproven, 1, "{stats:?}");
+        // Both filenames lack delivery proof; neither body is opened.
+        assert_eq!(stats.skipped_unproven, 2, "{stats:?}");
         assert!(ack_rows(&bus).is_empty());
     }
 
@@ -1459,5 +1473,39 @@ mod tests {
             mark.offset,
             (first_line.len() + seal_row(ROTATED_ID).len()) as u64
         );
+    }
+    #[test]
+    fn ack_scan_reads_only_new_proven_markers_and_admits_late_proof() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        for ordinal in 1..=256 {
+            let id = format!("{ordinal:024x}");
+            marker_for(&bridge, &id);
+        }
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(
+            MARKER_BODY_READS.with(|reads| reads.get()),
+            0,
+            "an unchanged scan must not open emitted or unproven marker bodies"
+        );
+        let late_id = format!("{:024x}", 128);
+        OpenOptions::new()
+            .append(true)
+            .open(&bus)
+            .unwrap()
+            .write_all(seal_row(&late_id).as_bytes())
+            .unwrap();
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 1);
+        assert_eq!(ack_rows(&bus).len(), 2);
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 0);
     }
 }

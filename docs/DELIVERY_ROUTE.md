@@ -21,10 +21,10 @@
    pasteboard, Cmd+V into the latched caret, then restore. The overlay must
    resign key first. The foreign target must then be observed as frontmost;
    Codescribe remaining frontmost is a veto. If Cmd+V cannot land, park ⌘⌥V
-   and leave the user's pasteboard alone. Two verbs leave text on the
-   pasteboard on purpose: explicit overlay **Copy**, and a **held** automatic
-   paste (`ClipboardHold`), which says so in a notification and waits for the
-   user's own ⌘V.
+   and leave the user's pasteboard alone. Only explicit **Copy** replaces the pasteboard on purpose. A held automatic paste
+   (`ClipboardHold`) arms the existing process-local Deferred Paste buffer;
+   the configured shortcut inserts it later without replacing the clipboard
+   merely because delivery was refused.
 
 ## Paste modes (`PASTE_MODE`, Founder 2026-09-25)
 
@@ -47,8 +47,8 @@ Insert is explicit intent, and still requires a confirmed editable recipient. To
   (`$ …`), a leading command word (`sudo`, `rm`, `git`, `curl`, …), or a
   chaining/substitution construct (`$(`, backticks around a command, `&&`,
   `| sh`, `; rm`, `> /path`). It leans toward holding: a false positive costs
-  one ⌘V. There is no interactive prompt in Rust; the notification is the
-  question and the user's ⌘V the only answer that pastes.
+  one press of the configured Deferred Paste shortcut (normally ⌥⌘V).
+  The notification names that shortcut; arming leaves the clipboard untouched.
 - The caret probe (`observe_paste_target`: frontmost app + focused AX
   element) runs only for an armed Orient take and can only hold that paste,
   never redirect it. With Codescribe frontmost the field is unobserved, so
@@ -551,6 +551,17 @@ Stacked on `fix/engine-routing`.
 
 ## Recipient capability and honest receipts (2026-10-09)
 
-Manual Insert, automatic paste (including Comfort), and the deferred global insertion command never post Cmd+V solely because an application is active. AXWebArea, disabled/read-only text, missing identity, and an unreadable recipient retain the text. Immediately before posting, the process and retained AX element must still match and the input must still be editable. A terminal without a positively supported input receives only a clipboard copy.
+Manual Insert, automatic paste (including Comfort), and the deferred global insertion command never post Cmd+V solely because an application is active. AXWebArea, disabled/read-only text, missing identity, and an unreadable recipient retain the text. Immediately before posting, the process and retained AX element must still match and the input must still be editable. A terminal without a positively supported input arms Deferred Paste without changing the clipboard.
 
-The clipboard transport acknowledges only posted keyboard events. `PasteRequested` projects as “Paste requested”, never “inserted”: there is no recipient acknowledgement in CGEvent. Changed/unavailable targets report a copy and leave the full text on the clipboard. No Return or navigation keys are posted.
+The clipboard transport acknowledges only posted keyboard events. `PasteRequested` projects as “Paste requested”, never “inserted”: there is no recipient acknowledgement in CGEvent. Changed/unavailable targets arm Deferred Paste. The transport checks identity before borrowing the clipboard and again before the keyboard event. If the target changes during the borrow, it restores the previous clipboard immediately, subject to the existing restore epoch. No Return or navigation keys are posted.
+
+### Startup load and ACK marker admission (2026-10-10)
+
+The ACK scan folds bus and pending-delivery proof before inspecting marker
+bodies. An already emitted delivery or a marker with no delivery proof is
+skipped before opening its file. New proven markers retain all lease, envelope
+and recipient validation. Late proof is eligible on the next scan; cursor
+recovery and exactly-once publication remain unchanged. This bounds body reads
+to new proven candidates, although directory enumeration still visits marker
+filenames. CPU and thermal acceptance require an installed-runtime comparison;
+a passing read-count regression alone does not certify temperature.

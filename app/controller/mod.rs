@@ -3461,15 +3461,27 @@ impl RecordingController {
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
         let delivery = if decision.route == DeliveryRoute::ClipboardHold {
-            clipboard::set_clipboard(&paste_text)?;
-            OverlayPasteDelivery::CopiedToClipboard
+            self.arm_or_copy_deferred_payload(
+                paste_text.clone(),
+                &config,
+                &mut deferred_insert_shortcut,
+                &mut deferred_insert_failure,
+            )?
         } else if focus_confirmed && preflight.can_post_events() {
-            let receipt = clipboard::paste_to_stop_target(&paste_text, &target)
-                .with_context(|| format!("{context}: failed to request paste"))?;
-            match receipt.delivery {
-                clipboard::StopPasteDelivery::Pasted => OverlayPasteDelivery::PasteRequested,
-                clipboard::StopPasteDelivery::CopiedTargetChanged => {
-                    OverlayPasteDelivery::CopiedToClipboard
+            match clipboard::paste_to_stop_target(&paste_text, &target) {
+                Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
+                    OverlayPasteDelivery::PasteRequested
+                }
+                outcome => {
+                    if let Err(error) = outcome {
+                        warn!(%error, "{context}: paste failed; arming deferred insert");
+                    }
+                    self.arm_or_copy_deferred_payload(
+                        paste_text.clone(),
+                        &config,
+                        &mut deferred_insert_shortcut,
+                        &mut deferred_insert_failure,
+                    )?
                 }
             }
         } else {
@@ -3524,11 +3536,10 @@ impl RecordingController {
             &config,
             |route, text, target| async move {
                 match route {
-                    DeliveryRoute::DeferredInsert => {
+                    DeliveryRoute::DeferredInsert | DeliveryRoute::ClipboardHold => {
                         self.arm_overlay_text(&text, target, Some("Codescribe".to_string()))
                             .await
                     }
-                    DeliveryRoute::ClipboardHold => Self::hold_on_clipboard(&text, target),
                     _ => {
                         self.execute_clipboard_paste(text, target, "Stop-path paste")
                             .await
@@ -3664,10 +3675,10 @@ impl RecordingController {
                         (assistive, force_ai, capture_turn, false),
                         &config,
                         |route, payload, target_app| async move {
-                            if route == DeliveryRoute::ClipboardHold {
-                                return Self::hold_on_clipboard(&payload, target_app);
-                            }
-                            if route == DeliveryRoute::DeferredInsert {
+                            if matches!(
+                                route,
+                                DeliveryRoute::ClipboardHold | DeliveryRoute::DeferredInsert
+                            ) {
                                 return self
                                     .arm_overlay_text(
                                         &payload,
@@ -3677,33 +3688,29 @@ impl RecordingController {
                                     .await;
                             }
                             let can_post = clipboard::synthetic_paste_preflight().can_post_events();
-                            let delivery = if !can_post {
-                                clipboard::set_clipboard(&payload)?;
-                                info!(
-                                    take_id,
-                                    target_readable_at_stop = stop.target.readable(),
-                                    target_readable_at_paste = false,
-                                    target_checked_at_paste = false,
-                                    "stop paste delivery receipt"
-                                );
-                                OverlayPasteDelivery::CopiedToClipboard
-                            } else {
-                                let receipt =
-                                    clipboard::paste_to_stop_target(&payload, &stop.target)?;
-                                info!(take_id,
-                                target_readable_at_stop = receipt.target_readable_at_stop,
-                                target_readable_at_paste = receipt.target_readable_at_paste,
-                                delivery = ?receipt.delivery,
-                                "stop paste delivery receipt");
-                                match receipt.delivery {
-                                    clipboard::StopPasteDelivery::Pasted => {
-                                        OverlayPasteDelivery::PasteRequested
-                                    }
-                                    clipboard::StopPasteDelivery::CopiedTargetChanged => {
-                                        OverlayPasteDelivery::CopiedToClipboard
-                                    }
+                            if !can_post {
+                                return self
+                                    .arm_overlay_text(
+                                        &payload,
+                                        target_app,
+                                        crate::os::selection::current_frontmost_app_name(),
+                                    )
+                                    .await;
+                            }
+                            let outcome = clipboard::paste_to_stop_target(&payload, &stop.target);
+                            if !matches!(outcome, Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted) {
+                                if let Err(error) = outcome {
+                                    warn!(%error, "Stop-path paste failed; arming deferred insert");
                                 }
-                            };
+                                return self
+                                    .arm_overlay_text(
+                                        &payload,
+                                        target_app,
+                                        crate::os::selection::current_frontmost_app_name(),
+                                    )
+                                    .await;
+                            }
+                            let delivery = OverlayPasteDelivery::PasteRequested;
                             Ok(OverlayPasteResult {
                                 delivery,
                                 // Automatic stop uses the retained AX identity;
@@ -4147,11 +4154,13 @@ impl RecordingController {
         let receipt_payload = payload.clone();
         let outcome = sink(decision.route, payload, latched_target).await;
         if let (Some(notice), Ok(result)) = (paste_hold_notice(decision), outcome.as_ref())
-            && result.delivery == OverlayPasteDelivery::CopiedToClipboard
+            && result.delivery == OverlayPasteDelivery::DeferredInsertArmed
         {
-            // The notice is the question the guard asks (Founder s04-036); the
-            // user's own ⌘V is the only answer that pastes.
-            helpers::announce_paste_hold(notice);
+            let guidance = result.deferred_insert_shortcut.as_deref().map_or_else(
+                || "Choose a Deferred Paste shortcut in Settings.".to_string(),
+                |shortcut| format!("Press {shortcut} in the target input to insert it."),
+            );
+            helpers::announce_paste_hold(&format!("{notice} {guidance}"));
         }
         let result = self.finish_stop_delivery(outcome, seal_refused).await;
         if let Some(presentation) = self.active_presentation.read().await.as_ref() {
@@ -4306,20 +4315,6 @@ impl RecordingController {
             *shortcut_label = Some(config.deferred_insert_shortcut.label().to_string());
         }
         Ok(OverlayPasteDelivery::DeferredInsertArmed)
-    }
-
-    /// Execute the throne's `ClipboardHold`: leave the transcript on the
-    /// pasteboard for the user's own ⌘V and post no synthetic keystroke. The
-    /// caller announces why (`paste_hold_notice`).
-    fn hold_on_clipboard(payload: &str, target_app: Option<String>) -> Result<OverlayPasteResult> {
-        clipboard::set_clipboard(payload).context("held paste: failed to write clipboard")?;
-        Ok(OverlayPasteResult {
-            delivery: OverlayPasteDelivery::CopiedToClipboard,
-            target_app_name: target_app,
-            frontmost_app_name: crate::os::selection::current_frontmost_app_name(),
-            deferred_insert_shortcut: None,
-            deferred_insert_failure: None,
-        })
     }
 
     /// Arm tagged overlay text for Paste Here. Shared by the throne's
