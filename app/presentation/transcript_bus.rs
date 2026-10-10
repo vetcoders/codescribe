@@ -496,16 +496,22 @@ fn history_entry_from_event(event: &TranscriptBusEvidenceEvent) -> Option<Docume
                 })
                 .flatten()
         });
-    let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
-        .into_iter()
-        .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
-        .map(str::to_string)
-        .unwrap_or_else(|| match event.reducer_action.as_str() {
-            "apply_ledger_decision" => "acoustic-ledger".to_string(),
-            "apply_incremental_shaping" => "light-plus".to_string(),
-            "apply_consultation_presentation" => "consultation".to_string(),
-            action => action.to_string(),
-        });
+    let provenance = [
+        "user-edit",
+        "retranscribe",
+        "formatter",
+        "light-plus",
+        "navigation",
+    ]
+    .into_iter()
+    .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
+    .map(str::to_string)
+    .unwrap_or_else(|| match event.reducer_action.as_str() {
+        "apply_ledger_decision" => "acoustic-ledger".to_string(),
+        "apply_incremental_shaping" => "light-plus".to_string(),
+        "apply_consultation_presentation" => "consultation".to_string(),
+        action => action.to_string(),
+    });
     Some(DocumentHistoryEntry {
         revision: event.reducer_revision,
         rendered_text: event.rendered_text.clone(),

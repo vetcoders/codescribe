@@ -37,6 +37,7 @@ mod helpers;
 mod hotkey_policy;
 /// Best-effort RMS frame feed for the loopback Voice Lab relay.
 mod lab_feed;
+pub(crate) mod live_archive;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -150,15 +151,16 @@ pub enum ArchivedFormatOutcome {
 }
 
 impl ArchivedFormatOutcome {
+    /// Only the formatter's status decides. An applied result equal to the
+    /// source is still one accepted attempt and becomes its own version; a
+    /// provider echo on failure reports `Failed`, never `Applied`.
     fn from_result(
-        source: &str,
+        _source: &str,
         result: codescribe_core::llm::ai_formatting::AiFormatResult,
     ) -> Self {
         use codescribe_core::llm::ai_formatting::AiFormatStatus;
         match result.status {
-            AiFormatStatus::Applied if result.text != source && !result.text.trim().is_empty() => {
-                Self::Applied(result.text)
-            }
+            AiFormatStatus::Applied if !result.text.trim().is_empty() => Self::Applied(result.text),
             AiFormatStatus::Applied | AiFormatStatus::AiNoop => Self::Unchanged,
             AiFormatStatus::Failed => Self::Failed,
             AiFormatStatus::Skipped => Self::Unavailable,
@@ -199,7 +201,7 @@ mod archived_format_outcome_tests {
     /// A failed provider hands back the cleaned input; that echo must never
     /// read as an applied archive format.
     #[test]
-    fn only_a_changed_applied_result_reaches_the_archive_canvas() {
+    fn every_applied_attempt_reaches_the_archive_canvas() {
         let source = "ala ma kota";
         assert_eq!(
             ArchivedFormatOutcome::from_result(
@@ -210,7 +212,7 @@ mod archived_format_outcome_tests {
         );
         assert_eq!(
             ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Applied)),
-            ArchivedFormatOutcome::Unchanged
+            ArchivedFormatOutcome::Applied(source.to_string())
         );
         assert_eq!(
             ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::AiNoop)),
@@ -460,16 +462,18 @@ fn observe_take_ledger(
 }
 
 /// Keep full audio independently of transcript outcome on a blocking worker.
+/// Returns the archived transcript when the take persisted spoken text: the
+/// file whose revision chain becomes the durable history of this take.
 async fn retain_session_audio(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
-) {
+) -> Option<std::path::PathBuf> {
     let lease = retainable_session_id(session_id).and_then(|id| {
         codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
     });
-    retain_session_audio_with_lease(session_id, path, transcript, lease, observer).await;
+    retain_session_audio_with_lease(session_id, path, transcript, lease, observer).await
 }
 
 async fn retain_session_audio_with_lease(
@@ -478,7 +482,7 @@ async fn retain_session_audio_with_lease(
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
     lease: Option<Arc<codescribe_core::state::history::audio_retention::CaptureLease>>,
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
-) {
+) -> Option<std::path::PathBuf> {
     use codescribe_core::state::SessionTranscriptArchive;
     let session_id = session_id.map(str::to_owned);
     let path = path.to_path_buf();
@@ -496,19 +500,28 @@ async fn retain_session_audio_with_lease(
         } else {
             SessionTranscriptArchive::NoSpeech
         };
-        retain_owned_session_audio(
+        let mut archived_transcript = None;
+        let retained = retain_owned_session_audio_linked(
             session_id.as_deref(),
             &path,
             transcript,
             &observer,
             lease.as_deref(),
-        )
+            &mut archived_transcript,
+        );
+        (retained, archived_transcript)
     })
     .await;
     match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::error!("{error:#}"),
-        Err(error) => tracing::error!(%error, "audio retention worker failed; source preserved"),
+        Ok((Ok(()), archived_transcript)) => archived_transcript,
+        Ok((Err(error), archived_transcript)) => {
+            tracing::error!("{error:#}");
+            archived_transcript
+        }
+        Err(error) => {
+            tracing::error!(%error, "audio retention worker failed; source preserved");
+            None
+        }
     }
 }
 
@@ -519,6 +532,23 @@ fn retain_owned_session_audio(
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
     lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
 ) -> Result<()> {
+    retain_owned_session_audio_linked(session_id, path, transcript, observer, lease, &mut None)
+}
+
+/// [`retain_owned_session_audio`], also naming the archived transcript when
+/// the daily archive persisted spoken text beside the audio.
+fn retain_owned_session_audio_linked(
+    session_id: Option<&str>,
+    path: &std::path::Path,
+    transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
+    lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
+    archived_transcript: &mut Option<std::path::PathBuf>,
+) -> Result<()> {
+    let spoken = matches!(
+        transcript,
+        codescribe_core::state::SessionTranscriptArchive::Committed(text) if !text.trim().is_empty()
+    );
     let root = Config::config_dir();
     let mut daily_audio = None;
     let mut daily_card = None;
@@ -543,6 +573,12 @@ fn retain_owned_session_audio(
             None => None,
         },
     );
+    if spoken {
+        *archived_transcript = daily_audio
+            .as_ref()
+            .map(|audio| audio.with_extension("txt"))
+            .filter(|transcript| transcript.is_file());
+    }
     if let Some(lease) = lease {
         if result.is_err() {
             lease.protect_retry();
@@ -1098,6 +1134,27 @@ fn recover_capture_stop_failure(
 /// overlay was showing a full formatted document (operator take 2026-09-24
 /// 08:23). No seal is claimed — the daily bag writes it as `Raw`. An empty
 /// document keeps the diagnostic-only retention.
+/// Archived transcript of the latest refused take that kept its committed
+/// words, keyed by session. The stop classifier that archives it has no
+/// controller; the controller that hands those words to the user takes it
+/// and links the take's live history to it. One slot: a newer refused take
+/// replaces an unclaimed older one.
+static REFUSED_TAKE_ARCHIVE: std::sync::Mutex<Option<(String, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
+fn take_refused_take_archive(session_id: &str) -> Option<std::path::PathBuf> {
+    let mut slot = REFUSED_TAKE_ARCHIVE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match slot.take() {
+        Some((session, path)) if session == session_id => Some(path),
+        other => {
+            *slot = other;
+            None
+        }
+    }
+}
+
 fn refused_take_archive(
     refusal: &TerminalSealRefused,
 ) -> codescribe_core::state::SessionTranscriptArchive<'_> {
@@ -1504,13 +1561,19 @@ async fn classify_terminal_stop(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        retain_session_audio(
+                        let archived = retain_session_audio(
                             session_id,
                             path,
                             refused_take_archive(&refusal),
                             &observer,
                         )
-                        .await
+                        .await;
+                        if let (Some(id), Some(archived)) = (session_id, archived) {
+                            *REFUSED_TAKE_ARCHIVE
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) =
+                                Some((id.to_string(), archived));
+                        }
                     }
                     None => warn!("refused take has no audio path to retain"),
                 }
@@ -1815,6 +1878,9 @@ pub struct RecordingController {
     /// admission immediately; no cleanup task is spawned without being tracked.
     capture_settlement: std::sync::Mutex<Option<CaptureSettlement>>,
     closed_capture_tails: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    /// The retained take's archived transcript, mirrored from the live
+    /// document history so a reopened take keeps every version.
+    live_archive: Arc<std::sync::Mutex<Option<live_archive::LiveArchiveMirror>>>,
     #[cfg(test)]
     settlement_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<CaptureSettlementStage>>>,
 
@@ -2099,6 +2165,7 @@ impl RecordingController {
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             capture_settlement: std::sync::Mutex::new(None),
             closed_capture_tails: std::sync::Mutex::new(Vec::new()),
+            live_archive: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             settlement_observer: std::sync::Mutex::new(None),
             delivery_disposition: Arc::new(RwLock::new(TranscriptDelivery::Unattempted)),
@@ -2332,14 +2399,139 @@ impl RecordingController {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no terminal transcript revision authority"))?;
-        presentation
+        let receipt = presentation
             .apply_user_revision(UserRevisionIntent {
                 session_id,
                 source_revision,
                 rendered_text,
                 provenance,
             })
-            .map_err(anyhow::Error::new)
+            .map_err(anyhow::Error::new)?;
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
+        Ok(receipt)
+    }
+
+    /// Undo, Redo or a version pick on the retained take: the reducer
+    /// re-selects an accepted step under the same session/revision CAS. No
+    /// transcription or formatting runs again.
+    pub async fn navigate_document_from_overlay(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        step: usize,
+    ) -> Result<UserRevisionCommit> {
+        if self.current_state().await != State::Idle {
+            return Err(anyhow::anyhow!(
+                "transcript navigation refused while recording is active"
+            ));
+        }
+        let presentation = self
+            .active_presentation
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no terminal transcript revision authority"))?;
+        let receipt = presentation
+            .navigate_document(session_id, source_revision, step)
+            .map_err(anyhow::Error::new)?;
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
+        Ok(receipt)
+    }
+
+    /// Why the versions of `session_id` are no longer saved to its archived
+    /// transcript, when the mirror stopped. Shown with the versions control.
+    pub fn live_archive_refusal(&self, session_id: &str) -> Option<String> {
+        self.live_archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|mirror| mirror.session_id() == session_id)
+            .and_then(|mirror| mirror.diverged().map(str::to_owned))
+    }
+
+    /// Accepted steps of the retained take with the selected one and the
+    /// revision a navigation names. No retained take reads as no history.
+    pub async fn document_versions(
+        &self,
+        session_id: &str,
+    ) -> (u64, crate::presentation::emitter::DocumentTimeline) {
+        match self.active_presentation.read().await.clone() {
+            Some(presentation) => presentation.document_timeline(session_id),
+            None => (0, Default::default()),
+        }
+    }
+
+    /// Link the take just archived at Stop to its live history and write
+    /// what the history already holds. A take without spoken text has no
+    /// archived transcript and keeps no link; a new link replaces the last.
+    async fn link_live_archive(
+        &self,
+        session_id: Option<&str>,
+        transcript: Option<std::path::PathBuf>,
+    ) {
+        let (Some(session_id), Some(transcript)) = (session_id, transcript) else {
+            return;
+        };
+        let Some(presentation) = self.active_presentation.read().await.clone() else {
+            warn!("archived take has no live document history to keep");
+            return;
+        };
+        // The archived bytes are the version selected at Stop. A take with no
+        // operation yet has no steps: the reducer anchors its committed
+        // document as step 0 on the first operation, and that step is the
+        // archived original. Mapped once, by position, never by text.
+        let (_, timeline) = presentation.document_timeline(session_id);
+        let archived_step = if timeline.steps().is_empty() {
+            0
+        } else {
+            timeline.cursor()
+        };
+        *self
+            .live_archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(live_archive::LiveArchiveMirror::link(
+                session_id.to_string(),
+                transcript,
+                archived_step,
+            ));
+        self.sync_live_archive(&presentation, session_id).await;
+    }
+
+    /// Admit the live history of `session_id` to its archived transcript.
+    /// Runs after every accepted operation and cursor move. The timeline is
+    /// read under the mirror lock, so syncs apply in reducer order. A refusal
+    /// stops the mirror and is reported; the live take is never undone.
+    async fn sync_live_archive(&self, presentation: &Arc<PresentationEmitter>, session_id: &str) {
+        let mirror = Arc::clone(&self.live_archive);
+        let presentation = Arc::clone(presentation);
+        let session_id = session_id.to_string();
+        let synced = tokio::task::spawn_blocking(move || {
+            let mut mirror = mirror.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(mirror) = mirror
+                .as_mut()
+                .filter(|mirror| mirror.session_id() == session_id)
+            else {
+                return Ok(());
+            };
+            let (_, timeline) = presentation.document_timeline(&session_id);
+            mirror
+                .sync(timeline.steps(), timeline.cursor())
+                .with_context(|| {
+                    format!(
+                        "versions of this take are no longer saved to {}",
+                        mirror.transcript().display()
+                    )
+                })
+        })
+        .await;
+        match synced {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => error!("{error:#}"),
+            Err(error) => error!(%error, "live history archive worker failed"),
+        }
     }
 
     /// Format the exact retained terminal document through the production
@@ -2404,6 +2596,8 @@ impl RecordingController {
             .apply_formatter_revision(session_id, source_revision, format_level, result)
             .map_err(anyhow::Error::new)?;
         log_formatter_revision(&receipt, format_level, level_source);
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
         Ok(receipt)
     }
 
@@ -4061,6 +4255,10 @@ impl RecordingController {
                 "terminal refusal has no matching authenticated Bus document"
             ));
         }
+        // The retained words are this take's document: the user can revise
+        // them like any take, so their versions keep the same durable history.
+        let archived = take_refused_take_archive(refusal.finality.session_id());
+        self.link_live_archive(take_id.as_deref(), archived).await;
         match deliver(refusal.committed_text.clone()).await {
             Ok(_) => Ok(ProcessRecordingOutcome {
                 transcript_present: true,
@@ -6515,7 +6713,7 @@ impl RecordingController {
                 self.select_paste_projection(streaming_text).await
             } else { streaming_text };
             if let Some(path) = raw_audio_path_opt.as_deref() {
-                retain_session_audio(
+                let archived = retain_session_audio(
                     session_id_snapshot.as_deref(),
                     path,
                     codescribe_core::state::SessionTranscriptArchive::from_committed(
@@ -6523,6 +6721,8 @@ impl RecordingController {
                     ),
                     &observer,
                 ).await;
+                self.link_live_archive(session_id_snapshot.as_deref(), archived)
+                    .await;
             }
             let settled = initial_delivery?;
             deliver_terminal_unless_settled(settled, || async {
@@ -7174,7 +7374,7 @@ impl RecordingController {
         };
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
-            retain_session_audio(
+            let archived = retain_session_audio(
                 take_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::from_committed(
@@ -7183,6 +7383,7 @@ impl RecordingController {
                 &observer,
             )
             .await;
+            self.link_live_archive(take_id.as_deref(), archived).await;
         }
         // Ctrl-hold literal (`force_raw`) and the hold flavour are sink-time
         // facts already consumed when the emitter was built; delivery reads

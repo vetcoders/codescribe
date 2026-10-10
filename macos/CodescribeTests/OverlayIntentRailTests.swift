@@ -620,14 +620,13 @@ final class OverlayIntentRailTests: XCTestCase {
   }
 
   func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
-    // Undo format and undo retranscribe are the same action on alternative
-    // archive heads. They never coexist and deliberately share the Undo icon.
-    XCTAssertEqual(OverlayIntent.undoFormat.systemImage, OverlayIntent.undoRetranscribe.systemImage)
+    XCTAssertNotEqual(OverlayIntent.undo.systemImage, OverlayIntent.redo.systemImage)
     // Other cases over-approximate co-visibility. Close is a custom brand dot.
     let symbols =
-      OverlayIntent.allCases.filter { $0 != .close && $0 != .undoFormat }.map(\.systemImage)
+      OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
-        OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
+        OverlayControlSymbols.history, OverlayControlSymbols.versions,
+        OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
         OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
         OverlayControlSymbols.returnToMini, "pin.fill",
@@ -695,7 +694,7 @@ final class OverlayIntentRailTests: XCTestCase {
 
     await fulfillment(of: [reached], timeout: 0.2)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertEqual(state.toast, "retranscribed — Back keeps the old text")
+    XCTAssertEqual(state.toast, "retranscribed")
   }
 
   func testMissingEngineSurfacesCopyAndInsertFailuresOnCanvas() {

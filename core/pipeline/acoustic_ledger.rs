@@ -3880,7 +3880,10 @@ impl AcousticLedger {
                 && Some(owner.capture_epoch) == receipt.capture_epoch
                 && Some(&owner.receipt_id) == receipt.capture_receipt_id.as_ref()
                 && receipt.source_seal_receipts.is_empty()
-                && matches!(receipt.provenance.as_str(), "user-edit" | "retranscribe")
+                && matches!(
+                    receipt.provenance.as_str(),
+                    "user-edit" | "retranscribe" | "navigation"
+                )
         })
     }
 
@@ -3912,7 +3915,9 @@ impl AcousticLedger {
         let capture = if source_occurrences.is_empty() {
             if !matches!(
                 provenance,
-                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+                DocumentRevisionProvenance::UserEdit
+                    | DocumentRevisionProvenance::Retranscribe
+                    | DocumentRevisionProvenance::Navigation
             ) {
                 return Err("manual_document_explicit_intent_required");
             }
@@ -5062,6 +5067,9 @@ pub enum DocumentRevisionProvenance {
     /// Deterministic Light+ sentence shaping minted by Rust at the terminal
     /// seal, before any formatter or user edit sees the document.
     LightPlus,
+    /// Undo, redo or a version pick: the reducer re-selects bytes it already
+    /// accepted. A receipt for the move, never a new accepted operation.
+    Navigation,
 }
 
 impl DocumentRevisionProvenance {
@@ -5072,6 +5080,7 @@ impl DocumentRevisionProvenance {
             Self::Retranscribe => "retranscribe",
             Self::Formatter => "formatter",
             Self::LightPlus => "light-plus",
+            Self::Navigation => "navigation",
         }
     }
 }

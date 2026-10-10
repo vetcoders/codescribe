@@ -564,13 +564,39 @@ buffer. It may follow `session_ended` because microphone lifecycle is already
 closed. Replay accepts that terminal revision only for the just-ended session;
 once a newer session is active, an older edit cannot displace it.
 
-The Format dock command is the sibling route, not a second reducer. Rust reads
-the exact current terminal document under the same `session_id + source_revision` CAS, runs `format_text_with_status_for_policy`, and admits only
-an `Applied` result through `TranscriptReducer::apply_user_revision`. Its
-`ManualDocumentRevisionReceipt` uses `provenance=formatter` and a
-`formatter-*` receipt; the resulting Bus projection is the only canvas repaint.
-`Failed`, `Skipped`, and `AiNoop` results return a visible refusal to Swift and
-append no ledger, Bus, history, delivery-buffer, or Copy-last state.
+The Format dock command enters the same ledger-before-reducer commit corridor.
+Rust reads the selected terminal document under `session_id + source_revision`
+CAS, runs `format_text_with_status_for_policy`, and accepts an `Applied` result
+as a derived presentation over unchanged acoustic text. Acceptance mints a
+`navigation` document receipt, advances the CAS revision, and publishes the
+formatter presentation over that new revision. A second result naming the old
+revision is stale. `Failed`, `Skipped`, and `AiNoop` results add no accepted
+version; diagnostic evidence may remain.
+
+### Linear transcript versions
+
+The reducer owns ordered accepted steps and one selected cursor. The first
+explicit operation anchors the existing document once. Each accepted edit,
+retranscription or formatting result appends one step, including an identical
+successful retranscription or formatter output. Three retranscriptions and one
+format therefore offer four Undo steps and four Redo steps. Navigation selects
+saved bytes without rerunning recognition or formatting and does not append an
+attempt. A new accepted operation after Undo discards the forward branch;
+a refused or stale operation leaves it intact. Swift projects these steps and
+blocks navigation while another document operation or an unsaved edit is pending.
+
+The retained take mirrors these steps and cursor into its existing transcript
+archive revision chain. Raw transcript and audio stay unchanged. Archived takes
+use that same chain for navigation; selecting a take from History opens its
+selected version on the overlay canvas with the normal actions. Retranscription
+requires retained audio; formatting operates on text. The Previous take menu
+continues to mean a retained superseded draft, not transcript versions.
+
+Archive writes use the current chain head as CAS. A conflicting external write
+or I/O failure preserves the existing archive and reports an unsaved-history
+reason, including when projection delivery finishes before the operation ACK.
+Live acceptance alone is not proof that a version was saved. A diverged live
+mirror stops writing rather than merging concurrent archive edits.
 
 Controller-authenticated context captures enter the same presentation reducer
 as `RecordContextMarker` actions (`record_context_marker` on the Bus). The

@@ -350,8 +350,15 @@ pub enum ArchiveRevisionProvenance {
     UserEdit,
     Formatter,
     Retranscribe,
-    /// An earlier version restored as a new revision (undo).
+    /// An earlier version restored as a new revision. Legacy records stay
+    /// readable and count as an operation; new writes use `Navigate`.
     Restore,
+    /// Undo, redo or a version pick: the cursor moves to an accepted step.
+    /// A receipt for the move, never a new step.
+    Navigate,
+    /// The take's own document as the live reducer accepted it (Raw or
+    /// Light+), admitted from the live history of the same take.
+    Transcript,
 }
 
 impl ArchiveRevisionProvenance {
@@ -361,6 +368,8 @@ impl ArchiveRevisionProvenance {
             Self::Formatter => "formatter",
             Self::Retranscribe => "retranscribe",
             Self::Restore => "restore",
+            Self::Navigate => "navigate",
+            Self::Transcript => "transcript",
         }
     }
 }
@@ -385,6 +394,12 @@ pub struct ArchiveRevision {
     /// Formatter level or retranscription pass, for provenance display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// A version the live take accepted before the bytes that were archived
+    /// (Raw behind an auto-format delivered at Stop). Replay places it before
+    /// the original, in record order; only a chain with no other record may
+    /// admit one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub precedes_original: bool,
 }
 
 /// An archived transcript with its revision chain.
@@ -406,10 +421,12 @@ impl ArchivedDocument {
         self.revisions.last()
     }
 
+    /// Text of the selected version: what the canvas shows, Copy/Insert/Send
+    /// deliver and Format reads.
     pub fn head_text(&self) -> &str {
-        self.head().map_or(self.original_text.as_str(), |revision| {
-            revision.rendered_text.as_str()
-        })
+        let selected = self.timeline().selected_revision();
+        self.text_at(selected)
+            .unwrap_or(self.original_text.as_str())
     }
 
     pub fn text_at(&self, revision: u64) -> Option<&str> {
@@ -422,17 +439,84 @@ impl ArchivedDocument {
             .map(|entry| entry.rendered_text.as_str())
     }
 
-    /// The version an undo restores: what the latest format or
-    /// retranscription replaced. Edits and restores have no undo here.
-    pub fn undo_revision(&self) -> Option<u64> {
-        self.head()
-            .filter(|head| {
-                matches!(
-                    head.provenance,
-                    ArchiveRevisionProvenance::Formatter | ArchiveRevisionProvenance::Retranscribe
-                )
-            })
-            .map(|head| head.source_revision)
+    /// Replay the chain as one linear history: the original and every
+    /// accepted operation, with the selected step. An operation after an undo
+    /// ends the abandoned redo branch; a navigation only moves the cursor.
+    /// Equal texts stay separate steps: each is an attempt the user made.
+    pub fn timeline(&self) -> ArchiveTimeline {
+        let step = |record: &ArchiveRevision| ArchiveStep {
+            revision: record.revision,
+            provenance: record.provenance.as_str().to_string(),
+            detail: record.detail.clone(),
+            rendered_text: record.rendered_text.clone(),
+            emitted_at: record.emitted_at.clone(),
+            receipt_id: record.receipt_id.clone(),
+        };
+        // Versions the live take accepted before the archived bytes lead the
+        // history; the writer admits them only into an otherwise empty chain.
+        let priors = self
+            .revisions
+            .iter()
+            .take_while(|record| record.precedes_original)
+            .count();
+        let mut steps = self.revisions[..priors]
+            .iter()
+            .map(step)
+            .collect::<Vec<_>>();
+        steps.push(ArchiveStep {
+            revision: 0,
+            provenance: "original".to_string(),
+            detail: None,
+            rendered_text: self.original_text.clone(),
+            emitted_at: String::new(),
+            receipt_id: String::new(),
+        });
+        let mut cursor = steps.len() - 1;
+        for record in &self.revisions[priors..] {
+            if record.provenance == ArchiveRevisionProvenance::Navigate {
+                if let Some(target) = record
+                    .restored_revision
+                    .and_then(|target| steps.iter().position(|step| step.revision == target))
+                {
+                    cursor = target;
+                }
+                continue;
+            }
+            steps.truncate(cursor + 1);
+            steps.push(step(record));
+            cursor = steps.len() - 1;
+        }
+        ArchiveTimeline { steps, cursor }
+    }
+}
+
+/// One accepted step of an archived transcript. `revision` is the chain
+/// record that accepted it (0 for the archived original): its identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveStep {
+    pub revision: u64,
+    pub provenance: String,
+    pub detail: Option<String>,
+    pub rendered_text: String,
+    pub emitted_at: String,
+    pub receipt_id: String,
+}
+
+/// The replayed linear history of an archived transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveTimeline {
+    pub steps: Vec<ArchiveStep>,
+    pub cursor: usize,
+}
+
+impl ArchiveTimeline {
+    pub fn selected(&self) -> Option<&ArchiveStep> {
+        self.steps.get(self.cursor)
+    }
+
+    /// Chain revision of the selected version (0 is the archived original).
+    pub fn selected_revision(&self) -> u64 {
+        self.selected().map_or(0, |step| step.revision)
     }
 }
 
@@ -557,6 +641,7 @@ struct PlannedRevision {
     rendered_text: String,
     restored_revision: Option<u64>,
     detail: Option<String>,
+    precedes_original: bool,
 }
 
 /// Accept one revision under the exclusive directory lease: validate the raw
@@ -582,6 +667,7 @@ fn accept_archived_revision(
             rendered_text,
             restored_revision,
             detail,
+            precedes_original,
         } = plan(&document)?;
         let revision = ArchiveRevision {
             schema: ARCHIVE_REVISION_SCHEMA.to_string(),
@@ -596,6 +682,7 @@ fn accept_archived_revision(
             evidence_sha256: evidence_digest(&document.original_text),
             restored_revision,
             detail,
+            precedes_original,
         };
         let mut contents = chain[..accepted_len].to_vec();
         contents.extend_from_slice(&serde_json::to_vec(&revision)?);
@@ -622,16 +709,25 @@ pub fn commit_archived_revision(
     detail: Option<String>,
 ) -> Result<ArchiveRevision> {
     anyhow::ensure!(
-        provenance != ArchiveRevisionProvenance::Restore,
-        "a restore names the version it restores"
+        !matches!(
+            provenance,
+            ArchiveRevisionProvenance::Restore
+                | ArchiveRevisionProvenance::Navigate
+                | ArchiveRevisionProvenance::Transcript
+        ),
+        "a navigation names the version it selects; a live document enters by admission"
     );
     anyhow::ensure!(
         !rendered_text.trim().is_empty(),
         "A transcript revision cannot be empty"
     );
     accept_archived_revision(transcript, source_revision, |document| {
+        // A format or a retranscription is an attempt even when its bytes
+        // repeat the selected version; only a hand edit that changes nothing
+        // is no revision.
         anyhow::ensure!(
-            document.head_text() != rendered_text,
+            provenance != ArchiveRevisionProvenance::UserEdit
+                || document.head_text() != rendered_text,
             "the revision does not change the transcript"
         );
         Ok(PlannedRevision {
@@ -639,34 +735,84 @@ pub fn commit_archived_revision(
             rendered_text: rendered_text.to_string(),
             restored_revision: None,
             detail,
+            precedes_original: false,
         })
     })
 }
 
-/// Restore an earlier version of an archived transcript as a new revision.
-pub fn restore_archived_revision(
+/// Admit one version the live reducer already accepted for the take this
+/// archive holds. The live history stays the authority while the take is
+/// current; this is its durable record, written through the same head CAS
+/// and evidence binding as every other revision, so a reopened take replays
+/// the same versions after the next take or a restart.
+///
+/// `precedes_original` admits a version accepted before the archived bytes
+/// (Raw behind an auto-format delivered at Stop); it is refused once the
+/// chain holds anything but such versions. Equal bytes are never refused:
+/// each live step is one accepted attempt.
+pub fn admit_live_revision(
     transcript: &Path,
     source_revision: u64,
-    restore_revision: u64,
+    rendered_text: &str,
+    provenance: ArchiveRevisionProvenance,
+    detail: Option<String>,
+    precedes_original: bool,
 ) -> Result<ArchiveRevision> {
     anyhow::ensure!(
-        restore_revision < source_revision,
-        "only an earlier version can be restored"
+        !matches!(
+            provenance,
+            ArchiveRevisionProvenance::Restore | ArchiveRevisionProvenance::Navigate
+        ),
+        "a live navigation is admitted as a navigation"
+    );
+    anyhow::ensure!(
+        !rendered_text.trim().is_empty(),
+        "A transcript revision cannot be empty"
     );
     accept_archived_revision(transcript, source_revision, |document| {
-        let restored = document
-            .text_at(restore_revision)
-            .context("restored version is not in this transcript's history")?
-            .to_string();
         anyhow::ensure!(
-            restored != document.head_text(),
-            "the restored version matches the current transcript"
+            !precedes_original
+                || document
+                    .revisions
+                    .iter()
+                    .all(|record| record.precedes_original),
+            "a version before the original can only lead an unrevised chain"
         );
         Ok(PlannedRevision {
-            provenance: ArchiveRevisionProvenance::Restore,
-            rendered_text: restored,
-            restored_revision: Some(restore_revision),
+            provenance,
+            rendered_text: rendered_text.to_string(),
+            restored_revision: None,
+            detail,
+            precedes_original,
+        })
+    })
+}
+
+/// Undo, redo or pick a version of an archived transcript: select the
+/// accepted step `target_revision` names. Appends one navigation receipt;
+/// no step is added and no text is produced again.
+pub fn navigate_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    target_revision: u64,
+) -> Result<ArchiveRevision> {
+    accept_archived_revision(transcript, source_revision, |document| {
+        let timeline = document.timeline();
+        let target = timeline
+            .steps
+            .iter()
+            .position(|step| step.revision == target_revision)
+            .context("selected version is not in this transcript's history")?;
+        anyhow::ensure!(
+            target != timeline.cursor,
+            "the selected version is already shown"
+        );
+        Ok(PlannedRevision {
+            provenance: ArchiveRevisionProvenance::Navigate,
+            rendered_text: timeline.steps[target].rendered_text.clone(),
+            restored_revision: Some(target_revision),
             detail: None,
+            precedes_original: false,
         })
     })
 }
@@ -2873,7 +3019,8 @@ mod archive_revision_integration_tests {
             reopened.text_at(0),
             Some(std::str::from_utf8(&raw).unwrap())
         );
-        assert_eq!(reopened.undo_revision(), Some(0));
+        assert_eq!(reopened.timeline().cursor, 1);
+        assert_eq!(reopened.timeline().steps[0].revision, 0);
         assert!(
             commit_archived_revision(
                 &path,
@@ -2884,7 +3031,7 @@ mod archive_revision_integration_tests {
             )
             .is_err()
         );
-        let restored = restore_archived_revision(&path, 1, 0).unwrap();
+        let restored = navigate_archived_revision(&path, 1, 0).unwrap();
         assert_eq!(restored.revision, 2);
         assert_eq!(restored.restored_revision, Some(0));
         assert_eq!(
@@ -3189,3 +3336,7 @@ mod archive_revision_integration_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "history_linear_tests.rs"]
+mod archive_linear_navigation_tests;

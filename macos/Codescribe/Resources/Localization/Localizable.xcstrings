@@ -5488,17 +5488,6 @@
         }
       }
     },
-    "Couldn't restore transcript version: %@" : {
-      "comment" : "The placeholder is the engine's own failure text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się przywrócić wersji transkrypcji: %@"
-          }
-        }
-      }
-    },
     "Couldn't save overlay preference" : {
       "localizations" : {
         "pl" : {
@@ -5578,28 +5567,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ponowna transkrypcja nie powiodła się."
-          }
-        }
-      }
-    },
-    "Couldn't undo retranscribe: %@" : {
-      "comment" : "The placeholder is the engine's own failure text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się cofnąć ponownej transkrypcji: %@"
-          }
-        }
-      }
-    },
-    "Couldn't undo: %@" : {
-      "comment" : "The placeholder is the engine's own failure text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się cofnąć: %@"
           }
         }
       }
@@ -12388,26 +12355,6 @@
         }
       }
     },
-    "Restores the transcript this format replaced, as a new revision" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywraca transkrypcję sprzed formatowania jako nową wersję"
-          }
-        }
-      }
-    },
-    "Restores the transcript this retranscribe replaced, as a new revision" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywraca jako nową wersję transkrypcję zastąpioną podczas ponownej transkrypcji"
-          }
-        }
-      }
-    },
     "Retranscribe" : {
       "localizations" : {
         "pl" : {
@@ -15187,16 +15134,6 @@
         }
       }
     },
-    "The retranscribed take is no longer current" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ponownie transkrybowane nagranie nie jest już bieżące"
-          }
-        }
-      }
-    },
     "The selected model cannot be removed." : {
       "comment" : "Whisper tab storage row: why Remove is disabled",
       "localizations" : {
@@ -15706,16 +15643,6 @@
         }
       }
     },
-    "Transcript restore receipt was inconsistent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się potwierdzić poprawności przywróconej wersji transkrypcji."
-          }
-        }
-      }
-    },
     "Transcript revision authority is unavailable" : {
       "localizations" : {
         "pl" : {
@@ -15974,16 +15901,6 @@
         }
       }
     },
-    "Undo format" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cofnij formatowanie"
-          }
-        }
-      }
-    },
     "Undo needs the recording engine" : {
       "localizations" : {
         "pl" : {
@@ -16000,16 +15917,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Cofnij usunięcie"
-          }
-        }
-      }
-    },
-    "Undo retranscribe" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cofnij ponowną transkrypcję"
           }
         }
       }
@@ -16299,6 +16206,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wersja %llu"
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: %@" : {
+      "comment" : "The placeholder is the archive's own refusal text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: %@"
           }
         }
       }
@@ -17679,16 +17597,6 @@
         }
       }
     },
-    "format undone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "cofnięto formatowanie"
-          }
-        }
-      }
-    },
     "formatted" : {
       "localizations" : {
         "pl" : {
@@ -18563,16 +18471,6 @@
         }
       }
     },
-    "nothing to undo" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "brak zmian do cofnięcia"
-          }
-        }
-      }
-    },
     "now" : {
       "comment" : "Timestamp of a thread or message created just now",
       "localizations" : {
@@ -18612,6 +18510,78 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "otwórz Ustawienia systemowe"
+          }
+        }
+      }
+    },
+    "overlay.intent.redo" : {
+      "comment" : "Overlay Redo control",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Redo"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponów"
+          }
+        }
+      }
+    },
+    "overlay.intent.redo.hint" : {
+      "comment" : "Overlay Redo accessibility hint",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Shows the next version again without running anything"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuje następną wersję bez ponownego uruchamiania czegokolwiek"
+          }
+        }
+      }
+    },
+    "overlay.intent.undo" : {
+      "comment" : "Overlay Undo control",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Undo"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij"
+          }
+        }
+      }
+    },
+    "overlay.intent.undo.hint" : {
+      "comment" : "Overlay Undo accessibility hint",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Shows the previous version again without running anything"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuje poprzednią wersję bez ponownego uruchamiania czegokolwiek"
           }
         }
       }
@@ -18666,6 +18636,492 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalnie"
+          }
+        }
+      }
+    },
+    "overlay.versions.action.edit" : {
+      "comment" : "Undo/Redo tooltip object: a hand edit of the transcript",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "edit"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "edycję"
+          }
+        }
+      }
+    },
+    "overlay.versions.action.format" : {
+      "comment" : "Undo/Redo tooltip object: an AI format",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "format"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "formatowanie"
+          }
+        }
+      }
+    },
+    "overlay.versions.action.formatLevel" : {
+      "comment" : "Undo/Redo tooltip object: an AI format; the placeholder is the level",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "format (%@)"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "formatowanie (%@)"
+          }
+        }
+      }
+    },
+    "overlay.versions.action.retranscribe" : {
+      "comment" : "Undo/Redo tooltip object: a new transcription of the same audio",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "retranscription"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ponowną transkrypcję"
+          }
+        }
+      }
+    },
+    "overlay.versions.action.transcript" : {
+      "comment" : "Undo/Redo tooltip object: the first transcript of the take",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "transcript"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "transkrypcję"
+          }
+        }
+      }
+    },
+    "overlay.versions.blocked.dirty" : {
+      "comment" : "Versions control while the canvas holds an unsaved edit",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Save or discard your edit before choosing a version."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisz lub odrzuć edycję, zanim wybierzesz wersję."
+          }
+        }
+      }
+    },
+    "overlay.versions.blocked.pending" : {
+      "comment" : "Versions control while a revision, format or restore runs",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Wait for the current change to finish."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poczekaj, aż bieżąca zmiana się zakończy."
+          }
+        }
+      }
+    },
+    "overlay.versions.control" : {
+      "comment" : "Overlay control listing the versions of the take on the canvas",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcript versions"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje transkryptu"
+          }
+        }
+      }
+    },
+    "overlay.versions.control.current" : {
+      "comment" : "Overlay control title; the placeholder names the version on the canvas",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcript versions · shown: %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje transkryptu · widoczna: %@"
+          }
+        }
+      }
+    },
+    "overlay.versions.current" : {
+      "comment" : "Accessibility value of the version the canvas shows",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Current version"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bieżąca wersja"
+          }
+        }
+      }
+    },
+    "overlay.versions.error.navigate" : {
+      "comment" : "Undo/Redo/version pick failed; the placeholder is the engine's own text",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Couldn't change the transcript version: %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić wersji transkrypcji: %@"
+          }
+        }
+      }
+    },
+    "overlay.versions.error.receipt" : {
+      "comment" : "Undo/Redo/version pick answered with a receipt for another document",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The transcript version change was not confirmed."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmiana wersji transkrypcji nie została potwierdzona."
+          }
+        }
+      }
+    },
+    "overlay.versions.footer.linear" : {
+      "comment" : "Versions list footer: selection moves the cursor, a new change ends redo",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Choosing a version works like Undo and Redo. A new change after it replaces the versions above it."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybór wersji działa jak Cofnij i Ponów. Nowa zmiana po nim zastępuje wersje powyżej."
+          }
+        }
+      }
+    },
+    "overlay.versions.redo.action" : {
+      "comment" : "Redo tooltip; the placeholder names the operation brought back",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Redo %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponów %@"
+          }
+        }
+      }
+    },
+    "overlay.versions.redo.none" : {
+      "comment" : "Disabled Redo: the transcript shows its newest version",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Nothing to redo"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma czego ponowić"
+          }
+        }
+      }
+    },
+    "overlay.versions.selectHint" : {
+      "comment" : "Accessibility hint of a version that can be chosen",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Shows this version without running anything again"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuje tę wersję bez ponownego uruchamiania czegokolwiek"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.edited" : {
+      "comment" : "Transcript version the user edited by hand",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Edited"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edytowana"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.formatted" : {
+      "comment" : "Transcript version produced by AI formatting",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatted"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sformatowana"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.formattedLevel" : {
+      "comment" : "Transcript version produced by AI formatting; the placeholder is the level",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatted · %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sformatowana · %@"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.lightPlus" : {
+      "comment" : "Transcript version cleaned up live by Light+ during transcription",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Light+"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Light+"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.original" : {
+      "comment" : "The transcript as it was saved to history, before any later change",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Saved transcript"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisana transkrypcja"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.other" : {
+      "comment" : "Transcript version whose origin the history does not name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Earlier version"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wcześniejsza wersja"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.raw" : {
+      "comment" : "Transcript version straight from transcription, before formatting",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Raw"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surowa"
+          }
+        }
+      }
+    },
+    "overlay.versions.source.retranscribed" : {
+      "comment" : "Transcript version from a new transcription of the same audio",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcribed again"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponowna transkrypcja"
+          }
+        }
+      }
+    },
+    "overlay.versions.title" : {
+      "comment" : "Header of the versions list for the take on the overlay canvas",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Versions of this transcript"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego transkryptu"
+          }
+        }
+      }
+    },
+    "overlay.versions.undo.action" : {
+      "comment" : "Undo tooltip; the placeholder names the operation taken back",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Undo %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij %@"
+          }
+        }
+      }
+    },
+    "overlay.versions.undo.none" : {
+      "comment" : "Disabled Undo: the transcript shows its first version",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Nothing to undo"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma czego cofnąć"
           }
         }
       }
@@ -18835,32 +19291,12 @@
         }
       }
     },
-    "retranscribe undone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "cofnięto ponowną transkrypcję"
-          }
-        }
-      }
-    },
     "retranscribed" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "transkrybowano ponownie"
-          }
-        }
-      }
-    },
-    "retranscribed — Back keeps the old text" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "transkrybowano ponownie — „Wstecz” zachowuje poprzedni tekst"
           }
         }
       }
