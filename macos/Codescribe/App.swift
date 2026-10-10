@@ -382,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
     let trayToggles = config.trayToggles()
-    NSApp.setActivationPolicy(trayToggles.showDockIcon ? .regular : .accessory)
+    DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
 
     do {
       let runtime = try startApplicationRuntime()
@@ -506,7 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let priorPolicy = NSApp.activationPolicy()
     if priorPolicy == .accessory {
-      NSApp.setActivationPolicy(.regular)
+      DockPresence.apply(showDockIcon: true)
     }
     NSApp.activate(ignoringOtherApps: true)
     Task { @MainActor [weak self] in
@@ -515,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
         if !self.config.trayToggles().showDockIcon {
-          NSApp.setActivationPolicy(.accessory)
+          DockPresence.apply(showDockIcon: false)
         }
       }
       appLogger.info(
@@ -976,6 +976,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // `orderFrontRegardless` is actually visible during voice delivery.
     window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     window.center()
+    DockPresence.adopt(window)
     agentWindow = window
     return window
   }
