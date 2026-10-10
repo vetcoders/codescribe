@@ -4,6 +4,14 @@ mod pipeline {
     pub use codescribe_core::pipeline::acoustic_ledger;
 }
 
+// The source contract includes the same admission gate as the live module.
+// Compile it here so its crate-visible predicates keep their production visibility.
+#[path = "../quality/lexicon_gate.rs"]
+pub(crate) mod lexicon_gate;
+mod quality {
+    pub(crate) use super::lexicon_gate;
+}
+
 #[path = "../pipeline/streaming/live_lexicon.rs"]
 mod live_lexicon;
 
