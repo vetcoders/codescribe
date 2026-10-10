@@ -1368,7 +1368,7 @@ final class OverlayState {
   /// in the existing unread inventory and must not bump the capture's focus
   /// revision out from under `followDictationCapturePresentation`.
   private var activeCaptureOwnsPresentation: Bool {
-    recording || warmingUp || transcribing
+    recording || warmingUp || transcribing || channelAudioCaptureActive
   }
 
   /// The mounted composer reports focus and typing into presentation metadata.
@@ -1612,6 +1612,9 @@ final class OverlayState {
     if wasCapturingAudio != audioCaptureActive {
       levelMeter.reset()
       hasMeasuredAudioLevel = false
+      // Agent capture has its own controller roster, not the dictation
+      // lifecycle. Opening holds the canvas; closing starts a fresh idle interval.
+      noteAutoCollapseActivity()
     }
     if let pending = pendingChannelConversation,
       !snapshot.contains(where: {
