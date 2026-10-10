@@ -273,13 +273,14 @@ impl CsArchivedDocument {
             original_text: document.original_text.clone(),
             revision: document.head_revision(),
             rendered_text: document.head_text().to_string(),
-            provenance: document
-                .head()
-                .map_or("original", |head| head.provenance.as_str())
-                .to_string(),
-            receipt_id: document
-                .head()
-                .map(|head| head.receipt_id.clone())
+            // The selected version names itself; a navigation receipt at the
+            // chain head is no version.
+            provenance: timeline
+                .selected()
+                .map_or_else(|| "original".to_string(), |step| step.provenance.clone()),
+            receipt_id: timeline
+                .selected()
+                .map(|step| step.receipt_id.clone())
                 .unwrap_or_default(),
             versions: timeline
                 .steps
