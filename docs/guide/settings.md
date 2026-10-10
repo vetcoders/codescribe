@@ -533,6 +533,14 @@ start signal. Nothing else: the transcription overlay is set under
 [Dictation → Preview](#dictation-tabs), and the Dock icon from the menu bar
 menu — neither lives in this pane.
 
+The Dock icon also decides whether the Settings and Agent windows can be
+minimised. Without a Dock icon there is no tile for a minimised window to land
+in, so macOS would leave it off screen as an empty tile in App Exposé and
+Mission Control; Codescribe therefore disables the yellow button (and ⌘M) on
+those windows until **Show Dock icon** is on, and brings a minimised window back
+when the icon is switched off. Closing a window and reopening it from the menu
+bar menu is the way to put it away.
+
 **Input device** — the microphone recording uses. Picking **System default** means
 Codescribe records on whichever microphone macOS currently uses; a named device is
 remembered, and if it is unplugged recording continues on the system microphone.
