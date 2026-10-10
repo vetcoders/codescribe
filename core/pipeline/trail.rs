@@ -1704,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn word_policy_v6_replays_five_pins_and_refuses_prior_policies_before_projection() {
+    fn word_policy_v7_replays_five_pins_and_refuses_prior_policies_before_projection() {
         let dir = tempfile::tempdir().unwrap();
         let owner = OccurrenceIdentity::new("word-policy-v5", 17, 0, 16_000);
         let sink =
@@ -1739,8 +1739,8 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(start.word_policy.as_deref(), Some("word-adjudication/v6"));
-        start.word_policy = Some("word-adjudication/v5".into());
+        assert_eq!(start.word_policy.as_deref(), Some("word-adjudication/v7"));
+        start.word_policy = Some("word-adjudication/v6".into());
         let mut projected = 0;
         let error = replay_decisions(&rows, |_, _, _| projected += 1).unwrap_err();
         assert!(
@@ -1749,13 +1749,15 @@ mod tests {
                 .contains("unsupported word adjudication policy")
         );
         assert_eq!(projected, 0);
-        for row in &mut rows {
-            if let TrailEvent::SlotStart { operation } = &mut row.event {
-                operation.word_policy = Some("word-adjudication/v4".into());
+        for policy in ["word-adjudication/v4", "word-adjudication/v5"] {
+            for row in &mut rows {
+                if let TrailEvent::SlotStart { operation } = &mut row.event {
+                    operation.word_policy = Some(policy.into());
+                }
             }
+            assert!(replay_decisions(&rows, |_, _, _| projected += 1).is_err());
+            assert_eq!(projected, 0);
         }
-        assert!(replay_decisions(&rows, |_, _, _| projected += 1).is_err());
-        assert_eq!(projected, 0);
     }
 
     #[test]
