@@ -125,7 +125,11 @@ budget. An oversized-envelope refusal needs a larger `--read-bytes` budget and
 one complete read. Use `--read-delivery ID` only when the original acoustic
 receipt is needed. Do not clear pending state by deleting files or changing sessions.
 
-ACK means **read**, not **done**. Track execution separately. Preserve drafts,
+ACK means **read**, not **done**. Track execution separately. A typed message
+can carry file pointers: an `attachments` list (`path`, `name`, `media_type`,
+`bytes`, `sha256`) plus an `[attachment] … : /abs/path` line in its text. The
+bus never carries the bytes; open the file with your own tool. ACK of the
+message is not proof the file was read. Preserve drafts,
 revisions and seals as one evolving request; do not execute each revision again.
 `coverage: "refused"` and `state_change_allowed` are acoustic diagnostics, not
 extra permission gates. Spoken requests have the same task permissions as typed
