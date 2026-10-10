@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 /// alternatives from one frame cannot become a complete group witness.
 /// v7: uncorroborated relabelling must keep the exact physical word partition,
 /// including its boundaries when admission handles a group as separate words.
-pub const WORD_POLICY: &str = "word-adjudication/v7";
+/// v8: phrase refinement cannot bypass a negation dispute. Context authority
+/// alone cannot add, remove or move a negation against an existing label.
+pub const WORD_POLICY: &str = "word-adjudication/v8";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +147,51 @@ fn trial_digest(trial: &WordTrial) -> [u8; 32] {
 pub(super) fn label_equal(a: &str, b: &str) -> bool {
     // Equality is evidence about a resolved component, never a target finder.
     normalize_word_token(a) == normalize_word_token(b)
+}
+
+/// Compare labels only after PCM has resolved the addressed component.
+/// Neighbours distinguish a moved negation from a punctuation/case change;
+/// these tokens never find a target, create pins or certify what was spoken.
+pub(super) fn negation_contexts(label: &str) -> Vec<(String, String, String)> {
+    let words = label
+        .split_whitespace()
+        .map(|token| normalize_word_token(token).replace('’', "'"))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| {
+            matches!(
+                word.as_str(),
+                "nie"
+                    | "bez"
+                    | "nigdy"
+                    | "not"
+                    | "no"
+                    | "never"
+                    | "without"
+                    | "don't"
+                    | "doesn't"
+                    | "can't"
+                    | "cannot"
+                    | "won't"
+                    | "isn't"
+                    | "aren't"
+            )
+        })
+        .map(|(index, word)| {
+            (
+                index
+                    .checked_sub(1)
+                    .and_then(|i| words.get(i))
+                    .cloned()
+                    .unwrap_or_default(),
+                word.clone(),
+                words.get(index + 1).cloned().unwrap_or_default(),
+            )
+        })
+        .collect()
 }
 
 /// `context_quality` saturation: the pin sits in the middle third of its
@@ -813,8 +860,11 @@ impl AcousticLedger {
             );
             return Some(false);
         }
+        let negation_disagrees =
+            negation_contexts(&compose_label(sources)) != negation_contexts(&compose_label(outputs));
         if sources.is_empty()
-            || sources.iter().all(|source| self.coarse_word_source(source))
+            || (sources.iter().all(|source| self.coarse_word_source(source))
+                && !negation_disagrees)
             || !sources
                 .iter()
                 .all(|source| acoustic_pair(source.producer, observation.producer))
@@ -1031,6 +1081,8 @@ impl AcousticLedger {
             }
         } else if !band_rights {
             (false, "outside_publication_band")
+        } else if negation_disagrees && !lexical_resolved {
+            (false, "negation_requires_lexical_evidence")
         } else if repeated_label {
             // Corroborated timing can extend the same physical word. Keeping
             // its first, shorter pin would turn a later suffix into a new word.
