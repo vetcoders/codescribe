@@ -78,6 +78,72 @@ class UserTextTests(unittest.TestCase):
                 self.assertEqual(publish.call_count, 2)
 
 
+    def test_attach_file_rides_as_pointer_without_copying_or_reading_bytes_into_text(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as directory:
+            root = Path(directory).resolve()
+            pasted = root / "pasted.png"
+            pasted.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+            for channel, name in [("2", "nina"), ("7", "igor")]:
+                bus = root / f"bus-{channel}.jsonl"
+                lid = DEMUX.lease_identifier("codex", name)
+                DEMUX.write_channel_binding(root, channel, name, "codex", name, str(bus))
+                DEMUX.atomic_json(root / "leases" / f"{lid}.json", {
+                    "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                    "lease_id": lid, "bus": str(bus)})
+            receipt = {"stream_id":"fixture", "stream_dev":1, "stream_inode":2, "offset":0, "length":12}
+            args = argparse.Namespace(bridge_home=root, channel="0", attach_file=[str(pasted)])
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"look"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+            events = [call.args[1] for call in publish.call_args_list]
+            self.assertEqual(len(events), 2)
+            for event in events:
+                pointer = event["attachments"][0]
+                self.assertEqual(pointer["path"], str(pasted))
+                self.assertEqual(pointer["name"], "pasted.png")
+                self.assertEqual(pointer["media_type"], "image/png")
+                self.assertEqual(pointer["bytes"], pasted.stat().st_size)
+                self.assertEqual(len(pointer["sha256"]), 64)
+                self.assertTrue(event["text"].startswith("look\n[attachment] pasted.png (image/png, "))
+                self.assertIn(str(pasted), event["text"])
+                self.assertNotIn("PNG", event["text"])
+                payload = DEMUX.consider(event, name=event["audience"], hear_all=False, drafts=False, debug=False)
+                self.assertEqual(payload["attachments"], event["attachments"])
+            self.assertEqual(sorted(root.iterdir()) and len(list(root.glob("*.png"))), 1)
+            # Empty text is fine when a pasted file rides along.
+            args = argparse.Namespace(bridge_home=root, channel="0", attach_file=[str(pasted)])
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"  "))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+            self.assertTrue(publish.call_args.args[1]["text"].startswith("\n[attachment] pasted.png"))
+            # The bell carries the pointer, never the bytes.
+            events_file = root / "notifications.jsonl"
+            events_file.write_text(json.dumps(payload | {"delivery_id": "a" * 24}) + "\n")
+            bell = subprocess.check_output(
+                [sys.executable, SPEC.origin, "--watch", "--once", "--from-file", str(events_file)], text=True)
+            self.assertEqual(json.loads(bell)["attachments"][0]["sha256"], payload["attachments"][0]["sha256"])
+
+    def test_attach_file_refuses_missing_outside_home_empty_and_oversized(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as directory:
+            root = Path(directory).resolve()
+            empty = root / "empty.png"; empty.touch()
+            for raw in [str(root / "missing.png"), "relative.png", "/etc/hosts", str(empty), str(root)]:
+                with self.subTest(raw=raw), self.assertRaises(ValueError):
+                    DEMUX.describe_attachment(raw)
+            big = root / "big.bin"
+            big.write_bytes(b"0")
+            with patch.object(DEMUX, "ATTACHMENT_MAX_BYTES", 0), self.assertRaises(ValueError):
+                DEMUX.describe_attachment(str(big))
+            self.assertEqual(DEMUX.describe_attachment(str(big))["media_type"], "application/octet-stream")
+            result = subprocess.run(
+                [sys.executable, SPEC.origin, "--attach-file", str(big), "--status",
+                 "--provider", "codex", "--session", "s", "--bridge-home", str(root)],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--attach-file is only valid with --send-text", result.stderr)
+
     def test_publish_holds_binding_identity_and_refuses_rebound_owner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

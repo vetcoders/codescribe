@@ -4364,8 +4364,56 @@ def send_text_command(args: argparse.Namespace) -> int:
             if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
                     or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
                 raise ValueError("selected conversation owner no longer matches")
+ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024  # mirrors core/attachment.rs MAX_ATTACHMENT_BYTES
+ATTACHMENT_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".heic": "image/heic", ".pdf": "application/pdf",
+    ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json",
+    ".csv": "text/csv", ".log": "text/plain",
+}
+
+
+def describe_attachment(raw: str) -> dict[str, Any]:
+    """Pointer to a pasted file already stored by the app; the helper never copies it.
+
+    The file must exist, be a regular readable file under the caller's home and
+    fit the app's attachment limit. The pointer carries what a reader needs to
+    open the file itself and to check it is the same bytes: absolute path, name,
+    media type, size and sha256. ACK of the message is not proof the file was read.
+    """
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"attachment path must be absolute: {raw}")
+    path = path.resolve(strict=False)
+    home = Path.home().resolve(strict=False)
+    if home not in path.parents:
+        raise ValueError(f"attachment must live under the home directory: {path}")
+    if not path.is_file():
+        raise ValueError(f"attachment is not a regular file: {path}")
+    size = path.stat().st_size
+    if size <= 0:
+        raise ValueError(f"attachment is empty: {path}")
+    if size > ATTACHMENT_MAX_BYTES:
+        raise ValueError(f"attachment exceeds {ATTACHMENT_MAX_BYTES} bytes: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return {"path": str(path), "name": path.name,
+            "media_type": ATTACHMENT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+            "bytes": size, "sha256": digest.hexdigest()}
+
+
+def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
+    """Plain-text pointers so a reader without envelope parsing still sees the file."""
+    return "".join(
+        f"\n[attachment] {item['name']} ({item['media_type']}, {item['bytes']} bytes): {item['path']}"
+        for item in attachments)
+
+
             owners.append({"provider": provider, "provider_session_id": session,
                            "lease_id": lease_id, "channel": channel, "audience": audience,
+    attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
                            "name": audience, "bus": str(bus)})
         if not owners:
             raise ValueError("no agents are bound; draft retained")
@@ -4373,7 +4421,7 @@ def send_text_command(args: argparse.Namespace) -> int:
         if len(text) > 65536:
             raise ValueError("message exceeds 64 KiB; draft retained")
         text = text.decode("utf-8")
-        if not text.strip():
+        if not text.strip() and not attachments:
             raise ValueError("empty message")
         identity = os.urandom(12).hex()
         emitted_at = utc_now()
@@ -4405,6 +4453,10 @@ def send_peer_command(args: argparse.Namespace) -> int:
     The wire shape is an agent reply — the canonical publisher's only
     agent-authored text lane — extended with explicit peer routing: `peer_to`
     names the one recipient of each per-bus copy, `sender` carries the
+        if attachments:
+            text = text.rstrip() + attachment_pointer_lines(attachments)
+            if len(text.encode("utf-8")) > 65536:
+                raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
     authoring lease, and the top-level `channel` records the origin ("0" for
     a broadcast, the target's digit for a direct). Followers admit it as a
     "message" delivery with state_change_allowed=False.
@@ -4413,6 +4465,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
     sender's own lease; each copy shares one message identity, so a reader
     bound to several channels still dedupes it within its lease.
     """
+            if attachments:
+                event["attachments"] = attachments
     root = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_json(root / "leases" / f"{lease_id}.json") or {}
@@ -5639,7 +5693,7 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
     # acoustic envelope or every recipient's copy of the same coordinates.
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
                 "emitted_at", "source", "sender", "peer_to", "association", "reply_id", "reply_to",
-                "routing_candidates", "instructions"):
+                "routing_candidates", "instructions", "attachments"):
         if key in payload:
             line[key] = payload[key]
     return line
@@ -6026,6 +6080,9 @@ def main() -> int:
         args.archive_agent not in tuple(str(n) for n in range(1, 10))
         or not args.provider or not args.session or not args.lease or args.bus is None
         or any((args.attach, args.detach, args.takeover, args.channel is not None,
+    parser.add_argument("--attach-file", metavar="PATH", action="append",
+                        help="with --send-text: pointer to a pasted file the app already stored "
+                        "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
                 args.status, args.watch, args.follow, args.once, args.from_start,
                 args.ack, args.from_file, args.say is not None, args.send_text,
                 args.send is not None, args.to is not None, args.read_delivery,
@@ -6209,6 +6266,8 @@ def main() -> int:
         if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
                 or not args.playback_ticket or not re.fullmatch(r"[0-9a-f]{24}", args.playback_ticket)):
             parser.error("reply control requires --provider/--session, a reply id and a playback ticket")
+    if args.attach_file and not args.send_text:
+        parser.error("--attach-file is only valid with --send-text")
         if any((args.say is not None, args.ack, args.attach, args.channel is not None,
                 args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
                 args.read_delivery, args.retry_wakeup, args.all, args.become, args.active_names,
