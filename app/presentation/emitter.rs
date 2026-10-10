@@ -1190,8 +1190,13 @@ impl TranscriptReducer {
         reason: &str,
     ) -> Option<&OccurrenceIdentity> {
         self.document_by_occurrence.keys().find(|owner| {
-            if reason != NoAuthorityReason::LateAppleWordNotCurrent.as_str() {
-                return range_within(pin, owner);
+            // A word pin may start before the Silero owner it belongs to. Its
+            // midpoint inside a committed word slot is that same physical word,
+            // whatever its text; a midpoint between slots is not covered.
+            if reason != NoAuthorityReason::LateAppleWordNotCurrent.as_str()
+                && range_within(pin, owner)
+            {
+                return true;
             }
             let midpoint = pin.sample_start + pin.sample_len() / 2;
             pin.is_anchored()
@@ -2061,10 +2066,13 @@ impl TranscriptReducer {
         self.manual_rendered_text = Some(intent.rendered_text.clone());
         if intent.provenance != DocumentRevisionProvenance::LightPlus {
             self.consultation_presentations.clear();
+            self.shaped_by_occurrence.clear();
+            self.shaping_evaluations.clear();
+            self.shaping_pause_bits = None;
         }
-        self.shaped_by_occurrence.clear();
-        self.shaping_evaluations.clear();
-        self.shaping_pause_bits = None;
+        // Light+ keeps the live shapes beneath its bytes: when a late ledger
+        // edit retires this document, the settled prefix renders exactly as
+        // before and only the edited owner onward is shaped again.
         // The manual document owns presentation until a later ledger edit
         // clears it. The cursor then starts at the first physical owner.
         self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
@@ -2298,6 +2306,38 @@ impl TranscriptReducer {
             && memo.sentence_pause_bits == sentence_pause_sec.to_bits()
             && memo.sentence_break_before
                 == self.sentence_break_before(occurrence, ledger, sentence_pause_sec)
+    }
+
+    /// First owner the terminal Light+ pass may shape.
+    ///
+    /// Lifecycle closure grants no rewrite of presentation that settled
+    /// while the take was live: an owner whose live shape is stable keeps
+    /// its bytes. The scope opens at the first owner without one, and always
+    /// holds the last owner, the only one whose sentence end Stop decides.
+    /// `None` while a human revision owns the document. A Light+ document
+    /// re-presents the live shapes it was built over, so its scope is read
+    /// from them and a repeated terminal pass mints nothing.
+    fn terminal_shaping_scope(
+        &self,
+        ledger: &AcousticLedger,
+        sentence_pause_sec: f32,
+    ) -> Option<OccurrenceIdentity> {
+        let light_plus_document = !self.raw_human_revision
+            && self
+                .manual_document_revision_receipt
+                .as_deref()
+                .is_some_and(|id| id.starts_with("light-plus-"));
+        if self.manual_rendered_text.is_some() && !light_plus_document {
+            return None;
+        }
+        let last = self.document_by_occurrence.keys().next_back()?;
+        self.document_by_occurrence
+            .keys()
+            .find(|occurrence| {
+                *occurrence == last
+                    || !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger)
+            })
+            .cloned()
     }
 
     /// First owner a non-terminal tick must evaluate.
@@ -2603,13 +2643,36 @@ impl TranscriptReducer {
     /// the shaped text is byte-identical (Light+ is idempotent, so a second
     /// pass — or a document a formatter already shaped — mints nothing).
     /// Read-only: the intent enters the same corridor as a user edit.
-    pub fn light_plus_intent(&self) -> Option<UserRevisionIntent> {
+    ///
+    /// Only the open terminal scope is shaped. The prefix keeps the exact
+    /// bytes its live shaping settled; the scope is shaped with that prefix
+    /// as left context, so a sentence end is placed where Stop closes it.
+    pub fn light_plus_intent(
+        &self,
+        ledger: &AcousticLedger,
+        sentence_pause_sec: f32,
+    ) -> Option<UserRevisionIntent> {
         let session_id = self.document_by_occurrence.keys().next()?.session.clone();
         let source = self.committed_rendered_text();
         if source.trim().is_empty() {
             return None;
         }
-        let shaped = codescribe_core::pipeline::light_plus::apply(&source);
+        let shaped = match self.terminal_shaping_scope(ledger, sentence_pause_sec) {
+            Some(scope) => {
+                let mut rendered = self.rendered_occurrence_span(Some(&scope));
+                let mut open = String::new();
+                for (occurrence, entry) in self.document_by_occurrence.range(scope..) {
+                    append_exact_fragment(&mut open, self.presentation_of(occurrence, entry));
+                }
+                let shaped_open = codescribe_core::pipeline::light_plus::apply_with_left_context(
+                    &rendered, &open,
+                );
+                append_exact_fragment(&mut rendered, &shaped_open);
+                render_context_markers(&rendered, &self.context_markers)
+            }
+            // A human document owns every byte; Light+ shapes it whole.
+            None => codescribe_core::pipeline::light_plus::apply(&source),
+        };
         if shaped == source {
             return None;
         }
@@ -4164,7 +4227,7 @@ impl PresentationEmitter {
         let prepared = budget.prepare(move |worker_budget| {
             let mut revisions = Vec::new();
             if terminal {
-                if let Some(intent) = candidate.light_plus_intent() {
+                if let Some(intent) = candidate.light_plus_intent(&candidate_ledger, pause) {
                     if worker_budget.expired() {
                         return None;
                     }
