@@ -295,7 +295,7 @@ final class AudioPanelTests: XCTestCase {
         fallbackToDefault: false,
         runtimeConfigurationMatches: true
       ))
-    XCTAssertEqual(healthy.current, "Currently: MacBook Pro Microphone")
+    XCTAssertEqual(healthy.current, "Currently using: MacBook Pro Microphone")
     XCTAssertNil(healthy.notice, "a working microphone needs no sentence")
     XCTAssertNil(healthy.noticeTone)
 
@@ -308,7 +308,7 @@ final class AudioPanelTests: XCTestCase {
         fallbackToDefault: false,
         runtimeConfigurationMatches: false
       ))
-    XCTAssertEqual(unapplied.current, "Currently: MacBook Pro Microphone")
+    XCTAssertEqual(unapplied.current, "Currently using: MacBook Pro Microphone")
     XCTAssertEqual(unapplied.noticeTone, .fallback)
     XCTAssertTrue(unapplied.notice?.contains("Restart Codescribe") == true)
 
@@ -321,7 +321,7 @@ final class AudioPanelTests: XCTestCase {
         fallbackToDefault: false,
         runtimeConfigurationMatches: true
       ))
-    XCTAssertEqual(noHardware.current, "Currently: no microphone")
+    XCTAssertEqual(noHardware.current, "Currently using: no microphone")
     XCTAssertEqual(noHardware.noticeTone, .unavailable)
     XCTAssertTrue(noHardware.notice?.contains("Connect a microphone") == true)
   }
