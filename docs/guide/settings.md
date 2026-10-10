@@ -539,43 +539,59 @@ minimised Codescribe window leaves the screen and shows up only as an empty
 tile in App Exposé and Mission Control, so the yellow button (and ⌘M) is
 disabled on both windows; close and reopen them instead.
 
-**Input device** — the microphone recording uses. Picking **System default** means
-Codescribe records on whichever microphone macOS currently uses; a named device is
-remembered, and if it is unplugged recording continues on the system microphone.
-**Use the system microphone** clears the saved choice. **Refresh microphones**
-re-reads the device list; it does not re-run the readiness checks below. A saved
-device that the running recorder is not actually using is reported as such, with
-the saved name — a restart applies it, and an explicit `AUDIO_INPUT_DEVICE` launch
-override keeps winning until it is removed.
+**Microphone** — one card: the **Input device** picker, the microphone actually
+recording, and **Refresh**. **System default** is the first option of the picker,
+so Codescribe records on whichever microphone macOS currently uses; a named device
+is remembered, and if it is unplugged recording continues on the system
+microphone. **Currently:** names the input the running recorder resolved — the
+live device, not the saved choice. **Refresh** re-reads the device list; it does
+not re-run the readiness checks below. The card stays at those three lines while
+nothing is wrong. A saved device that the running recorder is not actually using,
+or a Mac with no input hardware at all, adds one sentence saying so — a restart
+applies a saved device, and an explicit `AUDIO_INPUT_DEVICE` launch override keeps
+winning until it is removed.
 
-**Recording readiness** — four numbered steps, in the order the controller
-requires them:
+**Recording readiness** — one status line plus two values, instead of four
+numbered steps:
 
-1. **Microphone access** — the macOS permission, with the live device the recorder
-   resolved.
-2. **Calibration** — about 10 seconds of normal speech measured through the real
-   recorder path. **Calibrate** is unavailable while a take is active, starting or
-   finishing. The measured profile is not kept secret, it is just not a readiness
-   question: the stored profile identifier, the measured device, the sample rate,
-   the loader verdict and the calibration file sit under the collapsed
-   **Calibration details**.
-3. **Committing transcript fragments** — the same row in every state, with the
-   switch state written out. Off blocks recording. When
-   `CODESCRIBE_SILERO_FUSION` is set, the sentence names it and the switch is
-   read-only: remove the override to edit the setting again.
-4. **Ready to record** — names the configured Dictation gesture when Hotkeys binds
-   one, and only the **Start recording** button when it does not. Stopping through
-   the tray or a shortcut updates this row too, and a final formatting pass still
-   counts as finishing before the overlay changes its visible phase. After a failed
-   start, **Start recording** uses the same fresh-capture admission as the tray, so
-   it can retry without a stale capture fence; it waits for the tray's previous
-   start to settle and cannot turn that retry into a Stop.
+- The status line is the recorder's own verdict: **Ready to record** with
+  **Start recording**, or the live phase while a take is starting, running or
+  finishing. **Start recording** names the configured Dictation gesture when
+  Hotkeys binds one. After a failed start it uses the same fresh-capture
+  admission as the tray, so it can retry without a stale capture fence; it waits
+  for the tray's previous start to settle and cannot turn that retry into a Stop.
+- **Microphone calibration** — `Ready` or `Required`, with **Recalibrate**.
+  Calibration measures about 10 seconds of normal speech through the real
+  recorder path, and is unavailable while a take is active, starting or
+  finishing.
+- **Committing fragments** — `On`, `Off` or `Unavailable`. Audio states the
+  effective value and nothing else; the switch lives on the **Lab** desk.
+
+A neutral status never hides a blocker. When microphone access is missing,
+calibration has not been measured, the committing lane is off or its detector is
+unavailable, or there is no input device, the status line becomes that problem
+and carries its remedy — **Allow** or **System Settings** for the permission,
+**Calibrate**, or **Open Lab** for the committing switch. The explanation is the same sentence the readiness
+rows used before; it is simply shown only when it applies.
 
 These controls borrow the existing `RecordingController`; opening Audio never
 creates a second recorder.
 
-**Audio retention** — `Keep completed recordings`, and one sentence that describes
-the choice currently selected:
+The stored calibration profile identifier, the measured device, the sample rate,
+the loader verdict and the calibration file sit under the collapsed **Calibration
+details**, as label and value pairs.
+
+**Committing transcript fragments** lives on the **Lab** desk (developer builds
+only), as a switch with one line: _Required before a recording can start._
+Turning the recorder's own precondition off is a power-user act, so only that
+desk can do it. When `CODESCRIBE_SILERO_FUSION` is set the switch is read-only
+and says so: remove the override to edit the setting again. A build without the
+developer surface shows the `Off` state and its blocker in Audio, but has no
+switch — the setting is then changed in `settings.json` or by removing the
+override.
+
+**Audio retention** — `Keep completed recordings`. `Forever` (the default) adds
+no sentence; the choices that expire something each carry one short line:
 
 - `Forever` (default) — nothing expires automatically. An unknown value stored in
   `settings.json` resolves here, exactly as the config loader resolves it.
@@ -584,12 +600,13 @@ the choice currently selected:
 - `Off` — a new recording's audio is discarded as soon as processing finishes.
   Recordings already saved are kept.
 
-Text history is never touched by this setting, and a take keeps the choice it
-started with: switching to `Off` mid-take does not shorten that take, and a take
-captured under `Off` is still discarded if the choice is changed afterwards.
+Each sentence states that text history stays. A take keeps the choice it started
+with: switching to `Off` mid-take does not shorten that take, and a take captured
+under `Off` is still discarded if the choice is changed afterwards.
 
-**Sound feedback** — **Recording start signal** plays the recorder's live start
-confirmation, with a volume slider that follows the toggle.
+**Recording start sound** — **Play a signal** plays the recorder's live start
+confirmation, and **Volume** below it shows the level as a percentage. The slider
+is disabled while the signal is off.
 
 ## Diagnostics
 
