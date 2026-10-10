@@ -315,29 +315,58 @@ HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Optio
 
 The Shortcuts tab offers one flat gesture catalog for all three modes:
 `available_bindings()` returns every `ShortcutBinding` regardless of mode
-(`bridge/src/hotkeys.rs`). The tables above are the complete set the detector
-actually routes, so the picker is wider than the runtime:
+(`bridge/src/hotkeys.rs`). The detector routes a subset of those cells, and
+that subset is one predicate, `mode_binding_reachable(mode, binding)` in
+`app/os/hotkeys/detector.rs`:
 
-| Work mode  | Routed gestures                | Routing site                                                                                                          |
-| ---------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| Dictation  | all five `Hold*`, `DoubleCtrl` | `app/os/hotkeys/detector.rs:1049` (hold combo), `:622` (raw toggle)                                                   |
-| Formatting | `DoubleLeftOption` only        | `app/os/hotkeys/detector.rs:624` — the only read of `mode_bindings.formatting` in the repo                            |
-| Assistive  | `DoubleRightOption` only       | `app/os/hotkeys/detector.rs:626`; `assistive_hold_binding` returns `None` for every hold variant (`detector.rs:1081`) |
+| Work mode  | Routed gestures                | Routing site in `HotkeyDetector::handle_flags_changed`                                             |
+| ---------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Dictation  | all five `Hold*`, `DoubleCtrl` | hold combo (`check_hold_combo`), raw toggle (`dictation == DoubleCtrl`)                            |
+| Formatting | `DoubleLeftOption` only        | normal toggle (`formatting == DoubleLeftOption`) — the only read of `mode_bindings.formatting`     |
+| Assistive  | `DoubleRightOption` only       | assistive toggle; `assistive_hold_binding` maps no hold to Assistive, so every `Hold*` is unrouted |
 
-Two consequences the UI must not hide:
+`Disabled` binds nothing and is accepted for every mode. The routed sets are
+disjoint: a gesture bound to two modes always leaves one of them unrouted.
+`reachability_predicate_matches_detector_routing_for_every_cell` (detector
+tests) binds each of the 24 mode × gesture cells alone, performs the gesture
+through `HotkeyDetector::feed` with synthetic key snapshots, and asserts that
+the predicate and the started mode agree — 8 routed cells, 16 unrouted.
 
-- `Assistive` + any `Hold*` is refused by the setter (`set_mode_binding` in
-  `bridge/src/hotkeys.rs`) and never reaches disk. Settings reports the refusal
-  per mode and snaps that picker back to the persisted gesture.
-- `Formatting=HoldCtrl`, `Dictation=DoubleLeftOption` and the other unrouted
-  pairs ARE accepted and persisted, and then do nothing. A binding present in
-  `settings.json` is not evidence that the gesture fires.
+**Unrouted cells are refused, not persisted.** One owner, three readers:
 
-Filtering the picker per mode cannot be done on the Swift side today: the
-`HotkeysEngine` seam exposes only the flat, mode-agnostic catalog, and encoding
-the routing table in Swift would create a second owner of a truth that lives in
-the detector. The gap closes by narrowing `available_bindings()` to a per-mode
-query, not by hiding options in the UI.
+- Validation: `detect_internal_conflicts` (`app/os/shortcut_registry.rs`)
+  emits a blocking conflict for every bound mode the detector does not route,
+  through `unreachable_binding_message`. The sentence names the one mode the
+  gesture does start — the explicit precedence. Settings gates Save on it.
+- Write: `set_mode_binding` (`bridge/src/hotkeys.rs`) refuses the same cells
+  with the same sentence, for Settings, onboarding and any other caller, so no
+  path persists a dead binding.
+- Screen: `HotkeysPresentation.swift` maps each wire sentence to a localized
+  one (PL/EN) and keeps the wire text as the technical line. Swift holds no
+  routing table of its own.
+
+**Precedence matrix (what one physical gesture starts):**
+
+| Bound configuration                                           | Gesture         | Starts                    | Settings                                                       |
+| ------------------------------------------------------------- | --------------- | ------------------------- | -------------------------------------------------------------- |
+| Dictation=`DoubleLeftOption`, Formatting=`DoubleLeftOption`   | 2× left Option  | Formatting only           | blocking: "This gesture only starts Formatting, so Dictation…" |
+| Dictation=`DoubleCtrl`, Formatting=`DoubleLeftOption`         | 2× left Option  | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Left Option…"   |
+| Dictation=`DoubleCtrl`, Assistive=`DoubleRightOption`         | 2× right Option | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Right Option…"  |
+| Dictation=`Hold*`, Assistive=same `Hold*`                     | that hold       | Dictation only            | blocking: "This gesture only starts Dictation, so Assistive…"  |
+| Formatting=`HoldCtrl` (no duplicate)                          | hold Ctrl       | nothing                   | blocking: "This gesture only starts Dictation, so Formatting…" |
+| Defaults: `HoldFn` / `DoubleLeftOption` / `DoubleRightOption` | each            | its own mode              | clean                                                          |
+
+The macOS Fn/Globe tap note (`fn_tap_intercept_note`) is informational: it
+crosses the bridge with `blocking: false` and never blocks Save.
+
+A settings file written before this rule can still hold an unrouted cell. The
+Shortcuts tab shows it as a blocking conflict on load; choosing a routed
+gesture for that mode clears it.
+
+Narrowing the picker itself per mode needs a per-mode `available_bindings`
+query on the bridge (a UniFFI shape change, regenerated bindings). Until then
+the picker offers every gesture and the backend refuses the unrouted ones
+inline, before Save.
 
 ### Capture and transcript ownership
 

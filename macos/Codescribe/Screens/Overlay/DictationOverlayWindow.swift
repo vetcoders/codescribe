@@ -38,6 +38,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var frameTransitionGeneration: UInt64 = 0
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
+  var isUserDragging: Bool { dragStart != nil }
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
   /// MIDI borrows width around the parked mini; its temporary left edge is
   /// never the saved position. A real drag moves that mini by the same edges.

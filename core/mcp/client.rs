@@ -101,7 +101,10 @@ impl McpConfigFile {
 
 /// One server entry. Transport is implied, not declared: a present [`Self::url`]
 /// selects remote HTTP, otherwise `command` is spawned over stdio.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `PartialEq` lets connection evidence be pinned to the exact entry it was
+/// gathered against: a changed entry makes earlier evidence stale.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct McpServerConfig {
     /// Executable to spawn for stdio transport. A bare name is resolved against
     /// the effective `PATH`; ignored when `url` is set.

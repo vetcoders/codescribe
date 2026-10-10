@@ -4895,6 +4895,39 @@
         }
       }
     },
+    "Connection test failed: %@" : {
+      "comment" : "Placeholder is an error message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia nieudany: %@"
+          }
+        }
+      }
+    },
+    "Connection test passed — %@, not registered by the agent yet" : {
+      "comment" : "Placeholder is a tool count phrase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia udany — %@, agent jeszcze ich nie zarejestrował"
+          }
+        }
+      }
+    },
+    "Connection test passed — %@, not registered by the agent yet (server %@)" : {
+      "comment" : "First placeholder is a tool count phrase, second a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test połączenia udany — %1$@, agent jeszcze ich nie zarejestrował (serwer %2$@)"
+          }
+        }
+      }
+    },
     "Consultation reset is unavailable." : {
       "localizations" : {
         "pl" : {
@@ -8210,6 +8243,28 @@
         }
       }
     },
+    "Live — %@ registered; last connection test failed: %@" : {
+      "comment" : "First placeholder is a tool count phrase, second an error message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ w agencie; ostatni test połączenia nieudany: %2$@"
+          }
+        }
+      }
+    },
+    "Live — %@ registered; last connection test failed: %@ (server %@)" : {
+      "comment" : "First placeholder is a tool count phrase, second an error message, third a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działa — %1$@ w agencie; ostatni test połączenia nieudany: %2$@ (serwer %3$@)"
+          }
+        }
+      }
+    },
     "Load helper text into the correction editor without saving" : {
       "localizations" : {
         "pl" : {
@@ -9678,6 +9733,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niepołączone"
+          }
+        }
+      }
+    },
+    "Not detected (optional) — identity unknown for: %@" : {
+      "comment" : "Placeholder lists configured MCP server names whose identity is unknown until they are tested",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie wykryto (opcjonalne) — nieznana tożsamość: %@"
           }
         }
       }
@@ -11670,6 +11736,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzucony"
+          }
+        }
+      }
+    },
+    "Registration failed: %@; last connection test passed — %@" : {
+      "comment" : "First placeholder is an error message, second a tool count phrase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rejestracja nieudana: %1$@; ostatni test połączenia udany — %2$@"
+          }
+        }
+      }
+    },
+    "Registration failed: %@; last connection test passed — %@ (server %@)" : {
+      "comment" : "First placeholder is an error message, second a tool count phrase, third a server name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rejestracja nieudana: %1$@; ostatni test połączenia udany — %2$@ (serwer %3$@)"
           }
         }
       }
@@ -19285,24 +19373,6 @@
         }
       }
     },
-    "settings.shortcuts.conflict.dictationSharesAgentGesture" : {
-      "comment" : "Shortcuts screen: blocking conflict between two work modes",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Dictation and the Agent share one gesture, so the Agent may stay unreachable."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dyktowanie i Agent mają ten sam gest, więc Agent może pozostać nieosiągalny."
-          }
-        }
-      }
-    },
     "settings.shortcuts.conflict.doubleCtrlBlocksLeftOption" : {
       "comment" : "Shortcuts screen: blocking conflict between two gestures",
       "extractionState" : "extracted_with_value",
@@ -19353,6 +19423,114 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten gest jest już zajęty przez skrót systemowy macOS."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyAgentNotDictation" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Right ⌥ starts only the Agent, so Dictation would never start. Dictation starts with a hold or 2× Ctrl."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× prawy ⌥ uruchamia tylko Agenta, więc Dyktowanie nigdy by nie ruszyło. Dyktowanie uruchamia przytrzymanie albo 2× Ctrl."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyAgentNotFormatting" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Right ⌥ starts only the Agent, so Formatting would never start. Formatting starts with 2× Left ⌥."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× prawy ⌥ uruchamia tylko Agenta, więc Formatowanie nigdy by nie ruszyło. Formatowanie uruchamia 2× lewy ⌥."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyDictationNotAgent" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This gesture starts only Dictation, so the Agent would never start. The Agent starts with 2× Right ⌥."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten gest uruchamia tylko Dyktowanie, więc Agent nigdy by nie ruszył. Agenta uruchamia 2× prawy ⌥."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyDictationNotFormatting" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This gesture starts only Dictation, so Formatting would never start. Formatting starts with 2× Left ⌥."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten gest uruchamia tylko Dyktowanie, więc Formatowanie nigdy by nie ruszyło. Formatowanie uruchamia 2× lewy ⌥."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyFormattingNotAgent" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Left ⌥ starts only Formatting, so the Agent would never start. The Agent starts with 2× Right ⌥."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× lewy ⌥ uruchamia tylko Formatowanie, więc Agent nigdy by nie ruszył. Agenta uruchamia 2× prawy ⌥."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.onlyFormattingNotDictation" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Left ⌥ starts only Formatting, so Dictation would never start. Dictation starts with a hold or 2× Ctrl."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× lewy ⌥ uruchamia tylko Formatowanie, więc Dyktowanie nigdy by nie ruszyło. Dyktowanie uruchamia przytrzymanie albo 2× Ctrl."
           }
         }
       }
