@@ -61,8 +61,9 @@ slot, edit bindings or kill its reader. For a handoff from an ended session of
 **the same name**, use `--takeover`; read [Attach](references/attach.md) for the
 handover and inherited-message rules.
 
-For Kimi Code, use a finite `Bash(run_in_background=true)` task running
-`cs-bus --watch --until-event --max-wait 55 --provider kimi-code --session SESSION`.
+For Kimi Code, use one `Bash(run_in_background=true, disable_timeout=true)` task
+running `cs-bus --watch --until-event --provider kimi-code --session SESSION`; it
+ends only when a message arrives, so an idle agent costs no model turn.
 Follow the Kimi procedure in [Monitor](references/monitor.md); an infinite watch
 does not complete and therefore cannot trigger its completion notification.
 
