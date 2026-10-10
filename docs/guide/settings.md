@@ -260,23 +260,28 @@ dictated request; voice chat carries its own persona and does not read it.
 Codescribe may append further instructions at runtime, so the editor shows the
 base text, not the full prompt a provider receives.
 
-The **Source** line names the prompt in use: **Source: Custom prompt** when your
-file is read, **Source: Built-in prompt** when no custom file exists or the file
-is empty, and **Source: Built-in prompt (file unreadable)** with a red sentence
-when the file could not be read. **File details**, collapsed by default, holds
-the path, whether a custom file exists or would be created there on save, and
-the raw read error.
+A quiet tag on the header line names the prompt in use: **Custom** when your
+file is read, **Built-in** when no custom file exists or the file is empty. An
+unreadable file also reads **Built-in**, with a red sentence under the header
+saying so; screen readers get the full sentence (**Source: Custom prompt**,
+**Source: Built-in prompt**, **Source: Built-in prompt (file unreadable)**) as
+the tag's value. **File details**, collapsed by default and the last line of the
+panel, holds the path, whether a custom file is in use or **The custom file is
+created on save.**, and the raw read error.
 
-**Edit** opens the raw text; **Save** (solid accent) writes it and returns to
-the rendered view; **Cancel** drops the unsaved draft. Edit state is kept per
-prompt: switching segments mid-edit keeps that prompt in edit mode with an
-**Unsaved changes** marker, and the rendered view always shows the saved text,
-never a draft. **Restore default…** asks for confirmation that names the prompt
-and changes only that one. Confirming copies the custom file into the prompt
-backups folder, removes it, and records the removal in the prompt audit log,
-so the source afterwards reads **Built-in prompt** and the text follows future
-app updates. If the file cannot be removed, a red line under the source says
-**Could not complete restoring …** with the error and refreshes the actual
+**Edit** sits on the header line and opens the raw text; **Save** (solid accent)
+writes it and returns to the rendered view; **Cancel** drops the unsaved draft.
+Between the header and the card, **Preview of the original prompt text.** marks
+the rendered card as a view, not a field. Edit state is kept per prompt:
+switching segments mid-edit keeps that prompt in edit mode with an **Unsaved
+changes** marker, and the rendered view always shows the saved text, never a
+draft. **Restore default**, on the **File details** line, asks for confirmation
+that names the prompt and changes only that one. Confirming copies the custom
+file into the prompt backups folder, removes it, and records the removal in the
+prompt audit log, so the tag afterwards reads **Built-in** and the text follows
+future app updates. With no custom file there is nothing to remove, so the
+action is disabled. If the file cannot be removed, a red line under the header
+says **Could not complete restoring …** with the error and refreshes the actual
 source. An error can occur after the file has changed (for example while
 synchronizing the directory or writing its receipt); the backup remains
 recoverable. A failed save is reported with the same current-source check.
@@ -770,7 +775,8 @@ word. Only the two buttons are red.
   prompts_ — `assistive.txt`, `formatting.txt`, `formatting-smart.txt` and
   `formatting-max.txt`, all four named on the checkbox and in the confirmation.
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → **Agent → Prompts** → **Restore default…**
+- **Reset prompts**: Settings → **Agent → Prompts** → **File details** →
+  **Restore default**
 
 _Created by Vetcoders (c)2026_
 

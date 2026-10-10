@@ -92,10 +92,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Choose the Agent and formatting models. Accounts and keys live under Providers."
       )
     case .agentPrompts:
-      String(
-        localized:
-          "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs."
-      )
+      // One sentence only: each subtab names its own prompt's purpose, and the
+      // runtime-appended instructions are explained in the guide, not here
+      // (Founder brief, round 9, 2026-10-10).
+      String(localized: "Browse and edit the base prompts.")
     case .agentWorkspace:
       String(
         localized:

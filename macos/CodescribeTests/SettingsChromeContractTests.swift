@@ -524,7 +524,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("raw: savedText.isEmpty"))
     XCTAssertTrue(panel.contains("TextEditor(text: $draft)"))
     XCTAssertTrue(panel.contains("Button(\"Cancel\", action: onDiscard)"))
-    XCTAssertTrue(panel.contains("Button(\"Restore default…\")"))
+    XCTAssertTrue(panel.contains("Button(\"Restore default\")"))
     XCTAssertFalse(panel.contains("Button(\"Restore…\")"))
     XCTAssertTrue(
       panel.contains("\"Only \\(title) will change:"), "the confirmation names the prompt")
@@ -539,15 +539,18 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
     XCTAssertTrue(panel.contains("Text(\"File details\")"))
     XCTAssertFalse(panel.contains("ScrollView {\n      MarkdownText"), "no nested scrolling")
-    let source = try XCTUnwrap(panel.range(of: "sourceLine\n"))
+    // Round 9 order: quiet source tag in the header, the prompt content, and
+    // File details as the panel's last line.
+    let source = try XCTUnwrap(panel.range(of: "sourceTag"))
+    let body = try XCTUnwrap(panel.range(of: "promptBody"))
     let details = try XCTUnwrap(panel.range(of: "fileDetails\n"))
-    XCTAssertLessThan(source.lowerBound, details.lowerBound, "the path sits under the source line")
+    XCTAssertLessThan(source.lowerBound, body.lowerBound, "the tag sits in the header")
+    XCTAssertLessThan(body.lowerBound, details.lowerBound, "File details close the panel")
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Prompts": "Prompty",
-      "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.":
-        "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania.",
+      "Browse and edit the base prompts.": "Przeglądaj i edytuj prompty bazowe.",
       "Correction": "Korekta",
       "Correction prompt": "Prompt korekty",
       "Smart prompt": "Prompt Smart",
@@ -556,7 +559,12 @@ final class SettingsChromeContractTests: XCTestCase {
       "Source: Built-in prompt": "Źródło: Wbudowany prompt",
       "Source: Custom prompt": "Źródło: Własny prompt",
       "File details": "Szczegóły pliku",
-      "Restore default…": "Przywróć domyślny…",
+      "Restore default": "Przywróć domyślny",
+      "settings.prompt.source.builtIn": "Wbudowany",
+      "settings.prompt.source.custom": "Własny",
+      "The custom file is created on save.": "Własny plik powstanie przy zapisie.",
+      "Preview of the original prompt text.": "Podgląd oryginalnej treści promptu.",
+      "The built-in prompt is already in use.": "W użyciu jest już wbudowany prompt.",
       "Unsaved changes": "Niezapisane zmiany",
       "Edit": "Edytuj",
       "Save": "Zapisz",
@@ -572,6 +580,9 @@ final class SettingsChromeContractTests: XCTestCase {
     }
     for retired in [
       "Prompts.", "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
+      "Restore default…",
+      "No custom prompt file yet. Saving creates one at this path.",
+      "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.",
       "Only %@ will change. The previous version remains recoverable in the prompt backups folder.",
       "Correction only AI formatting (formatting.txt)",
       "Base system prompt for the Agent (assistive.txt)",

@@ -1519,7 +1519,11 @@ final class SettingsTruthTests: XCTestCase {
       promptFileStatus(source: "custom_file", fileExists: true), "Custom prompt file in use.")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: false),
-      "No custom prompt file yet. Saving creates one at this path.")
+      "The custom file is created on save.")
+    // The quiet header tag; the spelled-out source stays as its VoiceOver value.
+    XCTAssertEqual(promptSourceTag("custom_file"), "Custom")
+    XCTAssertEqual(promptSourceTag("built_in_fallback"), "Built-in")
+    XCTAssertNil(promptSourceTag(nil), "no empty capsule for an unknown source")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: true),
       "The file exists but is empty, so the built-in prompt is in use.")
