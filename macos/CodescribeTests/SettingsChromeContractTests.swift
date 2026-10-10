@@ -1058,7 +1058,9 @@ final class SettingsChromeContractTests: XCTestCase {
     // Resets: one closed section, two separate actions, red only on the buttons.
     XCTAssertTrue(panel.contains("@State private var showingResets = false"))
     XCTAssertTrue(panel.contains("if showingResets {"))
-    XCTAssertTrue(panel.contains("Text(\"Reset data\""))
+    XCTAssertTrue(
+      panel.contains("String(localized: \"Reset data\""),
+      "the Reset header is a ProvidersSectionHeader since round 16")
     XCTAssertTrue(panel.contains("Text(\"Reset Agent data\""))
     XCTAssertTrue(panel.contains("Text(\"Reset app data\""))
     XCTAssertFalse(panel.contains("String(localized: \"Danger zone\")"))
