@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 /// which decode arrived first (`band_authority`).
 /// v5: context authority alone may revise one word, never repartition a
 /// component. Changing its word partition requires lexical corroboration.
-pub const WORD_POLICY: &str = "word-adjudication/v5";
+/// v6: assembled witnesses keep their original producer pass and pin scope;
+/// alternatives from one frame cannot become a complete group witness.
+pub const WORD_POLICY: &str = "word-adjudication/v6";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -684,11 +686,22 @@ impl AcousticLedger {
             for hypothesis in member.support() {
                 let group = groups.iter_mut().find(|(h, _)| {
                     h.family() == hypothesis.family()
+                        && h.backend == hypothesis.backend
                         && h.observation
                             .occurrence
                             .same_capture(&hypothesis.observation.occurrence)
                         && if h.family() == ObservationProducer::Whisper {
-                            h.decode.is_some() && h.decode == hypothesis.decode
+                            h.decode.is_some()
+                                && h.decode == hypothesis.decode
+                                && match (&h.producer_request, &hypothesis.producer_request) {
+                                    (Some(a), Some(b)) => a == b,
+                                    (None, None) => {
+                                        h.observation.request == hypothesis.observation.request
+                                            && h.observation.generation
+                                                == hypothesis.observation.generation
+                                    }
+                                    _ => false,
+                                }
                         } else {
                             h.observation.request == hypothesis.observation.request
                                 && h.observation.generation == hypothesis.observation.generation
@@ -720,6 +733,18 @@ impl AcousticLedger {
             hypothesis
                 .pins
                 .sort_by_key(|pin| (pin.sample_start, pin.sample_end));
+            // support() can retain an incumbent and another alternative from
+            // the same frame. They are alternative labels/partitions, not
+            // additional physical words in one recognition. Exact duplicate
+            // pins were removed above; remaining overlaps cannot certify a
+            // complete group, even if their member targets cover this scope.
+            if hypothesis
+                .pins
+                .windows(2)
+                .any(|pair| pair[0].sample_end > pair[1].sample_start)
+            {
+                continue;
+            }
             hypothesis.original_text = hypothesis
                 .pins
                 .iter()
@@ -736,11 +761,13 @@ impl AcousticLedger {
             let start = ranges
                 .iter()
                 .map(|range| range.sample_start)
+                .chain(hypothesis.pins.iter().map(|pin| pin.sample_start))
                 .min()
                 .unwrap_or(0);
             let end = ranges
                 .iter()
                 .map(|range| range.sample_end)
+                .chain(hypothesis.pins.iter().map(|pin| pin.sample_end))
                 .max()
                 .unwrap_or(0);
             hypothesis.complete = hypothesis.complete
