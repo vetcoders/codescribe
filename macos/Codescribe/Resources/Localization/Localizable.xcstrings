@@ -1722,12 +1722,12 @@
         }
       }
     },
-    "A saved consent does not mean audio is being sent now. Audio is sent only while Cloud mode is selected, or during a cloud re-transcription you start yourself." : {
+    "A saved consent does not mean audio is being sent now." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisana zgoda nie oznacza, że dźwięk jest teraz wysyłany. Dźwięk jest wysyłany tylko wtedy, gdy wybrany jest tryb Chmura, albo podczas ponownej transkrypcji w chmurze, którą uruchamiasz samodzielnie."
+            "state" : "needs_review",
+            "value" : "Zgoda nie oznacza, że dźwięk jest teraz wysyłany."
           }
         }
       }
@@ -1791,6 +1791,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API (opcjonalnie)"
+          }
+        }
+      }
+    },
+    "API keys" : {
+      "comment" : "Privacy details subsection: key storage and the gateway",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Klucze API"
           }
         }
       }
@@ -2966,7 +2977,7 @@
       }
     },
     "Audio" : {
-      "comment" : "Settings section",
+      "comment" : "Privacy egress row: recorded sound\nSettings section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3072,16 +3083,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przechowywanie nagrań"
-          }
-        }
-      }
-    },
-    "Audio — during cloud speech recognition in Cloud mode, and during an explicit cloud re-transcription of a recording. The re-transcription is a separate action you start, available whenever a cloud transcription lane is configured." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dźwięk — podczas rozpoznawania mowy w trybie Chmura oraz podczas jawnej ponownej transkrypcji nagrania w chmurze. Ponowna transkrypcja to osobne działanie, które uruchamiasz samodzielnie; jest dostępna zawsze, gdy skonfigurowano transkrypcję w chmurze."
           }
         }
       }
@@ -4161,6 +4162,17 @@
         }
       }
     },
+    "Cloud consent" : {
+      "comment" : "Privacy row: the stored audio-egress consent record",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zgoda na chmurę"
+          }
+        }
+      }
+    },
     "Cloud live" : {
       "comment" : "Cloud streaming transcriber",
       "localizations" : {
@@ -4684,6 +4696,17 @@
         }
       }
     },
+    "Configure cloud services" : {
+      "comment" : "Privacy action: opens Providers > Cloud transcription",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Skonfiguruj usługi chmurowe"
+          }
+        }
+      }
+    },
     "Configured — agent not started yet" : {
       "localizations" : {
         "pl" : {
@@ -4840,6 +4863,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie sprawdzono połączenia"
+          }
+        }
+      }
+    },
+    "Consent" : {
+      "comment" : "Privacy details subsection: refusal without a grant",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zgoda"
           }
         }
       }
@@ -5518,17 +5552,6 @@
         }
       }
     },
-    "Current mode" : {
-      "comment" : "Privacy row: the selected recognition mode",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aktualny tryb"
-          }
-        }
-      }
-    },
     "Currently using: %@" : {
       "comment" : "The placeholder is an input device name",
       "localizations" : {
@@ -5844,12 +5867,22 @@
       }
     },
     "Diagnostics" : {
-      "comment" : "Settings tab: agent connection diagnostics",
+      "comment" : "Privacy details subsection: cloud session telemetry\nSettings tab: agent connection diagnostics",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Diagnostyka"
+          }
+        }
+      }
+    },
+    "Diagnostics, API keys, safeguards, and how the local modes behave." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Diagnostyka, klucze API, zabezpieczenia oraz działanie trybów lokalnych."
           }
         }
       }
@@ -6159,6 +6192,16 @@
         }
       }
     },
+    "During AI requests to the providers you configured." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podczas korzystania z funkcji AI wymagających zewnętrznego dostawcy."
+          }
+        }
+      }
+    },
     "During dictation" : {
       "localizations" : {
         "pl" : {
@@ -6297,16 +6340,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Adres API"
-          }
-        }
-      }
-    },
-    "Endpoints and keys live on Providers › Cloud transcription." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Adresy API i klucze ustawisz w: Dostawcy › Transkrypcje w chmurze."
           }
         }
       }
@@ -7225,6 +7258,16 @@
         }
       }
     },
+    "In Cloud mode, and when you start a cloud re-transcription of a recording yourself." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "W trybie Chmura lub gdy samodzielnie uruchomisz ponowną transkrypcję nagrania w chmurze."
+          }
+        }
+      }
+    },
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -8057,6 +8100,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dane lokalne"
+          }
+        }
+      }
+    },
+    "Local modes" : {
+      "comment" : "Privacy details subsection: local lanes and installs",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tryby lokalne"
           }
         }
       }
@@ -11116,7 +11170,7 @@
       }
     },
     "Recognition mode" : {
-      "comment" : "Engine tab section: the mode picker",
+      "comment" : "Engine tab section: the mode picker\nPrivacy row: the selected recognition mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -12331,17 +12385,6 @@
         }
       }
     },
-    "Saved consent" : {
-      "comment" : "Privacy row: the stored audio-egress consent record",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisana zgoda"
-          }
-        }
-      }
-    },
     "Saved conversations" : {
       "comment" : "Previous or unbound agent conversations; their immutable owner is retained",
       "localizations" : {
@@ -12629,12 +12672,12 @@
         }
       }
     },
-    "See when Codescribe processes audio on this Mac and when it may use cloud services." : {
+    "See when Codescribe uses online services." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź, kiedy Codescribe przetwarza dźwięk lokalnie, a kiedy może korzystać z usług chmurowych."
+            "state" : "needs_review",
+            "value" : "Sprawdź, kiedy Codescribe korzysta z usług online."
           }
         }
       }
@@ -14466,6 +14509,17 @@
         }
       }
     },
+    "Text" : {
+      "comment" : "Privacy egress row: transcript and prompt text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tekst"
+          }
+        }
+      }
+    },
     "Text appears almost as soon as it is recognized." : {
       "localizations" : {
         "pl" : {
@@ -14495,16 +14549,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Weryfikacja tekstu jest niepełna. Nie można wskazać dokładnego fragmentu, którego brakuje w transkrypcji."
-          }
-        }
-      }
-    },
-    "Text — during AI requests to the providers you configured." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tekst — podczas zapytań AI do skonfigurowanych przez Ciebie dostawców."
           }
         }
       }
@@ -16315,13 +16359,13 @@
         }
       }
     },
-    "What can leave this Mac" : {
+    "What can leave this computer?" : {
       "comment" : "Privacy section: outbound data",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co może opuścić tego Maca"
+            "state" : "needs_review",
+            "value" : "Co może opuścić ten komputer?"
           }
         }
       }
