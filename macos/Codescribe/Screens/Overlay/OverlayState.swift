@@ -2382,6 +2382,17 @@ final class OverlayState {
     autoFormatLevel = truth.autoFormatLevel
   }
 
+  /// A Settings or Quick Settings write reached `settings.json`. An idle
+  /// overlay re-reads the canonical policy so it shows the new level now,
+  /// not at the next take. A take in flight (warming, recording, tail decode,
+  /// final pass) keeps the snapshot latched at its start, and an explicit
+  /// one-shot format carries its own level, so neither is touched. Reads
+  /// only: transcript, document and presentation state stay as they are.
+  func canonicalConfigurationDidChange() {
+    guard !warmingUp, !recording, !transcribing, !isFinalPass else { return }
+    refreshOverlayPolicyTruth()
+  }
+
   private var engineChipLatched = false
 
   private func refreshEngineChip(reset: Bool) {

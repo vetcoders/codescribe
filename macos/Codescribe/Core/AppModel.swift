@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
   /// (Settings window, tray Quick Settings). Carries edges, never values.
   let configurationInvalidation: ConfigurationInvalidation
   private var recordingEdgeSink: AnyCancellable?
+  private var overlayPolicySink: AnyCancellable?
   /// Independent text scale for the agent chat surface (⌘+/-/0 while the chat
   /// window is key). The overlay's scale lives on `OverlayController`.
   let chatTextScale = TextScaleController(key: "AgentChat.textScale.v1")
@@ -72,6 +73,13 @@ final class AppModel: ObservableObject {
       .dropFirst()
       .sink { [configurationInvalidation] _ in
         configurationInvalidation.recordingLifecycleChanged()
+      }
+    // The idle overlay projects the same canonical policy; it re-reads it
+    // through its own engine when Settings or Quick Settings writes.
+    overlayPolicySink = configurationInvalidation.edges(excluding: self)
+      .sink { [overlay] edge in
+        guard edge == .settingsWritten else { return }
+        overlay.state.canonicalConfigurationDidChange()
       }
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }

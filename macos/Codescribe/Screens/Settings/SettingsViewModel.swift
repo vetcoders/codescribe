@@ -1239,12 +1239,19 @@ final class SettingsViewModel: ObservableObject {
   /// Shared invalidation edges from `AppModel` (nil in tests and previews).
   private let configurationInvalidation: ConfigurationInvalidation?
   private var configurationInvalidationSink: AnyCancellable?
-  /// Bounded residency settle loop; see `beginWhisperResidencyObservation`.
+  /// Residency wait loop; see `beginWhisperResidencyObservation`.
   private var whisperResidencyObservation: Task<Void, Never>?
   private var whisperResidencyObserved = false
-  /// Re-read cadence and budget while resident weights have not caught up
-  /// with the selection. Bounded so an idle Settings window stops reading.
-  var whisperResidencySettle: (interval: Duration, attempts: Int) = (.seconds(2), 15)
+  /// Fence for the wait loop: a newer edge, selection or close supersedes it.
+  private var whisperResidencyGeneration: UInt64 = 0
+  /// A recorder edge made a resident-weights change expected (a take loads
+  /// the engine lazily; its tail may cold-load after the stop edge).
+  private var whisperLoadExpected = false
+  /// Catalog re-read delay while a load is pending: starts at `initial`,
+  /// doubles per read, never exceeds `ceiling`. No lifetime budget.
+  var whisperResidencyPollInterval: (initial: Duration, ceiling: Duration) = (
+    .seconds(2), .seconds(10)
+  )
 
   // MARK: - Hotkeys (mode bindings)
 
@@ -1392,9 +1399,10 @@ final class SettingsViewModel: ObservableObject {
       applyLoadedSettings(engine.loadSettings())
       refreshWhisperModelCatalog()
     case .recordingLifecycle:
+      whisperLoadExpected = true
       refreshWhisperModelCatalog()
     }
-    settleWhisperResidencyIfObserved()
+    observeWhisperResidencyIfNeeded()
   }
 
   /// Passive inspection of the bundled installer; never attaches an agent.
@@ -1568,25 +1576,29 @@ final class SettingsViewModel: ObservableObject {
       }
       self.refreshWhisperModelCatalog()
       self.refreshWhisperModelStatus()
-      self.settleWhisperResidencyIfObserved()
+      self.observeWhisperResidencyIfNeeded()
     }
   }
 
   // MARK: - Resident Whisper observation (visible Settings only)
 
-  /// Residency moves without a Swift event: the launch prewarm thread and a
-  /// deferred switch applied after the recorder goes idle finish on their own
-  /// schedule, and the catalog is a passive read. Recorder edges and
-  /// selections therefore start a short, bounded re-read of the catalog alone
-  /// (never the whole settings snapshot) that stops as soon as resident
-  /// weights match the selection. Owned by the visible Settings window.
+  /// Residency moves without a Swift event: the bridge exposes no load
+  /// completion, a take loads the engine lazily, a tail decode may cold-load
+  /// after the stop edge, and a deferred switch lands at the recording-idle
+  /// boundary. While such a change is pending and Settings is visible, the
+  /// catalog alone (never the whole settings snapshot) is re-read on a
+  /// widening interval until resident weights match the selection, the
+  /// window closes, or a newer edge supersedes the wait. There is no lifetime
+  /// budget: a slow first load still reaches the open picker.
   func beginWhisperResidencyObservation() {
     whisperResidencyObserved = true
-    settleWhisperResidencyIfObserved()
+    observeWhisperResidencyIfNeeded()
   }
 
   func endWhisperResidencyObservation() {
     whisperResidencyObserved = false
+    whisperLoadExpected = false
+    whisperResidencyGeneration &+= 1
     whisperResidencyObservation?.cancel()
     whisperResidencyObservation = nil
   }
@@ -1601,20 +1613,40 @@ final class SettingsViewModel: ObservableObject {
     return loaded == resolved || loaded == "embedded"
   }
 
-  private func settleWhisperResidencyIfObserved() {
-    guard whisperResidencyObserved, engine != nil else { return }
-    whisperResidencyObservation?.cancel()
-    guard !whisperResidencySettled else {
-      whisperResidencyObservation = nil
-      return
+  /// A resident-weights change is on its way without another user action:
+  /// resident weights differ from the selection (a deferred switch drops them
+  /// at idle), or a recorder edge made a load expected. Idle and unloaded
+  /// with no such edge is stable truth ("loads on the next recording").
+  var whisperResidencyPending: Bool {
+    guard !whisperResidencySettled, whisperModelCatalog?.resolvedPath != nil else {
+      return false
     }
-    let settle = whisperResidencySettle
+    return whisperModelCatalog?.loaded != nil || whisperLoadExpected
+  }
+
+  private func observeWhisperResidencyIfNeeded() {
+    guard whisperResidencyObserved, engine != nil else { return }
+    whisperResidencyGeneration &+= 1
+    whisperResidencyObservation?.cancel()
+    whisperResidencyObservation = nil
+    if whisperResidencySettled { whisperLoadExpected = false }
+    guard whisperResidencyPending else { return }
+    let generation = whisperResidencyGeneration
+    let cadence = whisperResidencyPollInterval
     whisperResidencyObservation = Task { @MainActor [weak self] in
-      for _ in 0..<max(settle.attempts, 0) {
-        try? await Task.sleep(for: settle.interval)
-        guard !Task.isCancelled, let self else { return }
+      var delay = cadence.initial
+      while true {
+        try? await Task.sleep(for: delay)
+        guard !Task.isCancelled, let self, self.whisperResidencyGeneration == generation else {
+          return
+        }
         self.refreshWhisperModelCatalog()
-        if self.whisperResidencySettled { return }
+        if self.whisperResidencySettled { self.whisperLoadExpected = false }
+        guard self.whisperResidencyPending else {
+          self.whisperResidencyObservation = nil
+          return
+        }
+        delay = min(delay * 2, cadence.ceiling)
       }
     }
   }

@@ -11,7 +11,8 @@ import Foundation
 /// propagation".
 ///
 /// Scoped, not global: `AppModel` owns the single instance and hands it to the
-/// Settings window model and the tray. View models built without one (tests,
+/// Settings window model and the tray, and points the idle overlay policy
+/// projection at it. View models built without one (tests,
 /// previews, the Max-permission model) neither publish nor observe, so a mock
 /// engine test can never wake a live core listener in the XCTest host
 /// (`CodescribeTests/README.md`, bus fan-out).
