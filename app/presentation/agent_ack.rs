@@ -5,7 +5,7 @@
 //! A delivery is emitted once: the cursor remembers it, and a scan of existing
 //! `agent_ack` rows refuses a second append after the cursor is gone.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -156,6 +156,25 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             .collect();
         markers.sort();
         for marker_path in markers {
+            let Some(delivery_id) = marker_delivery_id(&marker_path) else {
+                continue;
+            };
+            // A persisted or bus-recovered ack is already final.
+            if cursor.emitted.contains(delivery_id) {
+                if cursor.known_seals.remove(delivery_id) {
+                    dirty = true;
+                }
+                continue;
+            }
+            // Bus and pending delivery proof were folded into known_seals
+            // before traversal. The marker body cannot authorize an ack alone.
+            if !cursor.known_seals.contains(delivery_id) {
+                // This counts canonical candidates lacking delivery proof.
+                stats.skipped_unproven += 1;
+                continue;
+            }
+            // Proof only permits inspection. A new marker must still pass
+            // its file, body, lease, envelope, and recipient checks.
             let Some(marker) = read_marker(&marker_path, lease, fallback_bus)? else {
                 continue;
             };
@@ -172,17 +191,6 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 if cursor.known_seals.remove(&delivery_id) {
                     dirty = true;
                 }
-                continue;
-            }
-            let pending_kind = lease
-                .pending
-                .iter()
-                .find(|pending| pending.id == delivery_id)
-                .and_then(|pending| pending.kind.as_deref());
-            let proven = matches!(pending_kind, Some("seal" | "message"))
-                || cursor.known_seals.contains(&delivery_id);
-            if !proven {
-                stats.skipped_unproven += 1;
                 continue;
             }
             let row = json!({
@@ -390,17 +398,56 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Clone)]
 struct PendingDelivery {
     id: String,
     kind: Option<String>,
 }
 
+#[derive(Clone)]
 struct LeaseRecord {
     lease_id: String,
     provider: String,
     provider_session_id: String,
     bus: Option<PathBuf>,
     pending: Vec<PendingDelivery>,
+}
+
+/// Fields the 500 ms ack scan actually reads. Everything else in a lease —
+/// pending occurrence payloads, unclosed channel transcripts — is skipped.
+/// Deserializing those as `serde_json::Value` rebuilt multi-megabyte trees
+/// on every pass.
+#[derive(serde::Deserialize)]
+struct LeaseSnapshot {
+    schema: String,
+    lease_id: String,
+    provider: String,
+    provider_session_id: String,
+    #[serde(default)]
+    bus: Option<String>,
+    #[serde(default)]
+    pending: Vec<LeasePendingSnapshot>,
+}
+
+#[derive(serde::Deserialize)]
+struct LeasePendingSnapshot {
+    #[serde(default)]
+    delivery_id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+struct CachedLease {
+    len: u64,
+    modified: SystemTime,
+    ino: u64,
+    record: LeaseRecord,
+}
+
+fn lease_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, CachedLease>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, CachedLease>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
@@ -413,67 +460,94 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
         .collect();
     paths.sort();
     for path in paths {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let len = metadata.len();
+        let ino = file_ino(&metadata);
+        let Some(modified) = metadata.modified().ok() else {
+            continue;
+        };
+        let cached = {
+            let cache = lease_cache()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            cache.get(&path).and_then(|hit| {
+                (hit.len == len && hit.ino == ino && hit.modified == modified)
+                    .then(|| hit.record.clone())
+            })
+        };
+        if let Some(record) = cached {
+            leases.push(record);
+            continue;
+        }
+        #[cfg(test)]
+        tests::LEASE_BODY_READS.with(|reads| reads.set(reads.get() + 1));
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        let Ok(snapshot) = serde_json::from_str::<LeaseSnapshot>(&text) else {
             continue;
         };
-        if value.get("schema").and_then(Value::as_str) != Some(LEASE_SCHEMA) {
+        if snapshot.schema != LEASE_SCHEMA || !safe_lease_id(&snapshot.lease_id) {
             continue;
         }
-        let Some(lease_id) = value.get("lease_id").and_then(Value::as_str) else {
-            continue;
-        };
-        if !safe_lease_id(lease_id) {
+        let provider = snapshot.provider.trim();
+        if provider.is_empty() {
             continue;
         }
-        let Some(provider) = value
-            .get("provider")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let Some(provider_session_id) = value.get("provider_session_id").and_then(Value::as_str)
-        else {
-            continue;
-        };
-        let provider_session_id = provider_session_id.trim();
+        let provider_session_id = snapshot.provider_session_id.trim();
         if provider_session_id.is_empty() {
             continue;
         }
-        let bus = value
-            .get("bus")
-            .and_then(Value::as_str)
+        let bus = snapshot
+            .bus
+            .as_deref()
             .map(str::trim)
             .filter(|bus| !bus.is_empty())
             .map(PathBuf::from);
-        let pending = value
-            .get("pending")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        let id = item
-                            .get("delivery_id")
-                            .and_then(Value::as_str)
-                            .filter(|id| is_delivery_id(id))?
-                            .to_string();
-                        let kind = item.get("kind").and_then(Value::as_str).map(str::to_string);
-                        Some(PendingDelivery { id, kind })
-                    })
-                    .collect()
+        let pending = snapshot
+            .pending
+            .into_iter()
+            .filter_map(|item| {
+                let id = item.delivery_id.filter(|id| is_delivery_id(id))?;
+                Some(PendingDelivery {
+                    id,
+                    kind: item.kind,
+                })
             })
-            .unwrap_or_default();
-        leases.push(LeaseRecord {
-            lease_id: lease_id.to_string(),
+            .collect();
+        let record = LeaseRecord {
+            lease_id: snapshot.lease_id,
             provider: provider.to_string(),
             provider_session_id: provider_session_id.to_string(),
             bus,
             pending,
+        };
+        let unchanged = fs::metadata(&path).ok().is_some_and(|after| {
+            after.len() == len && file_ino(&after) == ino && after.modified().ok() == Some(modified)
         });
+        if unchanged {
+            let mut cache = lease_cache()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(
+                path,
+                CachedLease {
+                    len,
+                    modified,
+                    ino,
+                    record: record.clone(),
+                },
+            );
+        }
+        leases.push(record);
     }
     leases
 }
@@ -714,25 +788,26 @@ struct AckMarker {
     has_envelope: bool,
 }
 
+fn marker_delivery_id(path: &Path) -> Option<&str> {
+    let stem = path.file_name()?.to_str()?.strip_suffix(".json")?;
+    is_delivery_id(stem).then_some(stem)
+}
+
 fn read_marker(
     path: &Path,
     lease: &LeaseRecord,
     fallback_bus: &Path,
 ) -> io::Result<Option<AckMarker>> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(stem) = marker_delivery_id(path) else {
         return Ok(None);
     };
-    let Some(stem) = name.strip_suffix(".json") else {
-        return Ok(None);
-    };
-    if !is_delivery_id(stem) {
-        return Ok(None);
-    }
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.len() > 1 << 20 {
         return Ok(None);
     }
     let file = fs::File::open(path)?;
+    #[cfg(test)]
+    tests::MARKER_BODY_READS.with(|reads| reads.set(reads.get() + 1));
     // Keep the physical read bound inside the buffer. Serde's reader otherwise
     // turns the recurring marker scan into one file syscall for every byte.
     let value: Value = match serde_json::from_reader(BufReader::new(file.take(1 << 20))) {
@@ -893,6 +968,11 @@ fn note_spoken_reply(cursor: &mut Cursor, dirty: &mut bool, reply_id: &str) {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    thread_local! {
+        pub(super) static MARKER_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static LEASE_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     const SEAL_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaa";
     const DRAFT_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -1179,7 +1259,8 @@ mod tests {
         );
         let stats = scan(&bridge, &bus).unwrap();
         assert_eq!(stats.appended, 0, "{stats:?}");
-        assert_eq!(stats.skipped_unproven, 1, "{stats:?}");
+        // Both filenames lack delivery proof; neither body is opened.
+        assert_eq!(stats.skipped_unproven, 2, "{stats:?}");
         assert!(ack_rows(&bus).is_empty());
     }
 
@@ -1459,5 +1540,73 @@ mod tests {
             mark.offset,
             (first_line.len() + seal_row(ROTATED_ID).len()) as u64
         );
+    }
+    #[test]
+    fn ack_scan_reads_only_new_proven_markers_and_admits_late_proof() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        for ordinal in 1..=256 {
+            let id = format!("{ordinal:024x}");
+            marker_for(&bridge, &id);
+        }
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(
+            MARKER_BODY_READS.with(|reads| reads.get()),
+            0,
+            "an unchanged scan must not open emitted or unproven marker bodies"
+        );
+        let late_id = format!("{:024x}", 128);
+        OpenOptions::new()
+            .append(true)
+            .open(&bus)
+            .unwrap()
+            .write_all(seal_row(&late_id).as_bytes())
+            .unwrap();
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 1);
+        assert_eq!(ack_rows(&bus).len(), 2);
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 0);
+    }
+
+    #[test]
+    fn an_unchanged_lease_body_is_read_once() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        let path = bridge.join("leases").join(format!("{LEASE_ID}.json"));
+        let mut document = lease(
+            &bus,
+            json!([{
+                "delivery_id": SEAL_ID,
+                "kind": "seal",
+                "occurrences": "x".repeat(256 * 1024)
+            }]),
+        );
+        write_json(&path, &document);
+        LEASE_BODY_READS.with(|reads| reads.set(0));
+        let first = load_leases(&bridge);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].pending[0].id, SEAL_ID);
+        assert_eq!(LEASE_BODY_READS.with(|reads| reads.get()), 1);
+        let second = load_leases(&bridge);
+        assert_eq!(second[0].pending[0].id, SEAL_ID);
+        assert_eq!(
+            LEASE_BODY_READS.with(|reads| reads.get()),
+            1,
+            "an unchanged lease must not be parsed again on the next 500 ms pass"
+        );
+        document["pending"] = json!([{ "delivery_id": DRAFT_ID, "kind": "seal" }]);
+        write_json(&path, &document);
+        let third = load_leases(&bridge);
+        assert_eq!(third[0].pending[0].id, DRAFT_ID);
+        assert_eq!(LEASE_BODY_READS.with(|reads| reads.get()), 2);
     }
 }

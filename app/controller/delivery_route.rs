@@ -53,9 +53,9 @@ pub enum DeliveryRoute {
     /// History / notes / RAW only — no user-visible delivery.
     ArchiveOnly,
     /// An armed automatic paste the paste-mode gate or the executable-content
-    /// guard stopped. The transcript is left on the pasteboard on purpose and
-    /// a notification names why; the user's own ⌘V is the confirmation. No
-    /// synthetic Cmd+V is ever posted for this route.
+    /// guard stopped. Execution arms the existing Deferred Paste slot without
+    /// changing the system clipboard. The configured deferred shortcut inserts
+    /// it later; no synthetic Cmd+V is posted by the hold.
     ClipboardHold,
 }
 
@@ -63,7 +63,8 @@ pub enum DeliveryRoute {
 /// selection still belongs exclusively to [`resolve_delivery_route`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayPasteDelivery {
-    Pasted,
+    /// Keyboard events were posted; the recipient has not acknowledged insertion.
+    PasteRequested,
     CopiedToClipboard,
     AccessibilityPermissionNeeded,
     DeferredInsertArmed,
@@ -325,8 +326,8 @@ fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
 ///   dictation never lands in a secret field (Founder s03-028).
 /// - A terminal gets Cmd+V only when the text does not look executable; a
 ///   command-shaped take is held for the user's own ⌘V (Founder s04-036).
-/// - Safe pastes into anything else only when an editable text field is
-///   observed; Comfort pastes wherever the caret is (Founder s04-023).
+/// - Both automatic modes require an observed editable input. App focus or a
+///   text-shaped role alone never authorizes a keyboard shortcut.
 ///
 /// The gate can only answer `ClipboardPaste` or `ClipboardHold`.
 fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> DeliveryDecision {
@@ -337,16 +338,13 @@ fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> Deliver
     if target.field == FocusedInputField::Secure {
         return hold("hold_secure_field");
     }
-    if target.terminal {
-        if executable {
-            return hold("hold_executable");
-        }
-    } else if mode == PasteMode::Safe {
-        match target.field {
-            FocusedInputField::Text | FocusedInputField::Secure => {}
-            FocusedInputField::NotText => return hold("hold_no_text_field"),
-            FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
-        }
+    if target.terminal && executable {
+        return hold("hold_executable");
+    }
+    match target.field {
+        FocusedInputField::Text | FocusedInputField::Secure => {}
+        FocusedInputField::NotText => return hold("hold_no_text_field"),
+        FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
     }
     DeliveryDecision {
         route: DeliveryRoute::ClipboardPaste,
@@ -366,17 +364,11 @@ pub fn paste_hold_notice(decision: DeliveryDecision) -> Option<&'static str> {
     }
     Some(match decision.reason {
         "hold_executable" => {
-            "Held: this looks like a shell command. It is on your clipboard — press ⌘V to paste it."
+            "Held: this looks like a shell command. It is waiting in Deferred Paste."
         }
-        "hold_secure_field" => {
-            "Held: a password field has focus. It is on your clipboard — press ⌘V where you want it."
-        }
-        "hold_no_text_field" => {
-            "Held: no text field had focus. It is on your clipboard — press ⌘V to paste it."
-        }
-        _ => {
-            "Held: Codescribe could not confirm a text field. It is on your clipboard — press ⌘V to paste it."
-        }
+        "hold_secure_field" => "Held: a password field has focus. It is waiting in Deferred Paste.",
+        "hold_no_text_field" => "Held: no text field had focus. It is waiting in Deferred Paste.",
+        _ => "Held: Codescribe could not confirm a text field. It is waiting in Deferred Paste.",
     })
 }
 
@@ -628,13 +620,21 @@ pub(crate) fn resolve_transcript_projection_availability(
     );
     let insert_route_is_legal = matches!(
         insert.route,
-        DeliveryRoute::ClipboardPaste | DeliveryRoute::DeferredInsert
+        DeliveryRoute::ClipboardPaste
+            | DeliveryRoute::ClipboardHold
+            | DeliveryRoute::DeferredInsert
     );
 
+    // A historical projection cannot observe today's caret. Keep the explicit
+    // action available so its executor can inspect the retained target; this
+    // flag never authorizes posting keyboard events.
     TranscriptProjectionAvailability {
         can_paste: !take_in_progress
             && has_latched_target
-            && matches!(insert.route, DeliveryRoute::ClipboardPaste),
+            && matches!(
+                insert.route,
+                DeliveryRoute::ClipboardPaste | DeliveryRoute::ClipboardHold
+            ),
         can_insert: !take_in_progress && insert_route_is_legal,
         can_copy: has_text,
         can_retranscribe: !take_in_progress && session_wav_exists,
@@ -662,9 +662,18 @@ fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
             reason: "refuse_paste_into_self",
         };
     }
-    DeliveryDecision {
-        route: DeliveryRoute::ClipboardPaste,
-        reason: "explicit_insert",
+    let gate = paste_gate(
+        PasteMode::Safe,
+        facts.paste_target,
+        facts.executable_payload,
+    );
+    if gate.route == DeliveryRoute::ClipboardPaste {
+        DeliveryDecision {
+            route: DeliveryRoute::ClipboardPaste,
+            reason: "explicit_insert",
+        }
+    } else {
+        gate
     }
 }
 
@@ -822,15 +831,29 @@ mod tests {
             (Safe, false, Secure, false, Hold, "hold_secure_field"),
             // Executable text into a non-terminal field is not a shell.
             (Safe, false, Text, true, Paste, "paste_safe"),
-            // Terminals rarely expose an AX text role; the guard decides.
-            (Safe, true, Unobserved, false, Paste, "paste_safe"),
+            // Unobserved terminal input is retained, even for ordinary prose.
+            (Safe, true, Unobserved, false, Hold, "hold_field_unobserved"),
             (Safe, true, Text, true, Hold, "hold_executable"),
             (Safe, true, Secure, false, Hold, "hold_secure_field"),
             (Comfort, false, Text, false, Paste, "paste_comfort"),
-            (Comfort, false, NotText, false, Paste, "paste_comfort"),
-            (Comfort, false, Unobserved, false, Paste, "paste_comfort"),
+            (Comfort, false, NotText, false, Hold, "hold_no_text_field"),
+            (
+                Comfort,
+                false,
+                Unobserved,
+                false,
+                Hold,
+                "hold_field_unobserved",
+            ),
             (Comfort, false, Secure, false, Hold, "hold_secure_field"),
-            (Comfort, true, Unobserved, false, Paste, "paste_comfort"),
+            (
+                Comfort,
+                true,
+                Unobserved,
+                false,
+                Hold,
+                "hold_field_unobserved",
+            ),
             (Comfort, true, Unobserved, true, Hold, "hold_executable"),
             (Comfort, true, Secure, true, Hold, "hold_secure_field"),
         ];
@@ -870,10 +893,17 @@ mod tests {
         assert_eq!(live.route, DeliveryRoute::ArchiveOnly);
     }
 
-    /// The explicit Insert click is the user's confirmation: neither the paste
-    /// mode nor the executable guard applies to it.
+    /// Explicit Insert bypasses automatic mode Off, but still needs a writable
+    /// non-secret field and refuses executable text in a terminal.
     #[test]
-    fn explicit_insert_is_not_gated_by_paste_mode_or_guard() {
+    fn explicit_insert_bypasses_mode_off_but_keeps_input_and_terminal_guards() {
+        let confirmed_input = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| f.paste_mode = PasteMode::Off),
+        );
+        assert_eq!(confirmed_input.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(confirmed_input.reason, "explicit_insert");
+
         let decision = resolve_delivery_route(
             DeliveryIntent::OverlayInsert,
             facts(|f| {
@@ -885,8 +915,19 @@ mod tests {
                 f.executable_payload = true;
             }),
         );
-        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
-        assert_eq!(decision.reason, "explicit_insert");
+        assert_eq!(decision.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(decision.reason, "hold_secure_field");
+
+        let executable = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| {
+                f.paste_mode = PasteMode::Off;
+                f.paste_target.terminal = true;
+                f.executable_payload = true;
+            }),
+        );
+        assert_eq!(executable.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(executable.reason, "hold_executable");
     }
 
     #[test]
@@ -907,7 +948,7 @@ mod tests {
                 reason,
             })
             .expect("a hold always explains itself");
-            assert!(notice.contains("⌘V"), "{reason}: {notice}");
+            assert!(notice.contains("Deferred Paste"), "{reason}: {notice}");
         }
         assert!(
             paste_hold_notice(DeliveryDecision {
@@ -1079,6 +1120,25 @@ mod tests {
     }
 
     #[test]
+    fn explicit_insert_requires_editable_input_in_every_app() {
+        for terminal in [false, true] {
+            for field in [
+                FocusedInputField::NotText,
+                FocusedInputField::Unobserved,
+                FocusedInputField::Secure,
+            ] {
+                let decision = resolve_delivery_route(
+                    DeliveryIntent::OverlayInsert,
+                    facts(|f| {
+                        f.paste_target = PasteTarget { terminal, field };
+                    }),
+                );
+                assert_eq!(decision.route, DeliveryRoute::ClipboardHold);
+            }
+        }
+    }
+
+    #[test]
     fn overlay_insert_into_self_is_deferred() {
         let decision = resolve_delivery_route(
             DeliveryIntent::OverlayInsert,
@@ -1114,6 +1174,22 @@ mod tests {
         assert!(click.latched_target_is_self);
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, click);
         assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
+    }
+
+    #[test]
+    fn projection_offers_explicit_target_check_without_authorizing_a_shortcut() {
+        let projection = resolve_transcript_projection_availability(true, false, true, true, false);
+        assert!(projection.can_insert);
+        assert!(projection.can_paste);
+        let unobserved = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            overlay_insert_facts(true, false),
+        );
+        assert_eq!(unobserved.route, DeliveryRoute::ClipboardHold);
+        assert_eq!(unobserved.reason, "hold_field_unobserved");
+        let no_target = resolve_transcript_projection_availability(true, false, true, false, false);
+        assert!(no_target.can_insert);
+        assert!(!no_target.can_paste);
     }
 
     #[test]

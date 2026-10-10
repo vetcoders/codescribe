@@ -41,7 +41,7 @@ fn token_is_current(token: u64, generation: u64) -> bool {
 /// gate needs it (`focused_input_field`). An observation, never a destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedInputField {
-    /// An editable text role (field, area, combo box, text view, web area).
+    /// An enabled text input with a writable value or selected-text attribute.
     Text,
     /// A password field, or secure event input is on system-wide (a password
     /// prompt owns the keyboard, e.g. a terminal `sudo` prompt).
@@ -66,6 +66,24 @@ fn classify_input_role(role: &str, subrole: Option<&str>) -> FocusedInputField {
         FocusedInputField::Text
     } else {
         FocusedInputField::NotText
+    }
+}
+
+/// An AX role is only a candidate. A whole web page or a read-only transcript
+/// must never become a paste recipient merely by reporting a text role.
+#[cfg(any(target_os = "macos", test))]
+fn classify_input_capability(
+    role: &str,
+    subrole: Option<&str>,
+    enabled: bool,
+    writable: bool,
+) -> FocusedInputField {
+    match classify_input_role(role, subrole) {
+        FocusedInputField::Secure => FocusedInputField::Secure,
+        FocusedInputField::Text if enabled && writable && role != "AXWebArea" => {
+            FocusedInputField::Text
+        }
+        _ => FocusedInputField::NotText,
     }
 }
 
@@ -162,6 +180,30 @@ impl HoldBadgeConfig {
 #[cfg(test)]
 mod tests {
     use super::{BadgeMode, FocusedInputField, HoldBadgeConfig, classify_input_role};
+
+    #[test]
+    fn paste_capability_refuses_pages_disabled_and_read_only_text() {
+        use super::classify_input_capability as classify;
+        assert_eq!(
+            classify("AXTextArea", None, true, true),
+            FocusedInputField::Text
+        );
+        for (role, enabled, writable) in [
+            ("AXWebArea", true, true),
+            ("AXTextArea", false, true),
+            ("AXTextArea", true, false),
+            ("AXButton", true, true),
+        ] {
+            assert_eq!(
+                classify(role, None, enabled, writable),
+                FocusedInputField::NotText
+            );
+        }
+        assert_eq!(
+            classify("AXTextField", Some("AXSecureTextField"), true, true),
+            FocusedInputField::Secure
+        );
+    }
 
     #[test]
     fn password_subrole_is_secure_and_text_roles_are_text() {
@@ -293,6 +335,7 @@ mod imp {
     use super::{FocusedInputField, HoldBadgeConfig};
 
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::boolean::CFBoolean;
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use dispatch::Queue;
@@ -309,7 +352,7 @@ mod imp {
     use tracing::{debug, warn};
 
     use crate::os::Id;
-    use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
+    use crate::os::ax_ffi::{AXUIElementCopyAttributeValue, AXUIElementIsAttributeSettable};
 
     // Accessibility API bindings (use raw pointers compatible with C FFI)
     /// Opaque `AXUIElementRef` / `AXValueRef` handle.
@@ -552,6 +595,50 @@ mod imp {
         }
     }
 
+    /// Classify capability on the same retained AX identity used by transport.
+    ///
+    /// # Safety
+    /// `element` must be a live retained AXUIElement owned by the caller.
+    pub(crate) unsafe fn input_field_for_element(element: AXId) -> FocusedInputField {
+        unsafe {
+            if IsSecureEventInputEnabled() != 0 {
+                return FocusedInputField::Secure;
+            }
+            let role = copy_string_attribute(element, AX_ROLE_ATTRIBUTE);
+            let subrole = copy_string_attribute(element, AX_SUBROLE_ATTRIBUTE);
+            let mut enabled_value: AXId = ptr::null_mut();
+            let enabled_attribute = CFString::new("AXEnabled");
+            let enabled_result = AXUIElementCopyAttributeValue(
+                element,
+                enabled_attribute.as_concrete_TypeRef() as AXId,
+                &mut enabled_value,
+            );
+            let enabled = if enabled_result == AX_ERROR_SUCCESS && !enabled_value.is_null() {
+                CFType::wrap_under_create_rule(enabled_value as CFTypeRef)
+                    .downcast::<CFBoolean>()
+                    .is_some_and(|value| value.into())
+            } else {
+                false
+            };
+            let writable = ["AXValue", "AXSelectedText"].iter().any(|name| {
+                let attribute = CFString::new(name);
+                let mut settable = 0;
+                AXUIElementIsAttributeSettable(
+                    element,
+                    attribute.as_concrete_TypeRef() as AXId,
+                    &mut settable,
+                ) == AX_ERROR_SUCCESS
+                    && settable != 0
+            });
+            match role {
+                Some(role) => {
+                    super::classify_input_capability(&role, subrole.as_deref(), enabled, writable)
+                }
+                None => FocusedInputField::Unobserved,
+            }
+        }
+    }
+
     /// Text-input shape of the element holding keyboard focus right now.
     ///
     /// Secure event input wins first: while any password prompt owns the
@@ -581,13 +668,9 @@ mod imp {
             // A stalled host must not hold the stop path for the default AX
             // timeout while the role and subrole are read.
             AXUIElementSetMessagingTimeout(focused, 0.1);
-            let role = copy_string_attribute(focused, AX_ROLE_ATTRIBUTE);
-            let subrole = copy_string_attribute(focused, AX_SUBROLE_ATTRIBUTE);
+            let field = input_field_for_element(focused);
             CFRelease(focused);
-            match role {
-                Some(role) => super::classify_input_role(&role, subrole.as_deref()),
-                None => FocusedInputField::Unobserved,
-            }
+            field
         }
     }
 
@@ -1144,3 +1227,6 @@ pub use stubs::{
     focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
     show_hold_badge_with_config, take_token, update_transcript,
 };
+
+#[cfg(target_os = "macos")]
+pub(crate) use imp::input_field_for_element;

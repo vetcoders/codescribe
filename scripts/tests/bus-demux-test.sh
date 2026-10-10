@@ -1677,7 +1677,7 @@ PY
 
 # --watch: one compact line per notable envelope from the session's follower
 # events. Drafts, attach receipts and stderr noise stay out; a replayed delivery
-# prints once; another lease's envelope is not this session's; text is capped.
+# prints once; another lease's envelope is not this session's; text is complete.
 WATCH_HOME="$WORKDIR/watch-bridge"
 python3 - "$DEMUX" "$WATCH_HOME" <<'PY'
 import importlib.util, json, subprocess, sys
@@ -1720,8 +1720,8 @@ out = subprocess.run(base + ["--provider", "codex", "--session", "watch-session"
                      capture_output=True, text=True, check=True)
 rows = [json.loads(line) for line in out.stdout.splitlines()]
 assert [row["delivery_id"] for row in rows] == ["b" * 24, "c" * 24, "d" * 24], rows
-assert set(rows[0]) == {"kind", "status", "coverage", "sca", "delivery_id", "text"}, rows[0]
-assert rows[0]["sca"] is True and len(rows[0]["text"]) == 500, rows[0]
+assert set(rows[0]) == {"kind", "status", "coverage", "sca", "delivery_id", "text", "lease_id"}, rows[0]
+assert rows[0]["sca"] is True and rows[0]["text"] == long_text, rows[0]
 assert rows[1]["coverage"] == "refused" and rows[1]["sca"] is False, rows[1]
 assert rows[2]["kind"] == "routing_ambiguity" and rows[2]["sca"] is False, rows[2]
 unscoped = subprocess.run(base + ["--from-file", str(log)],
@@ -1754,7 +1754,7 @@ try:
     ready, _, _ = select.select([watcher.stdout], [], [], 5)
     assert ready, "watch did not flush a live line"
     line = json.loads(watcher.stdout.readline())
-    assert line["delivery_id"] == "2" * 24 and "text" not in line and "notice" in line, line
+    assert line["delivery_id"] == "2" * 24 and line["text"] == "James, już." and "notice" in line, line
 finally:
     watcher.terminate()
     watcher.communicate(timeout=5)

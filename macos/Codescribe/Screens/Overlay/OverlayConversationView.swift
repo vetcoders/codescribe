@@ -114,7 +114,7 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if conversation.owner != nil {
+      if conversation.owner != nil || conversation.channel == "0" {
         OverlayConversationComposer(
           palette: palette, draft: $draft, sending: sending, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity)
@@ -159,11 +159,14 @@ struct OverlayConversationView: View {
       if conversation.channel == "0" {
         Text("0 · All")
       } else {
-        Text(verbatim: conversation.name)
-          .help(
-            Text(
-              verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
-                ?? ""))
+        Text(
+          verbatim: conversation.channel.isEmpty
+            ? conversation.name : "\(conversation.channel) · \(conversation.name)"
+        )
+        .help(
+          Text(
+            verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
+              ?? ""))
         if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale, weight: .regular))
@@ -328,6 +331,10 @@ struct OverlayConversationView: View {
         if message.unsolicited && message.kind == .reply {
           Text("Unsolicited reply").font(.system(size: 10 * textScale))
         }
+        Spacer(minLength: 8)
+        CopyMessageButton(text: message.text)
+          .buttonStyle(.borderless)
+          .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
       if let question = addressedQuestion(for: message) {

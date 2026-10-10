@@ -288,26 +288,7 @@ version:
 	@grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/v\1/'
 
 bump:
-	@if [ -z "$(TYPE)" ]; then \
-		echo "Usage: make bump TYPE=patch|minor|major"; \
-		echo "Current: $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"; \
-		exit 1; \
-	fi
-	@current=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	IFS='.' read -r major minor patch <<< "$$current"; \
-	case "$(TYPE)" in \
-		patch) patch=$$((patch + 1)) ;; \
-		minor) minor=$$((minor + 1)); patch=0 ;; \
-		major) major=$$((major + 1)); minor=0; patch=0 ;; \
-		*) echo "Invalid TYPE: $(TYPE)"; exit 1 ;; \
-	esac; \
-	new="$$major.$$minor.$$patch"; \
-	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" $(VERSION_FILE); \
-	if [ -f README.md ]; then \
-		sed -i '' "s/badge\/version-$$current-/badge\/version-$$new-/" README.md; \
-		sed -i '' "s/current source version is \`$$current\`/current source version is \`$$new\`/" README.md; \
-	fi; \
-	echo "Bumped: v$$current -> v$$new (Cargo.toml + README). Update CHANGELOG by hand. Website download metadata comes from GitHub Releases."
+	@python3 scripts/release-version.py --version-file "$(VERSION_FILE)" bump "$(TYPE)" $(if $(TO),--to "$(TO)",)
 
 bump-patch:
 	@$(MAKE) bump TYPE=patch
@@ -1150,11 +1131,13 @@ verify:
 	bash scripts/tests/share-new-model-tokenizer-test.sh; \
 	echo "=== Verify (env registry) ==="; \
 	python3 -m unittest scripts/tests/test_env_registry.py; \
+	python3 -m unittest scripts/tests/test_release_version.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
+	python3 -m unittest scripts/tests/test_bus_listener_recovery.py; \
 	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
 	python3 -m unittest scripts/tests/test_bus_runtime_model.py; \
 	python3 -m unittest scripts/tests/test_bus_user_text.py; \

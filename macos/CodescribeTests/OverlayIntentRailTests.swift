@@ -383,7 +383,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "coverage_refused", text: "Words kept without a seal",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed, showsDiagnostics: true)
@@ -403,7 +403,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "formatted", text: "Sealed words",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed)
@@ -620,14 +620,15 @@ final class OverlayIntentRailTests: XCTestCase {
   }
 
   func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
-    // All cases deliberately over-approximate co-visibility, so adding an
-    // intent cannot silently evade the census. Close is a custom brand dot.
+    XCTAssertNotEqual(OverlayIntent.undo.systemImage, OverlayIntent.redo.systemImage)
+    // Other cases over-approximate co-visibility. Close is a custom brand dot.
     let symbols =
       OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
-        OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
+        OverlayControlSymbols.history, OverlayControlSymbols.versions,
+        OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.placement,
-        OverlayControlSymbols.miniToTranscript, OverlayControlSymbols.midiToTranscript,
+        OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
         OverlayControlSymbols.returnToMini, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
@@ -693,7 +694,7 @@ final class OverlayIntentRailTests: XCTestCase {
 
     await fulfillment(of: [reached], timeout: 0.2)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertEqual(state.toast, "retranscribed — Back keeps the old text")
+    XCTAssertEqual(state.toast, "retranscribed")
   }
 
   func testMissingEngineSurfacesCopyAndInsertFailuresOnCanvas() {
@@ -920,8 +921,8 @@ final class OverlayIntentRailTests: XCTestCase {
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand widget")
-    XCTAssertEqual(collapsed.previewSymbol, "arrow.down.left", "click opens the full view")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand to compact widget")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.left", "click opens MIDI")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

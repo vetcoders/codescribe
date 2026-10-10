@@ -10,9 +10,22 @@ struct OverlayConversationComposer: View {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var clipboard: NSPasteboard = .general
+  var saveImage: (Data) throws -> URL = { data in
+    URL(fileURLWithPath: try savePastedImage(data: data))
+  }
+  @State private var pasteError: String?
 
   var body: some View {
-    composerContent.modifier(OverlayControlGlass())
+    VStack(alignment: .leading, spacing: 4) {
+      composerContent.modifier(OverlayControlGlass())
+      if let pasteError {
+        Text(verbatim: pasteError)
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-conversation-paste-error")
+      }
+    }
   }
 
   private var composerContent: some View {
@@ -20,7 +33,9 @@ struct OverlayConversationComposer: View {
       ConversationMessageField(
         text: $draft, textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
         sending: sending, onSubmit: onSubmit, onEditorActive: onEditorActive,
-        onTypingActivity: onTypingActivity
+        onTypingActivity: onTypingActivity,
+        clipboard: clipboard, saveImage: saveImage,
+        onPasteError: { pasteError = $0 }
       )
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("overlay-conversation-composer")
@@ -58,6 +73,9 @@ private struct ConversationMessageField: NSViewRepresentable {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  let clipboard: NSPasteboard
+  let saveImage: (Data) throws -> URL
+  let onPasteError: (String?) -> Void
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -105,6 +123,11 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.submit = { context.coordinator.submit($0) }
     editor.onEditorActive = { context.coordinator.noteEditorActive($0) }
     editor.onTypingActivity = { context.coordinator.noteTyping() }
+    editor.pasteImage = {
+      guard let data = try ConversationClipboardImage.png(from: clipboard) else { return nil }
+      return try saveImage(data)
+    }
+    editor.onPasteError = onPasteError
     if editor.string != text {
       context.coordinator.applyingExternalText = true
       editor.string = text
@@ -156,6 +179,23 @@ private struct ConversationMessageField: NSViewRepresentable {
     var submit: ((String) -> Void)?
     var onEditorActive: (Bool) -> Void = { _ in }
     var onTypingActivity: () -> Void = {}
+    var pasteImage: (() throws -> URL?)?
+    var onPasteError: (String?) -> Void = { _ in }
+
+    override func paste(_ sender: Any?) {
+      do {
+        if let url = try pasteImage?() {
+          insertText("\n\(url.path)\n", replacementRange: selectedRange())
+          onPasteError(nil)
+          onTypingActivity()
+          return
+        }
+        onPasteError(nil)
+        super.paste(sender)
+      } catch {
+        onPasteError(String(localized: "Could not save pasted image. Try pasting again."))
+      }
+    }
 
     override func becomeFirstResponder() -> Bool {
       let accepted = super.becomeFirstResponder()
@@ -188,5 +228,20 @@ private struct ConversationMessageField: NSViewRepresentable {
       onEditorActive(true)
       super.mouseDown(with: event)
     }
+  }
+}
+
+/// Only a bare clipboard image is converted; ordinary text keeps native paste behavior.
+enum ConversationClipboardImage {
+  @MainActor
+  static func png(from pasteboard: NSPasteboard) throws -> Data? {
+    guard pasteboard.availableType(from: [.fileURL, .string]) == nil,
+      let type = pasteboard.availableType(from: [.png, .tiff])
+    else { return nil }
+    guard let bytes = pasteboard.data(forType: type),
+      let bitmap = NSBitmapImageRep(data: bytes),
+      let png = bitmap.representation(using: .png, properties: [:])
+    else { throw CocoaError(.fileReadCorruptFile) }
+    return png
   }
 }

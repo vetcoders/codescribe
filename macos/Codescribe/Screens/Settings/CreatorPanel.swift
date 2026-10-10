@@ -56,8 +56,20 @@ struct CreatorPanel: View {
           }
           .pickerStyle(.segmented)
           .labelsHidden()
-          .frame(width: 330)
+          .fixedSize()
           .disabled(!model.settings.aiFormattingEnabled)
+        }
+        if model.maxAgentUnavailable {
+          Text(
+            String(
+              localized: "Max uses the Agent model. Set up the Agent endpoint to use Max.",
+              comment: "Shown when the Max level is selected but the Agent lane is unavailable"
+            )
+          )
+          .font(.caption)
+          .foregroundStyle(CSColor.terracotta)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("settings-max-agent-unavailable")
         }
         if model.maxConsultationEnabled {
           SettingsControlRow(
@@ -100,9 +112,9 @@ struct CreatorPanel: View {
         ) { model.performQuickStart(.testMic) }
         QuickStartCard(
           icon: .overlay,
-          title: "Open overlay",
-          accessibilityId: "settings-quickstart-open-overlay"
-        ) { model.performQuickStart(.openOverlay) }
+          title: "Open widget",
+          accessibilityId: "settings-quickstart-open-widget"
+        ) { model.performQuickStart(.openWidget) }
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",
@@ -416,21 +428,14 @@ private struct InterfaceLanguageRow: View {
       }
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
-          Text(
-            "Codescribe will restart in this language. Your recording must finish first.",
-            comment: "Interface language restart explanation in Settings"
-          )
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          Button(
-            model.applyingInterfaceLanguage
-              ? String(localized: "Restarting…", comment: "Interface language restart in flight")
-              : String(localized: "Restart now", comment: "Apply the interface language")
-          ) { model.applyInterfaceLanguage() }
-          .disabled(model.applyingInterfaceLanguage)
-          .accessibilityIdentifier("settings-interface-language-restart")
+          Text(model.interfaceLanguageRestartExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Button(model.interfaceLanguageRestartTitle) { model.applyInterfaceLanguage() }
+            .disabled(model.applyingInterfaceLanguage)
+            .accessibilityIdentifier("settings-interface-language-restart")
         }
       }
       if let notice = model.interfaceLanguageNotice {

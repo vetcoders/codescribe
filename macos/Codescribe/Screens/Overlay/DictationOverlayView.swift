@@ -58,6 +58,7 @@ struct OverlayRecordingControls: View {
   let onPreviewToggle: () -> Void
   var showsRecordingButton = true
   var onShowDictation: (() -> Void)?
+  var onPresentationSelect: ((OverlayPresentationMode) -> Void)?
 
   /// Recording and preview keep fixed hairline circles, leaving the remaining
   /// width to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
@@ -107,14 +108,15 @@ struct OverlayRecordingControls: View {
   }
   var previewAccessibilityLabel: String {
     switch presentationMode {
-    case .mini, .midi: String(localized: "Expand widget")
+    case .mini: String(localized: "Expand to compact widget")
+    case .midi: String(localized: "Expand transcript")
     case .expanded: String(localized: "Collapse widget")
     }
   }
-  /// Full view is always an explicit click; hover reveals only the midi strip.
+  /// Expanding the widget is always an explicit click.
   var previewSymbol: String {
     switch presentationMode {
-    case .mini: OverlayControlSymbols.miniToTranscript
+    case .mini: OverlayControlSymbols.miniToMidi
     case .midi: OverlayControlSymbols.midiToTranscript
     case .expanded: OverlayControlSymbols.returnToMini
     }
@@ -211,6 +213,20 @@ struct OverlayRecordingControls: View {
             .strokeBorder(palette.border.color, lineWidth: 1 / max(displayScale, 1))
             .accessibilityHidden(true)
         }
+    }
+    .contextMenu {
+      if let onPresentationSelect {
+        Picker(
+          "Live preview",
+          selection: Binding(get: { presentationMode }, set: onPresentationSelect)
+        ) {
+          Text("Collapse widget").tag(OverlayPresentationMode.mini)
+          Text("Compact").tag(OverlayPresentationMode.midi)
+          Text("Transcription").tag(OverlayPresentationMode.expanded)
+        }
+        .pickerStyle(.inline)
+        .accessibilityIdentifier("overlay-presentation-picker")
+      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
@@ -310,6 +326,15 @@ struct DictationOverlayView: View {
           palette: palette,
           formatLevel: state.autoFormatLevel,
           cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
+          retranscribeUnavailableReason: state.retranscribeUnavailableReason,
+          historyOpenRefusal: state.archiveOpenRefusal,
+          recoverSupersededLabel: state.supersededRecoveryActionLabel,
+          admitHistoryOpen: { state.admitHistoryOpen() },
+          onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
+          onHistoryDismiss: { state.invalidateHistoryOpens() },
+          versions: state.transcriptVersions,
+          onVersionsOpened: { state.refreshTranscriptVersions() },
+          onSelectVersion: { state.selectDocumentVersion($0) },
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
           onFormatOnce: { state.formatTranscript(at: $0) },
@@ -346,12 +371,7 @@ struct DictationOverlayView: View {
       pointerInsideOverlay = inside
       state.setPointerHovering(inside)
     }
-    .task(id: state.widgetHoverDeadline) {
-      guard let deadline = state.widgetHoverDeadline else { return }
-      do { try await ContinuousClock().sleep(until: deadline) } catch { return }
-      guard !Task.isCancelled else { return }
-      state.expireWidgetHover()
-    }
+
     .onAppear {
       FontLoader.register()
     }
@@ -412,9 +432,9 @@ struct DictationOverlayView: View {
           }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: state.isCollapsed)
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: .topTrailing) {
           if state.showsAgentMonitor && !state.isCollapsed {
-            ZStack(alignment: .trailing) {
+            ZStack(alignment: .topTrailing) {
               Button {
                 state.hideAgentSidebar()
               } label: {
@@ -425,22 +445,23 @@ struct DictationOverlayView: View {
               .buttonStyle(.plain)
               .accessibilityLabel("Close agent sidebar")
               .accessibilityIdentifier("overlay-agent-drawer-dismiss")
-              channelStatusView.monitorBody
-                .padding(12)
-                .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
-                .frame(maxHeight: .infinity)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.trailing, 8)
-                .accessibilityIdentifier("overlay-agent-sidebar")
-                .background {
-                  GeometryReader { drawer in
-                    Color.clear.preference(
-                      key: OverlayDrawerFramePreferenceKey.self,
-                      value: drawer.frame(in: .named("overlay-canvas")))
-                  }
-                  .allowsHitTesting(false)
+              channelStatusView.monitorBody(
+                maximumHeight: max(0, geometry.size.height - headerHeight - 8 - 16 - 24)
+              )
+              .padding(12)
+              .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
+              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+              .clipShape(RoundedRectangle(cornerRadius: 14))
+              .padding(.trailing, 8)
+              .accessibilityIdentifier("overlay-agent-sidebar")
+              .background {
+                GeometryReader { drawer in
+                  Color.clear.preference(
+                    key: OverlayDrawerFramePreferenceKey.self,
+                    value: drawer.frame(in: .named("overlay-canvas")))
                 }
+                .allowsHitTesting(false)
+              }
             }
             .padding(.top, headerHeight + 8)
             .padding(.bottom, 16)
@@ -557,6 +578,16 @@ struct DictationOverlayView: View {
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+            if state.completedMaxConsultationID != nil {
+              Button("Continue in chat", systemImage: "bubble.left") {
+                state.continueMaxConsultationInChat()
+              }
+              .buttonStyle(.plain)
+              .csMono(10, .medium)
+              .foregroundStyle(palette.primaryText.color)
+              .padding(.vertical, 2)
+              .accessibilityIdentifier("overlay-continue-max-chat")
+            }
             if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
               footerMessageRow
                 .frame(height: 18)
@@ -659,7 +690,7 @@ struct DictationOverlayView: View {
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
-      OverlayRenderVisibility(onHidden: { state.clearWidgetHover() }) { visible in
+      OverlayRenderVisibility(onHidden: { state.clearPointerHover() }) { visible in
         state.setConversationVisible(visible)
         guard overlayVisible != visible else { return }
         var transaction = Transaction(animation: nil)
@@ -686,6 +717,10 @@ struct DictationOverlayView: View {
         .foregroundStyle(palette.primaryText.color)
         .fixedSize()
         .accessibilityIdentifier("overlay-mini-brand")
+        .allowsHitTesting(false)
+        .background {
+          OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
+        }
       Spacer(minLength: 4)
       recordingControls(compact: false)
     }
@@ -709,13 +744,12 @@ struct DictationOverlayView: View {
               .accessibilityHidden(true)
           }
         }
-        .scaleEffect(closeDotHovered ? 1.15 : 1)
+        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
     .onHover {
       closeDotHovered = $0
-      state.setWidgetInteraction(.closeControl, held: $0)
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
     .focusable(false)
@@ -736,7 +770,8 @@ struct DictationOverlayView: View {
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
-    return controls.onHover { state.setWidgetInteraction(.primaryControls, held: $0) }
+    controls.onPresentationSelect = state.setPresentationMode
+    return controls
   }
 
   private func justifiedHeader(compact: Bool) -> some View {
@@ -907,13 +942,19 @@ struct DictationOverlayView: View {
 
   /// One message slot below the floating tools; details never grow the footer.
   private var footerMessage: String? {
-    if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
+    if let error = state.transcriptStorageError ?? state.maxPreparationError {
+      return error
+    }
+    if state.archivedTranscript != nil {
+      if let error = state.archiveActionError ?? state.recoveryFailure { return error }
+    } else if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
       return error
     }
     if state.formatterCommitPending { return String(localized: "Formatting revision…") }
     if state.revisionCommitPending { return String(localized: "Committing revision…") }
     if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
     if let notice = state.toast { return notice }
+    if let origin = state.archivedTranscriptOrigin { return origin }
     if let status = state.presentationStatus { return status.headline }
     if state.errorDiagnosticDetail != nil { return state.errorFooterSummary }
     if state.mode == .error {
@@ -941,9 +982,11 @@ struct DictationOverlayView: View {
       } detail: { _ in
         ScrollView {
           VStack(alignment: .leading, spacing: 8) {
-            if state.presentationStatus != nil {
+            if state.presentationStatus != nil && state.archivedTranscript == nil {
               transcriptStatus
-            } else if state.errorDiagnosticDetail != nil || state.mode == .error {
+            } else if state.archivedTranscript == nil
+              && (state.errorDiagnosticDetail != nil || state.mode == .error)
+            {
               errorBody
             } else if state.mode == .noSpeech {
               noSpeechBody
@@ -1053,6 +1096,10 @@ struct DictationOverlayView: View {
       .accessibilityHint(
         livePaint != nil
           ? Text("Live preview. Uncommitted words may change.")
+          : state.archivedTranscript != nil
+            ? Text(
+              "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept."
+            )
           : state.isTranscriptEditable
             ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
             : Text(verbatim: "")

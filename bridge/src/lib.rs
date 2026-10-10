@@ -132,6 +132,104 @@ pub fn agent_conversation_bus_path() -> String {
         .into_owned()
 }
 
+/// Validate and recover managed journal linkage before the first take. The
+/// potentially expensive archive verification never runs on the UI thread.
+#[uniffi::export]
+pub async fn prepare_transcript_storage() -> Result<bool, CsError> {
+    application_runtime::run(async {
+        tokio::task::spawn_blocking(|| {
+            let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+            prepare_transcript_storage_at(&path, &codescribe_core::stt::active_names::bridge_home())
+        })
+        .await
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })?
+        .map_err(|error| CsError::Recording {
+            msg: format!("Transcript storage unavailable: {error}"),
+        })
+    })
+    .await?
+}
+
+fn prepare_transcript_storage_at(
+    path: &std::path::Path,
+    bridge_home: &std::path::Path,
+) -> std::io::Result<bool> {
+    use codescribe::presentation::transcript_bus_maintenance::generation;
+    use std::{fs, io};
+
+    let mut receipt = path.as_os_str().to_os_string();
+    receipt.push(".generations.json");
+    for selected in [path, std::path::Path::new(&receipt)] {
+        match fs::symlink_metadata(selected) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Transcript storage is not a regular file: {}",
+                        selected.display()
+                    ),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let mut paths = std::collections::BTreeSet::from([path.to_path_buf()]);
+    let buses = bridge_home.join("buses");
+    let entries = match fs::symlink_metadata(&buses) {
+        Ok(metadata) if metadata.is_dir() => Some(fs::read_dir(&buses)?),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Channel storage is not a directory: {}", buses.display()),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(entries) = entries {
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with("channel-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let receipt = entry
+                .path()
+                .with_file_name(format!("{name}.generations.json"));
+            match fs::symlink_metadata(&receipt) {
+                Ok(metadata) if metadata.is_file() && entry.file_type()?.is_file() => {
+                    paths.insert(entry.path());
+                }
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Managed channel storage is not a regular file: {}",
+                            entry.path().display()
+                        ),
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let mut recovered = false;
+    for path in paths {
+        recovered |= generation::recover_device_number(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+    }
+    Ok(recovered)
+}
+
 /// Start the one process-owned async runtime. Idempotent while running; once
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]
@@ -243,6 +341,72 @@ impl From<CsLanguage> for codescribe_core::config::Language {
 mod startup_tests {
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn storage_preparation_skips_unmanaged_files_and_reports_a_broken_managed_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let home = root.path().join("agent-bridge");
+        std::fs::create_dir_all(home.join("buses")).unwrap();
+        let channel = home.join("buses/channel-3.jsonl");
+        std::fs::write(&channel, b"untouched unmanaged data\n").unwrap();
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.exists());
+        let receipt = channel.with_file_name("channel-3.jsonl.generations.json");
+        std::fs::write(&receipt, b"{broken").unwrap();
+        let error = super::prepare_transcript_storage_at(&bus, &home).unwrap_err();
+        assert!(error.to_string().contains("channel-3.jsonl"));
+        assert_eq!(
+            std::fs::read(&channel).unwrap(),
+            b"untouched unmanaged data\n"
+        );
+        assert_eq!(std::fs::read(&receipt).unwrap(), b"{broken");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn storage_preparation_refuses_symlinked_managed_channels_receipts_and_directory() {
+        use std::os::unix::fs::symlink;
+        for mode in [
+            "directory",
+            "channel",
+            "receipt",
+            "main_bus",
+            "main_receipt",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let bus = root.path().join("bus.jsonl");
+            let home = root.path().join("agent-bridge");
+            let outside = root.path().join("outside");
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let sentinel = outside.join("sentinel");
+            std::fs::write(&sentinel, b"preserve").unwrap();
+            if mode == "main_bus" {
+                symlink(&sentinel, &bus).unwrap();
+            } else if mode == "main_receipt" {
+                symlink(&sentinel, bus.with_file_name("bus.jsonl.generations.json")).unwrap();
+            } else if mode == "directory" {
+                symlink(&outside, home.join("buses")).unwrap();
+            } else {
+                std::fs::create_dir_all(home.join("buses")).unwrap();
+                let channel = home.join("buses/channel-3.jsonl");
+                let receipt = home.join("buses/channel-3.jsonl.generations.json");
+                if mode == "channel" {
+                    symlink(&sentinel, &channel).unwrap();
+                    std::fs::write(&receipt, b"{}").unwrap();
+                } else {
+                    std::fs::write(&channel, b"preserve channel").unwrap();
+                    symlink(&sentinel, &receipt).unwrap();
+                }
+            }
+            assert!(
+                super::prepare_transcript_storage_at(&bus, &home).is_err(),
+                "{mode}"
+            );
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+        }
+    }
 
     #[test]
     fn startup_returns_while_compaction_thread_is_held_at_entry() {

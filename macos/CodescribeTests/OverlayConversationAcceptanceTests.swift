@@ -8,6 +8,164 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testConversationNamePillExposesChannelAtNormalAndLargeTextSizes() throws {
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    for channel in ["0", "2", "7"] {
+      let conversationOwner = OverlayConversationOwner(row: owner(leaseA, channel: channel))
+      let conversation = OverlayConversation(
+        id: "pill-\(channel)", channel: channel, name: "Lena",
+        owner: channel == "0" ? nil : conversationOwner, messages: [])
+      let expected = channel == "0" ? String(localized: "0 · All") : "\(channel) · Lena"
+      for scale in [CGFloat(1), CGFloat(1.6)] {
+        let view = OverlayConversationView(
+          conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+          draft: .constant(""), sending: false, sendError: nil, onSend: {})
+        let host = NSHostingView(rootView: view.environment(\.csTextScale, scale))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+        let window = NSWindow(
+          contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        host.layoutSubtreeIfNeeded()
+        let pill = try XCTUnwrap(
+          elements(host).first { $0.accessibilityIdentifier() == "overlay-conversation-name" })
+        let text = [pill.accessibilityLabel(), pill.accessibilityValue() as? String]
+          .compactMap { $0 }.joined(separator: " ")
+        XCTAssertTrue(text.contains(expected), "channel=\(channel) scale=\(scale): \(text)")
+        XCTAssertGreaterThan(pill.accessibilityFrame().width, 0)
+        XCTAssertLessThanOrEqual(pill.accessibilityFrame().width, host.bounds.width)
+      }
+    }
+  }
+
+  @MainActor
+  func testSelectableMessageTextOpensOverlayKeyboardGate() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    defer { panel.close() }
+    let host = NSHostingView(rootView: MarkdownText(raw: "Wiadomość agenta"))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    func selectableText(in view: NSView) -> NSView? {
+      if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+        return view
+      }
+      return view.subviews.lazy.compactMap { selectableText(in: $0) }.first
+    }
+    let field = try XCTUnwrap(selectableText(in: host))
+    let point = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+    XCTAssertFalse(panel.canBecomeKey)
+    let event = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: point, modifierFlags: [],
+        timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 0, clickCount: 1, pressure: 1))
+    let mouseUp = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseUp, location: point, modifierFlags: [],
+        timestamp: 0.01, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 1, clickCount: 1, pressure: 0))
+    NSApp.postEvent(mouseUp, atStart: true)
+    panel.sendEvent(event)
+    XCTAssertTrue(panel.allowsKeyForTranscript)
+    panel.releaseKeyAfterTranscript()
+    XCTAssertFalse(panel.canBecomeKey)
+  }
+
+  @MainActor
+  func testCommandCCopiesThroughFocusedNativeResponder() throws {
+    class CopyTarget: NSTextView {
+      var copiedText: String?
+      override func copy(_ sender: Any?) {
+        copiedText = (string as NSString).substring(with: selectedRange())
+      }
+    }
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    defer { panel.close() }
+    let text = CopyTarget(frame: panel.contentLayoutRect)
+    text.string = "alpha beta gamma"
+    text.isEditable = false
+    text.isSelectable = true
+    panel.contentView = text
+    panel.orderFrontRegardless()
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(text))
+    text.setSelectedRange(NSRange(location: 6, length: 4))
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "c",
+        charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8))
+    XCTAssertTrue(panel.performKeyEquivalent(with: key))
+    XCTAssertEqual(text.copiedText, "beta")
+  }
+
+  @MainActor
+  func testMessageCopyPreservesFullRawMarkdown() {
+    let pasteboard = NSPasteboard.withUniqueName()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.setString("poprzednia zawartość", forType: .string)
+    let raw = "Pierwszy akapit.\n\n```swift\nlet wynik = \"całość\"\n```\n\nOstatni akapit."
+    chatCopy(raw, to: pasteboard)
+    XCTAssertEqual(pasteboard.string(forType: .string), raw)
+  }
+
+  @MainActor
+  func testChannelZeroHasEditableComposerAndReturnSendsDraft() throws {
+    var draft = ""
+    var sent: [String] = []
+    let conversation = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: Binding(get: { draft }, set: { draft = $0 }), sending: false,
+      sendError: nil, onSend: { sent.append(draft) })
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 480, height: 500)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    window.orderFrontRegardless()
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let deadline = Date(timeIntervalSinceNow: 1)
+    while editor(in: host) == nil, Date() < deadline {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    window.makeFirstResponder(text)
+    text.insertText("Do wszystkich", replacementRange: text.selectedRange())
+    text.keyDown(with: try returnEvent())
+    XCTAssertEqual(sent, ["Do wszystkich"])
+  }
+
+  @MainActor
   func testBusMarkdownUsesChatCodeWellAndKeepsResizeMarginAcrossZoom() throws {
     let raw = """
       ## Wynik pracy
@@ -386,6 +544,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertEqual(try lenaConversation(bus).messages.last?.replyTo, delivery)
     bus = try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
     XCTAssertEqual(try lenaConversation(bus).messages.count, 6)
+  }
+
+  func testTypedBroadcastMergesRecipientCopiesIntoOneQuestion() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let identity = String(repeating: "e", count: 24)
+    for (lease, channel) in [(leaseA, "2"), (String(repeating: "b", count: 32), "7")] {
+      let recipient = owner(lease, channel: channel)
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+        "message_id": identity, "source_event_id": identity, "source": "typed",
+        "text": "Do wszystkich", "audience": "lena", "channel": channel,
+        "origin_channel": "0", "recipients": [recipient],
+      ]
+      bus.consume(row)
+      bus.consume(row)
+    }
+    let all = try XCTUnwrap(bus.conversations(busPath: "fixture").first { $0.channel == "0" })
+    XCTAssertEqual(all.messages.count, 1)
+    XCTAssertEqual(all.messages.first?.recipients.count, 2)
+    XCTAssertEqual(Set(all.messages[0].recipients.compactMap(\.deliveryID)).count, 2)
   }
 
   @MainActor
@@ -840,7 +1018,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
         let revision = state.conversationFocusRevision
         if initiallyMini {
-          state.toggleCollapsed()
+          state.setPresentationMode(.expanded)
           XCTAssertEqual(state.conversationFocusRevision, revision)
         }
         // Permit the existing presentation animation and native layout to

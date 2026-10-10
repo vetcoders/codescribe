@@ -228,6 +228,8 @@ pub enum CsDocumentRevisionProvenance {
     Retranscribe,
     Formatter,
     LightPlus,
+    /// Undo, redo or a version pick re-selected an accepted version.
+    Navigation,
 }
 
 /// Document provenance travels beside acoustic receipts, never inside a fake serial.
@@ -250,6 +252,7 @@ impl CsManualDocumentRevisionReceipt {
             "retranscribe" => CsDocumentRevisionProvenance::Retranscribe,
             "formatter" => CsDocumentRevisionProvenance::Formatter,
             "light-plus" => CsDocumentRevisionProvenance::LightPlus,
+            "navigation" => CsDocumentRevisionProvenance::Navigation,
             _ => return None,
         };
         Some(Self {

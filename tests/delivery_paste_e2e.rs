@@ -44,10 +44,14 @@ fn clipboard_or_skip<T>(result: anyhow::Result<T>, action: &str) -> Option<T> {
 #[test]
 #[serial]
 fn foreign_insert_selects_one_route_and_borrows_clipboard_losslessly() {
-    let decision = resolve_delivery_route(
-        DeliveryIntent::OverlayInsert,
-        overlay_insert_facts(true, false),
-    );
+    let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, {
+        let mut facts = overlay_insert_facts(true, false);
+        facts.paste_target = PasteTarget {
+            terminal: false,
+            field: FocusedInputField::Text,
+        };
+        facts
+    });
     assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
     assert_eq!(decision.reason, "explicit_insert");
     assert_eq!(
@@ -89,7 +93,7 @@ fn foreign_insert_selects_one_route_and_borrows_clipboard_losslessly() {
 
 /// Stop-path contract: a plain hold / toggle session freezes `OrientDictation`;
 /// the paste mode decides the gun (Safe pastes into a terminal only past the
-/// executable guard, Off archives only), and an assistive session never
+/// editable-input and executable guards, Off archives only), and an assistive session never
 /// reaches it.
 #[test]
 fn stop_path_intent_follows_the_paste_mode() {
@@ -104,10 +108,10 @@ fn stop_path_intent_follows_the_paste_mode() {
     };
     facts.executable_payload = looks_executable("zrób podsumowanie dnia");
     let prose = resolve_delivery_route(dictation, facts);
-    assert_eq!(prose.route, DeliveryRoute::ClipboardPaste);
+    assert_eq!(prose.route, DeliveryRoute::ClipboardHold);
     assert_eq!(
         format_delivery_route_line(dictation, prose, Some("Ghostty")),
-        "delivery_route: intent=orient_dictation route=clipboard_paste reason=paste_safe target=Ghostty"
+        "delivery_route: intent=orient_dictation route=clipboard_hold reason=hold_field_unobserved target=Ghostty"
     );
 
     facts.executable_payload = looks_executable("git push --force");

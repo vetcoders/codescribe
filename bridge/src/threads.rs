@@ -20,6 +20,17 @@ use serde_json::Value;
 
 use crate::CsError;
 
+/// Persist a pasted PNG through the same asset store used by agent conversations.
+/// Returns a local file path for the composer; no image bytes enter the bus.
+#[uniffi::export]
+pub fn save_pasted_image(data: Vec<u8>) -> Result<String, CsError> {
+    codescribe_core::agent::assets::AgentAssetStore::save_inline_image(&data, "image/png")
+        .map(|asset| asset.path.to_string_lossy().into_owned())
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })
+}
+
 /// Cumulative token accounting for a thread. Mirrors `TokenUsage`
 /// (`thread_store.rs:105`).
 #[derive(uniffi::Record)]
@@ -236,6 +247,78 @@ impl From<HistoryEntry> for CsHistoryEntry {
     }
 }
 
+/// Which explicit action a Swift-submitted archive revision came from. The
+/// formatter and restore commit inside Rust and are not offered here.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchiveRevisionKind {
+    UserEdit,
+    Retranscribe,
+}
+
+/// An archived transcript as its history owner holds it: the untouched
+/// original plus the accepted head of its revision chain. Swift paints this
+/// and addresses the next request with `path` + `revision`; it never decides
+/// which text is current.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsArchivedDocument {
+    pub path: String,
+    pub original_text: String,
+    pub revision: u64,
+    pub rendered_text: String,
+    /// `original` for revision 0, otherwise the head revision's provenance.
+    pub provenance: String,
+    /// Durable receipt of the head revision; empty for the original.
+    pub receipt_id: String,
+    /// Every accepted version, oldest first: the original, then each format,
+    /// retranscription and edit. Undo and Redo move `cursor` between them.
+    pub versions: Vec<crate::hotkeys::CsDocumentVersion>,
+    /// The selected version; `rendered_text` is its text.
+    pub cursor: u64,
+}
+
+impl CsArchivedDocument {
+    pub(crate) fn from_document(path: String, document: &history::ArchivedDocument) -> Self {
+        let timeline = document.timeline();
+        Self {
+            path,
+            original_text: document.original_text.clone(),
+            revision: document.head_revision(),
+            rendered_text: document.head_text().to_string(),
+            // The selected version names itself; a navigation receipt at the
+            // chain head is no version.
+            provenance: timeline
+                .selected()
+                .map_or_else(|| "original".to_string(), |step| step.provenance.clone()),
+            receipt_id: timeline
+                .selected()
+                .map(|step| step.receipt_id.clone())
+                .unwrap_or_default(),
+            versions: timeline
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(step, version)| crate::hotkeys::CsDocumentVersion {
+                    step: step as u64,
+                    provenance: version.provenance.clone(),
+                    detail: version.detail.clone(),
+                    rendered_text: version.rendered_text.clone(),
+                    emitted_at: version.emitted_at.clone(),
+                    receipt_id: version.receipt_id.clone(),
+                })
+                .collect(),
+            cursor: timeline.cursor as u64,
+        }
+    }
+
+    pub(crate) fn read(path: String) -> Result<Self, CsError> {
+        history::read_archived_document(std::path::Path::new(&path))
+            .map(|document| Self::from_document(path, &document))
+            .map_err(|error| CsError::Recording {
+                msg: format!("{error:#}"),
+            })
+    }
+}
+
 /// Thin handle to the codescribe thread store + transcript history.
 ///
 /// Stateless: every call constructs a fresh `ThreadStore` / `ThreadIndex` over
@@ -373,6 +456,85 @@ impl CodescribeThreads {
     /// `std::fs::read_to_string`.
     pub fn read_history_text(&self, path: String) -> Result<String, CsError> {
         Ok(fs::read_to_string(&path)?)
+    }
+
+    /// Audio the daily archive wrote with the transcript at `path`, if it is
+    /// still on disk. Wraps `history::paired_audio_for_transcript`; `None`
+    /// means the take cannot be transcribed again, never "use another take".
+    pub fn history_audio_path(&self, path: String) -> Option<String> {
+        history::paired_audio_for_transcript(std::path::Path::new(&path))
+            .map(|audio| audio.to_string_lossy().into_owned())
+    }
+
+    /// The archived transcript at `path` with the accepted head of its
+    /// revision chain. Wraps `history::read_archived_document`.
+    pub fn history_document(&self, path: String) -> Result<CsArchivedDocument, CsError> {
+        CsArchivedDocument::read(path)
+    }
+
+    /// Commit an explicit edit or retranscription of the archived transcript
+    /// at `path` against `source_revision`. `detail` names the generating
+    /// pass of a retranscription and travels with it through any retry. The
+    /// archived text and audio stay untouched; a moved head refuses instead
+    /// of overwriting newer work.
+    pub fn commit_history_revision(
+        &self,
+        path: String,
+        source_revision: u64,
+        rendered_text: String,
+        kind: CsArchiveRevisionKind,
+        detail: Option<String>,
+    ) -> Result<CsArchivedDocument, CsError> {
+        let provenance = match kind {
+            CsArchiveRevisionKind::UserEdit => history::ArchiveRevisionProvenance::UserEdit,
+            CsArchiveRevisionKind::Retranscribe => history::ArchiveRevisionProvenance::Retranscribe,
+        };
+        history::commit_archived_revision(
+            std::path::Path::new(&path),
+            source_revision,
+            &rendered_text,
+            provenance,
+            detail,
+        )
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })?;
+        CsArchivedDocument::read(path)
+    }
+
+    /// Undo, Redo or a version pick on the archived transcript at `path`:
+    /// select accepted version `step` against `source_revision`. Rust maps
+    /// the step to its chain record and appends one navigation receipt; the
+    /// bytes come from the chain, never from Swift.
+    pub fn navigate_history_revision(
+        &self,
+        path: String,
+        source_revision: u64,
+        step: u64,
+    ) -> Result<CsArchivedDocument, CsError> {
+        let transcript = std::path::Path::new(&path);
+        let document =
+            history::read_archived_document(transcript).map_err(|error| CsError::Recording {
+                msg: format!("{error:#}"),
+            })?;
+        let target = usize::try_from(step)
+            .ok()
+            .and_then(|step| {
+                document
+                    .timeline()
+                    .steps
+                    .get(step)
+                    .map(|step| step.revision)
+            })
+            .ok_or_else(|| CsError::Recording {
+                msg: "Selected transcript version is not in this transcript's history".to_string(),
+            })?;
+        history::navigate_archived_revision(transcript, source_revision, target).map_err(
+            |error| CsError::Recording {
+                msg: format!("{error:#}"),
+            },
+        )?;
+        CsArchivedDocument::read(path)
     }
 }
 

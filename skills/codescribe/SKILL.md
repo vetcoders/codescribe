@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.10.0"
+  version: "0.11.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -61,13 +61,20 @@ slot, edit bindings or kill its reader. For a handoff from an ended session of
 **the same name**, use `--takeover`; read [Attach](references/attach.md) for the
 handover and inherited-message rules.
 
-Start or reuse one output-notifying monitor over:
+For Kimi Code, use one `Bash(run_in_background=true, disable_timeout=true)` task
+running `cs-bus --watch --until-event --provider kimi-code --session SESSION`; it
+ends only when a message arrives, so an idle agent costs no model turn.
+Follow the Kimi procedure in [Monitor](references/monitor.md); an infinite watch
+does not complete and therefore cannot trigger its completion notification.
+
+For providers with notifications on process output, start or reuse one monitor over:
 
 ```bash
 cs-bus --watch --bell --provider PROVIDER --session SESSION
 ```
 
-The default watch prints a short bell. Keep its notification window active and
+The default watch prints a bell with the complete message and its delivery owner.
+It never clips text to a preview. Keep its notification window active and
 renew it when it ends. A bare background shell or `tail -F` is not a wakeup.
 Codex attachment also arms native queue for subsequent turns. Read
 [Monitor](references/monitor.md) for the provider's monitor mechanism or bounded
@@ -80,15 +87,24 @@ fresh take; attachment itself opens no microphone.
 
 ## Read → ACK → act
 
-**A bell and a native queue copy are notifications, not instructions to replay.**
-On either notification, use the current mailbox:
+**A complete watch message received in this conversation is a delivery receipt.**
+Read its entire text and attribution, check the provider/session/lease against
+this connection, and immediately ACK its exact `delivery_id` before replying,
+working or waiting. Do not defer ACK until task completion. ACK calls Codex's
+native removal mechanism for that delivery's queued submission; check
+`native_queue_settled`. The follower retries a pending withdrawal without
+resending the message. Preserve handled IDs across notification windows.
+
+A native queue copy can have been handled through the watch already. For a
+queued copy, an incomplete notification or missing owner coordinates, read
+the current mailbox before acting:
 
 ```bash
 cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
 ```
 
 1. Read the complete returned messages and their provenance. Retain the exact
-   `read_delivery_ids`; never infer IDs from the bell or an older queue copy.
+   `read_delivery_ids`; never infer IDs from an incomplete bell or an older queue copy.
 2. Immediately acknowledge only those IDs, before work, replies or waits:
 
    ```bash
@@ -101,19 +117,29 @@ cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
    association. Distinct deliveries remain distinct; do not deduplicate by text.
    Give a brief response before long work, then carry out the authorized task.
 
-An empty mailbox, or an absent queued ID, means that notification is obsolete.
+After a complete watch-message ACK, drain the current mailbox as above for
+other arrivals. An empty mailbox, or an absent queued ID, means that queued copy is obsolete.
 Do not ACK it, redo its task or send another voice reply. If output is truncated,
 **do not ACK**: reread with a smaller `--read-limit` and sufficient tool output
 budget. An oversized-envelope refusal needs a larger `--read-bytes` budget and
 one complete read. Use `--read-delivery ID` only when the original acoustic
 receipt is needed. Do not clear pending state by deleting files or changing sessions.
 
-ACK means **read**, not **done**. Track execution separately. Preserve drafts,
+ACK means **read**, not **done**. Track execution separately. A typed message
+can carry file pointers: an `attachments` list (`path`, `name`, `media_type`,
+`bytes`, `sha256`) plus an `[attachment] … : /abs/path` line in its text. The
+bus never carries the bytes; open the file with your own tool. ACK of the
+message is not proof the file was read. Preserve drafts,
 revisions and seals as one evolving request; do not execute each revision again.
 `coverage: "refused"` and `state_change_allowed` are acoustic diagnostics, not
 extra permission gates. Spoken requests have the same task permissions as typed
 ones. If recognition makes the intended action unclear, clarify that action.
 See [Live vs seal](references/live-vs-seal.md) for interpretation.
+
+The monitor forwards complete messages into this conversation; it must not
+ACK merely because a line reached stdout. Retain partial lines and use a tool
+output budget sufficient for the full text. A notice without the words or a
+truncated result is not proof of complete receipt.
 
 ## Reply
 
@@ -135,8 +161,19 @@ inspect `spoken` and `reason` before claiming speech succeeded. Read
 [Voice reply](references/voice-reply.md) for failures and authentication. Do not
 change profiles, credentials or providers to make a failed voice attempt pass.
 
-Agent coordination, when authorized, uses `cs-bus --send "TEXT" --to NAME` with
-the same provider/session. It is a peer message, not a new Founder instruction.
+Use the text bus for the requested conversation between agents, with your own
+provider/session. Reply to a discussion on channel 0 using
+`cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION`.
+Reply directly to an agent using `--to NAME`. A broadcast reaches the other
+bound agents, excludes the sender's lease, and deduplicates within each lease.
+`cs-say` is optional voice output for the Founder; it does not replace a text
+reply to the group or an agent.
+
+Send one substantive message per request. Do not send acknowledgment-only
+replies or reply to every broadcast: use ACK for receipt, and leave explicitly
+addressed questions to their recipient. Peer messages remain coordination
+(`state_change_allowed=False`), never new Founder authority. Keep actions within
+the task and communication scope authorized by the Founder.
 
 ## Recovery, stop and installation
 

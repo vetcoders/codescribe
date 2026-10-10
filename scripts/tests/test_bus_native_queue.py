@@ -89,7 +89,9 @@ class NativeQueueTests(unittest.TestCase):
             self.assertIn("--read-pending", message)
             self.assertIn("--ack", message)
             self.assertIn(identity, message)
-            self.assertIn("Coverage is diagnostic", message)
+            self.assertLess(len(message) - len(self.pending[0]["text"]), 220)
+            self.assertNotIn("Delivery provenance", message)
+            self.assertNotIn("read_delivery_ids", message)
             self.assertNotIn("sample_start", message)
             self.assertNotIn("/private/audio.wav", message)
             self.assertNotIn("shell", call.kwargs)
@@ -206,16 +208,27 @@ class NativeQueueTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-    def test_busy_turn_bell_is_short_and_read_returns_full_original_without_ack(self):
-        event = dict(self.pending[0], schema=DEMUX.EVENT_SCHEMA, status="transcript_sealed")
+    def test_busy_turn_bell_carries_complete_text_and_owner_without_ack(self):
+        text = "Zażółć gęślą jaźń.\n" * 90 + "KONIEC PEŁNEJ WIADOMOŚCI"
+        event = dict(self.pending[0], schema=DEMUX.EVENT_SCHEMA, status="transcript_sealed",
+                     text=text, sender={"name": "peer", "provider": "claude-code"},
+                     association={"reply_to": "original"})
         events = self.root / "notifications.jsonl"
         events.write_text(json.dumps(event) + "\n")
         bell = subprocess.check_output([
             sys.executable, SPEC.origin, "--watch", "--once", "--from-file", str(events),
         ], text=True)
-        self.assertEqual(json.loads(bell)["delivery_id"], event["delivery_id"])
-        self.assertNotIn(event["text"], bell)
-        self.assertLess(len(bell), 200)
+        received_bell = json.loads(bell)
+        self.assertEqual(received_bell["delivery_id"], event["delivery_id"])
+        self.assertEqual(received_bell["text"], text)
+        self.assertEqual(received_bell["lease_id"], self.lease_id)
+        self.assertEqual(received_bell["sender"], event["sender"])
+        self.assertEqual(received_bell["association"], event["association"])
+        self.assertNotIn("wav", received_bell)
+        explicit_bell = subprocess.check_output([
+            sys.executable, SPEC.origin, "--watch", "--bell", "--once", "--from-file", str(events),
+        ], text=True)
+        self.assertEqual(json.loads(explicit_bell), received_bell)
         full = subprocess.check_output([
             sys.executable, SPEC.origin, "--watch", "--full", "--once", "--from-file", str(events),
         ], text=True)
@@ -226,6 +239,80 @@ class NativeQueueTests(unittest.TestCase):
         ], text=True)
         self.assertEqual(json.loads(received), self.pending[0])
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, event["delivery_id"]))
+
+    @patch("shutil.which", return_value="/fake/codex")
+    @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
+    def test_queue_preserves_long_multiline_message_with_bounded_wrapper(self, run, _which):
+        text = "Pierwszy akapit.\n\n" + "Iwo żółć. " * 700 + "\nOSTATNIE SŁOWO"
+        self.pending[0]["text"] = text
+        state_path = self.root / "leases" / f"{self.lease_id}.json"
+        state = DEMUX.read_json(state_path)
+        state["pending"] = self.pending
+        DEMUX.atomic_json(state_path, state)
+        wake = self.wake()
+        wake.enqueue(self.pending[0])
+        wake.close(wait=True)
+        message = run.call_args.args[0][5]
+        self.assertIn(text, message)
+        self.assertLess(len(message) - len(text), 220)
+        self.assertNotIn("Delivery provenance", message)
+
+    def test_watch_exits_quietly_when_its_consumer_closes_the_pipe(self):
+        """``--watch | head -1`` is an exit-on-bell wakeup, not a crash."""
+        events = self.root / "notifications.jsonl"
+        rows = [dict(self.envelope(identity), schema=DEMUX.EVENT_SCHEMA,
+                     status="transcript_sealed", text=f"Iwo {identity}")
+                for identity in self.ids[:2]]
+        events.write_text(json.dumps(rows[0]) + "\n")
+        process = subprocess.Popen(
+            [sys.executable, SPEC.origin, "--watch", "--from-start", "--from-file", str(events)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            first = process.stdout.readline()
+            self.assertEqual(json.loads(first)["delivery_id"], rows[0]["delivery_id"])
+            process.stdout.close()
+            with events.open("a") as handle:
+                handle.write(json.dumps(rows[1]) + "\n")
+            stderr = process.communicate(timeout=10)[1]
+        finally:
+            if process.poll() is None:
+                process.kill()
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("BrokenPipeError", stderr)
+
+    def test_twenty_complete_bells_ack_and_withdraw_before_work_without_replay(self):
+        self.ids = [f"{index:024x}" for index in range(1, 21)]
+        self.pending = [dict(self.envelope(identity), schema=DEMUX.EVENT_SCHEMA,
+                             status="transcript_sealed", text="Iwo " * 180 + str(index))
+                        for index, identity in enumerate(self.ids)]
+        state_path = self.root / "leases" / f"{self.lease_id}.json"
+        state = DEMUX.read_json(state_path)
+        state["pending"] = self.pending
+        DEMUX.atomic_json(state_path, state)
+        self.prepare_ack_state()
+        events = self.root / "notifications.jsonl"
+        events.write_text("".join(json.dumps(p) + "\n" for p in self.pending))
+        command = [sys.executable, SPEC.origin, "--watch", "--once", "--from-file", str(events),
+                   "--provider", "codex", "--session", self.session, "--bridge-home", str(self.root)]
+        notifications = [json.loads(line) for line in subprocess.check_output(command, text=True).splitlines()]
+        self.assertEqual([row["text"] for row in notifications], [p["text"] for p in self.pending])
+        submissions = []
+        for index, identity in enumerate(self.ids):
+            self.accepted_receipt(identity)
+            path = self.root / "wakeups" / self.lease_id / f"{identity}.json"
+            receipt = self.result(identity)
+            submission = f"11111111-2222-4333-8444-{index:012x}"
+            receipt["provider_receipt"] = f"Queued message {submission} for thread {self.session}."
+            DEMUX.atomic_json(path, receipt)
+            submissions.append(submission)
+        with patch.object(DEMUX, "delete_native_queue_submission", return_value=True) as delete:
+            for notification in notifications:
+                DEMUX.acknowledge_delivery(self.ack_args(notification["delivery_id"]))
+                self.assertEqual(self.result(notification["delivery_id"])["queue_disposition"], "removed")
+        self.assertEqual([call.args[2] for call in delete.call_args_list], submissions)
+        self.assertEqual(subprocess.check_output(command, text=True), "")
+        self.assertEqual(DEMUX.read_json(state_path)["pending"], self.pending)
 
     def ack_args(self, identity):
         return argparse.Namespace(ack=[identity], provider="codex", session=self.session,

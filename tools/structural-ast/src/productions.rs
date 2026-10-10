@@ -8,24 +8,42 @@ use super::Grammar;
 use syn::{Block, Stmt, parse_quote};
 
 pub(super) fn overlay(g: &mut Grammar, body: &Block) {
-    g.sequence(body, vec![
-        (parse_quote!(let trimmed = text.trim();), "trim input"),
-        (parse_quote!(let target_app = self.pre_overlay_frontmost_app.read().await.clone();), "read latched target"),
-        (parse_quote!(let intent = DeliveryIntent::OverlayInsert;), "explicit overlay intent"),
-        (parse_quote!(let decision = resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), false));), "resolve explicit route"),
-        (parse_quote!(info!("{}", format_delivery_route_line(intent, decision, target_app.as_deref()));), "observational route log"),
-        // `noop()` is admitted only together with its own body (see `noop`
-        // below): the constructor never inherits its meaning from its name.
-        (parse_quote!(if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
-            return Ok(OverlayPasteResult::noop());
-        }), "only empty/archive early success is Noop"),
-        (parse_quote!(let config = self.get_config().await;), "read immutable delivery config"),
-        (parse_quote!(let payload = self.delivery_tagger.render(trimmed, &config, None);), "render delivery-only transcript tag"),
-        (parse_quote!(if decision.route == DeliveryRoute::DeferredInsert {
-            return self.arm_overlay_text(&payload, target_app, Some("Codescribe".to_string())).await;
-        }), "deferred route return"),
-        (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(payload, target_app, "Overlay paste").await), None), "await guarded helper tail"),
-    ]);
+    g.sequence(
+        body,
+        vec![
+            (parse_quote!(let trimmed = text.trim();), "trim input"),
+            (
+                parse_quote!(let target_app = self.pre_overlay_frontmost_app.read().await.clone();),
+                "read latched target",
+            ),
+            // `noop()` is admitted only together with its own body (see `noop`
+            // below): the constructor never inherits its meaning from its name.
+            (
+                parse_quote!(if trimmed.is_empty() {
+                    return Ok(OverlayPasteResult::noop());
+                }),
+                "only empty/archive early success is Noop",
+            ),
+            (
+                parse_quote!(let config = self.get_config().await;),
+                "read immutable delivery config",
+            ),
+            (
+                parse_quote!(let payload = self.delivery_tagger.render(trimmed, &config, None);),
+                "render delivery-only transcript tag",
+            ),
+            (
+                Stmt::Expr(
+                    parse_quote!(
+                        self.execute_clipboard_paste(payload, target_app, "Overlay paste")
+                            .await
+                    ),
+                    None,
+                ),
+                "await guarded helper tail",
+            ),
+        ],
+    );
 }
 
 /// The overlay early return's `OverlayPasteResult::noop()`: no transport ran,
@@ -51,11 +69,13 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
     // The guard's bindings are authenticated before accepting the conditional.
     // Closures here are exact predicate productions, not generic opaque calls.
     g.sequence(body, vec![
+        (parse_quote!(let config = self.get_config().await;), "read config before target observation"),
         (parse_quote!(let focus_confirmed = target_app.as_deref().map(str::trim)
             .filter(|name| !name.is_empty()).is_some_and(|name| {
                 is_codescribe_app(name) || (crate::os::selection::activate_app_by_name(name)
                     && crate::os::selection::wait_for_frontmost_app(name, Duration::from_millis(250),))
             });), "observe target activation"),
+        (parse_quote!(let target = clipboard::StopPasteTarget::capture();), "retain recipient identity before focus confirmation"),
         (parse_quote!(let frontmost = crate::os::selection::current_frontmost_app_name();), "observe frontmost"),
         (parse_quote!(let target_observed_frontmost = matches!(
             (target_app.as_deref(), frontmost.as_deref()),
@@ -67,16 +87,35 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
             focus_confirmed_by_wait = focus_confirmed, target_observed_frontmost,
             frontmost_is_external, "{context}: paste target activation");), "observational focus log"),
         (parse_quote!(let focus_confirmed = delivery_route::clipboard_paste_may_post(
-            target_app.is_some(), focus_confirmed, target_observed_frontmost, frontmost_is_external,
-        );), "latched focus policy binding"),
-        (parse_quote!(let config = self.get_config().await;), "read deferred config"),
+            target_app.is_some(), focus_confirmed && target_observed_frontmost,
+            target_observed_frontmost, frontmost_is_external,
+        ) && frontmost.as_deref().is_some_and(|name| target.matches_app_name(name));), "latched current focus and retained process binding"),
         (parse_quote!(let preflight = clipboard::synthetic_paste_preflight();), "preflight binding"),
+        (parse_quote!(let mut facts = overlay_insert_facts(!paste_text.is_empty(), false);), "explicit insert facts"),
+        (parse_quote!(facts.paste_target = helpers::observe_paste_target(frontmost.as_deref());), "observe input capability"),
+        (parse_quote!(facts.executable_payload = looks_executable(&paste_text);), "observe terminal payload risk"),
+        (parse_quote!(let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts);), "resolve capability gate through delivery throne"),
+        (parse_quote!(info!("{}", format_delivery_route_line(
+            DeliveryIntent::OverlayInsert, decision, target_app.as_deref()
+        ));), "observational route log"),
         (parse_quote!(let mut deferred_insert_shortcut = None;), "initialize shortcut"),
         (parse_quote!(let mut deferred_insert_failure = None;), "initialize failure"),
-        (parse_quote!(let delivery = if focus_confirmed && preflight.can_post_events() {
-            clipboard::paste_and_restore(&paste_text)
-                .with_context(|| format!("{context}: failed to paste"))?;
-            OverlayPasteDelivery::Pasted
+        (parse_quote!(let delivery = if decision.route == DeliveryRoute::ClipboardHold {
+            self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
+                &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
+        } else if focus_confirmed && preflight.can_post_events() {
+            match clipboard::paste_to_stop_target(&paste_text, &target) {
+                Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
+                    OverlayPasteDelivery::PasteRequested
+                }
+                outcome => {
+                    if let Err(error) = outcome {
+                        warn!(%error, "{context}: paste failed; arming deferred insert");
+                    }
+                    self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
+                        &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
+                }
+            }
         } else {
             warn!(target_app = ?target_app, frontmost_app = ?frontmost,
                 cg_post_event_access = preflight.cg_post_event_access,
@@ -84,7 +123,7 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
                 "{context}: could not execute the selected clipboard route; arming deferred insert");
             self.arm_or_copy_deferred_payload(paste_text, &config,
                 &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
-        };), "guarded effect versus deferred branch"),
+        };), "capability hold versus identity guarded request versus deferred branch"),
         (Stmt::Expr(parse_quote!(Ok(OverlayPasteResult { delivery, target_app_name: target_app,
             frontmost_app_name: frontmost, deferred_insert_shortcut, deferred_insert_failure, })), None), "return preserved delivery result"),
     ]);
@@ -112,185 +151,16 @@ pub(super) fn stop(g: &mut Grammar, body: &Block) {
                 "observational drop branch",
             ),
             (
-                parse_quote!(let release = self.release_take_pcm_feed();),
-                "release take feed before selecting capture archive result",
+                parse_quote!(let was_active = self.close_capture().await;),
+                "await feed release and conditional physical close",
             ),
             (
-                parse_quote!(let stopped = if let Some(prepared) = self.prepared_capture_archive.take() {
-                    prepared
-                } else {
-                    match release {
-                        TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
-                            self.recorder.stop().await
-                        }
-                        TakeFeedRelease::CaptureShared => Ok(None),
-                    }
-                };),
-                "consume prepared archive result unchanged, otherwise stop only unshared capture; \
-                 retain either result without question-mark exit",
-            ),
-            (
-                Stmt::Expr(parse_quote!(self.complete_stop(stopped).await), None),
-                "unconditional await complete_stop tail",
+                Stmt::Expr(
+                    parse_quote!(self.finish_closed_capture(was_active).await),
+                    None,
+                ),
+                "unconditionally settle retained closed owner using actual physical-close result",
             ),
         ],
     );
-}
-
-pub(super) fn complete(g: &mut Grammar, body: &Block) {
-    // Each atom is one state transition, including BOTH paths of optional
-    // ownership. No arbitrary callee is assumed to complete a shutdown step.
-    let shutdown: Vec<(Stmt, &str)> = vec![
-        (
-            parse_quote!(if let Some(sender) = self.terminal_audio_sender.take() {
-                let receipt = match &stopped {
-                    Ok(Some(path)) => Ok(
-                        crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
-                            session_id: self.authority_session_id.clone().unwrap_or_default(),
-                            capture_epoch: self.capture_epoch,
-                            sample_rate: self.sample_rate,
-                            sample_count: self.captured_samples.load(Ordering::Relaxed),
-                            path: path.clone(),
-                        },
-                    ),
-                    Ok(None) => Err("capture finalized without a WAV archive".into()),
-                    Err(error) => Err(format!("capture archive finalization failed: {error}")),
-                };
-                let _ = sender.send(receipt);
-            }),
-            "publish available archive receipt",
-        ),
-        (
-            parse_quote!(self.lifecycle_handle = None;),
-            "clear lifecycle",
-        ),
-        (
-            parse_quote!(let task_failure = if let Some(handle) = self.transcription_handle.as_mut() {
-            debug!("Waiting for transcription session task to finish...");
-            handle.await.context("Transcription session task failed").err()
-        } else { None };),
-            "join owned task or prove absent; retain join failure",
-        ),
-        (
-            parse_quote!(self.transcription_handle = None;),
-            "clear joined task handle",
-        ),
-        (
-            parse_quote!(let drain_failure = match self.event_sink.as_ref() {
-                Some(sink) => match self.authority_session_id.as_deref() {
-                    Some(session_id) => tokio::time::timeout(
-                        std::time::Duration::from_secs(3),
-                        sink.wait_presentation_published(session_id, self.capture_epoch),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err(anyhow!("presentation terminal drain timed out")))
-                    .err(),
-                    None => Some(anyhow!(
-                        "presentation terminal drain has no capture identity"
-                    )),
-                },
-                None => None,
-            };),
-            "await publication acknowledgement for exact capture after producer join; retain drain failure",
-        ),
-        (
-            parse_quote!(if drain_failure.is_none() {
-                self.event_sink = None;
-            }),
-            "drop sink only after successful publication acknowledgement or proven absence",
-        ),
-        (
-            parse_quote!(let (audio_path, cause, task_failure) = match stopped {
-            Ok(path) => (path, task_failure, None),
-            Err(error) => (None, Some(error), task_failure),
-        };),
-            "classify archive failure after shutdown",
-        ),
-        (
-            parse_quote!(let cause = match (cause, drain_failure) {
-                (Some(cause), Some(drain)) => {
-                    Some(cause.context(format!("presentation drain also failed: {drain:#}")))
-                }
-                (cause, drain) => cause.or(drain),
-            };),
-            "preserve primary archive or task cause with secondary drain context, or drain cause alone",
-        ),
-        (
-            parse_quote!(if let Some(cause) = cause {
-                return Err(anyhow::Error::new(CaptureStopFailure {
-                    session_id: self.authority_session_id.clone(),
-                    capture_epoch: self.capture_epoch,
-                    audio_path,
-                    cause,
-                    task_failure,
-                }));
-            }),
-            "typed capture failure only after shutdown",
-        ),
-        (
-            parse_quote!(let transcript = self.transcript_buffer.lock().await.clone();),
-            "read committed transcript after owned shutdown",
-        ),
-        (
-            parse_quote!(let captured_samples = self.captured_samples.load(Ordering::Relaxed);),
-            "read captured sample count after owned shutdown",
-        ),
-        (
-            parse_quote!(let empty_capture = captured_samples <= u64::from(self.sample_rate) * 3 / 10
-                && transcript.is_empty()
-                && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
-                    ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .has_no_capture_facts()
-                });),
-            "short no-speech capture requires empty text and no conflicting ledger facts",
-        ),
-        (
-            parse_quote!(if empty_capture {
-                return Ok((transcript, audio_path));
-            }),
-            "short no-speech capture is not a fabricated speech seal",
-        ),
-        (
-            parse_quote!(let finality = self.authority_session_id.as_deref().and_then(|session| {
-                self.acoustic_ledger.as_ref().map(|ledger| {
-                    ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .terminal_finality(session, self.capture_epoch)
-                })
-            });),
-            "inspect issued finality using exact capture identity",
-        ),
-        (
-            Stmt::Expr(
-                syn::parse_str(
-                    r#"match finality {
-                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::Sealed(_)) => {
-                        Ok((transcript, audio_path))
-                    }
-                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::ObservedSilence(_))
-                        if transcript.is_empty() => {
-                        Ok((transcript, audio_path))
-                    }
-                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::Refused(finality)) => {
-                        Err(anyhow::Error::new(TerminalSealRefused {
-                            finality,
-                            audio_path,
-                            committed_text: transcript,
-                        }))
-                    }
-                    _ => Err(anyhow::Error::new(CaptureStopFailure {
-                        session_id: self.authority_session_id.clone(),
-                        capture_epoch: self.capture_epoch,
-                        audio_path,
-                        cause: anyhow!("recording terminal authority unavailable or inconsistent"),
-                        task_failure: None,
-                    })),
-                }"#,
-                )
-                .expect("reviewed finality production"),
-                None,
-            ),
-            "issued finality or observed empty silence succeeds; refusal retains audio and words",
-        ),
-    ];
-    g.sequence(body, shutdown);
 }

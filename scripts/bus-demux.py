@@ -110,6 +110,13 @@ TAKEOVER_RECEIPT_SCHEMA = "codescribe.agent-bridge.takeover-receipt.v1"
 #: channel; the other two mean the previous reader is still sitting on it.
 HANDOVER_CLEAR_STATES = ("stopped", "not_running")
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
+LIFECYCLE_SCHEMA = "codescribe.agent-bridge.listener-lifecycle.v1"
+LIFECYCLE_NOTICE_SCHEMA = "codescribe.agent-bridge.lifecycle-notice.v1"
+#: Founder 2026-10-10: after two consecutive follower losses with no newly
+#: received message between them, stop reconnecting and say so.
+LIFECYCLE_SUSPEND_AFTER = 2
+#: How often a watch looks at its follower; a loss needs two observations.
+LISTENER_CHECK_SECONDS = 2.0
 DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
@@ -227,8 +234,14 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
     if len(raw) > 4 << 20:
         raise ValueError("oversized generation receipt")
     value = json.loads(raw)
-    if set(value) != {"schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime", "segments", "active", "pending"} or value.get("schema") != "codescribe.bus-generations.v1" or value.get("root") != str(path):
+    required = {"schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime", "segments", "active", "pending"}
+    if not isinstance(value, dict) or set(value) - {"volume_uuid"} != required or value.get("schema") != "codescribe.bus-generations.v1" or value.get("root") != str(path):
         raise ValueError("unknown generation receipt")
+    volume = value.get("volume_uuid")
+    if volume is not None and (not isinstance(volume, str) or re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", volume
+    ) is None):
+        raise ValueError("invalid generation volume UUID")
     segments = list(value["segments"])
     active = dict(value["active"])
     pending = value.get("pending")
@@ -1476,6 +1489,7 @@ def consider(
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
         return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "channel": event.get("origin_channel", event.get("channel")),
                 "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
                 "routing_match": "audience"}
     status = event.get("status")
@@ -2370,6 +2384,8 @@ class SessionLease:
             )
         self.pending[delivery_id] = payload
         self.persist(active=True)
+        if payload.get("kind") in TERMINAL_KINDS:
+            lifecycle_message_received(self.root, self.lease_id)
         return True
 
     def _drafts_of(self, key: tuple[Any, Any]) -> list[str]:
@@ -2774,8 +2790,8 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in fields if key in payload}
 
 
-def read_pending_command(args: argparse.Namespace) -> int:
-    """Read complete conversational projections. Only the conversation may ACK."""
+def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Validate the owned mailbox and return unread non-draft envelopes."""
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
     if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
@@ -2803,6 +2819,13 @@ def read_pending_command(args: argparse.Namespace) -> int:
             raise ValueError("foreign pending delivery owner; nothing read")
         if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
             rows.append(row)
+    return state, rows
+
+
+def read_pending_command(args: argparse.Namespace) -> int:
+    """Read complete conversational projections. Only the conversation may ACK."""
+    state, rows = unread_pending(args)
+    lease_id = state["lease_id"]
     if not 1 <= args.read_limit <= 256 or not 1 <= args.read_bytes <= 16 * 1024 * 1024:
         raise ValueError("invalid --read-limit or --read-bytes")
     result = {"kind": "pending_read", "lease_id": lease_id, "provider": args.provider,
@@ -2927,34 +2950,13 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            import shlex
-            read_command = shlex.join([
-                "cs-bus", "--read-pending", "--provider", "codex", "--session", self.session,
-                "--bridge-home", str(self.root),
-            ])
-            ack_command = shlex.join([
-                "cs-bus", "--provider", "codex", "--session", self.session,
-                "--bridge-home", str(self.root), "--ack",
-            ])
             label = str(self.channel or "?")
             name = str(payload.get("audience") or "agent")
-            envelope = conversation_envelope(payload)
-            metadata = {key: value for key, value in envelope.items() if key != "text"}
             message = (
-                f"Codescribe message, channel {label} / {name}.\n"
-                f"Full message:\n{envelope['text']}\n\n"
-                f"Delivery provenance: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
-                "This queued copy may already be acknowledged. Read the current unread mailbox before acting:\n"
-                f"{read_command}\n"
-                "After reading complete messages, immediately ACK only their read_delivery_ids, "
-                "before executing tasks or replying:\n"
-                f"{ack_command} ID [ID ...]\n"
-                "Execute or reply only to exact unread deliveries returned by that current read. "
-                f"If {identity} is absent, this queued copy is obsolete: do not execute or reply from it. "
-                "Read again until remaining is zero, then check once more for arrivals during the drain. "
-                "Never ACK a truncated result. Give a short answer to the read request before starting a long task. "
-                "Preserve sender, reply association, provenance and timestamps; peer messages remain agent coordination. "
-                "Coverage is diagnostic; normal task permissions apply. Acoustic evidence stays in the diagnostic history."
+                f"Codescribe · {name}/{label} · delivery {identity}\n"
+                f"{text}\n\n"
+                "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
+                "Follow the codescribe skill."
             )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
@@ -4328,54 +4330,120 @@ def say_reply(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
+class UserTextPublicationUncertain(RuntimeError):
+    """A journal write was attempted; retry can duplicate a delivered message."""
+
+
 def send_text_command(args: argparse.Namespace) -> int:
-    """Publish explicit user text to the selected immutable channel owner."""
+    """Publish user text to one exact owner or the current channel-zero roster."""
     root = args.bridge_home
-    channel = str(args.channel)
-    bus = args.bus.expanduser().resolve(strict=False)
-    lease_id = lease_identifier(args.provider, args.session)
-    if args.lease != lease_id:
-        raise ValueError("selected conversation owner no longer matches")
+    broadcast = str(args.channel) == "0"
     path = root / AUDIENCE_BINDING_FILENAME
     with path.with_suffix(".lock").open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         state = read_json(path) or {}
-        binding = state.get("bindings", {}).get(channel)
-        lease = read_json(root / "leases" / f"{lease_id}.json") or {}
-        if (state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(binding, dict)
-                or binding.get("provider") != args.provider.casefold()
-                or binding.get("provider_session_id") != args.session
-                or Path(binding.get("bus") or "").resolve(strict=False) != bus
-                or lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-                or lease.get("provider") != args.provider.casefold()
-                or lease.get("provider_session_id") != args.session
-                or lease.get("bus") != str(bus)
-                or not live_follower_pid(root, lease_id)):
-            raise ValueError("channel was rebound or its agent is not listening; draft retained")
+        bindings = state.get("bindings")
+        if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
+            raise ValueError("channel bindings unavailable; draft retained")
+        selected = sorted(bindings.items()) if broadcast else [(str(args.channel), bindings.get(str(args.channel)))]
+        owners = []
+        for channel, binding in selected:
+            if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
+                raise ValueError("invalid channel binding; draft retained")
+            provider, session = binding.get("provider"), binding.get("provider_session_id")
+            audience, bus_name = binding.get("audience"), binding.get("bus")
+            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
+                raise ValueError("incomplete channel binding; draft retained")
+            bus = Path(bus_name).expanduser().resolve(strict=False)
+            lease_id = lease_identifier(provider, session)
+            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
+                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)):
+                raise ValueError("channel was rebound or its agent is not listening; draft retained")
+            if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
+                    or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
+                raise ValueError("selected conversation owner no longer matches")
+ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024  # mirrors core/attachment.rs MAX_ATTACHMENT_BYTES
+ATTACHMENT_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".heic": "image/heic", ".pdf": "application/pdf",
+    ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json",
+    ".csv": "text/csv", ".log": "text/plain",
+}
+
+
+def describe_attachment(raw: str) -> dict[str, Any]:
+    """Pointer to a pasted file already stored by the app; the helper never copies it.
+
+    The file must exist, be a regular readable file under the caller's home and
+    fit the app's attachment limit. The pointer carries what a reader needs to
+    open the file itself and to check it is the same bytes: absolute path, name,
+    media type, size and sha256. ACK of the message is not proof the file was read.
+    """
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"attachment path must be absolute: {raw}")
+    path = path.resolve(strict=False)
+    home = Path.home().resolve(strict=False)
+    if home not in path.parents:
+        raise ValueError(f"attachment must live under the home directory: {path}")
+    if not path.is_file():
+        raise ValueError(f"attachment is not a regular file: {path}")
+    size = path.stat().st_size
+    if size <= 0:
+        raise ValueError(f"attachment is empty: {path}")
+    if size > ATTACHMENT_MAX_BYTES:
+        raise ValueError(f"attachment exceeds {ATTACHMENT_MAX_BYTES} bytes: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return {"path": str(path), "name": path.name,
+            "media_type": ATTACHMENT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+            "bytes": size, "sha256": digest.hexdigest()}
+
+
+def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
+    """Plain-text pointers so a reader without envelope parsing still sees the file."""
+    return "".join(
+        f"\n[attachment] {item['name']} ({item['media_type']}, {item['bytes']} bytes): {item['path']}"
+        for item in attachments)
+
+
+            owners.append({"provider": provider, "provider_session_id": session,
+                           "lease_id": lease_id, "channel": channel, "audience": audience,
+    attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
+                           "name": audience, "bus": str(bus)})
+        if not owners:
+            raise ValueError("no agents are bound; draft retained")
         text = sys.stdin.buffer.read(65537)
         if len(text) > 65536:
             raise ValueError("message exceeds 64 KiB; draft retained")
         text = text.decode("utf-8")
-        if not text.strip():
+        if not text.strip() and not attachments:
             raise ValueError("empty message")
-        audience = binding.get("audience")
-        if not isinstance(audience, str) or not audience:
-            raise ValueError("channel has no audience")
         identity = os.urandom(12).hex()
-        owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
-                 "lease_id": lease_id, "channel": channel, "audience": audience,
-                 "name": audience, "bus": str(bus)}
-        event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
-                 **owner, "message_id": identity, "source_event_id": identity,
-                 "source": "typed", "text": text, "emitted_at": utc_now(),
-                 "recipients": [owner]}
-        receipt = publish_reply_event(bus, event, bridge_root=root)
-        if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                for key in ("stream_dev", "stream_inode", "offset", "length"))
-                or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-            raise ValueError("publication has no durable receipt; do not automatically resend")
-    emit({"kind": "message_published", "message_id": identity, "source": receipt})
+        emitted_at = utc_now()
+        receipts = []
+        for owner in owners:
+            event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
+                     **owner, "message_id": identity, "source_event_id": identity,
+                     "source": "typed", "text": text, "emitted_at": emitted_at,
+                     "recipients": [owner]}
+            if broadcast:
+                event["origin_channel"] = "0"
+            try:
+                receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
+                if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                        for key in ("stream_dev", "stream_inode", "offset", "length"))
+                        or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                        or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                    raise ValueError("publication has no durable receipt; do not automatically resend")
+            except (OSError, ValueError, RuntimeError) as error:
+                raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
+            receipts.append(receipt)
+    emit({"kind": "message_published", "message_id": identity, "source": receipts[0], "sources": receipts})
     return 0
 
 
@@ -4385,6 +4453,10 @@ def send_peer_command(args: argparse.Namespace) -> int:
     The wire shape is an agent reply — the canonical publisher's only
     agent-authored text lane — extended with explicit peer routing: `peer_to`
     names the one recipient of each per-bus copy, `sender` carries the
+        if attachments:
+            text = text.rstrip() + attachment_pointer_lines(attachments)
+            if len(text.encode("utf-8")) > 65536:
+                raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
     authoring lease, and the top-level `channel` records the origin ("0" for
     a broadcast, the target's digit for a direct). Followers admit it as a
     "message" delivery with state_change_allowed=False.
@@ -4393,6 +4465,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
     sender's own lease; each copy shares one message identity, so a reader
     bound to several channels still dedupes it within its lease.
     """
+            if attachments:
+                event["attachments"] = attachments
     root = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_json(root / "leases" / f"{lease_id}.json") or {}
@@ -4511,6 +4585,310 @@ def live_follower_pid(root: Path, lease_id: str) -> int | None:
         ):
             return lease_pid
     return None
+
+
+def lifecycle_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
+    base = root / "runtime" / "followers" / lease_id
+    return base.with_suffix(".lifecycle.json"), base.with_suffix(".lifecycle.lock")
+
+
+def watch_record_path(root: Path, lease_id: str) -> Path:
+    return (root / "runtime" / "followers" / lease_id).with_suffix(".watch.json")
+
+
+@contextlib.contextmanager
+def listener_lifecycle(root: Path, lease_id: str) -> Iterator[dict[str, Any]]:
+    """The loss streak's only writer: one lock, written back only on change.
+
+    Lifecycle state is diagnostics and recovery bookkeeping. It never holds a
+    transcript, a delivery or a cursor; the lease stays the mailbox authority.
+    """
+    path, lock_path = lifecycle_paths(root, lease_id)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = read_json(path)
+        if path.exists() and (not isinstance(state, dict)
+                              or state.get("schema") != LIFECYCLE_SCHEMA
+                              or state.get("lease_id") != lease_id):
+            raise OSError("listener lifecycle state is unreadable; preserved")
+        state = state or {"schema": LIFECYCLE_SCHEMA, "lease_id": lease_id,
+                          "consecutive_losses": 0, "suspended": False, "losses": []}
+        before = json.dumps(state, sort_keys=True)
+        yield state
+        if json.dumps(state, sort_keys=True) != before:
+            state["updated_at"] = utc_now()
+            atomic_json(path, state)
+
+
+def reset_listener_streak(root: Path, lease_id: str, reason: str) -> None:
+    """A received message or an explicit attach ends the loss streak."""
+    current = read_json(lifecycle_paths(root, lease_id)[0])
+    if not current or (not current.get("consecutive_losses") and not current.get("suspended")):
+        return
+    try:
+        with listener_lifecycle(root, lease_id) as state:
+            state.update(consecutive_losses=0, suspended=False, reset_at=utc_now(), reset_by=reason)
+    except OSError:
+        pass  # Bookkeeping never blocks a delivery or an attachment.
+
+
+def lifecycle_message_received(root: Path, lease_id: str) -> None:
+    reset_listener_streak(root, lease_id, "message_received")
+
+
+def follower_command(root: Path, *, provider: str, session: str, name: str, channel: str,
+                     bus: str, wakeup: str, on_seal: str | None) -> list[str]:
+    _, events_path = follower_paths(root, lease_identifier(provider, session))
+    command = [sys.executable, os.path.abspath(__file__),
+               "--bus", bus, "--bridge-home", str(root.resolve()),
+               "--provider", provider, "--session", session,
+               "--name", name, "--drafts", "--follow", "--coalesce",
+               "--follower-events", str(events_path),
+               "--follower-channel", str(channel),
+               "--wakeup", wakeup]
+    if on_seal:
+        command += ["--on-seal", on_seal]
+    return command
+
+
+def launch_follower(root: Path, command: list[str]) -> Any:
+    """Start one detached follower writing the lease's log and error files."""
+    import subprocess
+
+    lease_id = lease_identifier(command[command.index("--provider") + 1],
+                                command[command.index("--session") + 1])
+    log_path, _ = follower_paths(root, lease_id)
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with contextlib.ExitStack() as outputs:
+        handles = []
+        for path in (log_path, log_path.with_suffix(".errors.log")):
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+            os.fchmod(handle.fileno(), 0o600)
+            handles.append(handle)
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                stdout=handles[0], stderr=handles[1], start_new_session=True)
+
+
+def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
+                     child: Any, configuration: dict[str, Any]) -> None:
+    """Record the child and wait until it verifiably owns the lease."""
+    log_path, events_path = follower_paths(root, lease_id)
+    errors_path = log_path.with_suffix(".errors.log")
+    lease_path = root / "leases" / f"{lease_id}.json"
+    atomic_json(follower_pidfile(root, lease_id), {
+        "lease_id": lease_id, "pid": child.pid, "started_at": utc_now(),
+        "configuration": configuration,
+    })
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise OSError(f"follower exited during startup; see {errors_path}")
+        state = read_json(lease_path) or {}
+        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == child.pid
+                and state.get("lease_id") == lease_id
+                and state.get("active") is True and state.get("bus") == bus
+                and events_path.exists()
+                and verified_follower(root, lease_id, session, child.pid)
+                and child.poll() is None):
+            return
+        time.sleep(0.1)
+    raise OSError(f"follower readiness timed out; see {errors_path}")
+
+
+def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
+    """Restore one unexpectedly lost follower on its own lease, at most once.
+
+    Runs under the binding lock in the order attach, detach and archive use,
+    so a handover in progress finishes first and is observed, never raced.
+    The channel binding is the only proof that this session still intends to
+    listen: detach, archive and takeover remove or replace it, and nothing
+    without it is revived. The replacement resumes the same lease, cursor and
+    unread mailbox; nothing is acknowledged, resubmitted or replayed here.
+    """
+    provider = provider.casefold()
+    lease_id = lease_identifier(provider, session)
+    report: dict[str, Any] = {"schema": LIFECYCLE_NOTICE_SCHEMA, "kind": "listener_lifecycle",
+                              "lease_id": lease_id, "provider": provider,
+                              "provider_session_id": session}
+    lease_path = root / "leases" / f"{lease_id}.json"
+    with channel_bindings(root) as bindings:
+        owned = sorted((slot, entry) for slot, entry in bindings.items()
+                       if isinstance(entry, dict) and entry.get("provider") == provider
+                       and entry.get("provider_session_id") == session)
+        if not owned:
+            return {**report, "event": "listener_ended",
+                    "reason": "this session owns no channel; detached or handed over"}
+        slot, entry = owned[0]
+        report.update(channel=str(slot), name=entry.get("audience"))
+        pid = live_follower_pid(root, lease_id)
+        if pid is not None:
+            return {**report, "event": "alive", "follower_pid": pid}
+        descriptor = os.open(root / "leases" / f"{lease_id}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {**report, "event": "busy"}
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+        lease_state = read_json(lease_path)
+        if (not isinstance(lease_state, dict) or lease_state.get("schema") != LEASE_SCHEMA
+                or lease_state.get("lease_id") != lease_id
+                or lease_state.get("provider_session_id") != session
+                or lease_state.get("bus") != entry.get("bus")):
+            return {**report, "event": "unrecoverable",
+                    "reason": "lease recovery state is missing or belongs elsewhere; preserved"}
+        identity = lease_state.get("process_identity")
+        started = identity.get("started") if isinstance(identity, dict) else None
+        incarnation = f"{lease_state.get('pid')}@{started}"
+        report["lost_follower_pid"] = lease_state.get("pid")
+        with listener_lifecycle(root, lease_id) as state:
+            if any(loss.get("incarnation") == incarnation for loss in state["losses"]):
+                return {**report, "event": "already_handled", "suspended": state["suspended"]}
+            losses = int(state.get("consecutive_losses") or 0) + 1
+            loss = {"layer": "follower", "incarnation": incarnation,
+                    "lost_follower_pid": lease_state.get("pid"), "observed_at": utc_now()}
+            state["consecutive_losses"] = losses
+            state["losses"] = (state["losses"] + [loss])[-16:]
+            report.update(consecutive_losses=losses,
+                          notice_id=_identity(("listener_lifecycle", lease_id, incarnation)))
+            if losses >= LIFECYCLE_SUSPEND_AFTER:
+                state["suspended"] = True
+                loss["outcome"] = "recovery_suspended"
+                return {**report, "event": "recovery_suspended", "suspended": True}
+            loss["outcome"] = "recovering"
+        recorded = (read_json(follower_pidfile(root, lease_id)) or {}).get("configuration") \
+            or lease_state.get("wakeup_configuration") or {}
+        wakeup = recorded.get("wakeup") if recorded.get("wakeup") in ("codex-queue", "off") else "off"
+        on_seal = recorded.get("on_seal") if isinstance(recorded.get("on_seal"), str) else None
+        configuration = {"wakeup": wakeup, "on_seal": on_seal,
+                         "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        child = None
+        try:
+            child = launch_follower(root, follower_command(
+                root, provider=provider, session=session, name=str(entry.get("audience")),
+                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal))
+            confirm_follower(root, lease_id, session, str(entry.get("bus")), child, configuration)
+            outcome: dict[str, Any] = {"event": "follower_recovered", "follower_pid": child.pid}
+        except OSError as error:
+            if child is not None and child.poll() is None:
+                child.terminate()
+            outcome = {"event": "recovery_failed", "reason": str(error)}
+        with listener_lifecycle(root, lease_id) as state:
+            for item in state["losses"]:
+                if item.get("incarnation") == incarnation:
+                    item["outcome"] = outcome["event"]
+        return {**report, **outcome, "suspended": False}
+
+
+def submit_lifecycle_notice(root: Path, notice: dict[str, Any]) -> str:
+    """Wake a Codex conversation about a suspended listener, never as a delivery.
+
+    The watch printing the notice may itself end with the turn; the native
+    queue reaches a later turn. The text carries no transcript and no
+    delivery id, so nothing about it can be acknowledged or executed.
+    """
+    import shutil
+    import subprocess
+
+    executable = shutil.which("codex")
+    message = (
+        f"Codescribe lifecycle · {notice.get('name') or 'agent'}/{notice.get('channel') or '?'}\n"
+        f"Bus listener lost {notice.get('consecutive_losses')} times without a new message; "
+        "automatic reconnection is suspended. No transcript is attached. "
+        "Re-run cs-bus --attach for this session and restart cs-bus --watch to resume; "
+        "unread messages stay in cs-bus --read-pending."
+    )
+    if executable is None:
+        disposition = "unavailable"
+    else:
+        try:
+            result = subprocess.run(
+                [executable, "queue", "--thread", str(notice["provider_session_id"]), "--message", message],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            )
+            disposition = "provider_accepted" if result.returncode == 0 else "rejected"
+        except subprocess.TimeoutExpired:
+            disposition = "uncertain"
+        except OSError:
+            disposition = "unavailable"
+    try:
+        with listener_lifecycle(root, str(notice["lease_id"])) as state:
+            state["suspension_queue_notice"] = {"notice_id": notice.get("notice_id"),
+                                                "disposition": disposition, "at": utc_now()}
+    except OSError:
+        pass
+    return disposition
+
+
+class ListenerSupervisor:
+    """A watch's view of its own follower: observe twice, then recover once.
+
+    Quiet time is never a loss: only a follower process that is gone, with its
+    lease lock free and its channel binding still naming this session, is.
+    The watch's stdout is the notice path, independent of the lost follower.
+    """
+
+    NOTICE_EVENTS = ("follower_recovered", "recovery_failed", "recovery_suspended",
+                     "unrecoverable", "listener_ended")
+
+    def __init__(self, root: Path, provider: str, session: str,
+                 interval: float = LISTENER_CHECK_SECONDS):
+        self.root = root
+        self.provider = provider.casefold()
+        self.session = session
+        self.lease_id = lease_identifier(provider, session)
+        self.interval = interval
+        self.last_check: float | None = None
+        self.missing_since: float | None = None
+        self.follower_seen = False
+        self.reported: set[str] = set()
+
+    def check(self, now: float) -> dict[str, Any] | None:
+        if self.last_check is not None and now - self.last_check < self.interval:
+            return None
+        self.last_check = now
+        if live_follower_pid(self.root, self.lease_id) is not None:
+            self.follower_seen = True
+            self.missing_since = None
+            return None
+        if self.missing_since is None:
+            self.missing_since = now
+            return None
+        self.missing_since = None
+        try:
+            outcome = recover_follower(self.root, self.provider, self.session)
+        except OSError as error:
+            # Unreadable bindings or lifecycle state are preserved, not repaired.
+            outcome = {"schema": LIFECYCLE_NOTICE_SCHEMA, "kind": "listener_lifecycle",
+                       "lease_id": self.lease_id, "provider": self.provider,
+                       "provider_session_id": self.session,
+                       "event": "unrecoverable", "reason": str(error)}
+        event = outcome.get("event")
+        if event == "listener_ended" and not self.follower_seen:
+            return None  # A watch started before its attachment waits for it.
+        if event in ("unrecoverable", "listener_ended"):
+            if event in self.reported:
+                return None
+            self.reported.add(event)
+        if event not in self.NOTICE_EVENTS:
+            return None
+        if event == "follower_recovered":
+            self.follower_seen = True
+        if event == "recovery_suspended" and self.provider == "codex":
+            outcome["queue_notice"] = submit_lifecycle_notice(self.root, outcome)
+        outcome["instructions"] = {
+            "follower_recovered": "Same lease, cursor and mailbox; unread messages follow as usual. Do not ACK this notice.",
+            "recovery_failed": "Automatic recovery did not start a reader; re-run cs-bus --attach for this session.",
+            "recovery_suspended": "Two losses without a new message; reconnection is off until cs-bus --attach.",
+            "unrecoverable": "Lease state could not be resumed and was preserved; inspect cs-bus --status.",
+            "listener_ended": "This session no longer owns the channel; nothing is revived. The watch exits.",
+        }[event]
+        return outcome
 
 
 @contextlib.contextmanager
@@ -5079,7 +5457,6 @@ def attach_command(args: argparse.Namespace) -> int:
     resumed = lease_path.exists()
     configuration = wakeup_configuration(args)
     log_path, events_path = follower_paths(root, lease_id)
-    errors_path = log_path.with_suffix(".errors.log")
     try:
         # Old lease locks outlive the binding commit; the child owns its own
         # distinct lease. No competing attach can observe a half-started owner.
@@ -5123,50 +5500,14 @@ def attach_command(args: argparse.Namespace) -> int:
                             atomic_json(lease_path, lease_state)
                     pid = None
                 if pid is None:
-                    command = [sys.executable, os.path.abspath(__file__),
-                               "--bus", resolved_bus, "--bridge-home", str(root.resolve()),
-                               "--provider", args.provider, "--session", args.session,
-                               "--name", name, "--drafts", "--follow", "--coalesce",
-                               "--follower-events", str(events_path),
-                               "--follower-channel", str(args.channel),
-                               "--wakeup", configuration["wakeup"]]
-                    if args.on_seal:
-                        command += ["--on-seal", args.on_seal]
-                    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    with contextlib.ExitStack() as outputs:
-                        for path in (log_path, errors_path):
-                            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-                            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
-                            os.fchmod(handle.fileno(), 0o600)
-                            if path == log_path:
-                                log = handle
-                            else:
-                                errors = handle
-                        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                                 stdout=log, stderr=errors, start_new_session=True)
+                    child = launch_follower(root, follower_command(
+                        root, provider=args.provider, session=args.session, name=name,
+                        channel=str(args.channel), bus=resolved_bus,
+                        wakeup=configuration["wakeup"], on_seal=args.on_seal))
                     pid = child.pid
                     child_state = "starting"
-                    atomic_json(follower_pidfile(root, lease_id), {
-                        "lease_id": lease_id, "pid": pid, "started_at": utc_now(),
-                        "configuration": configuration,
-                    })
-                    deadline = time.monotonic() + 5.0
-                    while time.monotonic() < deadline:
-                        if child.poll() is not None:
-                            child_state = "exited"
-                            raise OSError(f"follower exited during startup; see {errors_path}")
-                        state = read_json(lease_path) or {}
-                        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid
-                                and state.get("lease_id") == lease_id
-                                and state.get("active") is True and state.get("bus") == resolved_bus
-                                and events_path.exists()
-                                and verified_follower(root, lease_id, args.session, pid)
-                                and child.poll() is None):
-                            child_state = "ready"
-                            break
-                        time.sleep(0.1)
-                    else:
-                        raise OSError(f"follower readiness timed out; see {errors_path}")
+                    confirm_follower(root, lease_id, args.session, resolved_bus, child, configuration)
+                    child_state = "ready"
                 if persist_voice:
                     write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
                 if previous is not None:
@@ -5201,6 +5542,8 @@ def attach_command(args: argparse.Namespace) -> int:
         suffix = "unchanged" if unchanged else "state uncertain"
         sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
         return 3
+    # An explicit attachment is the agent's own decision to listen again.
+    reset_listener_streak(root, lease_id, "attach")
     state = read_json(lease_path) or {}
     emit({
         "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
@@ -5259,10 +5602,24 @@ def status_command(args: argparse.Namespace) -> int:
                 channel = str(slot)
                 break
     name = state.get("name") if isinstance(state, dict) else None
+    lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
+    watch = read_json(watch_record_path(root, lease_id)) or {}
+    watch_pid = watch.get("pid")
+    watch_alive = (isinstance(watch_pid, int) and process_is_alive(watch_pid)
+                   and process_identity(watch_pid) == watch.get("process_identity"))
     emit(
         {
             "schema": STATUS_SCHEMA,
             "kind": "status",
+            # The helper sees the follower and the watch process; a provider's
+            # notification window and its conversation are visible only to it.
+            "listener": {
+                "consecutive_losses": lifecycle.get("consecutive_losses", 0),
+                "recovery_suspended": lifecycle.get("suspended") is True,
+                "last_loss": (lifecycle.get("losses") or [None])[-1],
+                "watch_alive": watch_alive if watch else None,
+                "watch_pid": watch_pid if watch_alive else None,
+            },
             "wakeup": (state or {}).get("wakeup_configuration", {}).get("wakeup", "unrecorded"),
             "wakeup_receipts": str(root / "wakeups" / lease_id),
             "pending_wakeups": [
@@ -5306,11 +5663,8 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-WATCH_TEXT_LIMIT = 500
-
-
 def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
-    """One compact monitor line for an envelope worth waking the agent for.
+    """One complete message for an envelope worth waking the agent for.
 
     Drafts and revisions stay in the mailbox. The watch surfaces seals
     (certified or coverage-refused), anything allowed to change state, and
@@ -5327,14 +5681,63 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
         or payload.get("coverage") == COVERAGE_REFUSED
     ):
         return None
-    return {
+    line = {
         "kind": payload.get("kind"),
         "status": payload.get("status"),
         "coverage": payload.get("coverage"),
         "sca": payload.get("state_change_allowed") is True,
         "delivery_id": payload.get("delivery_id"),
-        "text": str(payload.get("text") or "")[:WATCH_TEXT_LIMIT],
+        "text": str(payload.get("text") or ""),
     }
+    # Keep the owner and conversational attribution, without repeating the
+    # acoustic envelope or every recipient's copy of the same coordinates.
+    for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
+                "emitted_at", "source", "sender", "peer_to", "association", "reply_id", "reply_to",
+                "routing_candidates", "instructions", "attachments"):
+        if key in payload:
+            line[key] = payload[key]
+    return line
+
+
+def wait_for_pending_command(args: argparse.Namespace) -> int:
+    """A notification task for providers that wake on process completion.
+
+    Without --max-wait the process ends only when the owned mailbox has an unread
+    non-draft message, so an idle agent costs no model turn. --max-wait keeps a
+    bounded diagnostic variant that may also end with watch_timeout.
+    """
+    lease_id = lease_identifier(args.provider, args.session)
+    # No --max-wait: wait without a deadline. A provider that wakes its agent on
+    # task completion would otherwise get one empty turn per deadline.
+    deadline = None if args.max_wait is None else time.monotonic() + args.max_wait
+    source = args.bridge_home / "leases" / f"{lease_id}.json"
+    trigger = BusEventTrigger(source, args.interval)
+    try:
+        while True:
+            _state, rows = unread_pending(args)
+            if rows:
+                emit({"kind": "mailbox_ready", "lease_id": lease_id,
+                      "provider": args.provider, "provider_session_id": args.session,
+                      "pending_count": len(rows),
+                      "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
+                return 0
+            if deadline is None:
+                trigger.wait(timeout=1.0)
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                emit({"kind": "watch_timeout", "lease_id": lease_id,
+                      "provider": args.provider, "provider_session_id": args.session,
+                      "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
+                return 0
+            trigger.wait(timeout=min(1.0, remaining))
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, ValueError) as error:
+        sys.stderr.write(f"cs-bus: bounded watch refused: {error}\n")
+        return 3
+    finally:
+        trigger.close()
 
 
 def watch_command(args: argparse.Namespace) -> int:
@@ -5400,6 +5803,9 @@ def watch_command(args: argparse.Namespace) -> int:
             if identity in seen:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
+            if (not args.human and lease_id and payload.get("delivery_id")
+                    and delivery_acknowledged(args.bridge_home, lease_id, identity)):
+                continue
             if args.human:
                 key = draft_key(payload)
                 if payload.get("kind") in DRAFT_KINDS:
@@ -5408,10 +5814,10 @@ def watch_command(args: argparse.Namespace) -> int:
                 flush(key)
                 print(human_line(payload, channel), flush=True)
             else:
-                emit(line if getattr(args, "full", False) else {
-                    "delivery_id": identity, "kind": line.get("kind"),
-                    "notice": "Codescribe mailbox has a new delivery",
-                })
+                if getattr(args, "full", False):
+                    emit(line)
+                else:
+                    emit({"notice": "Codescribe message", **line})
         if args.human:
             flush()
 
@@ -5428,16 +5834,41 @@ def watch_command(args: argparse.Namespace) -> int:
         except FileNotFoundError:
             offset = 0
     sys.stderr.write(f"bus-demux: watching {source}\n")
+    # A session watch also looks after its own follower. It is the one
+    # process the provider monitors, so its stdout reaches the conversation
+    # even when the follower it observes has died.
+    supervisor = (ListenerSupervisor(args.bridge_home, args.provider, args.session)
+                  if lease_id and args.from_file is None else None)
+    record = watch_record_path(args.bridge_home, lease_id) if supervisor else None
+    if record is not None:
+        atomic_json(record, {"lease_id": lease_id, "pid": os.getpid(),
+                             "process_identity": process_identity(os.getpid()),
+                             "started_at": utc_now()})
     trigger = BusEventTrigger(source, args.interval)
     try:
         while True:
             entries, offset = iter_new_lines(source, offset)
             pump(entries)
+            notice = supervisor.check(time.monotonic()) if supervisor else None
+            if notice is not None:
+                emit({"notice": "Codescribe listener lifecycle", **notice})
+                if notice["event"] == "listener_ended":
+                    return 0
             trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:
+        # The consumer closed the pipe (``--watch | head -1`` is a legitimate
+        # exit-on-bell wakeup). Leave quietly instead of a traceback, and keep
+        # the interpreter from retrying the flush at shutdown.
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     finally:
         trigger.close()
+        if record is not None and (read_json(record) or {}).get("pid") == os.getpid():
+            with contextlib.suppress(OSError):
+                record.unlink()
 
 
 def main() -> int:
@@ -5455,8 +5886,8 @@ def main() -> int:
                "  cs-bus --ack ID --provider codex --session THREAD\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
-               "Every attachment needs an output-notifying watch. Its default is a short bell;\n"
-               "read the full envelope before ACK. Codex native queue also wakes the next turn.",
+               "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
+               "ACK complete received messages immediately. Codex native queue also wakes the next turn.",
     )
     parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
@@ -5560,12 +5991,17 @@ def main() -> int:
     parser.add_argument(
         "--watch",
         action="store_true",
-        help="live notifications for this mailbox; short bell by default "
+        help="live notifications for this mailbox; bell with full message by default "
         "(--once reads existing events and exits)",
     )
+    parser.add_argument("--until-event", action="store_true",
+                        help="with --watch: exit when the owned mailbox has unread non-draft messages; never ACK")
+    parser.add_argument("--max-wait", type=float, default=None,
+                        help="with --watch --until-event: diagnostic deadline in seconds (0 < seconds <= 60); "
+                        "omit it to wait without a deadline until a message arrives")
     watch_format = parser.add_mutually_exclusive_group()
     watch_format.add_argument("--human", action="store_true", help="diagnostic --watch as readable one-line envelopes")
-    watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: delivery id and notice only")
+    watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: bell and complete message")
     watch_format.add_argument("--full", action="store_true", help="diagnostic --watch with transcript text and receipt fields")
     parser.add_argument(
         "--from-file",
@@ -5608,7 +6044,7 @@ def main() -> int:
         help="append an agent reply to the canonical Bus and speak it through "
         "vendor TTS; --name defaults to the name on this session's lease",
     )
-    parser.add_argument("--send-text", action="store_true", help="send user text from stdin to an exact channel owner; --channel, --lease and --bus required")
+    parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
     parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
@@ -5644,6 +6080,9 @@ def main() -> int:
         args.archive_agent not in tuple(str(n) for n in range(1, 10))
         or not args.provider or not args.session or not args.lease or args.bus is None
         or any((args.attach, args.detach, args.takeover, args.channel is not None,
+    parser.add_argument("--attach-file", metavar="PATH", action="append",
+                        help="with --send-text: pointer to a pasted file the app already stored "
+                        "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
                 args.status, args.watch, args.follow, args.once, args.from_start,
                 args.ack, args.from_file, args.say is not None, args.send_text,
                 args.send is not None, args.to is not None, args.read_delivery,
@@ -5741,6 +6180,22 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.until_event or args.max_wait is not None:
+        if (not args.watch or not args.until_event or not args.provider
+                or any((args.once, args.from_start, args.from_file, args.human, args.full,
+                        args.read_pending, args.read_delivery, args.retry_wakeup, args.detach,
+                        args.send_text, args.send is not None, args.ack, args.attach,
+                        args.status, args.say is not None, args.follow, args.lease,
+                        args.archive_agent is not None, args.mute_agent, args.unmute_agent,
+                        args.play_reply, args.stop_reply, args.channel is not None,
+                        args.all, args.become, args.active_names, args.takeover,
+                        args.to is not None, args.reply_to, args.playback_ticket,
+                        args.name, args.voice, args.speed is not None, args.tts_vendor,
+                        args.drafts, args.coalesce, args.on_seal))):
+            parser.error("--until-event requires only --watch --provider/--session and optional --max-wait")
+        if args.max_wait is not None and not 0 < args.max_wait <= 60:
+            parser.error("--max-wait must be greater than zero and at most 60 seconds")
+        return wait_for_pending_command(args)
     if args.read_pending:
         if not args.provider:
             parser.error("--read-pending requires --provider/--session")
@@ -5776,8 +6231,10 @@ def main() -> int:
             sys.stderr.write(f"cs-bus: playback mute refused: {error}\n")
             return 3
     if args.send_text:
-        if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
-                or not args.lease or not args.bus_overridden
+        if ((args.channel == "0" and any((args.provider, args.session, args.lease, args.bus_overridden)))
+                or (args.channel != "0" and (not args.provider
+                    or args.channel not in tuple(str(n) for n in range(1, 10))
+                    or not args.lease or not args.bus_overridden))
                 or any((args.say is not None, args.send is not None, args.to is not None,
                         args.ack, args.attach, args.status, args.watch,
                         args.follow, args.once, args.read_delivery, args.retry_wakeup,
@@ -5785,6 +6242,9 @@ def main() -> int:
             parser.error("--send-text requires an exact --provider/--session/--lease/--channel/--bus owner")
         try:
             return send_text_command(args)
+        except UserTextPublicationUncertain as error:
+            sys.stderr.write(f"cs-bus: {error}\n")
+            return 4
         except (OSError, ValueError, RuntimeError) as error:
             sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
             return 3
@@ -5806,6 +6266,8 @@ def main() -> int:
         if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
                 or not args.playback_ticket or not re.fullmatch(r"[0-9a-f]{24}", args.playback_ticket)):
             parser.error("reply control requires --provider/--session, a reply id and a playback ticket")
+    if args.attach_file and not args.send_text:
+        parser.error("--attach-file is only valid with --send-text")
         if any((args.say is not None, args.ack, args.attach, args.channel is not None,
                 args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
                 args.read_delivery, args.retry_wakeup, args.all, args.become, args.active_names,

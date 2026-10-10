@@ -423,6 +423,8 @@ struct MockSettingsEngine: SettingsEngine {
   /// Preview seed for the local-Whisper picker; the observer records selections.
   var whisperCatalog: CsWhisperModelCatalog = .sample
   var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
+  /// Live catalog reads for residency transitions; nil serves `whisperCatalog`.
+  var whisperCatalogLoader: (() -> CsWhisperModelCatalog)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -469,7 +471,9 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog { whisperCatalog }
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
+    whisperCatalogLoader?() ?? whisperCatalog
+  }
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     if let selectLocalWhisperModelObserver {
       return try await selectLocalWhisperModelObserver(reference)
@@ -487,7 +491,8 @@ struct MockSettingsEngine: SettingsEngine {
     let records = try qualityRecordsLoader?() ?? qualityRecords
     return CsQualityListing(
       records: Array(records.prefix(Int(clamping: limit))),
-      unchangedTakes: unchangedQualityTakes
+      unchangedTakes: unchangedQualityTakes,
+      totalCorrections: UInt64(records.count)
     )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
@@ -1064,18 +1069,18 @@ extension CsSttLane {
   static let sampleFile = CsSttLane(
     id: "file",
     title: "File transcription",
-    accepts: "https multipart /v1/audio/transcriptions or NDJSON …:stream",
+    accepts: "multipart /v1/audio/transcriptions · NDJSON …:stream",
     placeholder: "https://…/v1/audio/transcriptions",
     endpoint: nil,
     endpointWireKey: "STT_FILE_ENDPOINT",
     keyAccount: "STT_FILE_API_KEY",
     apiKeySet: false
   )
-  /// Mirrors `SttLane::Live` (§B.0): wss live socket (stt-ws-v1).
+  /// Mirrors `SttLane::Live` (§B.0): the wss protocol ids.
   static let sampleLive = CsSttLane(
     id: "live",
     title: "Live transcript",
-    accepts: "wss live socket (stt-ws-v1)",
+    accepts: "stt-ws-v1 · xAI /v1/stt",
     placeholder: "wss://…/v1/audio/transcribe",
     endpoint: nil,
     endpointWireKey: "STT_LIVE_ENDPOINT",

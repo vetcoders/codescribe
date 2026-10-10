@@ -18,12 +18,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserDragEnded: ((NSPoint) -> Void)?
   var onUserResize: (() -> Void)?
   var onUserResizeEnded: (() -> Void)?
+  var onResizePresentationSelected: ((OverlayPresentationMode) -> Void)?
   var onFrameTransitionCompleted: (() -> Void)?
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
   /// or default expanded size: manual sizing, an open editor, or a dirty draft.
   /// The panel remains the only writer of the transition frame.
   var qualifiedExpandedHeight: ((CGFloat) -> CGFloat?)?
-  var onWidgetInteractionChanged: ((OverlayWidgetInteraction, Bool) -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
   private var dragMoved = false
@@ -31,15 +31,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
-  private var presentationMode: OverlayPresentationMode = .expanded
+  fileprivate var presentationMode: OverlayPresentationMode = .expanded
   private var transitionTop: CGFloat?
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
   private var frameTransitionGeneration: UInt64 = 0
-  private var menuObservers: [NSObjectProtocol] = []
-  private var trackingMenus: Set<ObjectIdentifier> = []
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
+  var isUserDragging: Bool { dragStart != nil }
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
   /// MIDI borrows width around the parked mini; its temporary left edge is
   /// never the saved position. A real drag moves that mini by the same edges.
@@ -59,21 +58,23 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Grow leftward so the microphone and fold controls keep their screen position.
   /// Display containment wins when the complete strip cannot fit to the left.
-  func setPresentationMode(_ mode: OverlayPresentationMode, animated: Bool = false) {
+  func setPresentationMode(
+    _ mode: OverlayPresentationMode, animated: Bool = false, settleResize: Bool = false
+  ) {
     if isUserResizing {
       pendingResizePresentation = (mode, animated)
       return
     }
-    guard mode != presentationMode else { return }
+    guard mode != presentationMode || settleResize else { return }
     let previous = presentationMode
-    if previous == .mini { miniFrame = frameTransitionTarget ?? frame }
+    if previous == .mini && !settleResize { miniFrame = frameTransitionTarget ?? frame }
     presentationMode = mode
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
     let top = isFrameTransitioning ? transitionTop ?? frame.maxY : frame.maxY
     let right =
-      if previous == .midi, let miniFrame {
+      if previous == .midi, let miniFrame, !settleResize {
         miniFrame.maxX
       } else {
         isFrameTransitioning ? transitionRight ?? frame.maxX : frame.maxX
@@ -141,10 +142,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     frameTransitionTarget = nil
     transitionTop = nil
     transitionRight = nil
-    minSize = presentationMode == .expanded ? DictationOverlayWindow.minSize : frame.size
+    // Mini is a drag surface; MIDI exposes only horizontal resize handles.
+    minSize = DictationOverlayWindow.collapsedSize
     contentMinSize = minSize
+    if presentationMode != .mini { styleMask.insert(.resizable) }
+    if let contentView { invalidateCursorRects(for: contentView) }
     if presentationMode == .expanded {
-      styleMask.insert(.resizable)
       expandedSize = nil
       miniFrame = nil
     }
@@ -164,37 +167,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func startPresence() {
     presence?.start()
-    guard menuObservers.isEmpty else { return }
-    for (name, tracking) in [
-      (NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false),
-    ] {
-      menuObservers.append(
-        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
-          [weak self] notification in
-          guard let menu = notification.object as? NSMenu else { return }
-          let identity = ObjectIdentifier(menu)
-          MainActor.assumeIsolated {
-            guard let self, !self.menuObservers.isEmpty else { return }
-            if tracking {
-              guard self.isVisible else { return }
-              self.trackingMenus.insert(identity)
-            } else {
-              self.trackingMenus.remove(identity)
-            }
-            self.onWidgetInteractionChanged?(.menu, !self.trackingMenus.isEmpty)
-          }
-        })
-    }
   }
 
   func invalidatePresence() {
     cancelUserResize()
     presence?.invalidate()
-    menuObservers.forEach(NotificationCenter.default.removeObserver)
-    menuObservers.removeAll()
-    trackingMenus.removeAll()
-    onWidgetInteractionChanged?(.menu, false)
-    onWidgetInteractionChanged?(.dragging, false)
   }
 
   override var canBecomeKey: Bool { allowsKeyForTranscript }
@@ -225,10 +202,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if isKeyWindow, let transcript = firstResponder as? LiveTranscriptNativeTextView,
-      transcript.performSelectedCopy(with: event)
+    if isKeyWindow, event.type == .keyDown,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c",
+      let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:)))
     {
-      return true
+      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
     }
     return super.performKeyEquivalent(with: event)
   }
@@ -242,20 +221,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // returns the container. Dispatching these motions to AppKit first sets
     // an iBeam, then the panel sets a resize cursor on every event.
     // The strip owns motion as well as dragging; interior tracking stays native.
-    if event.type == .mouseMoved, styleMask.contains(.resizable), let contentView,
-      OverlayResizeHit.edge(at: event.locationInWindow, in: contentView.bounds) != nil
+    if event.type == .mouseMoved || event.type == .cursorUpdate,
+      styleMask.contains(.resizable), let contentView,
+      OverlayResizeHit.edge(
+        at: event.locationInWindow, in: contentView.bounds, mode: presentationMode) != nil
+    {
+      refreshCursor(at: event.locationInWindow)
+      return
+    }
+    if event.type == .mouseMoved || event.type == .cursorUpdate,
+      isWindowDragHit(at: event.locationInWindow)
     {
       refreshCursor(at: event.locationInWindow)
       return
     }
     if event.type == .leftMouseDown {
       if isUserResizing { endUserResize() }
-      if dragStart != nil { onWidgetInteractionChanged?(.dragging, false) }
       dragStart = nil
       dragMoved = false
       if styleMask.contains(.resizable), let contentView,
         contentView.bounds.contains(event.locationInWindow),
-        let edge = OverlayResizeHit.edge(at: event.locationInWindow, in: contentView.bounds)
+        let edge = OverlayResizeHit.edge(
+          at: event.locationInWindow, in: contentView.bounds, mode: presentationMode)
       {
         beginUserResize(edge: edge, at: screenPoint(for: event))
         return
@@ -269,7 +256,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       settleFrameTransition()
       dragStart = (screenPoint(for: event), frame, miniFrame)
-      onWidgetInteractionChanged?(.dragging, true)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
@@ -289,9 +275,20 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
       dragStart = nil
       dragMoved = false
-      onWidgetInteractionChanged?(.dragging, false)
       if moved { onUserDragEnded?(origin) }
     default:
+      if event.type == .leftMouseDown, let contentView {
+        var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
+        while let view = hit {
+          // SwiftUI uses different native text classes across macOS versions.
+          // Follow public responder capabilities, not a private class name.
+          if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+            takeKeyForTranscript()
+            break
+          }
+          hit = view.superview
+        }
+      }
       super.sendEvent(event)
       if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }
@@ -301,11 +298,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// commit each layout before AppKit presents the next window frame.
   @discardableResult
   func beginUserResize(edge: OverlayResizeHit.Edge, at point: NSPoint) -> Bool {
-    guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing else {
+    guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing,
+      presentationMode != .mini,
+      presentationMode != .midi || edge == .left || edge == .right
+    else {
       return false
     }
     resizeStart = (point, frame, edge)
-    onWidgetInteractionChanged?(.dragging, true)
     onUserResize?()
     return true
   }
@@ -313,10 +312,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func updateUserResize(to point: NSPoint) -> Bool {
     guard let resizeStart else { return false }
-    let target = OverlayResizeHit.apply(
+    var target = OverlayResizeHit.apply(
       edge: resizeStart.edge, start: resizeStart.frame,
       dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
       minSize: minSize)
+    // Morphology always pivots on the upper-right corner, regardless of
+    // which edge the Founder grabs. Only a window drag moves the pin.
+    target.origin = NSPoint(
+      x: resizeStart.frame.maxX - target.width, y: resizeStart.frame.maxY - target.height)
     guard target != frame else { return false }
     // Do not force an intermediate paint while hosting geometry is invalidated.
     setFrame(target, display: false)
@@ -324,12 +327,29 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func endUserResize() {
-    guard isUserResizing else { return }
-    resizeStart = nil
-    onWidgetInteractionChanged?(.dragging, false)
+    guard let resizeStart else { return }
+    let changed = frame.size != resizeStart.frame.size
+    if changed, pendingResizePresentation == nil, presentationMode == .expanded {
+      let mode = DictationOverlayWindow.presentationMode(forResizedSize: frame.size)
+      // OverlayState remains the presentation authority. Its ordinary
+      // callback queues the selected mode until this gesture ends.
+      onResizePresentationSelected?(mode)
+      if pendingResizePresentation == nil { pendingResizePresentation = (mode, false) }
+    }
+    if changed {
+      if pendingResizePresentation?.mode == .expanded {
+        expandedSize = DictationOverlayWindow.clamp(frame.size)
+      } else if presentationMode == .expanded {
+        expandedSize = resizeStart.frame.size
+      }
+      miniFrame = nil
+    }
+    self.resizeStart = nil
     let pending = pendingResizePresentation
     pendingResizePresentation = nil
-    if let pending { setPresentationMode(pending.mode, animated: pending.animated) }
+    if let pending {
+      setPresentationMode(pending.mode, animated: pending.animated, settleResize: changed)
+    }
     onUserResizeEnded?()
   }
 
@@ -337,7 +357,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private func cancelUserResize() {
     resizeStart = nil
     pendingResizePresentation = nil
-    onWidgetInteractionChanged?(.dragging, false)
   }
 
   /// Native tracking owns the interior, including SwiftUI text and links
@@ -346,8 +365,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
     guard let contentView else { return false }
-    let resizeEdge = styleMask.contains(.resizable)
-      && OverlayResizeHit.edge(at: point, in: contentView.bounds) != nil
+    let resizeEdge =
+      styleMask.contains(.resizable)
+      && OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
     guard resizeEdge || isWindowDragHit(at: point) else { return false }
     let desired = resizeEdge ? cursor(at: point) : NSCursor.arrow
     guard desired != .iBeam, NSCursor.current != desired else { return false }
@@ -359,7 +379,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func cursor(at point: NSPoint) -> NSCursor {
     guard let contentView else { return .arrow }
     if styleMask.contains(.resizable),
-      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds)
+      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode)
     {
       return OverlayResizeHit.cursor(for: edge)
     }
@@ -442,7 +462,9 @@ final class OverlayContentContainer: NSView {
   /// including the bottom capsule and its margin, so SwiftUI cannot steal it.
   override func hitTest(_ point: NSPoint) -> NSView? {
     if window?.styleMask.contains(.resizable) == true,
-      OverlayResizeHit.edge(at: point, in: bounds) != nil
+      OverlayResizeHit.edge(
+        at: point, in: bounds,
+        mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded) != nil
     {
       return self
     }
@@ -479,11 +501,13 @@ final class OverlayContentContainer: NSView {
 
   override func resetCursorRects() {
     discardCursorRects()
-    // A non-activating glass panel still owns the cursor above its chrome.
-    // Descendant NSTextView cursor rects retain native selection/editing cursors.
-    addCursorRect(bounds, cursor: .arrow)
+    // No whole-window arrow rectangle: it overlaps every native text/link
+    // rectangle and makes AppKit alternate cursor owners on entry. Interior
+    // views own their cursors; this container owns only the resize band.
     guard window?.styleMask.contains(.resizable) == true else { return }
-    for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
+    for (rect, cursor) in OverlayResizeHit.cursorRects(
+      in: bounds, mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded)
+    {
       addCursorRect(rect, cursor: cursor)
     }
   }
@@ -497,6 +521,11 @@ enum DictationOverlayWindow {
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
 
+  static func presentationMode(forResizedSize size: NSSize) -> OverlayPresentationMode {
+    if size.height >= (collapsedHeight + minSize.height) / 2 { return .expanded }
+    return size.width < (collapsedSize.width + midiSize.width) / 2 ? .mini : .midi
+  }
+
   /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
   /// below the display. Keep its top unchanged whenever the full frame fits.
   static func visibleExpansionFrame(_ proposed: NSRect, in visible: NSRect?) -> NSRect {
@@ -506,9 +535,9 @@ enum DictationOverlayWindow {
     return NSRect(
       origin: OverlayPlacement.clampOrigin(proposed.origin, size: size, in: visible), size: size)
   }
-  /// Hard floor for the panel's content size. Enforced for user edge-drag
-  /// (`minSize`/`contentMinSize`) AND for every programmatic `setFrame` via
-  /// `clamp(_:to:)` (AppKit does not apply `minSize` to programmatic frames).
+  /// Readability floor for settled regular content and programmatic content
+  /// sizing via `clamp(_:to:)`. Live edge gestures can cross below this floor
+  /// to select MIDI or MINI; the window applies the selected form on release.
   /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
   /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
   /// lines) without the old action-layer mass. Width floor (320) is unchanged.
@@ -567,6 +596,9 @@ enum DictationOverlayWindow {
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
+    panel.onResizePresentationSelected = { [weak state] mode in
+      state?.setPresentationMode(mode)
+    }
     state.onAgentSidebarPresented = { [weak panel] in
       panel?.makeFirstResponder(nil)
       panel?.releaseKeyAfterTranscript()
@@ -582,9 +614,7 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userResizedOverlay()
     }
-    panel.onWidgetInteractionChanged = { [weak state] interaction, held in
-      state?.setWidgetInteraction(interaction, held: held)
-    }
+
     panel.contentView = OverlayContentContainer(hosting: hosting)
 
     // User-resizable: borderless windows still honour edge-drag resize when
@@ -791,15 +821,20 @@ enum OverlayResizeHit: Sendable {
   static let band: CGFloat = 16
   static let scrollbarInset: CGFloat = 15
 
-  enum Edge: Sendable, Equatable {
+  enum Edge: Sendable, Hashable {
     case left, right, top, bottom
     case topLeft, topRight, bottomLeft, bottomRight
   }
 
-  static func edge(at point: NSPoint, in bounds: NSRect, band: CGFloat = band) -> Edge? {
+  static func edge(
+    at point: NSPoint, in bounds: NSRect, band: CGFloat = band,
+    mode: OverlayPresentationMode = .expanded
+  ) -> Edge? {
+    guard mode != .mini else { return nil }
     guard bounds.width > band * 2, bounds.height > band * 2 else { return nil }
     let left = point.x <= bounds.minX + band
     let right = point.x >= bounds.maxX - band
+    if mode == .midi { return left ? .left : right ? .right : nil }
     let bottom = point.y <= bounds.minY + band
     let top = point.y >= bounds.maxY - band
     switch (left, right, bottom, top) {
@@ -847,7 +882,22 @@ enum OverlayResizeHit: Sendable {
   }
 
   @MainActor
-  static func cursorRects(in bounds: NSRect, band: CGFloat = band) -> [(NSRect, NSCursor)] {
+  static func cursorRects(
+    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode = .expanded
+  ) -> [(NSRect, NSCursor)] {
+    if mode == .mini { return [] }
+    if mode == .midi {
+      return [
+        (
+          NSRect(x: bounds.minX, y: bounds.minY, width: band, height: bounds.height),
+          cursor(for: .left)
+        ),
+        (
+          NSRect(x: bounds.maxX - band, y: bounds.minY, width: band, height: bounds.height),
+          cursor(for: .right)
+        ),
+      ]
+    }
     let b = band
     let w = bounds.width
     let h = bounds.height
@@ -865,6 +915,20 @@ enum OverlayResizeHit: Sendable {
 
   @MainActor
   static func cursor(for edge: Edge) -> NSCursor {
+    resizeCursors[edge] ?? .arrow
+  }
+
+  // frameResize creates cursor objects. Reuse one object per edge so repeated
+  // mouseMoved/cursorUpdate beats do not regenerate the same cursor image.
+  @MainActor
+  private static let resizeCursors: [Edge: NSCursor] = Dictionary(
+    uniqueKeysWithValues: [
+      Edge.left, .right, .top, .bottom, .topLeft, .topRight, .bottomLeft, .bottomRight,
+    ]
+    .map { ($0, makeCursor(for: $0)) })
+
+  @MainActor
+  private static func makeCursor(for edge: Edge) -> NSCursor {
     if #available(macOS 15.0, *) {
       let position: NSCursor.FrameResizePosition
       switch edge {

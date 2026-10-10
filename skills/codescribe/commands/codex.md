@@ -22,8 +22,12 @@ Connect this chat now using: $ARGUMENTS
    `attached_unverified`. Upgrade to `listening_verified` only after a fresh
    named utterance reaches this chat and receives a reply without a typed nudge.
 6. On every bell/queued copy, follow **Read → ACK → act** from the skill:
-   current `--read-pending --read-limit 2`, immediate exact returned-ID ACK, drain, extra read,
-   then execute/reply. Empty or already-read queued copies get no repeated action.
+   immediately ACK a complete owned watch message once received in this chat;
+   this removes its exact native queued submission before work. For a queued
+   copy or incomplete notice, use current `--read-pending --read-limit 2` first.
+   ACK fresh returned IDs, drain and check once more, then execute/reply.
+   Empty or already-read queued copies get no repeated action. Do not ACK stdout
+   that has not reached this conversation or a truncated message.
 
 Keep the connection for requested ongoing listening. Detach on explicit stop
 or handoff; do not free the channel merely because a normal reply ends a turn.

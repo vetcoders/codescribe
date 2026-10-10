@@ -650,6 +650,10 @@ pub struct RuntimeLlmLane {
     credential: RuntimeLlmCredential,
     available: bool,
     unavailable_reason: Option<String>,
+    /// Sealed topology fault (no model, vanished custom provider). Unlike the
+    /// credential part of `unavailable_reason`, a later Keychain save cannot
+    /// repair it without a new settings generation.
+    configuration_fault: Option<String>,
 }
 
 impl RuntimeLlmLane {
@@ -658,7 +662,7 @@ impl RuntimeLlmLane {
         provider: ResolvedProvider,
         model: String,
         credential: RuntimeLlmCredential,
-        available: bool,
+        configuration_fault: Option<String>,
         unavailable_reason: Option<String>,
     ) -> Self {
         Self {
@@ -666,8 +670,9 @@ impl RuntimeLlmLane {
             provider,
             model,
             credential,
-            available,
+            available: unavailable_reason.is_none(),
             unavailable_reason,
+            configuration_fault,
         }
     }
 
@@ -726,6 +731,28 @@ impl RuntimeLlmLane {
 
     pub fn unavailable_reason(&self) -> Option<&str> {
         self.unavailable_reason.as_deref()
+    }
+
+    /// The one request-time verdict for this lane: a sealed topology fault, or
+    /// no credential truth now (stored key, signed-in account, or a
+    /// key-optional endpoint). `None` means a request can be sent. Every
+    /// availability gate and request sender reads this, so a lane without a
+    /// model can never look ready.
+    pub fn request_unavailable_reason(&self) -> Option<String> {
+        if let Some(fault) = &self.configuration_fault {
+            return Some(fault.clone());
+        }
+        (!self.request_available()).then(|| {
+            self.unavailable_reason.clone().unwrap_or_else(|| {
+                format!(
+                    "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
+                    self.lane.as_str(),
+                    self.provider.display_name,
+                    self.provider.endpoint,
+                    self.credential.key_account,
+                )
+            })
+        })
     }
 
     pub(super) fn digest_material(&self) -> String {

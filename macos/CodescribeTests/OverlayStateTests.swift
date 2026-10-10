@@ -25,7 +25,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var pastedText: String?
   var onStopRecording: (() -> Void)?
   var pasteCallCount = 0
-  var pasteOutcome: CsPasteOutcome = .pasted
+  var pasteOutcome: CsPasteOutcome = .pasteRequested
   var pasteFrontmostAppNameValue: String?
   var deferredText: String?
   var deferOutcome: CsPasteOutcome = .deferredInsertArmed
@@ -33,6 +33,8 @@ private final class OverlayStateTestEngine: DictationEngine {
   var deferredInsertFailureValue: String?
   var copiedTaggedText: String?
   var onCopyTagged: (() -> Void)?
+  var copyTaggedHandler: (() async throws -> Void)?
+  var pasteHandler: (() async throws -> Void)?
   var onPaste: (() -> Void)?
   var onDefer: (() -> Void)?
   var pasteTargetAppNameValue: String?
@@ -59,6 +61,9 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onFormatter: (() -> Void)?
   var historyEntries: [CsDocumentHistoryEntry] = []
   var onHistoryRead: (() -> Void)?
+  var historyCursor: UInt64?
+  var historySourceRevision: UInt64?
+  var formatterArchiveRefusal: String?
   var onRestore: (() -> Void)?
   var restoredSelections: [UInt64] = []
   var rosterSnapshot: [CsChannelRosterState] = []
@@ -134,6 +139,7 @@ private final class OverlayStateTestEngine: DictationEngine {
         renderedText: renderedText
       )
     )
+    appendHistory(renderedText, source: sourceRevision, provenance: "retranscribe")
     onRevision?()
     return CsUserRevisionResult(
       sessionId: sessionId,
@@ -160,27 +166,41 @@ private final class OverlayStateTestEngine: DictationEngine {
       sourceRevision: sourceRevision,
       revision: sourceRevision + 1,
       renderedText: formatterRenderedText,
-      provenanceReceipt: "formatter-test-\(sourceRevision + 1)"
+      provenanceReceipt: "formatter-test-\(sourceRevision + 1)",
+      archiveRefusal: formatterArchiveRefusal
     )
   }
-  func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] {
+  func documentVersions(sessionId _: String) async throws -> CsDocumentVersions {
     onHistoryRead?()
-    return historyEntries
+    return CsDocumentVersions(
+      sourceRevision: historySourceRevision ?? historyEntries.last?.revision ?? 0,
+      cursor: historyCursor ?? UInt64(max(0, historyEntries.count - 1)),
+      versions: historyEntries.enumerated().map { index, entry in
+        CsDocumentVersion(step: UInt64(index), provenance: entry.provenance, detail: nil,
+          renderedText: entry.renderedText, emittedAt: entry.emittedAt,
+          receiptId: "version-\(entry.revision)")
+      })
   }
-  func restoreDocumentRevision(
-    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  func appendHistory(_ text: String, source: UInt64, provenance: String) {
+    guard !historyEntries.isEmpty else { return }
+    let cursor = Int(historyCursor ?? UInt64(historyEntries.count - 1))
+    historyEntries = Array(historyEntries.prefix(cursor + 1))
+    historyEntries.append(CsDocumentHistoryEntry(revision: source + 1, renderedText: text,
+      provenance: provenance, emittedAt: "2026-10-10T00:00:00Z"))
+    historyCursor = UInt64(historyEntries.count - 1)
+    historySourceRevision = source + 1
+  }
+  func navigateDocumentVersion(
+    sessionId: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsUserRevisionResult {
-    restoredSelections.append(restoreRevision)
+    restoredSelections.append(step)
+    historyCursor = step
+    historySourceRevision = sourceRevision + 1
     onRestore?()
-    let text = historyEntries.first(where: { $0.revision == restoreRevision })!.renderedText
-    historyEntries.append(
-      CsDocumentHistoryEntry(
-        revision: sourceRevision + 1, renderedText: text, provenance: "user-edit",
-        emittedAt: "2026-09-25T00:00:04Z"))
     return CsUserRevisionResult(
-      sessionId: sessionId, sourceRevision: sourceRevision,
-      revision: sourceRevision + 1, renderedText: text,
-      provenanceReceipt: "user-edit-test-\(sourceRevision + 1)")
+      sessionId: sessionId, sourceRevision: sourceRevision, revision: sourceRevision + 1,
+      renderedText: historyEntries[Int(step)].renderedText,
+      provenanceReceipt: "navigation-test-\(sourceRevision + 1)")
   }
   func isRecording() async -> Bool { false }
   func initModel() async throws {}
@@ -193,6 +213,7 @@ private final class OverlayStateTestEngine: DictationEngine {
     pastedText = text
     pasteCallCount += 1
     onPaste?()
+    if let pasteHandler { try await pasteHandler() }
     return CsPasteResult(
       outcome: pasteOutcome,
       targetAppName: pasteTargetAppNameValue,
@@ -215,6 +236,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   func copyTaggedTranscript(text: String) async throws {
     copiedTaggedText = text
     onCopyTagged?()
+    if let copyTaggedHandler { try await copyTaggedHandler() }
   }
   func pasteTargetAppName() async -> String? {
     onPasteTargetRead?()
@@ -242,6 +264,107 @@ private final class OverlayStateTestEngine: DictationEngine {
     if let transcriptionHandler { return try await transcriptionHandler(path) }
     return CsTranscription(text: transcriptionText, language: "pl")
   }
+  struct ArchivedFormatRequest: Equatable {
+    let archivePath: String
+    let sourceRevision: UInt64
+    let level: FormattingPolicyOption?
+  }
+  var archivedFormatRequests: [ArchivedFormatRequest] = []
+  var archivedFormatHandler: ((ArchivedFormatRequest) async throws -> CsArchivedFormat)?
+  func formatArchivedTranscript(
+    archivePath: String, sourceRevision: UInt64, level: FormattingPolicyOption?
+  ) async throws -> CsArchivedFormat {
+    let request = ArchivedFormatRequest(
+      archivePath: archivePath, sourceRevision: sourceRevision, level: level)
+    archivedFormatRequests.append(request)
+    let result: CsArchivedFormat
+    if let archivedFormatHandler {
+      result = try await archivedFormatHandler(request)
+    } else {
+      result = CsArchivedFormat(
+        outcome: .applied,
+        document: archiveDocument(
+          path: archivePath, revision: sourceRevision + 1, text: "Sformatowane archiwum.",
+          provenance: "formatter", undo: sourceRevision))
+    }
+    if let document = result.document { rememberArchive(document) }
+    return result
+  }
+  struct ArchiveCommitRequest: Equatable {
+    let path: String
+    let sourceRevision: UInt64
+    let text: String
+    let kind: CsArchiveRevisionKind
+    let detail: String?
+  }
+  var archiveCommitRequests: [ArchiveCommitRequest] = []
+  var archiveCommitHandler: ((ArchiveCommitRequest) async throws -> CsArchivedDocument)?
+  var archivedDocuments: [String: CsArchivedDocument] = [:]
+  var archivedVersions: [String: [UInt64: String]] = [:]
+  var archiveRestoreRequests: [(String, UInt64, UInt64)] = []
+  var sentArchivedTexts: [String] = []
+  var archivedSendHandler: (() async throws -> Bool)?
+  func archiveDocument(
+    path: String, revision: UInt64, text: String, provenance: String, undo: UInt64? = nil
+  ) -> CsArchivedDocument {
+    let prior = archivedDocuments[path]
+    var versions = prior?.versions ?? CsArchivedDocument.unrevised(path: path, text: "tekst A").versions
+    if revision > (prior?.revision ?? 0) {
+      versions = Array(versions.prefix(Int(prior?.cursor ?? 0) + 1))
+      versions.append(CsDocumentVersion(step: UInt64(versions.count), provenance: provenance,
+        detail: nil, renderedText: text, emittedAt: "2026-10-10T00:00:00Z",
+        receiptId: "archive-test-\(revision)"))
+    }
+    return CsArchivedDocument(
+      path: path, originalText: prior?.originalText ?? "tekst A",
+      revision: revision, renderedText: text, provenance: provenance,
+      receiptId: "archive-test-\(revision)", versions: versions, cursor: UInt64(versions.count - 1))
+  }
+  func rememberArchive(_ document: CsArchivedDocument) {
+    archivedDocuments[document.path] = document
+    archivedVersions[document.path, default: [:]][0] = document.originalText
+    archivedVersions[document.path, default: [:]][document.revision] = document.renderedText
+  }
+  func commitArchivedRevision(
+    archivePath: String, sourceRevision: UInt64, renderedText: String, kind: CsArchiveRevisionKind,
+    detail: String?
+  ) async throws -> CsArchivedDocument {
+    let request = ArchiveCommitRequest(
+      path: archivePath, sourceRevision: sourceRevision, text: renderedText, kind: kind,
+      detail: detail)
+    archiveCommitRequests.append(request)
+    let document: CsArchivedDocument
+    if let archiveCommitHandler {
+      document = try await archiveCommitHandler(request)
+    } else {
+      document = archiveDocument(
+        path: archivePath, revision: sourceRevision + 1, text: renderedText,
+        provenance: kind == .retranscribe ? "retranscribe" : "user-edit",
+        undo: kind == .retranscribe ? sourceRevision : nil)
+    }
+    rememberArchive(document)
+    return document
+  }
+  func navigateArchivedVersion(archivePath: String, sourceRevision: UInt64, step: UInt64)
+    async throws -> CsArchivedDocument
+  {
+    archiveRestoreRequests.append((archivePath, sourceRevision, step))
+    let prior = archivedDocuments[archivePath] ?? .unrevised(path: archivePath, text: "tekst A")
+    let selected = prior.versions[Int(step)]
+    let document = CsArchivedDocument(
+      path: archivePath, originalText: prior.originalText, revision: sourceRevision + 1,
+      renderedText: selected.renderedText, provenance: selected.provenance,
+      receiptId: "archive-navigation-\(sourceRevision + 1)", versions: prior.versions, cursor: step)
+    rememberArchive(document)
+    return document
+  }
+  func sendArchivedTranscript(text: String) async throws -> Bool {
+    sentArchivedTexts.append(text)
+    if let archivedSendHandler { return try await archivedSendHandler() }
+    return true
+  }
+  var cloudConfigured = false
+  func cloudRetranscribeConfigured() -> Bool { cloudConfigured }
 }
 
 private final class OverlayStateTestClock {
@@ -471,15 +594,15 @@ final class OverlayStateTests: XCTestCase {
     let lena = try navigationConversation()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.setConversationVisible(false)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     let reply = replyFocusConversation(lena)
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
     XCTAssertEqual(state.selectedConversationID, lena.id)
     XCTAssertEqual(state.unreadReplies(in: reply), 1)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: reply), 1)
-    if state.isCollapsed { state.toggleCollapsed() }
+    if state.isCollapsed { state.setPresentationMode(.expanded) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: reply), 0)
   }
@@ -655,7 +778,7 @@ final class OverlayStateTests: XCTestCase {
     let lena = try navigationConversation()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.selectConversation(lena.id)
-    if !state.isCollapsed { state.toggleCollapsed() }
+    if !state.isCollapsed { state.setPresentationMode(.mini) }
     state.setConversationVisible(false)
     let reply = replyFocusConversation(lena, id: "reply:collapsed-owner")
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [reply]))
@@ -1189,7 +1312,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(state.textMessageErrors[owner.id])
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
     state.publishConversationText = { recipient, text in
-      XCTAssertEqual(recipient.id, owner.id)
+      XCTAssertEqual(recipient?.id, owner.id)
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
     }
@@ -1204,6 +1327,32 @@ final class OverlayStateTests: XCTestCase {
       OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.selectConversation(conversation.id)
     XCTAssertGreaterThan(state.conversationFocusRevision, focus)
+  }
+
+  @MainActor
+  func testBroadcastComposerRetainsFailureAndNewerDraft() async {
+    let state = OverlayState()
+    let conversation = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.conversationDrafts["0"] = "Do wszystkich"
+    state.publishConversationText = { owner, _ in
+      XCTAssertNil(owner)
+      throw CocoaError(.fileWriteUnknown)
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "Do wszystkich")
+    XCTAssertNotNil(state.textMessageErrors["0"])
+    state.publishConversationText = { owner, text in
+      XCTAssertNil(owner)
+      XCTAssertEqual(text, "Do wszystkich")
+      state.conversationDrafts["0"] = "Nowy szkic"
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
+    XCTAssertNil(state.textMessageErrors["0"])
+    state.publishConversationText = { _, _ in }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "")
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {
@@ -1261,7 +1410,7 @@ final class OverlayStateTests: XCTestCase {
     let named = try XCTUnwrap(snapshot.conversations.first { $0.channel == "2" })
     state.selectConversation(named.id)
     XCTAssertEqual(state.unreadReplies(in: named), 1, "selection while hidden is not reading")
-    if state.isCollapsed { state.toggleCollapsed() }
+    if state.isCollapsed { state.setPresentationMode(.expanded) }
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: named), 0)
     XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
@@ -1626,6 +1775,7 @@ final class OverlayStateTests: XCTestCase {
     label: String? = nil,
     deliveryText: String? = nil,
     sealCoverage: CsProjectedSealCoverageReceipt? = nil,
+    documentReceipt: CsManualDocumentRevisionReceipt? = nil,
     consultationPresentations: [CsProjectedConsultationPresentation] = []
   ) {
     nextProjectionSequence += 1
@@ -1673,6 +1823,7 @@ final class OverlayStateTests: XCTestCase {
         lifecycleTerminal: lifecycleTerminal ?? (terminal && action != "apply_manual_edit"),
         delivery: delivery,
         acousticReceipts: [receipt],
+        documentRevisionReceipt: documentReceipt,
         sealCoverage: sealCoverage,
         consultationPresentations: consultationPresentations
       )
@@ -1874,6 +2025,57 @@ final class OverlayStateTests: XCTestCase {
 
     state.teachUncertainWord(word, canonical: "   ")
     XCTAssertEqual(engine.teachRequests.count, 1, "an empty correction teaches nothing")
+  }
+
+  func testContinueMaxChatUsesOnlyCompletedReceiptAndNeverResendsTranscript() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    var opened: [String] = []
+    state.onContinueMaxConsultation = {
+      opened.append($0)
+      return true
+    }
+    let receipt = CsProjectedConsultationPresentation(
+      receiptId: "receipt-owned", consultationId: "max-owned-thread", turnId: "completed-turn",
+      sourceRevision: 1, revision: 2, members: [], renderedText: "Finished answer")
+    projectText("Live answer", to: state, consultationPresentations: [receipt])
+    XCTAssertNil(state.completedMaxConsultationID)
+    state.continueMaxConsultationInChat()
+    XCTAssertTrue(opened.isEmpty)
+    projectText("Finished answer", to: state, terminal: true, consultationPresentations: [receipt])
+    XCTAssertEqual(state.completedMaxConsultationID, "max-owned-thread")
+    state.continueMaxConsultationInChat()
+    XCTAssertEqual(opened, ["max-owned-thread"])
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+    XCTAssertEqual(engine.pasteCallCount, 0)
+    projectText("Another take", to: state, terminal: true, sessionId: "next-take")
+    XCTAssertNil(state.completedMaxConsultationID)
+  }
+
+  func testStorageReadinessFailureSurvivesNewTakeAndClearsOnlyOnRecovery() {
+    let state = OverlayState()
+    state.setTranscriptStorageError("unverified bus storage linkage")
+    let failure = state.transcriptStorageError
+    XCTAssertNotNil(failure)
+    state.prepareForExternalStart()
+    XCTAssertEqual(state.transcriptStorageError, failure)
+    state.setTranscriptStorageError(nil)
+    XCTAssertNil(state.transcriptStorageError)
+  }
+
+  func testPostedPasteEventsDoNotClaimConfirmedInsertion() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.insertCaretInCodescribeProbe = { false }
+    projectText("Retained text", to: state, canPaste: true, canInsert: true, terminal: true)
+    let requested = expectation(description: "paste dispatched")
+    engine.onPaste = { requested.fulfill() }
+    state.relayIntent(.insertPaste)
+    await fulfillment(of: [requested], timeout: 1)
+    XCTAssertEqual(state.toast, String(localized: "Paste requested"))
+    XCTAssertEqual(state.formattedText, "Retained text")
   }
 
   func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {
@@ -2251,16 +2453,16 @@ final class OverlayStateTests: XCTestCase {
   // IDLE-1: authored under W1; execution belongs to the integrator after close.
   func testCaretActivityStopsWithCaptureEvenWhenProjectionStillSaysListening() {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertFalse(state.animatesTranscriptCaret)
     state.handleRecordingPreparing()
     XCTAssertFalse(state.animatesTranscriptCaret, "Warmup has no live audio yet")
     state.handleRecordingStarted()
     XCTAssertTrue(state.animatesTranscriptCaret)
 
-    state.toggleCollapsed()
+    state.setPresentationMode(.mini)
     XCTAssertFalse(state.animatesTranscriptCaret, "Clipped content stays mounted")
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     XCTAssertTrue(state.animatesTranscriptCaret)
 
     projectText("streaming", to: state, phase: "finalizing")
@@ -2285,7 +2487,7 @@ final class OverlayStateTests: XCTestCase {
     for phase in ["formatted", "no_speech", "error", "coverage_refused"] {
       let clock = OverlayStateTestClock()
       let state = OverlayState(nowProvider: { clock.now })
-      state.toggleCollapsed()
+      state.setPresentationMode(.expanded)
       state.handleRecordingPreparing()
       state.handleRecordingStarted()
       XCTAssertTrue(state.animatesTranscriptCaret)
@@ -2303,7 +2505,7 @@ final class OverlayStateTests: XCTestCase {
 
   func testErrorBeforeTerminalProjectionStopsIdleRenderActivity() {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.handleError(message: "Capture failed")
@@ -2434,6 +2636,25 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.autoFormatLevel, .max)
     XCTAssertEqual(engine.policyReadCount, 2)
     XCTAssertEqual(engine.pasteCallCount, 0, "a policy read never delivers")
+  }
+
+  func testCanonicalPolicyInvalidationRefreshesIdleOverlayButPreservesTakeSnapshot() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .smart)
+    state.canonicalConfigurationDidChange()
+    XCTAssertEqual(state.autoFormatLevel, .smart)
+    XCTAssertEqual(engine.policyReadCount, 1)
+
+    state.handleRecordingStarted()
+    defer { state.finishControllerRecording() }
+    let readsAtStart = engine.policyReadCount
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .max)
+    state.canonicalConfigurationDidChange()
+    XCTAssertEqual(state.autoFormatLevel, .smart)
+    XCTAssertEqual(engine.policyReadCount, readsAtStart)
+    XCTAssertEqual(engine.pasteCallCount, 0)
   }
 
   func testQuietInputAdvisoryPreservesTranscriptAndDelivery() {
@@ -3439,15 +3660,15 @@ final class OverlayStateTests: XCTestCase {
       terminal: true,
       lifecycleTerminal: false,
       sessionId: "formatter-session",
-      reducerRevision: 11,
+      reducerRevision: 12,
       reducerAction: "derived_projection",
-      label: "formatter-derived-formatter-session-11-9223372036854775809",
+      label: "formatter-derived-formatter-session-12-9223372036854775809",
       deliveryText: engine.formatterRenderedText
     )
 
     XCTAssertEqual(state.formattedText, engine.formatterRenderedText)
     XCTAssertEqual(state.latestTranscriptProjection?.renderedText, "tekst bazowy do formatowania")
-    XCTAssertEqual(state.revision, 11)
+    XCTAssertEqual(state.revision, 12)
     XCTAssertFalse(state.formatterCommitPending)
     XCTAssertNil(state.formatterError)
     XCTAssertNil(state.userRevisionProvenance, "formatter is not a human correction")
@@ -3609,47 +3830,56 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
   }
 
-  func testThreeVersionHistoryRestoresFirstAsFourthWithoutRewritingCanvas() async {
+  func testArchiveWriteRefusalSurvivesProjectionArrivingBeforeFormatAcknowledgement() async {
     let engine = OverlayStateTestEngine()
-    engine.historyEntries = [
-      CsDocumentHistoryEntry(
-        revision: 1, renderedText: "first", provenance: "acoustic-ledger",
-        emittedAt: "2026-09-25T00:00:01Z"),
-      CsDocumentHistoryEntry(
-        revision: 2, renderedText: "second", provenance: "formatter",
-        emittedAt: "2026-09-25T00:00:02Z"),
-      CsDocumentHistoryEntry(
-        revision: 3, renderedText: "third", provenance: "retranscribe",
-        emittedAt: "2026-09-25T00:00:03Z"),
-    ]
     let state = OverlayState()
     state.engine = engine
-    let loaded = expectation(description: "Bus history loaded")
+    projectText("raw", to: state, canFormat: true, terminal: true, reducerRevision: 7)
+    engine.formatterArchiveRefusal = "disk full"
+    engine.onFormatter = {
+      self.projectText("raw", to: state, canFormat: true, terminal: true,
+        lifecycleTerminal: false, reducerRevision: 8, reducerAction: "derived_projection",
+        label: "formatter-derived-overlay-state-tests-8-9223372036854775809",
+        deliveryText: engine.formatterRenderedText)
+    }
+    state.formatTranscript(at: .smart)
+    for _ in 0..<50 { await Task.yield() }
+    XCTAssertFalse(state.formatterCommitPending)
+    XCTAssertTrue(state.revisionCommitError?.contains("disk full") == true,
+      "the later receipt must reveal failed durability even after paint cleared pending")
+  }
+
+  func testVersionPickMovesCursorWithoutAppendingAnAttemptOrOptimisticPaint() async {
+    let engine = OverlayStateTestEngine()
+    engine.historyEntries = ["first", "second", "third"].enumerated().map { index, text in
+      CsDocumentHistoryEntry(revision: UInt64(index + 1), renderedText: text,
+        provenance: "retranscribe", emittedAt: "2026-10-10T00:00:00Z")
+    }
+    let state = OverlayState()
+    state.engine = engine
+    let loaded = expectation(description: "versions loaded")
     engine.onHistoryRead = { loaded.fulfill() }
     projectText("third", to: state, terminal: true, reducerRevision: 3)
     await fulfillment(of: [loaded], timeout: 1)
     engine.onHistoryRead = nil
-    XCTAssertEqual(
-      state.documentHistory.map(\.provenance),
-      ["acoustic-ledger", "formatter", "retranscribe"])
-
-    let requested = expectation(description: "selected history revision reached Rust")
+    XCTAssertEqual(state.transcriptVersions.options.count, 3)
+    let requested = expectation(description: "version selection reached Rust")
     engine.onRestore = { requested.fulfill() }
-    state.restoreDocumentRevision(1)
+    state.selectDocumentVersion(0)
     await fulfillment(of: [requested], timeout: 1)
-    XCTAssertEqual(engine.restoredSelections, [1])
+    XCTAssertEqual(engine.restoredSelections, [0])
     XCTAssertEqual(state.formattedText, "third", "only the reducer projection repaints")
-    let refreshed = expectation(description: "fourth version loaded")
+    let refreshed = expectation(description: "cursor read")
     engine.onHistoryRead = { refreshed.fulfill() }
-    projectText(
-      "first", to: state, terminal: true, lifecycleTerminal: false,
-      sessionId: "overlay-state-tests", reducerRevision: 4,
-      reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-4")
-    state.loadDocumentHistory()
+    projectText("first", to: state, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 4, reducerAction: "apply_manual_edit",
+      documentReceipt: emptyRecoveryReceipt(text: "first", provenance: .navigation,
+        sessionId: "overlay-state-tests", source: 3, revision: 4))
     await fulfillment(of: [refreshed], timeout: 1)
     XCTAssertEqual(state.formattedText, "first")
-    XCTAssertEqual(state.documentHistory.map(\.revision), [1, 2, 3, 4])
-    XCTAssertEqual(state.documentHistory.last?.provenance, "user-edit")
+    XCTAssertEqual(state.transcriptVersions.options.count, 3)
+    XCTAssertEqual(state.transcriptVersions.cursor, 0)
+    XCTAssertTrue(state.transcriptVersions.canRedo)
   }
 
   func testTerminalProjectionBurstReadsHistoryAtMostOnce() async {
@@ -4150,45 +4380,39 @@ final class OverlayStateTests: XCTestCase {
   /// 2026-09-24: "nie można zrobić back po retranscribe"). The commit replaces
   /// the rendered text on the reducer tip; the rail must retain the replaced
   /// text and Back must restore it as a NEW revision on the same session.
-  func testRetranscribeRetainsReplacedTextAndBackRestoresIt() async {
+  func testRetranscribeUndoAndRedoUseRustCursorAndKeepOriginalAvailable() async {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
     engine.lastSessionAudioPathValue = "/tmp/take-undo.wav"
     engine.transcriptionText = "gorsza wersja"
+    engine.historyEntries = [CsDocumentHistoryEntry(revision: 7, renderedText: "dobra wersja",
+      provenance: "raw", emittedAt: "2026-10-10T00:00:00Z")]
     state.engine = engine
-    projectText(
-      "dobra wersja", to: state, canRetranscribe: true, terminal: true,
+    projectText("dobra wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 7)
-
+    for _ in 0..<30 { await Task.yield() }
     let committed = expectation(description: "retranscribe committed")
     engine.onRevision = { committed.fulfill() }
     state.retranscribe(pass: .fullHq)
     await fulfillment(of: [committed], timeout: 2)
-
     XCTAssertEqual(engine.revisionRequests.first?.renderedText, "gorsza wersja")
-    XCTAssertTrue(state.canUndoRetranscribe)
-    XCTAssertEqual(
-      OverlayIntentRail.projectedIntents(for: state).first, .undoRetranscribe,
-      "Back must lead the rail while the replaced text is recoverable")
-
-    // The reducer echoes the committed retranscription as the current tip —
-    // an apply_manual_edit document revision, NOT a second lifecycle terminal
-    // (a replayed lifecycle line is dropped and would never repaint the tip).
-    projectText(
-      "gorsza wersja", to: state, canRetranscribe: true, terminal: true,
+    projectText("gorsza wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit")
-    XCTAssertTrue(state.canUndoRetranscribe, "the same session keeps Back alive")
-
-    let restored = expectation(description: "undo committed")
-    engine.onRevision = { restored.fulfill() }
-    state.undoRetranscribeIntent()
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertTrue(state.transcriptVersions.canUndo)
+    let restored = expectation(description: "undo selected original")
+    engine.onRestore = { restored.fulfill() }
+    state.undoDocumentVersion()
     await fulfillment(of: [restored], timeout: 2)
-
-    XCTAssertEqual(engine.revisionRequests.last?.renderedText, "dobra wersja")
-    XCTAssertEqual(
-      engine.revisionRequests.last?.sourceRevision, 8,
-      "the restore builds on the CURRENT tip, not the pre-retranscribe one")
-    XCTAssertFalse(state.canUndoRetranscribe, "the slot is consumed by a landed restore")
+    projectText("dobra wersja", to: state, terminal: true, lifecycleTerminal: false,
+      sessionId: "take-undo", reducerRevision: 9, reducerAction: "apply_manual_edit",
+      documentReceipt: emptyRecoveryReceipt(text: "dobra wersja", provenance: .navigation,
+        sessionId: "take-undo", source: 8, revision: 9))
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(engine.restoredSelections, [0])
+    XCTAssertFalse(state.transcriptVersions.canUndo)
+    XCTAssertTrue(state.transcriptVersions.canRedo)
+    XCTAssertEqual(state.transcriptVersions.options.count, 2)
   }
 
   func testLateRetranscriptionCannotCommitOverANewCapture() async {
@@ -4248,32 +4472,22 @@ final class OverlayStateTests: XCTestCase {
 
   /// The rollback repaints the canvas, so it dies with its take: a new capture
   /// must never restore words over a different session's document.
-  func testRetranscribeRollbackDoesNotSurviveANewCapture() async {
+  func testVersionNavigationDoesNotSurviveANewCapture() async {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
-    engine.lastSessionAudioPathValue = "/tmp/take-undo.wav"
-    engine.transcriptionText = "nowy tekst"
+    engine.historyEntries = ["stary", "nowy"].enumerated().map { index, text in
+      CsDocumentHistoryEntry(revision: UInt64(index + 2), renderedText: text,
+        provenance: "retranscribe", emittedAt: "2026-10-10T00:00:00Z")
+    }
     state.engine = engine
-    projectText(
-      "stary tekst", to: state, canRetranscribe: true, terminal: true,
-      sessionId: "take-a", reducerRevision: 3)
-
-    let committed = expectation(description: "retranscribe committed")
-    engine.onRevision = { committed.fulfill() }
-    state.retranscribe(pass: .fullHq)
-    await fulfillment(of: [committed], timeout: 2)
-    XCTAssertTrue(state.canUndoRetranscribe)
-
+    projectText("nowy", to: state, terminal: true, sessionId: "take-a", reducerRevision: 3)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertTrue(state.transcriptVersions.canUndo)
     state.handleRecordingStarted()
-    XCTAssertFalse(
-      state.canUndoRetranscribe,
-      "a new capture must clear the rollback with the rest of the transcript state")
+    XCTAssertFalse(state.transcriptVersions.canUndo)
+    XCTAssertFalse(state.transcriptVersions.canRedo)
   }
 
-  /// Assistive hides the overlay, so "transcript kept" on a canvas the user
-  /// cannot see is a drop. A terminal failure with a committed draft must hand
-  /// the projection to the composer join before abort wipes capture identity —
-  /// and exactly once, because the delivery slot is per session.
   func testTerminalFailureHandsTheDraftToTheComposerJoin() {
     let state = OverlayState()
     var delivered: [(text: String, sessionId: String)] = []
@@ -4306,7 +4520,7 @@ final class OverlayStateTests: XCTestCase {
   @MainActor
   func testFormattedOverlayMinimumHeightSnapshotRenders() throws {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let longTranscript = Array(
       repeating:
         "Choose Insert to paste the text where you want it and press Return. The clipboard is untouched.",
@@ -6175,5 +6389,329 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.finalized)
     XCTAssertFalse(
       state.isTranscriptEditable, "new capture cannot inherit completed-take editing rights")
+  }
+}
+
+// MARK: - Transcript reopened from history
+
+extension OverlayStateTests {
+  private func archived(
+    _ path: String, text: String, audio: String?, timestampMs: Int64 = 1_759_000_000_000
+  ) -> OverlayArchivedTranscript {
+    OverlayArchivedTranscript(
+      entry: CsHistoryEntry(path: path, timestampMs: timestampMs, preview: text, kind: .raw),
+      text: text, audioPath: audio)
+  }
+
+  /// The visible take B is terminal; archive A goes on the canvas and every
+  /// action reads A — never B's text, B's session audio or B's reducer.
+  func testArchiveOnCanvasRoutesEveryActionToItsOwnSource() async throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/latest-b.wav"
+    engine.audioPathsBySession["take-b"] = "/tmp/take-b.wav"
+    engine.transcriptionText = "A transkrybowane ponownie"
+    state.engine = engine
+    state.insertCaretInCodescribeProbe = { false }
+    projectText(
+      "tekst B", to: state, canPaste: true, canCopy: true, canRetranscribe: true,
+      canFormat: true, terminal: true, sessionId: "take-b", reducerRevision: 3)
+    // B's own terminal probes B's audio availability; only archive actions are measured.
+    engine.requestedAudioSessionIds.removeAll()
+
+    XCTAssertNil(state.archiveOpenRefusal)
+    XCTAssertTrue(
+      state.openArchivedTranscript(
+        archived("/history/101500_a_raw.txt", text: "tekst A", audio: "/history/101500_a_raw.m4a")))
+
+    XCTAssertEqual(state.activeText, "tekst A")
+    XCTAssertEqual(state.canvasText, "tekst A")
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertTrue(state.isTranscriptEditable)
+    XCTAssertNotNil(state.archivedTranscriptOrigin)
+    let intents = OverlayIntentRail.projectedIntents(for: state)
+    XCTAssertEqual(intents, [.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close])
+    XCTAssertNil(engine.pastedText, "opening history never pastes")
+    XCTAssertNil(engine.copiedTaggedText, "opening history never writes the clipboard")
+
+    let copied = expectation(description: "copy")
+    engine.onCopyTagged = { copied.fulfill() }
+    state.relayIntent(.copy)
+    await fulfillment(of: [copied], timeout: 2)
+    XCTAssertEqual(engine.copiedTaggedText, "tekst A")
+
+    let pasted = expectation(description: "insert")
+    engine.onPaste = { pasted.fulfill() }
+    state.relayIntent(.insertPaste)
+    await fulfillment(of: [pasted], timeout: 2)
+    XCTAssertEqual(engine.pastedText, "tekst A", "insert goes through the guarded paste route")
+
+    state.retranscribe(pass: .fullHq)
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+    XCTAssertEqual(engine.transcribedPaths, ["hq:/history/101500_a_raw.m4a"])
+    XCTAssertTrue(engine.requestedAudioSessionIds.isEmpty, "B's session audio is never asked for")
+    XCTAssertTrue(engine.revisionRequests.isEmpty, "B's reducer is never revised")
+    XCTAssertEqual(state.activeText, "A transkrybowane ponownie")
+    XCTAssertTrue(state.transcriptVersions.canUndo)
+    state.undoDocumentVersion()
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+    XCTAssertEqual(state.activeText, "tekst A")
+    XCTAssertEqual(engine.archiveRestoreRequests.first?.1, 1)
+    XCTAssertEqual(engine.archiveRestoreRequests.first?.2, 0)
+
+    state.close()
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertEqual(state.activeText, "tekst B", "leaving history returns the projected take")
+    XCTAssertTrue(state.canSendToAgent, "B's own capabilities come back unchanged")
+  }
+
+  /// Format sends A's path, A's text and the chosen level. A result that
+  /// returns after the user moved to archive C can never repaint C.
+  func testArchiveFormatResultCannotLandOnALaterSelection() async throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    var release: CheckedContinuation<Void, Never>?
+    let entered = expectation(description: "format entered")
+    engine.archivedFormatHandler = { _ in
+      await withCheckedContinuation { continuation in
+        release = continuation
+        entered.fulfill()
+      }
+      return CsArchivedFormat(
+        outcome: .applied,
+        document: engine.archiveDocument(
+          path: "/history/a_raw.txt", revision: 1, text: "Późny wynik A.", provenance: "formatter",
+          undo: 0))
+    }
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    state.formatTranscript(at: .max)
+    await fulfillment(of: [entered], timeout: 2)
+    XCTAssertEqual(
+      engine.archivedFormatRequests,
+      [.init(archivePath: "/history/a_raw.txt", sourceRevision: 0, level: .max)])
+    XCTAssertNotNil(state.archiveOpenRefusal, "no second archive while A's format runs")
+
+    state.close()
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/c_raw.txt", text: "tekst C", audio: nil)))
+    release?.resume()
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(state.archivedTranscript?.path, "/history/c_raw.txt")
+    XCTAssertEqual(state.activeText, "tekst C", "A's late result must not overwrite C")
+    XCTAssertEqual(engine.archivedDocuments["/history/a_raw.txt"]?.renderedText, "Późny wynik A.")
+    XCTAssertFalse(state.archiveActionPending)
+    XCTAssertTrue(engine.formatterRequests.isEmpty, "no reducer formatter revision is requested")
+  }
+
+  func testArchiveFormatFailureKeepsTextAndStatesIt() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    engine.archivedFormatHandler = { _ in
+      CsArchivedFormat(outcome: .failed, document: nil)
+    }
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+    state.formatTranscript(at: .smart)
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+    XCTAssertEqual(state.activeText, "tekst A")
+    XCTAssertNotNil(state.archiveActionError)
+    XCTAssertFalse(state.archiveActionPending)
+  }
+
+  /// Without its own audio, A is not transcribed again — not from B's
+  /// session, not from the last recording.
+  func testArchiveWithoutAudioNeverRetranscribesAnotherTake() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/latest-b.wav"
+    engine.audioPathsBySession["take-b"] = "/tmp/take-b.wav"
+    state.engine = engine
+    projectText(
+      "tekst B", to: state, canRetranscribe: true, terminal: true, sessionId: "take-b",
+      reducerRevision: 2)
+    engine.requestedAudioSessionIds.removeAll()
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+
+    XCTAssertNotNil(state.retranscribeUnavailableReason)
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.retranscribe))
+    state.retranscribe(pass: .fullHq)
+    state.retranscribe(pass: .cloud)
+
+    XCTAssertTrue(engine.transcribedPaths.isEmpty)
+    XCTAssertTrue(engine.requestedAudioSessionIds.isEmpty)
+    XCTAssertEqual(state.archiveActionError, state.retranscribeUnavailableReason)
+    XCTAssertEqual(state.activeText, "tekst A")
+  }
+
+  /// History never takes the canvas from a live capture, and a capture that
+  /// starts over an open archive takes the canvas back.
+  func testLiveCaptureRefusesHistoryAndANewTakeLeavesTheArchive() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertNotNil(state.archiveOpenRefusal)
+    XCTAssertFalse(
+      state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertTrue(state.recording, "opening history must not stop the take")
+
+    let idle = OverlayState()
+    idle.engine = engine
+    projectText("tekst B", to: idle, terminal: true, sessionId: "take-b", reducerRevision: 1)
+    XCTAssertTrue(
+      idle.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    idle.handleRecordingPreparing()
+    XCTAssertNil(idle.archivedTranscript, "a new take owns the canvas")
+    XCTAssertEqual(idle.mode, .listening)
+    XCTAssertEqual(idle.activeText, "")
+  }
+
+  /// An archive edit replaces only the canvas document of that archive; the
+  /// archived text and the take behind it stay untouched.
+  func testArchiveEditIsLocalToTheArchiveAndNeverRevisesTheTakeBehind() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    projectText("tekst B", to: state, terminal: true, sessionId: "take-b", reducerRevision: 4)
+    state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil))
+
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("tekst A poprawiony")
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertNotNil(state.archiveOpenRefusal, "an unsaved edit is never stranded by history")
+    XCTAssertEqual(
+      OverlayIntentRail.projectedIntents(for: state), [.commitRevision, .discardRevision, .close])
+    state.commitRevisionDraft()
+    XCTAssertEqual(state.activeText, "tekst A", "draft is not accepted before the owner receipt")
+    XCTAssertEqual(state.canvasText, "tekst A poprawiony")
+    for _ in 0..<50 where state.archiveActionPending { await Task.yield() }
+
+    XCTAssertEqual(state.activeText, "tekst A poprawiony")
+    XCTAssertEqual(state.archivedTranscript?.archivedText, "tekst A")
+    XCTAssertTrue(engine.revisionRequests.isEmpty)
+    XCTAssertEqual(engine.archiveCommitRequests.first?.sourceRevision, 0)
+    XCTAssertEqual(engine.archiveCommitRequests.first?.kind, .userEdit)
+    XCTAssertFalse(state.isRevisionDraftDirty)
+
+    // A late revision of B keeps the archive on the canvas; a new session takes it back.
+    projectText(
+      "tekst B2", to: state, terminal: true, sessionId: "take-b", reducerRevision: 5,
+      reducerAction: "apply_manual_edit")
+    XCTAssertEqual(state.activeText, "tekst A poprawiony")
+    XCTAssertEqual(state.mode, .formatted)
+    projectText("tekst D", to: state, terminal: true, sessionId: "take-d", reducerRevision: 1)
+    XCTAssertNil(state.archivedTranscript)
+    XCTAssertEqual(state.activeText, "tekst D")
+  }
+
+  func testArchiveClipboardCompletionsCannotPaintAnotherCanvas() async {
+    for paste in [false, true] {
+      for fails in [false, true] {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { false }
+        var release: CheckedContinuation<Void, Never>?
+        let entered = expectation(description: "clipboard operation entered")
+        let operation: () async throws -> Void = {
+          await withCheckedContinuation { continuation in
+            release = continuation
+            entered.fulfill()
+          }
+          if fails { throw NSError(domain: "clipboard-test", code: 1) }
+        }
+        if paste { engine.pasteHandler = operation } else { engine.copyTaggedHandler = operation }
+        XCTAssertTrue(
+          state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+        state.relayIntent(paste ? .insertPaste : .copy)
+        await fulfillment(of: [entered], timeout: 2)
+        state.close()
+        XCTAssertTrue(
+          state.openArchivedTranscript(archived("/history/c_raw.txt", text: "tekst C", audio: nil)))
+        let toast = state.toast
+        let deadline = state.autoHideDeadline
+        release?.resume()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(state.canvasText, "tekst C")
+        XCTAssertEqual(state.toast, toast, "old clipboard result must not paint C")
+        XCTAssertEqual(state.autoHideDeadline, deadline, "old action must not close C")
+        XCTAssertNil(state.archiveActionError)
+        XCTAssertEqual(paste ? engine.pastedText : engine.copiedTaggedText, "tekst A")
+      }
+    }
+  }
+
+  func testArchiveRetranscriptionRetryPreservesProvenanceUntilHumanChangesWords() async {
+    for humanChanges in [false, true] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      engine.transcriptionText = "Nowe słowa A"
+      engine.archiveCommitHandler = { _ in throw NSError(domain: "archive-disk", code: 1) }
+      XCTAssertTrue(
+        state.openArchivedTranscript(
+          archived("/history/a_raw.txt", text: "tekst A", audio: "/history/a_raw.m4a")))
+      state.retranscribe(pass: .fullHq)
+      for _ in 0..<100 where state.archiveActionPending { await Task.yield() }
+      XCTAssertEqual(state.activeText, "tekst A", "failed write cannot become accepted text")
+      XCTAssertEqual(state.canvasText, "Nowe słowa A", "generated work remains recoverable")
+      XCTAssertTrue(state.isRevisionDraftDirty)
+      XCTAssertNotNil(state.archiveActionError)
+      XCTAssertEqual(engine.archiveCommitRequests.first?.kind, .retranscribe)
+      let passDetail = engine.archiveCommitRequests.first?.detail
+      XCTAssertNotNil(passDetail)
+      if humanChanges { state.updateRevisionDraft("Moja ręczna poprawka A") }
+      engine.archiveCommitHandler = nil
+      state.commitRevisionDraft()
+      for _ in 0..<100 where state.archiveActionPending { await Task.yield() }
+      XCTAssertEqual(engine.archiveCommitRequests.count, 2)
+      XCTAssertEqual(engine.archiveCommitRequests.last?.sourceRevision, 0)
+      XCTAssertEqual(
+        engine.archiveCommitRequests.last?.kind, humanChanges ? .userEdit : .retranscribe)
+      XCTAssertEqual(engine.archiveCommitRequests.last?.detail, humanChanges ? nil : passDetail)
+      XCTAssertEqual(state.activeText, humanChanges ? "Moja ręczna poprawka A" : "Nowe słowa A")
+      XCTAssertFalse(state.isRevisionDraftDirty)
+      XCTAssertTrue(engine.revisionRequests.isEmpty)
+    }
+  }
+
+  func testArchiveAgentSendUsesArchiveRouteAndLateReplyCannotCloseAnotherCanvas() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    projectText("tekst B", to: state, terminal: true, sessionId: "take-b", reducerRevision: 4)
+    var release: CheckedContinuation<Void, Never>?
+    let entered = expectation(description: "archive send entered")
+    engine.archivedSendHandler = {
+      await withCheckedContinuation { continuation in
+        release = continuation
+        entered.fulfill()
+      }
+      return true
+    }
+    var closeCount = 0
+    var delivered: [String] = []
+    state.onClose = { closeCount += 1 }
+    state.onSendToAgent = { delivered.append($0) }
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/a_raw.txt", text: "tekst A", audio: nil)))
+    state.relayIntent(.sendToAgent)
+    await fulfillment(of: [entered], timeout: 2)
+    state.close()
+    XCTAssertTrue(
+      state.openArchivedTranscript(archived("/history/c_raw.txt", text: "tekst C", audio: nil)))
+    let closesBeforeReply = closeCount
+    release?.resume()
+    for _ in 0..<50 { await Task.yield() }
+    XCTAssertEqual(engine.sentArchivedTexts, ["tekst A"])
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty, "A must not consume B's live delivery route")
+    XCTAssertEqual(state.canvasText, "tekst C")
+    XCTAssertEqual(closeCount, closesBeforeReply)
+    XCTAssertTrue(delivered.isEmpty, "late completion cannot trigger another canvas' callbacks")
   }
 }

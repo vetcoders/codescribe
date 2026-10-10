@@ -280,6 +280,40 @@ refresh under the same lease. Pending swaps recover only matching original
 identities; incomplete trailing rows refuse rollover. Existing archive names
 are never implicitly overwritten.
 
+Device numbers (`st_dev`) are physical mount coordinates, not durable volume
+identity. On macOS the receipt pins the volume UUID. At startup, a reader or an
+appender may recover a uniform device-number change under the same generation
+lease, after checking volume UUID, every inode, archive length and recorded
+archive SHA-256. The ordered chain is validated again before an atomic receipt
+replacement. Only segment device coordinates change: stream ID, original logical
+stream device/inode, offsets and all journal bytes remain intact. An active file
+may have legitimately grown since its recorded checkpoint; shrinking is refused.
+
+Receipts written before volume UUID pinning need independent reboot evidence:
+the receipt predates the current boot, the original stream inode retains its
+recorded birthtime, every linked file moved from the same old device to the same
+current volume, and immutable bytes lacking a historical digest were not changed
+after boot. The active inode must have a pre-boot birth and content modification
+time; a later permission change may update ctime without invalidating those
+bytes. Growth since the manifest checkpoint remains valid if its content mtime
+predates boot. If compression replaced the original stream inode, the first
+closed generation must have a recorded compressed flag and historical digest;
+that digest is verified, and every linked file must have a pre-boot birth and
+content mtime, with every closed generation also retaining a pre-boot ctime.
+All recorded digests, physical inodes, lengths and the uniform device transition
+remain mandatory. Actual post-boot content writes without a previously pinned
+UUID still refuse automatic admission. A successful admission pins the UUID for
+future restarts. Missing proof,
+another volume, replaced inodes, digest mismatch, ambiguous pending rollover or
+superseded-copy cleanup refuse recovery and preserve the original receipt and
+bytes. Recovery never deletes the manifest or certifies a session as ended.
+
+App startup applies this same leased recovery to the main journal and existing
+managed regular `channel-*.jsonl` files under the authoritative agent bridge
+home's `buses` directory. It does not follow channel/receipt symlinks, create
+receipts for unmanaged files, or rewrite channel lifecycle events. A refused
+channel reports its path and remains unavailable rather than looking idle.
+
 An existing nonempty journal without a generation receipt is **undated**.
 Admission pins all its original bytes under `events/undated/`; it neither scans
 nor compresses that mixed-day source, and never invents a day from mtime. A
@@ -530,13 +564,39 @@ buffer. It may follow `session_ended` because microphone lifecycle is already
 closed. Replay accepts that terminal revision only for the just-ended session;
 once a newer session is active, an older edit cannot displace it.
 
-The Format dock command is the sibling route, not a second reducer. Rust reads
-the exact current terminal document under the same `session_id + source_revision` CAS, runs `format_text_with_status_for_policy`, and admits only
-an `Applied` result through `TranscriptReducer::apply_user_revision`. Its
-`ManualDocumentRevisionReceipt` uses `provenance=formatter` and a
-`formatter-*` receipt; the resulting Bus projection is the only canvas repaint.
-`Failed`, `Skipped`, and `AiNoop` results return a visible refusal to Swift and
-append no ledger, Bus, history, delivery-buffer, or Copy-last state.
+The Format dock command enters the same ledger-before-reducer commit corridor.
+Rust reads the selected terminal document under `session_id + source_revision`
+CAS, runs `format_text_with_status_for_policy`, and accepts an `Applied` result
+as a derived presentation over unchanged acoustic text. Acceptance mints a
+`navigation` document receipt, advances the CAS revision, and publishes the
+formatter presentation over that new revision. A second result naming the old
+revision is stale. `Failed`, `Skipped`, and `AiNoop` results add no accepted
+version; diagnostic evidence may remain.
+
+### Linear transcript versions
+
+The reducer owns ordered accepted steps and one selected cursor. The first
+explicit operation anchors the existing document once. Each accepted edit,
+retranscription or formatting result appends one step, including an identical
+successful retranscription or formatter output. Three retranscriptions and one
+format therefore offer four Undo steps and four Redo steps. Navigation selects
+saved bytes without rerunning recognition or formatting and does not append an
+attempt. A new accepted operation after Undo discards the forward branch;
+a refused or stale operation leaves it intact. Swift projects these steps and
+blocks navigation while another document operation or an unsaved edit is pending.
+
+The retained take mirrors these steps and cursor into its existing transcript
+archive revision chain. Raw transcript and audio stay unchanged. Archived takes
+use that same chain for navigation; selecting a take from History opens its
+selected version on the overlay canvas with the normal actions. Retranscription
+requires retained audio; formatting operates on text. The Previous take menu
+continues to mean a retained superseded draft, not transcript versions.
+
+Archive writes use the current chain head as CAS. A conflicting external write
+or I/O failure preserves the existing archive and reports an unsaved-history
+reason, including when projection delivery finishes before the operation ACK.
+Live acceptance alone is not proof that a version was saved. A diverged live
+mirror stops writing rather than merging concurrent archive edits.
 
 Controller-authenticated context captures enter the same presentation reducer
 as `RecordContextMarker` actions (`record_context_marker` on the Bus). The
@@ -1070,6 +1130,22 @@ selection. Routine roster polling does not override manual review. Simultaneous
 new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
+The delivery observer's restart cache is
+`runtime/overlay-delivery-cursor.v1.json`. Live snapshots consume bus evidence
+and verified receipt metadata immediately; persistence is a separate checkpoint.
+The first changed snapshot saves once, and later changes across all buses share
+one atomic save after 30 seconds since the last successful checkpoint, or when
+one bus has advanced by at least 8 MiB. The byte threshold triggers a checkpoint
+after a read; it does not lower the existing 64 MiB per-read budget. Continuous
+activity cannot postpone the time deadline. Unchanged polls do not write.
+
+Each checkpoint pairs its projection with a cursor before any unfinished row
+or storage transaction. Restart replays the suffix after that cursor. A failed
+save preserves the previous file and retries the dirty state on the next poll.
+The existing 128 MiB cache budget evicts whole projection/cursor units; an
+evicted unit returns to the bounded cold-tail path. This cache never advances
+the agent mailbox cursor, acknowledges delivery, or establishes transcript truth.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor
@@ -1094,6 +1170,16 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
+The channel-zero composer uses `cs-bus --send-text --channel 0`. Under the
+same binding lock, it validates every bound recipient before publication and
+writes one private copy per recipient. Copies share a message ID and timestamp;
+`origin_channel: "0"` records the broadcast while `channel` retains the exact
+recipient channel for the publisher. The follower presents channel zero and the
+overlay merges recipient receipts into one question. An empty roster or invalid
+recipient refuses the send and retains the draft. Publication across journals is
+not atomic: a write failure can leave earlier recipients delivered, so errors
+must not trigger automatic retry. No audio capture or agent identity is invented.
+
 ## Native provider queue receipt
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the
@@ -1111,6 +1197,53 @@ a bounded cooldown, without blocking journal consumption. Missing or mismatched
 provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
+
+## Unexpected listener loss and recovery
+
+A listening session has four layers. Each is observed by a different component,
+and only some can be recovered by the helper:
+
+| Layer                                                                    | Observed by                                               | Recovered by                                            |
+| ------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------- |
+| Follower process (lease owner, mailbox writer)                           | the session's `--watch`                                   | the same `--watch`, through owned recovery below        |
+| Watch process                                                            | the provider's monitor (exit notification) and `--status` | the agent only: it restarts `--watch` under its monitor |
+| Provider notification window (for example a bounded exec/monitor window) | the provider only                                         | the agent, by renewing the window                       |
+| Provider conversation                                                    | the provider only                                         | not recoverable by the helper                           |
+
+The helper cannot see a provider's notification window or conversation. A
+window ending while the watch keeps running is not a disconnect, and the helper
+does not claim to notify through an expired window.
+
+A watch started with `--provider/--session` checks its follower every two
+seconds. A follower counts as lost only when two consecutive checks find no
+live follower process, the lease lock is free, and the channel binding still
+names this exact provider session. Quiet time, a stale heartbeat and a renewed
+watch are not losses. A held lease lock means a handover is in progress.
+
+Recovery runs under the canonical binding lock, in the same order as attach,
+detach and archive. It starts one follower with the recorded name, channel, bus,
+wakeup and hook through the same launch and readiness path as `--attach`. The
+replacement acquires the same lease and resumes its cursor and unread mailbox.
+Recovery writes no acknowledgment, resubmits no accepted queue copy and replays
+no transcript. Each lost follower incarnation (pid plus start time) is handled
+at most once. Detach, archive and takeover remove or replace the binding, so
+nothing they ended is revived. A session that does not own the binding cannot
+recover it. Forks need their own session ID.
+
+The watch reports recovery on its own stdout as a single
+`codescribe.agent-bridge.lifecycle-notice.v1` line (`notice: "Codescribe listener lifecycle"`). It is independent of the lost follower. Events are
+`follower_recovered`, `recovery_failed`, `recovery_suspended`, `unrecoverable`
+and `listener_ended`, after which the watch exits. A notice has no
+`delivery_id` and no transcript text. It is never in the mailbox and is never
+acknowledged.
+
+Two consecutive losses without a newly queued message suspend automatic
+recovery (Founder decision, 2026-10-10). A suspended session stays visible as
+`listener.recovery_suspended` in `--status`. For Codex, the suspension notice is
+also submitted once through the native queue, so a later turn learns of it after
+the watch has ended. A newly queued terminal message or an explicit `--attach`
+resets the streak. Bookkeeping lives in `runtime/followers/<lease>.lifecycle.json`;
+the watch registers in `<lease>.watch.json` for `--status`.
 
 ## Disconnected agent archive
 

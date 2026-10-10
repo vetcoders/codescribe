@@ -3,12 +3,8 @@ import Observation
 import SwiftUI
 
 /// Window presentation only; the reducer continues to own the transcript.
-enum OverlayPresentationMode: CaseIterable {
+enum OverlayPresentationMode: CaseIterable, Hashable {
   case mini, midi, expanded
-}
-
-enum OverlayWidgetInteraction: Hashable {
-  case primaryControls, closeControl, menu, dragging
 }
 
 // View model for the dictation overlay, backed by the redesign hotkey/controller
@@ -48,9 +44,13 @@ protocol DictationEngine: AnyObject {
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult
-  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry]
-  func restoreDocumentRevision(
-    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  /// The take's accepted versions and the selected one, read from the Rust
+  /// reducer that owns them. Swift keeps no copy it could restore from.
+  func documentVersions(sessionId: String) async throws -> CsDocumentVersions
+  /// Undo, Redo or a version pick: Rust moves the take's cursor to `step`
+  /// under the session/revision CAS. Nothing is transcribed or formatted.
+  func navigateDocumentVersion(
+    sessionId: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsUserRevisionResult
   func isRecording() async -> Bool
   func initModel() async throws
@@ -66,6 +66,10 @@ protocol DictationEngine: AnyObject {
   func copyTaggedTranscript(text: String) async throws
   func pasteTargetAppName() async -> String?
   func sendAssistiveTranscript(text: String) async throws -> Bool
+  /// Send a transcript reopened from history to Agent. Unlike
+  /// `sendAssistiveTranscript` it never takes the live take's pending
+  /// assistive context; route and destination are resolved by Rust.
+  func sendArchivedTranscript(text: String) async throws -> Bool
   func lastSessionAudioPath() -> String?
   func sessionAudioPath(sessionId: String) -> String?
   /// Export one word's PCM from the retained take audio as a temp WAV clip
@@ -80,6 +84,24 @@ protocol DictationEngine: AnyObject {
     -> CsQualityCommitResult
   func transcribeFile(path: String) async throws -> CsTranscription
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
+  /// Production formatter over one revision of a transcript reopened from
+  /// history. Rust reads the source from that archive's revision chain and
+  /// commits an applied result there; the reducer and the Bus are untouched.
+  func formatArchivedTranscript(
+    archivePath: String, sourceRevision: UInt64, level: FormattingPolicyOption?
+  ) async throws -> CsArchivedFormat
+  /// Commit an explicit edit or retranscription of one archive against the
+  /// revision the canvas shows. The archived text and audio stay untouched.
+  /// `detail` names how a retranscription was produced (its pass).
+  func commitArchivedRevision(
+    archivePath: String, sourceRevision: UInt64, renderedText: String,
+    kind: CsArchiveRevisionKind, detail: String?
+  ) async throws -> CsArchivedDocument
+  /// Undo, Redo or a version pick on one archive: Rust appends a navigation
+  /// receipt selecting accepted version `step` of its revision chain.
+  func navigateArchivedVersion(
+    archivePath: String, sourceRevision: UInt64, step: UInt64
+  ) async throws -> CsArchivedDocument
   func channelRosterSnapshot() async -> [CsChannelRosterState]
   func toggleAgentChannel(digit: UInt8) async throws
   func archiveAgent(request: CsAgentArchiveRequest) async throws -> String
@@ -90,11 +112,13 @@ extension DictationEngine {
     throw CocoaError(.fileWriteUnknown)
   }
   func cloudRetranscribeConfigured() -> Bool { false }
-  func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] { [] }
-  func restoreDocumentRevision(
-    sessionId _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
+  func documentVersions(sessionId _: String) async throws -> CsDocumentVersions {
+    CsDocumentVersions(sourceRevision: 0, cursor: 0, versions: [])
+  }
+  func navigateDocumentVersion(
+    sessionId _: String, sourceRevision _: UInt64, step _: UInt64
   ) async throws -> CsUserRevisionResult {
-    throw NSError(domain: "Transcript history unavailable", code: 1)
+    throw NSError(domain: "Transcript versions unavailable", code: 1)
   }
   func commitRetranscribeRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -117,6 +141,27 @@ extension DictationEngine {
   }
   func transcribeTake(sessionId _: String, path: String) async throws -> CsTranscription {
     try await transcribeFile(path: path)
+  }
+  func formatArchivedTranscript(
+    archivePath _: String, sourceRevision _: UInt64, level _: FormattingPolicyOption?
+  ) async throws -> CsArchivedFormat {
+    throw NSError(domain: "Archived transcript formatting unavailable", code: 1)
+  }
+  func commitArchivedRevision(
+    archivePath _: String, sourceRevision _: UInt64, renderedText _: String,
+    kind _: CsArchiveRevisionKind, detail _: String?
+  ) async throws -> CsArchivedDocument {
+    throw NSError(domain: "Archived transcript revisions unavailable", code: 1)
+  }
+  /// No fallback to `sendAssistiveTranscript`: that path consumes the live
+  /// take's context, which an archive send must never do.
+  func sendArchivedTranscript(text _: String) async throws -> Bool {
+    throw NSError(domain: "Archived transcript delivery unavailable", code: 1)
+  }
+  func navigateArchivedVersion(
+    archivePath _: String, sourceRevision _: UInt64, step _: UInt64
+  ) async throws -> CsArchivedDocument {
+    throw NSError(domain: "Archived transcript revisions unavailable", code: 1)
   }
   func overlayExpandedByDefault() -> Bool { true }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
@@ -162,7 +207,12 @@ struct OverlayPresentationStatus: Equatable {
 /// The identity is Rust's: a take with no observed projection has no session id
 /// and is therefore not retained, rather than retained under a minted one.
 struct OverlaySupersededTake: Equatable, Identifiable {
-  let sessionId: String
+  /// Rust's session identity for a projected take; nil for an archive.
+  let sessionId: String?
+  /// The transcript reopened from history this work belongs to. Its path is
+  /// the archive owner's identity and `reducerRevision` is then the archive
+  /// revision the draft was written against.
+  let archive: OverlaySupersededArchive?
   /// The last authoritative document Rust projected for this session.
   let renderedText: String
   let reducerRevision: UInt64
@@ -170,12 +220,59 @@ struct OverlaySupersededTake: Equatable, Identifiable {
   /// `renderedText`. `nil` means nothing was unsaved — the document itself is
   /// still ledger-authoritative and reproducible.
   let unsavedDraft: String?
+  /// Set when `unsavedDraft` is an archive retranscription the chain did not
+  /// accept, byte for byte: a retry keeps its retranscribe provenance.
+  let generated: OverlayArchiveGeneratedWork?
 
-  var id: String { "\(sessionId)#\(reducerRevision)" }
+  var id: String {
+    if let archive { return "archive:\(archive.path)#\(reducerRevision)" }
+    return "\(sessionId ?? "")#\(reducerRevision)"
+  }
   var hasUnsavedEdits: Bool { unsavedDraft != nil }
   /// What an explicit recovery hands back: the user's own edit when one was
   /// unsaved, otherwise the projected document.
   var recoverableText: String { unsavedDraft ?? renderedText }
+
+  init(sessionId: String, renderedText: String, reducerRevision: UInt64, unsavedDraft: String?) {
+    self.sessionId = sessionId
+    archive = nil
+    self.renderedText = renderedText
+    self.reducerRevision = reducerRevision
+    self.unsavedDraft = unsavedDraft
+    generated = nil
+  }
+
+  init(
+    archive: OverlaySupersededArchive, renderedText: String, revision: UInt64,
+    unsavedDraft: String, generated: OverlayArchiveGeneratedWork? = nil
+  ) {
+    sessionId = nil
+    self.archive = archive
+    self.renderedText = renderedText
+    reducerRevision = revision
+    self.unsavedDraft = unsavedDraft
+    self.generated = generated?.text.utf8.elementsEqual(unsavedDraft.utf8) == true ? generated : nil
+  }
+}
+
+/// Which archived transcript a retained edit was written for.
+struct OverlaySupersededArchive: Equatable {
+  let path: String
+  let recordedAt: Date
+  /// The archive as the canvas showed it when the work was set aside, so a
+  /// recovery can put the work back on that archive rather than on a
+  /// clipboard. Nil only when no canvas source is known.
+  var source: OverlayArchivedTranscript? = nil
+}
+
+/// Words a retranscription of one archive produced that its chain has not
+/// accepted yet. While the draft stays byte-equal to `text`, committing it is
+/// still that retranscription; any human change makes it a user edit.
+struct OverlayArchiveGeneratedWork: Equatable {
+  let text: String
+  let sourceRevision: UInt64
+  /// How the words were produced, recorded as the revision's detail.
+  let detail: String
 }
 
 /// How a sibling presentation status addresses the receiver's current capture.
@@ -252,10 +349,11 @@ enum OverlayIntent: String, Equatable, Hashable, CaseIterable {
   case copy
   case insertPaste = "insert-paste"
   case retranscribe
-  /// Restore the exact rendered text the last Retranscribe replaced, committed
-  /// as a new user revision on the same session. Rail-projected only while the
-  /// replaced text is still recoverable (same session, no newer capture).
-  case undoRetranscribe = "undo-retranscribe"
+  /// Select the version before the current one in Rust's linear history:
+  /// format, retranscription and committed edit alike. Saved bytes only.
+  case undo
+  /// Select the version after the current one, while one exists.
+  case redo
   case format
   case sendToAgent = "send-to-agent"
   /// Hand one retained superseded take back to the user, or drop it on an
@@ -366,9 +464,39 @@ final class OverlayState {
   private(set) var revisionCommitError: String?
   private(set) var formatterCommitPending = false
   private(set) var formatterError: String?
-  /// Read-only projection of this take's Bus journal revisions.
-  private(set) var documentHistory: [CsDocumentHistoryEntry] = []
-  private var historyReadSessionId: String?
+  private(set) var maxPreparationError: String?
+  private(set) var transcriptStorageError: String?
+  /// Rust's linear history of this take as last read, with its session.
+  /// Read-only: navigation sends a step, never these bytes.
+  private(set) var documentVersions: CsDocumentVersions?
+  private var documentVersionsSessionId: String?
+  /// Fence for versions reads: only the newest request may land.
+  @ObservationIgnored private var documentVersionsReadGeneration: UInt64 = 0
+  /// One Undo/Redo/version pick in flight; a second is refused until the
+  /// projection that answers it arrives.
+  private(set) var pendingNavigation: OverlayPendingNavigation?
+  /// The live Retranscribe pass running for the projected take, if any. A
+  /// new take drops it; a finishing pass clears only its own ticket.
+  private var retranscribeTicket: UInt64?
+  @ObservationIgnored private var retranscribeTickets: UInt64 = 0
+  var retranscribePending: Bool { retranscribeTicket != nil }
+  /// A transcript reopened from history. While set it owns the canvas and
+  /// every canvas action; the projected take behind it keeps its own state.
+  private(set) var archivedTranscript: OverlayArchivedTranscript?
+  /// Editor payload for the archive, the twin of `revisionDraft`.
+  private var archiveDraft = ""
+  /// The unaccepted retranscription `archiveDraft` was filled with, if any.
+  private var archiveGeneratedWork: OverlayArchiveGeneratedWork?
+  private(set) var archiveActionPending = false
+  private(set) var archiveActionError: String?
+  /// Fence for archive presentation: bumped on every open, leave and action,
+  /// so a late result can only repaint the archive request that started it.
+  /// It fences painting only; Rust's revision chain owns what was accepted.
+  private var archiveGeneration: UInt64 = 0
+  /// Admission ticket for history opens. A read that finishes after a newer
+  /// request, a dismissed list, a close or a new take holds a stale ticket.
+  @ObservationIgnored private var historyOpenAdmission: UInt64 = 0
+  private var chromeBehindArchive: OverlayProjectedChrome?
   private(set) var userRevisionProvenance: String?
   private(set) var canPaste = false
   private(set) var canInsert = false
@@ -488,6 +616,7 @@ final class OverlayState {
   /// Handoff to the agent surface — wired by the orchestrator (routes the text
   /// into AgentChat, which streams it through `CodescribeAgent.streamReply`).
   var onSendToAgent: ((String) -> Void)?
+  var onContinueMaxConsultation: ((String) -> Bool)?
   /// Dismiss the floating window when the overlay's own lifecycle ends
   /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
   /// which keeps an open agent channel on screen against it.
@@ -504,16 +633,13 @@ final class OverlayState {
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
-  private(set) var widgetHoverDeadline: ContinuousClock.Instant?
-  @ObservationIgnored private var widgetHoverTarget: OverlayPresentationMode?
-  @ObservationIgnored private var widgetHoverInteractions: Set<OverlayWidgetInteraction> = []
-  @ObservationIgnored private var widgetMidiIsAutomatic = false
-  @ObservationIgnored private var widgetHoverSuppressedUntilExit = false
-
+  /// Presentation changes come from explicit controls; pointer motion never morphs the window.
   func toggleCollapsed() {
-    let target: OverlayPresentationMode = isCollapsed ? .expanded : .mini
-    setPresentationMode(target)
-    if target == .mini { widgetHoverSuppressedUntilExit = isPointerHovering }
+    switch presentationMode {
+    case .mini: setPresentationMode(.midi)
+    case .midi: setPresentationMode(.expanded)
+    case .expanded: setPresentationMode(.mini)
+    }
   }
 
   func requestHeaderRecording(_ intent: OverlayIntent) {
@@ -521,58 +647,102 @@ final class OverlayState {
     relayIntent(intent)
   }
 
+  /// The user's choice (controls, resize gesture, explicit window entry). It
+  /// supersedes a pending automatic collapse, including a choice of the form
+  /// already on screen: a manually chosen expanded panel stays expanded.
   func setPresentationMode(_ mode: OverlayPresentationMode) {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    widgetMidiIsAutomatic = false
-    guard presentationMode != mode else { return }
-    presentationMode = mode
-    if mode != .expanded { showsAgentMonitor = false }
-    onPresentationModeChanged?(mode)
+    applyPresentationMode(mode, cause: .user)
   }
 
-  func setWidgetInteraction(_ interaction: OverlayWidgetInteraction, held: Bool) {
-    let changed =
-      held
-      ? widgetHoverInteractions.insert(interaction).inserted
-      : widgetHoverInteractions.remove(interaction) != nil
-    if changed { scheduleWidgetHover() }
-  }
-
-  private func scheduleWidgetHover() {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    guard widgetHoverInteractions.isEmpty, !isEditingTranscript else { return }
-    if isPointerHovering && isMini && !widgetHoverSuppressedUntilExit {
-      widgetHoverTarget = .midi
-      widgetHoverDeadline = .now.advanced(by: .milliseconds(500))
-    } else if !isPointerHovering && presentationMode == .midi && widgetMidiIsAutomatic {
-      widgetHoverTarget = .mini
-      widgetHoverDeadline = .now.advanced(by: .milliseconds(420))
+  /// The one presentation write. An automatic expansion from mini/midi is
+  /// remembered once and receives a fresh idle interval, which also invalidates
+  /// any wake armed for its predecessor.
+  private func applyPresentationMode(
+    _ mode: OverlayPresentationMode, cause: OverlayPresentationCause
+  ) {
+    let automaticExpansion = cause == .automatic && mode == .expanded
+    if automaticExpansion {
+      autoCollapse.noteAutomaticExpansion(from: presentationMode)
+    } else {
+      autoCollapse.forget()
+    }
+    if presentationMode != mode {
+      presentationMode = mode
+      if mode != .expanded { showsAgentMonitor = false }
+      onPresentationModeChanged?(mode)
+    }
+    if automaticExpansion {
+      autoCollapse.suspend()
+      noteAutoCollapseActivity()
+    } else {
+      releaseAutoHideAwaitingCollapse()
     }
   }
 
-  /// The view sleeps until this deadline; stale entry/exit tasks cannot route a
-  /// later user action, capture or menu interaction.
-  func expireWidgetHover(at now: ContinuousClock.Instant = .now) {
-    guard let deadline = widgetHoverDeadline, now >= deadline,
-      let target = widgetHoverTarget, widgetHoverInteractions.isEmpty, !isEditingTranscript
-    else { return }
-    guard
-      (target == .midi && isPointerHovering && isMini)
-        || (target == .mini && !isPointerHovering && presentationMode == .midi
-          && widgetMidiIsAutomatic)
-    else { return }
-    setPresentationMode(target)
-    widgetMidiIsAutomatic = target == .midi
+  /// An automatic expansion still owes its return to the remembered compact
+  /// form: the terminal hide must not close the full panel before it.
+  private var autoCollapsePending: Bool {
+    autoCollapse.restoreMode != nil && presentationMode == .expanded
   }
 
-  func clearWidgetHover() {
-    widgetHoverDeadline = nil
-    widgetHoverTarget = nil
-    widgetHoverInteractions.removeAll()
-    widgetMidiIsAutomatic = false
-    widgetHoverSuppressedUntilExit = false
+  /// The return happened, or a manual choice or a lost memo cancelled it. A
+  /// hide that waited for it gets an ordinary countdown, with every auto-hide
+  /// guard re-checked, unless a successor capture took over meanwhile.
+  private func releaseAutoHideAwaitingCollapse() {
+    guard let generation = autoHideAwaitingCollapse else { return }
+    autoHideAwaitingCollapse = nil
+    guard generation == captureGeneration else { return }
+    restartAutoHideCountdown()
+  }
+
+  /// Fresh transcript, presentation activity or the end of an interaction.
+  /// While an interaction holds the panel, the deadline is dropped instead;
+  /// the end of that interaction calls here again for a full interval.
+  /// Unchanged polls and repaints do not reach this method.
+  func noteAutoCollapseActivity() {
+    guard autoCollapse.restoreMode != nil, presentationMode == .expanded else { return }
+    if autoCollapseInteractionHeld {
+      autoCollapse.suspend()
+    } else {
+      autoCollapse.restartDeadline()
+    }
+  }
+
+  /// The panel left the screen. A wake armed while it was shown cannot act;
+  /// the memo survives, so the next automatic expansion still knows the form.
+  func suspendAutoCollapse() {
+    autoCollapse.suspend()
+  }
+
+  /// The compact form a pending automatic collapse returns to, if any.
+  var autoCollapseRestoreMode: OverlayPresentationMode? { autoCollapse.restoreMode }
+  var autoCollapseDeadline: TimeInterval? { autoCollapse.deadline }
+
+  /// Window-side holds (hidden panel, resize or drag in progress, open menu or
+  /// popover), supplied by the panel's owner. Standalone states have none.
+  @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
+
+  /// Editing, an uncommitted draft, the pointer over the panel, the focused
+  /// composer and a live capture are active interactions.
+  private var autoCollapseInteractionHeld: Bool {
+    isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
+      || activeCaptureOwnsPresentation || autoCollapseExternalHold()
+  }
+
+  private func autoCollapseDeadlineReached() {
+    guard presentationMode == .expanded, let restore = autoCollapse.restoreMode else {
+      autoCollapse.forget()
+      releaseAutoHideAwaitingCollapse()
+      return
+    }
+    guard !autoCollapseInteractionHeld else {
+      autoCollapse.suspend()
+      return
+    }
+    applyPresentationMode(restore, cause: .automatic)
+  }
+
+  func clearPointerHover() {
     isPointerHovering = false
   }
 
@@ -586,10 +756,13 @@ final class OverlayState {
     applyPreferredExpansion()
   }
 
-  private func applyPreferredExpansion() {
+  /// The menu toggle is the user's choice; a take start is automatic.
+  private func applyPreferredExpansion(forTake: Bool = false) {
     guard let engine else { return }
     expandedByDefault = engine.overlayExpandedByDefault()
-    setPresentationMode(expandedByDefault ? .expanded : .mini)
+    applyPresentationMode(
+      expandedByDefault ? .expanded : (forTake ? .midi : .mini),
+      cause: forTake ? .automatic : .user)
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -768,10 +941,19 @@ final class OverlayState {
   /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
 
+  /// Idle return of an automatic expansion; see `OverlayAutoCollapse`.
+  @ObservationIgnored private let autoCollapse: OverlayAutoCollapse
+  /// Capture generation whose terminal hide came due while an automatic
+  /// expansion still owed its return to mini/midi. The hide waits for that
+  /// return, then gets an ordinary countdown. Cleared with the auto-hide.
+  @ObservationIgnored private var autoHideAwaitingCollapse: UInt64?
+
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
-    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() }
+    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
+    autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
+      .liveScheduler
   ) {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     eventStream = channel.stream
@@ -779,12 +961,14 @@ final class OverlayState {
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
     self.micAccessProvider = micAccessProvider
+    autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
       for await event in eventStream {
         guard let self else { return }
         apply(event)
       }
     }
+    autoCollapse.onDeadline = { [weak self] in self?.autoCollapseDeadlineReached() }
   }
 
   func attach() {
@@ -1042,6 +1226,12 @@ final class OverlayState {
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
   func selectConversation(_ id: String?, expand: Bool = true) {
+    selectConversation(id, expansion: expand ? .user : nil)
+  }
+
+  /// `expansion` names who opened the surface: a click is the user's choice,
+  /// a followed reply or roster change is automatic. Nil keeps the form.
+  private func selectConversation(_ id: String?, expansion: OverlayPresentationCause?) {
     guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
@@ -1049,8 +1239,8 @@ final class OverlayState {
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
-    if id != nil && expand {
-      expandAgentSurface()
+    if id != nil, let expansion {
+      expandAgentSurface(cause: expansion)
     } else {
       onChannelPresentationChanged?()
     }
@@ -1059,14 +1249,18 @@ final class OverlayState {
 
   func showTranscription() {
     selectConversation(nil)
-    expandAgentSurface()
+    expandAgentSurface(cause: .user)
   }
 
   func showAgentMonitor(expand: Bool = true) {
+    showAgentMonitor(expansion: expand ? .user : nil)
+  }
+
+  private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
     showsAgentMonitor = true
-    if expand { expandAgentSurface() }
+    if let expansion { expandAgentSurface(cause: expansion) }
   }
 
   func toggleAgentSidebar() {
@@ -1079,9 +1273,9 @@ final class OverlayState {
     onChannelPresentationChanged?()
   }
 
-  private func expandAgentSurface() {
+  private func expandAgentSurface(cause: OverlayPresentationCause) {
     cancelAutoHide()
-    setPresentationMode(.expanded)
+    applyPresentationMode(.expanded, cause: cause)
     onChannelPresentationChanged?()
   }
 
@@ -1090,7 +1284,7 @@ final class OverlayState {
   private func followChannelConversation(_ row: CsChannelRosterState) {
     pendingChannelConversation = row
     resolveChannelConversation()
-    if expandedByDefault { expandAgentSurface() }
+    if expandedByDefault { expandAgentSurface(cause: .automatic) }
   }
 
   private func resolveChannelConversation() {
@@ -1181,10 +1375,12 @@ final class OverlayState {
   /// Neither fact is a conversation, a draft, or a document.
   func noteComposerEditorActive(_ active: Bool) {
     composerEditorActive = active
+    noteAutoCollapseActivity()
   }
 
   func noteComposerTypingActivity() {
     composerTypingDeadline = nowProvider() + Self.composerTypingHorizon
+    noteAutoCollapseActivity()
   }
 
   /// Active editor holds without a clock, blank draft included. Typing holds
@@ -1214,10 +1410,12 @@ final class OverlayState {
       let conversation = ownedConversation(forNewReplies: fresh)
     else { return }
     if selectedConversationID == conversation.id {
-      if isCollapsed && expandedByDefault { expandAgentSurface() }
+      if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
     } else {
-      selectConversation(conversation.id, expand: expandedByDefault)
+      selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
     }
+    // A fresh reply is content activity for an already expanded surface.
+    noteAutoCollapseActivity()
     // The selection callback above is an ordinary repaint. The snapshot's
     // own callback, still ahead, is the one that may ask the panel to show.
     freshReplyPresentationRequested = true
@@ -1253,12 +1451,13 @@ final class OverlayState {
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner, String) async throws -> Void = {
+    @MainActor (OverlayConversationOwner?, String) async throws -> Void = {
       owner, text in try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text)
     }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
-    guard let owner = conversation.owner, let draft = conversationDrafts[conversation.id],
+    guard conversation.owner != nil || conversation.channel == "0",
+      let draft = conversationDrafts[conversation.id],
       !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !pendingTextMessages.contains(conversation.id)
     else { return }
@@ -1266,7 +1465,7 @@ final class OverlayState {
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
     do {
-      try await publishConversationText(owner, draft)
+      try await publishConversationText(conversation.owner, draft)
       // A newer draft belongs to the Founder, even if publication finishes late.
       if conversationDrafts[conversation.id] == draft { conversationDrafts[conversation.id] = "" }
     } catch {
@@ -1425,9 +1624,9 @@ final class OverlayState {
       followChannelConversation(row)
     } else if newlyOpened.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
-      selectConversation(
-        conversations.first { $0.channel == "0" }?.id, expand: expandedByDefault)
-      if selectedConversationID == nil { showAgentMonitor(expand: expandedByDefault) }
+      let expansion: OverlayPresentationCause? = expandedByDefault ? .automatic : nil
+      selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
+      if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
     }
     if hasOpenChannel {
       cancelAutoHide()
@@ -1547,18 +1746,29 @@ final class OverlayState {
 
   /// Exact engine text shared by the canvas, sizing, copy, and delivery.
   var activeText: String {
-    formattedText
+    archivedTranscript?.text ?? formattedText
   }
 
   /// Human review depends on capture completion, not the engine's seal,
   /// warning, phase label or a revision request in flight. Typing stays local.
   var isTranscriptEditable: Bool {
-    finalized && latestTranscriptProjection != nil
+    if archivedTranscript != nil {
+      return !archiveActionPending && !recording && !warmingUp && !transcribing
+    }
+    return finalized && latestTranscriptProjection != nil
       && !recording && !warmingUp && !transcribing
   }
 
   /// Engine state changes cannot hide or discard an unsaved human draft.
   var isRevisionDraftDirty: Bool {
+    if let archivedTranscript {
+      return !archiveDraft.utf8.elementsEqual(archivedTranscript.text.utf8)
+    }
+    return isProjectedDraftDirty
+  }
+
+  /// The projected take's own unsaved edit, independent of a reopened archive.
+  private var isProjectedDraftDirty: Bool {
     latestTranscriptProjection != nil && !revisionDraft.utf8.elementsEqual(formattedText.utf8)
   }
 
@@ -1566,7 +1776,10 @@ final class OverlayState {
   /// under review or awaiting its ledger projection, the Rust projection
   /// otherwise. Delivery never reads this; it reads `activeText`.
   var canvasText: String {
-    isRevisionDraftDirty ? revisionDraft : formattedText
+    if let archivedTranscript {
+      return isRevisionDraftDirty ? archiveDraft : archivedTranscript.text
+    }
+    return isRevisionDraftDirty ? revisionDraft : formattedText
   }
 
   /// Uncertain words painted on the canvas. The spans index into
@@ -1575,7 +1788,7 @@ final class OverlayState {
   /// rather than color the wrong bytes. `coverage_refused` / `degraded` never
   /// create spans upstream, so they can never create color here.
   var canvasUncertainWords: [OverlayUncertainWord] {
-    guard !isRevisionDraftDirty else { return [] }
+    guard archivedTranscript == nil, !isRevisionDraftDirty else { return [] }
     return OverlayUncertainWordProjection.project(spans: uncertainSpans, text: formattedText)
   }
 
@@ -1857,8 +2070,10 @@ final class OverlayState {
     case .retranscribe:
       // Keyboard / AX path without a menu pick: the local paradigm.
       relayRetranscribeIntent(pass: .fullHq)
-    case .undoRetranscribe:
-      undoRetranscribeIntent()
+    case .undo:
+      undoDocumentVersion()
+    case .redo:
+      redoDocumentVersion()
     case .format:
       relayFormatIntent()
     case .sendToAgent:
@@ -1880,11 +2095,36 @@ final class OverlayState {
       return
     }
     let text = activeText
+    let canvas = canvasText
+    let archive = archivedTranscript
+    let generation = archiveGeneration
+    let capture = captureGeneration
+    let admission = historyOpenAdmission
+    let projection = latestTranscriptProjection
+    let revisionGeneration = revisionRequestGeneration
     Task { @MainActor in
+      // The requested copy still runs for its captured bytes. Only its UI
+      // acknowledgement belongs to this exact canvas revision.
+      let outcome: Result<Void, Error>
       do {
         try await engine.copyTaggedTranscript(text: text)
-        self.showFooterNotice(String(localized: "copied"))
+        outcome = .success(())
       } catch {
+        outcome = .failure(error)
+      }
+      guard self.archiveGeneration == generation, self.captureGeneration == capture,
+        self.historyOpenAdmission == admission, self.archivedTranscript == archive,
+        self.latestTranscriptProjection?.sessionId == projection?.sessionId,
+        self.latestTranscriptProjection?.reducerRevision == projection?.reducerRevision,
+        self.latestTranscriptProjection?.captureEpoch == projection?.captureEpoch,
+        self.latestTranscriptProjection?.sequence == projection?.sequence,
+        self.revisionRequestGeneration == revisionGeneration,
+        self.canvasText.utf8.elementsEqual(canvas.utf8)
+      else { return }
+      switch outcome {
+      case .success:
+        self.showFooterNotice(String(localized: "copied"))
+      case .failure(let error):
         self.presentActionFailure(
           String(
             localized: "Couldn't copy transcript: \(String(describing: error))",
@@ -1905,16 +2145,39 @@ final class OverlayState {
     cancelAutoHide()
     showFooterNotice(String(localized: "inserting…"), persists: true)
     let text = activeText
+    let canvas = canvasText
+    let archive = archivedTranscript
+    let generation = archiveGeneration
+    let capture = captureGeneration
+    let admission = historyOpenAdmission
+    let projection = latestTranscriptProjection
+    let revisionGeneration = revisionRequestGeneration
     let shouldDefer = insertCaretInCodescribeProbe()
     Task { @MainActor in
-      defer { self.restartAutoHideCountdown() }
+      // Preserve the explicit paste request; a later canvas must not inherit
+      // its acknowledgement, error or auto-hide countdown.
+      let outcome: Result<CsPasteResult, Error>
       do {
-        let result: CsPasteResult
         if shouldDefer {
-          result = try await engine.deferText(text: text)
+          outcome = .success(try await engine.deferText(text: text))
         } else {
-          result = try await engine.pasteText(text: text)
+          outcome = .success(try await engine.pasteText(text: text))
         }
+      } catch {
+        outcome = .failure(error)
+      }
+      guard self.archiveGeneration == generation, self.captureGeneration == capture,
+        self.historyOpenAdmission == admission, self.archivedTranscript == archive,
+        self.latestTranscriptProjection?.sessionId == projection?.sessionId,
+        self.latestTranscriptProjection?.reducerRevision == projection?.reducerRevision,
+        self.latestTranscriptProjection?.captureEpoch == projection?.captureEpoch,
+        self.latestTranscriptProjection?.sequence == projection?.sequence,
+        self.revisionRequestGeneration == revisionGeneration,
+        self.canvasText.utf8.elementsEqual(canvas.utf8)
+      else { return }
+      defer { self.restartAutoHideCountdown() }
+      switch outcome {
+      case .success(let result):
         switch result.outcome {
         case .deferredInsertArmed:
           let shortcut = result.deferredInsertShortcut ?? "⌘⌥V"
@@ -1924,17 +2187,44 @@ final class OverlayState {
         case .accessibilityPermissionNeeded:
           self.showFooterNotice(
             String(localized: "no ax", comment: "Footer notice: no Accessibility permission"))
-        case .pasted:
-          self.showFooterNotice(String(localized: "inserted"))
+        case .pasteRequested:
+          self.showFooterNotice(String(localized: "Paste requested"))
         case .noop:
           self.showFooterNotice(String(localized: "no insert"))
         }
-      } catch {
-        self.errorMessage = String(
-          localized: "Couldn't paste transcript: \(String(describing: error))",
-          comment: "The placeholder is the engine's own failure text")
-        self.showFooterNotice(String(localized: "no paste"))
+      case .failure(let error):
+        self.presentActionFailure(
+          String(
+            localized: "Couldn't paste transcript: \(String(describing: error))",
+            comment: "The placeholder is the engine's own failure text"),
+          notice: String(localized: "no paste"))
       }
+    }
+  }
+
+  /// Startup diagnostics are projections of the Rust owners, independent of
+  /// the current take. Starting a new recording must not hide storage failure.
+  func setMaxPreparationError(_ message: String?) {
+    maxPreparationError = message == nil ? nil
+      : String(localized: "Max could not prepare its conversation.")
+  }
+
+  func setTranscriptStorageError(_ message: String?) {
+    transcriptStorageError = message == nil ? nil
+      : String(localized: "Transcript history is unavailable. Your text remains visible.")
+  }
+
+  var completedMaxConsultationID: String? {
+    guard terminal, let receipt = latestTranscriptProjection?.consultationPresentations.last,
+      !receipt.consultationId.isEmpty
+    else { return nil }
+    return receipt.consultationId
+  }
+
+  func continueMaxConsultationInChat() {
+    guard let backendID = completedMaxConsultationID else { return }
+    if onContinueMaxConsultation?(backendID) != true {
+      showFooterNotice(String(localized: "This consultation is unavailable in chat."))
     }
   }
 
@@ -1947,6 +2237,13 @@ final class OverlayState {
   }
 
   private func relayRetranscribeIntent(pass: OverlayRetranscribePass) {
+    if archivedTranscript != nil {
+      retranscribeArchivedTranscript(pass: pass)
+      return
+    }
+    // One accepted operation at a time: a second pass, or a pass started
+    // under a pending Undo/format, would only race the same CAS.
+    guard !documentOperationPending else { return }
     guard let engine else {
       presentActionFailure(
         String(localized: "Retranscription needs the recording engine"),
@@ -1980,7 +2277,13 @@ final class OverlayState {
     engineChip = running
     engineChipLatched = true
     showFooterNotice(running, persists: true)
+    retranscribeTickets &+= 1
+    let ticket = retranscribeTickets
+    retranscribeTicket = ticket
     Task { @MainActor [weak self] in
+      defer {
+        if self?.retranscribeTicket == ticket { self?.retranscribeTicket = nil }
+      }
       guard let self, generation == self.captureGeneration else { return }
       do {
         let result = try await engine.transcribeTake(
@@ -2000,12 +2303,11 @@ final class OverlayState {
         }
         if !text.isEmpty {
           if self.latestTranscriptProjection?.sessionId == projection.sessionId {
-            // The commit replaces the rendered text irreversibly on the
-            // reducer's current tip. Retain the exact text it replaces, so the
-            // rail can offer a real Back — a worse retranscription must never
-            // be a one-way door.
-            let replaced = projection.renderedText
-            _ = try await engine.commitRetranscribeRevision(
+            // Rust records the pass as a new step of the take's linear
+            // history, so Undo returns to the version it replaced. The CAS
+            // is the revision this pass started from: an Undo or another
+            // change in between refuses the result instead of stacking it.
+            let receipt = try await engine.commitRetranscribeRevision(
               sessionId: projection.sessionId,
               sourceRevision: projection.reducerRevision,
               renderedText: text
@@ -2013,12 +2315,7 @@ final class OverlayState {
             guard generation == self.captureGeneration,
               self.latestTranscriptProjection?.sessionId == projection.sessionId
             else { return }
-            if replaced != text,
-              !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-              self.retranscribeRollback = OverlayRetranscribeRollback(
-                sessionId: projection.sessionId, renderedText: replaced)
-            }
+            self.noteArchiveRefusal(receipt.archiveRefusal)
           } else {
             self.engineChip = previousChip
             self.presentActionFailure(
@@ -2033,10 +2330,7 @@ final class OverlayState {
         self.engineChip = passEngine
         self.errorMessage = nil
         self.errorDiagnosticDetail = nil
-        self.showFooterNotice(
-          self.retranscribeRollback == nil
-            ? String(localized: "retranscribed")
-            : String(localized: "retranscribed — Back keeps the old text"))
+        self.showFooterNotice(String(localized: "retranscribed"))
         self.restartAutoHideCountdown()
       } catch {
         guard generation == self.captureGeneration,
@@ -2059,70 +2353,20 @@ final class OverlayState {
     }
   }
 
-  /// The text a Retranscribe replaced, recoverable while its take is current.
-  /// A `nil` session is the draft path (no live projection at commit time).
-  struct OverlayRetranscribeRollback: Equatable {
-    let sessionId: String?
-    let renderedText: String
-  }
-
-  private(set) var retranscribeRollback: OverlayRetranscribeRollback?
-
-  /// Back is honest only while the replaced text still belongs to the current
-  /// document: same session for the committed path, any time for the draft path.
-  var canUndoRetranscribe: Bool {
-    guard let rollback = retranscribeRollback else { return false }
-    guard let sessionId = rollback.sessionId else { return true }
-    return latestTranscriptProjection?.sessionId == sessionId
-  }
-
-  /// Restore the pre-retranscribe text as a NEW user revision on the same
-  /// session — no history rewrite, no forged seal; the reducer keeps both
-  /// texts in its revision chain. The rollback slot is consumed only when the
-  /// restore actually landed.
-  func undoRetranscribeIntent() {
-    guard let rollback = retranscribeRollback else { return }
-    guard let sessionId = rollback.sessionId else {
-      revisionDraft = rollback.renderedText
-      retranscribeRollback = nil
-      showFooterNotice(String(localized: "retranscribe undone"))
-      return
-    }
-    guard let engine else {
-      presentActionFailure(
-        String(localized: "Undo needs the recording engine"),
-        notice: String(localized: "undo unavailable"))
-      return
-    }
-    guard let projection = latestTranscriptProjection, projection.sessionId == sessionId else {
-      retranscribeRollback = nil
-      presentActionFailure(
-        String(localized: "The retranscribed take is no longer current"),
-        notice: String(localized: "nothing to undo"))
-      return
-    }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        _ = try await engine.commitUserRevision(
-          sessionId: sessionId,
-          sourceRevision: projection.reducerRevision,
-          renderedText: rollback.renderedText
-        )
-        self.retranscribeRollback = nil
-        self.showFooterNotice(String(localized: "retranscribe undone"))
-      } catch {
-        self.presentActionFailure(
-          String(
-            localized: "Couldn't undo retranscribe: \(String(describing: error))",
-            comment: "The placeholder is the engine's own failure text"),
-          notice: String(localized: "undo failed — kept"))
-      }
-    }
+  /// Undo/Redo or a version pick waiting for the projection that answers it.
+  /// A formatted target answers with its presentation, after the receipt.
+  struct OverlayPendingNavigation: Equatable {
+    let sessionId: String
+    let sourceRevision: UInt64
+    let expectsPresentation: Bool
   }
 
   private func presentActionFailure(_ message: String, notice: String) {
-    errorMessage = message
+    if archivedTranscript != nil {
+      archiveActionError = message
+    } else {
+      errorMessage = message
+    }
     showFooterNotice(notice)
   }
 
@@ -2136,9 +2380,11 @@ final class OverlayState {
 
   @discardableResult
   func sendToAgent() -> Task<Void, Never>? {
-    guard terminal, canSendToAgent, !isRevisionDraftDirty,
-      !revisionCommitPending, !formatterCommitPending
-    else { return nil }
+    // One guard for every entry point: while an accepted operation waits for
+    // its answer the selected bytes are not settled, so nothing is sent.
+    guard !documentOperationPending else { return nil }
+    if archivedTranscript != nil { return sendArchivedTranscriptToAgent() }
+    guard terminal, canSendToAgent, !isRevisionDraftDirty else { return nil }
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "send")
     return deliverAgentTranscript()
@@ -2174,7 +2420,12 @@ final class OverlayState {
   }
 
   func close() {
-    discardRevisionDraft()
+    invalidateHistoryOpens()
+    // An unsaved archive edit is retained for explicit recovery before the
+    // canvas lets go of it; closing is not a decision to drop it.
+    let wasViewingArchive = archivedTranscript != nil
+    leaveArchivedTranscript()
+    if !wasViewingArchive { discardRevisionDraft() }
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "close")
     cancelWarmupWatchdog()
@@ -2204,6 +2455,17 @@ final class OverlayState {
     refreshRetranscriptionAvailability()
     guard let truth = engine?.currentOverlayPolicy() else { return }
     autoFormatLevel = truth.autoFormatLevel
+  }
+
+  /// A Settings or Quick Settings write reached `settings.json`. An idle
+  /// overlay re-reads the canonical policy so it shows the new level now,
+  /// not at the next take. A take in flight (warming, recording, tail decode,
+  /// final pass) keeps the snapshot latched at its start, and an explicit
+  /// one-shot format carries its own level, so neither is touched. Reads
+  /// only: transcript, document and presentation state stay as they are.
+  func canonicalConfigurationDidChange() {
+    guard !warmingUp, !recording, !transcribing, !isFinalPass else { return }
+    refreshOverlayPolicyTruth()
   }
 
   private var engineChipLatched = false
@@ -2246,8 +2508,7 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
-    if !hovering { widgetHoverSuppressedUntilExit = false }
-    scheduleWidgetHover()
+    noteAutoCollapseActivity()
     guard isTerminalMode else { return }
     if hovering {
       cancelAutoHide()
@@ -2259,7 +2520,9 @@ final class OverlayState {
   // MARK: P0-D quality loop
 
   private func captureQualityIfEdited(action: String) {
-    guard mode == .formatted else { return }
+    // An archive has no delivered take to compare against; its text must
+    // never be recorded as a correction of the take behind it.
+    guard archivedTranscript == nil, mode == .formatted else { return }
     // `commitOverlayQualityRecord` is a free FFI function, not a call on the
     // injected `engine` — so a mocked engine does NOT stop it, and the XCTest
     // suite was appending two synthetic corrections ("original delivered
@@ -2340,8 +2603,9 @@ final class OverlayState {
     // Taking the final canvas for review requires an explicit Agent send,
     // even after focus leaves or the reducer accepts the revision.
     agentAutoSendCancelled = true
-    revisionCommitError = nil
+    if archivedTranscript != nil { archiveActionError = nil } else { revisionCommitError = nil }
     cancelAutoHide()
+    noteAutoCollapseActivity()
   }
 
   /// The canvas gave keyboard focus back. A dirty draft commits after a short
@@ -2354,11 +2618,17 @@ final class OverlayState {
     } else if terminal {
       restartAutoHideCountdown()
     }
+    noteAutoCollapseActivity()
   }
 
   /// Canvas bytes changed under the user's caret.
   func updateRevisionDraft(_ text: String) {
     guard isTranscriptEditable else { return }
+    if archivedTranscript != nil {
+      archiveDraft = text
+      noteRevisionDraftActivity()
+      return
+    }
     revisionDraft = text
     noteRevisionDraftActivity()
   }
@@ -2366,12 +2636,13 @@ final class OverlayState {
   /// User typing is local draft activity: keep the review panel alive without
   /// mutating projected text or any delivery source.
   func noteRevisionDraftActivity() {
-    revisionCommitError = nil
+    if archivedTranscript != nil { archiveActionError = nil } else { revisionCommitError = nil }
     if isRevisionDraftDirty || isEditingTranscript {
       cancelAutoHide()
     } else if terminal {
       restartAutoHideCountdown()
     }
+    noteAutoCollapseActivity()
   }
 
   /// Commit on a genuine focus exit, but wait one click's worth so an explicit
@@ -2393,6 +2664,13 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     guard !revisionCommitPending, !formatterCommitPending else { return }
+    if let archivedTranscript {
+      archiveDraft = archivedTranscript.text
+      archiveGeneratedWork = nil
+      archiveActionError = nil
+      if !isEditingTranscript { restartAutoHideCountdown() }
+      return
+    }
     revisionDraft = formattedText
     revisionCommitError = nil
     if terminal, !isEditingTranscript { restartAutoHideCountdown() }
@@ -2405,8 +2683,12 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     guard isTranscriptEditable, isRevisionDraftDirty, !revisionCommitPending,
-      !formatterCommitPending
+      !formatterCommitPending, pendingNavigation == nil, !retranscribePending
     else {
+      return
+    }
+    if archivedTranscript != nil {
+      commitArchivedDraft()
       return
     }
     guard terminal, latestTranscriptProjection?.terminal == true else {
@@ -2438,6 +2720,14 @@ final class OverlayState {
           sourceRevision: projection.reducerRevision,
           renderedText: proposed
         )
+        // The reducer may already have painted and cleared pending. A
+        // durable-write refusal still belongs to this session's accepted operation.
+        guard revisionRequestGeneration == requestGeneration,
+          latestTranscriptProjection?.sessionId == projection.sessionId,
+          receipt.sessionId == projection.sessionId,
+          receipt.sourceRevision == projection.reducerRevision
+        else { return }
+        noteArchiveRefusal(receipt.archiveRefusal)
         guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
           pendingRevisionSessionId == projection.sessionId,
           pendingRevisionSource == projection.reducerRevision,
@@ -2522,7 +2812,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forTake: true)
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -2544,7 +2834,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
-      applyPreferredExpansion()
+      applyPreferredExpansion(forTake: true)
     }
     if captureStartedAtUptime == nil {
       beginCaptureClock()
@@ -2579,6 +2869,8 @@ final class OverlayState {
       finalized = true
       onRecordingStopped?()
     }
+    // The live capture hold ended.
+    noteAutoCollapseActivity()
   }
 
   /// Native hold-release / toggle-stop lifecycle evidence. It freezes capture
@@ -2656,6 +2948,9 @@ final class OverlayState {
   }
 
   private func restartAutoHideCountdown() {
+    // Every auto-hide restart is user or presentation activity (drag, resize,
+    // edit end, draft resolution, terminal status, archive action).
+    noteAutoCollapseActivity()
     if hasOpenChannel {
       cancelAutoHide()
       return
@@ -2742,6 +3037,15 @@ final class OverlayState {
       }
       return
     }
+    // The 5 s hide can come due before an automatic expansion's 10 s return.
+    // Closing then would take the full panel off screen, so the hide waits for
+    // the return. A deadline dropped without a later signal is re-armed here,
+    // otherwise neither timer would ever run.
+    if autoCollapsePending {
+      autoHideAwaitingCollapse = generation
+      if autoCollapse.deadline == nil { noteAutoCollapseActivity() }
+      return
+    }
     onClose?()
   }
 
@@ -2774,7 +3078,12 @@ final class OverlayState {
     autoHideTask?.cancel()
     autoHideTask = nil
     autoHideDeadline = nil
+    autoHideAwaitingCollapse = nil
   }
+
+  /// Whether a terminal hide that came due is waiting for the automatic
+  /// collapse; see `evaluateAutoHideDeadline`.
+  var autoHideAwaitsAutoCollapse: Bool { autoHideAwaitingCollapse != nil }
 
   @discardableResult
   private func deliverAgentTranscript() -> Task<Void, Never>? {
@@ -3061,6 +3370,7 @@ final class OverlayState {
       guard recording || transcribing else { return }
     }
     compactProjection = projection
+    noteAutoCollapseActivity()
     onTranscriptPresentationChanged?()
   }
 
@@ -3117,10 +3427,26 @@ final class OverlayState {
       return
     }
     if lifecycleTerminal { endedProjectionSessions.insert(projection.sessionId) }
-    defer { onTranscriptPresentationChanged?() }
+    defer {
+      // Runs after capture flags settle, so a terminal arms the idle interval.
+      noteAutoCollapseActivity()
+      onTranscriptPresentationChanged?()
+    }
+    // A late revision of the take behind a reopened archive updates that take
+    // only; any other projection takes the canvas back.
+    let keepsArchive =
+      archivedTranscript != nil && !lifecycleTerminal
+      && latestTranscriptProjection?.sessionId == projection.sessionId
+    if !keepsArchive { leaveArchivedTranscript() }
+    defer {
+      if keepsArchive {
+        chromeBehindArchive = projectedChrome
+        paintArchivedChrome()
+      }
+    }
     let priorProjection = latestTranscriptProjection
     let isNewSession = priorProjection?.sessionId != projection.sessionId
-    let draftWasDirty = isRevisionDraftDirty
+    let draftWasDirty = isProjectedDraftDirty
     // A text snapshot can arrive before its compact snapshot. Keep same-capture
     // evidence through seals and terminals, but never carry foreign capture paint.
     if let paint = compactProjection,
@@ -3168,12 +3494,29 @@ final class OverlayState {
       && (projection.documentRevisionReceipt == nil
         || projection.documentRevisionReceipt?.sourceRevision == pendingRevisionSource)
       && revisionReceipt != nil
+    // Navigation mints a receipt revision; a formatted target then presents
+    // its accepted result over it. Only the last of the two ends the wait.
+    let completesPendingNavigation: Bool
+    if let pending = pendingNavigation, projection.terminal,
+      projection.sessionId == pending.sessionId,
+      projection.reducerRevision > pending.sourceRevision
+    {
+      completesPendingNavigation =
+        pending.expectsPresentation
+        ? projection.reducerAction == "derived_projection"
+        : projection.reducerAction == "apply_manual_edit"
+          && projection.documentRevisionReceipt?.provenance == .navigation
+    } else {
+      completesPendingNavigation = false
+    }
     let completesPendingFormatter =
       formatterCommitPending
       && projection.reducerAction == "derived_projection"
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
-      && projection.reducerRevision == pendingRevisionSource
+      // Accepting a format mints its own receipt, so the derived projection
+      // stands on a revision after the one the request named.
+      && pendingRevisionSource.map { projection.reducerRevision > $0 } == true
       && formatterReceipt != nil
     // A successful acoustic terminal has its own callback. Agent auto-send
     // below uses lifecycle completion and nonempty text, not this seal signal.
@@ -3182,8 +3525,10 @@ final class OverlayState {
     // Initialize before the first event can obtain a receiver receipt or retain
     // refused bytes. The first observed projection may already end this session.
     if isNewSession {
-      documentHistory = []
-      historyReadSessionId = nil
+      documentVersions = nil
+      documentVersionsSessionId = nil
+      documentVersionsReadGeneration &+= 1
+      pendingNavigation = nil
       if let priorProjection {
         // An unannounced different session cannot inherit the outgoing
         // capture's completion. Its own lifecycle must prove it ended.
@@ -3269,6 +3614,10 @@ final class OverlayState {
         revisionDraft = formattedText
       }
       pendingRevisionDraft = nil
+    } else if completesPendingNavigation {
+      pendingNavigation = nil
+      revisionCommitError = nil
+      if !draftWasDirty { revisionDraft = formattedText }
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
@@ -3277,16 +3626,18 @@ final class OverlayState {
       formatterError = nil
       if !draftWasDirty { revisionDraft = formattedText }
       showFooterNotice(String(localized: "formatted"))
-      loadDocumentHistory()
     } else if !draftWasDirty || isNewSession {
       revisionDraft = formattedText
     }
 
     if projection.terminal {
-      if isLifecycleTerminal && historyReadSessionId != projection.sessionId {
-        historyReadSessionId = projection.sessionId
-        refreshDocumentHistory(
-          sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
+      // Every terminal document projection may carry a new step or a moved
+      // cursor (a format answers with a derived projection at the same
+      // revision), so the read follows each one; only the newest lands.
+      if projection.reducerAction == "apply_manual_edit"
+        || projection.reducerAction == "derived_projection" || isLifecycleTerminal
+      {
+        loadDocumentVersions()
       }
       if deliveredTextSessionId != projection.sessionId {
         deliveredText = projection.renderedText
@@ -3394,9 +3745,12 @@ final class OverlayState {
   }
 
   private func relayFormatIntent(level: FormattingPolicyOption? = nil) {
+    if archivedTranscript != nil {
+      formatArchivedTranscript(level: level)
+      return
+    }
     guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
-      !isRevisionDraftDirty,
-      !revisionCommitPending, !formatterCommitPending
+      !isRevisionDraftDirty, !documentOperationPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {
       formatterError = String(localized: "Transcript formatter authority is unavailable")
@@ -3420,6 +3774,14 @@ final class OverlayState {
           sourceRevision: projection.reducerRevision,
           level: level
         )
+        // The reducer may already have painted and cleared pending. A
+        // durable-write refusal still belongs to this session's accepted operation.
+        guard revisionRequestGeneration == requestGeneration,
+          latestTranscriptProjection?.sessionId == projection.sessionId,
+          receipt.sessionId == projection.sessionId,
+          receipt.sourceRevision == projection.reducerRevision
+        else { return }
+        noteArchiveRefusal(receipt.archiveRefusal)
         guard revisionRequestGeneration == requestGeneration, formatterCommitPending,
           pendingRevisionSessionId == projection.sessionId,
           pendingRevisionSource == projection.reducerRevision,
@@ -3461,79 +3823,146 @@ final class OverlayState {
     }
   }
 
-  func restoreDocumentRevision(_ selectedRevision: UInt64) {
-    guard terminal, !isRevisionDraftDirty, !revisionCommitPending,
-      !formatterCommitPending, let projection = latestTranscriptProjection,
-      documentHistory.contains(where: { $0.revision == selectedRevision }),
-      selectedRevision != projection.reducerRevision, let engine
+  /// Versions, Undo and Redo for the transcript on the canvas: an archive's
+  /// own revision chain while it owns the canvas, otherwise the projected
+  /// take's linear history as Rust last returned it for this exact revision.
+  var transcriptVersions: OverlayTranscriptVersionsPresentation {
+    let blockedReason: String? =
+      documentOperationPending
+      ? OverlayTranscriptVersionsPresentation.pendingReason
+      : isRevisionDraftDirty ? OverlayTranscriptVersionsPresentation.dirtyReason : nil
+    if let archivedTranscript {
+      return .make(
+        versions: archivedTranscript.versions, cursor: archivedTranscript.cursor,
+        blockedReason: blockedReason)
+    }
+    guard terminal, let projection = latestTranscriptProjection,
+      let versions = documentVersions, documentVersionsSessionId == projection.sessionId,
+      versions.sourceRevision == projection.reducerRevision
+    else { return .empty }
+    return .make(versions: versions.versions, cursor: versions.cursor, blockedReason: blockedReason)
+  }
+
+  /// Any accepted-operation request still waiting for its answer. A second
+  /// one would race the CAS, so every entry point refuses it.
+  var documentOperationPending: Bool {
+    revisionCommitPending || formatterCommitPending || archiveActionPending
+      || pendingNavigation != nil || retranscribePending
+  }
+
+  /// Opening the versions control re-reads Rust's history for the canvas.
+  func refreshTranscriptVersions() {
+    guard archivedTranscript == nil else { return }
+    loadDocumentVersions()
+  }
+
+  func undoDocumentVersion() {
+    guard let step = transcriptVersions.undoStep else {
+      showFooterNotice(transcriptVersions.undoTitle)
+      return
+    }
+    selectDocumentVersion(step)
+  }
+
+  func redoDocumentVersion() {
+    guard let step = transcriptVersions.redoStep else {
+      showFooterNotice(transcriptVersions.redoTitle)
+      return
+    }
+    selectDocumentVersion(step)
+  }
+
+  /// Undo, Redo and the versions picker all land here: ask Rust to move the
+  /// cursor to `step`. Only the projection that answers repaints the canvas.
+  func selectDocumentVersion(_ step: UInt64) {
+    let versions = transcriptVersions
+    guard versions.selectableSteps.contains(step),
+      let target = versions.options.first(where: { $0.step == step })
     else { return }
-    revisionCommitPending = true
+    if archivedTranscript != nil {
+      navigateArchivedVersion(step)
+      return
+    }
+    guard terminal, let projection = latestTranscriptProjection,
+      let source = documentVersions?.sourceRevision, let engine
+    else { return }
+    var expectsPresentation = false
+    if case .formatted = target.source {
+      expectsPresentation = true
+    }
+    let pending = OverlayPendingNavigation(
+      sessionId: projection.sessionId, sourceRevision: source,
+      expectsPresentation: expectsPresentation)
+    pendingNavigation = pending
     revisionCommitError = nil
-    pendingRevisionSessionId = projection.sessionId
-    pendingRevisionSource = projection.reducerRevision
-    pendingRevisionDraft = revisionDraft
-    revisionRequestGeneration &+= 1
-    let requestGeneration = revisionRequestGeneration
     cancelAutoHide()
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
-        let receipt = try await engine.restoreDocumentRevision(
-          sessionId: projection.sessionId,
-          sourceRevision: projection.reducerRevision,
-          restoreRevision: selectedRevision)
-        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
-          pendingRevisionSessionId == projection.sessionId,
-          pendingRevisionSource == projection.reducerRevision,
-          latestTranscriptProjection?.sessionId == projection.sessionId
+        let receipt = try await engine.navigateDocumentVersion(
+          sessionId: pending.sessionId, sourceRevision: pending.sourceRevision, step: step)
+        guard self.latestTranscriptProjection?.sessionId == pending.sessionId,
+          receipt.sessionId == pending.sessionId,
+          receipt.sourceRevision == pending.sourceRevision
         else { return }
-        guard receipt.sessionId == projection.sessionId,
-          receipt.sourceRevision == projection.reducerRevision,
-          receipt.revision > receipt.sourceRevision,
-          receipt.provenanceReceipt.hasPrefix("user-edit-")
+        self.noteArchiveRefusal(receipt.archiveRefusal)
+        guard self.pendingNavigation == pending else { return }
+        guard receipt.sessionId == pending.sessionId,
+          receipt.sourceRevision == pending.sourceRevision,
+          receipt.revision > receipt.sourceRevision
         else {
-          revisionCommitPending = false
-          pendingRevisionSessionId = nil
-          pendingRevisionSource = nil
-          pendingRevisionDraft = nil
-          revisionCommitError = String(localized: "Transcript restore receipt was inconsistent")
+          self.pendingNavigation = nil
+          self.revisionCommitError = String(
+            localized: "overlay.versions.error.receipt",
+            defaultValue: "The transcript version change was not confirmed.",
+            comment: "Undo/Redo/version pick answered with a receipt for another document")
+          self.loadDocumentVersions()
           return
         }
-        // Only the matching reducer callback repaints the canvas.
+        // Only the matching reducer projection repaints and ends the wait.
       } catch {
-        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
-          pendingRevisionSessionId == projection.sessionId,
-          pendingRevisionSource == projection.reducerRevision,
-          latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
-        revisionCommitPending = false
-        pendingRevisionSessionId = nil
-        pendingRevisionSource = nil
-        pendingRevisionDraft = nil
-        revisionCommitError = String(
-          localized: "Couldn't restore transcript version: \(String(describing: error))",
-          comment: "The placeholder is the engine's own failure text")
+        guard self.pendingNavigation == pending else { return }
+        self.pendingNavigation = nil
+        self.revisionCommitError = String(
+          localized: "overlay.versions.error.navigate",
+          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
+        self.loadDocumentVersions()
       }
+      self.restartAutoHideCountdown()
     }
   }
 
-  func loadDocumentHistory() {
-    guard terminal, let projection = latestTranscriptProjection else { return }
-    refreshDocumentHistory(
-      sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
+  /// Read the projected take's linear history from Rust. A reply for another
+  /// session, or overtaken by a newer read, never lands.
+  /// An operation the live take accepted but its archived transcript did
+  /// not save. The live versions still work; reopening the take from history
+  /// will not show the ones after this point, and the user is told so.
+  func noteArchiveRefusal(_ refusal: String?) {
+    guard let refusal else { return }
+    revisionCommitError = String(
+      localized: "Versions of this take are no longer saved to history: \(refusal)",
+      comment: "The placeholder is the archive's own refusal text")
   }
 
-  private func refreshDocumentHistory(sessionId: String, sourceRevision: UInt64) {
-    guard let engine else { return }
+  func loadDocumentVersions() {
+    guard terminal, let projection = latestTranscriptProjection, let engine else { return }
+    let sessionId = projection.sessionId
+    documentVersionsReadGeneration &+= 1
+    let generation = documentVersionsReadGeneration
     Task { @MainActor [weak self] in
       do {
-        let entries = try await engine.documentHistory(sessionId: sessionId)
-        guard let self, self.latestTranscriptProjection?.sessionId == sessionId,
-          self.latestTranscriptProjection?.reducerRevision == sourceRevision
+        let versions = try await engine.documentVersions(sessionId: sessionId)
+        guard let self, self.documentVersionsReadGeneration == generation,
+          self.latestTranscriptProjection?.sessionId == sessionId
         else { return }
-        self.documentHistory = entries
+        self.documentVersions = versions
+        self.documentVersionsSessionId = sessionId
+        self.noteArchiveRefusal(versions.archiveRefusal)
       } catch {
-        guard let self, self.latestTranscriptProjection?.sessionId == sessionId else { return }
+        guard let self, self.documentVersionsReadGeneration == generation,
+          self.latestTranscriptProjection?.sessionId == sessionId
+        else { return }
         self.revisionCommitError = String(
           localized: "Couldn't read transcript history: \(String(describing: error))",
           comment: "The placeholder is the engine's own failure text")
@@ -3653,6 +4082,7 @@ final class OverlayState {
   /// exists to prevent, reintroduced one line lower.
   func recoverSupersededTake() {
     guard let take = supersededTakes.first else { return }
+    if reopenRetainedArchiveWork(take) { return }
     guard recoveryClipboardWriter(take.recoverableText) else {
       recoveryFailure =
         take.hasUnsavedEdits
@@ -3704,6 +4134,12 @@ final class OverlayState {
   /// finish its addressed delivery, but it can no longer repaint, finalize or
   /// auto-hide the successor.
   private func admitNewCapture() {
+    // A new take owns the canvas. Accepted archive revisions are already
+    // durable in that archive's chain; an unsaved archive edit moves into the
+    // superseded-work owner under the archive's own identity, and any history
+    // read still in flight can no longer land.
+    invalidateHistoryOpens()
+    leaveArchivedTranscript()
     if let compactProjection {
       retiredProjectionSessions.insert(compactProjection.sessionId)
     }
@@ -3730,8 +4166,10 @@ final class OverlayState {
     }
     latestTranscriptProjection = nil
     revisionDraft = ""
-    documentHistory = []
-    historyReadSessionId = nil
+    documentVersions = nil
+    documentVersionsSessionId = nil
+    documentVersionsReadGeneration &+= 1
+    pendingNavigation = nil
     // Retained chrome is evidence about the previous take, not this one.
     transcriptMode = "dictation"
     mode = .listening
@@ -3784,10 +4222,7 @@ final class OverlayState {
   private func resetTranscript() {
     deliveredText = ""
     pendingNoSpeechMessage = nil
-    // A rollback belongs to the take whose Retranscribe created it. Unlike
-    // `supersededTakes` it repaints the canvas, so it must never survive into
-    // a new capture and restore words over a different take.
-    retranscribeRollback = nil
+    retranscribeTicket = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     coverageRefusalNotice = nil
     // A persisting chip belongs to the take that raised it. Nothing else
@@ -3996,16 +4431,14 @@ final class ControllerDictationEngine: DictationEngine {
       level: level?.rawValue
     )
   }
-  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry] {
-    try await hotkeys.documentHistory(sessionId: sessionId)
+  func documentVersions(sessionId: String) async throws -> CsDocumentVersions {
+    try await hotkeys.documentVersions(sessionId: sessionId)
   }
-  func restoreDocumentRevision(
-    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  func navigateDocumentVersion(
+    sessionId: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsUserRevisionResult {
-    try await hotkeys.restoreDocumentRevision(
-      sessionId: sessionId,
-      sourceRevision: sourceRevision,
-      restoreRevision: restoreRevision)
+    try await hotkeys.navigateDocumentVersion(
+      sessionId: sessionId, sourceRevision: sourceRevision, step: step)
   }
   func isRecording() async -> Bool {
     await hotkeys.isRecording()
@@ -4047,6 +4480,9 @@ final class ControllerDictationEngine: DictationEngine {
   func sendAssistiveTranscript(text: String) async throws -> Bool {
     try await hotkeys.sendAssistiveTranscript(text: text)
   }
+  func sendArchivedTranscript(text: String) async throws -> Bool {
+    try await hotkeys.sendArchivedTranscript(text: text)
+  }
   func lastSessionAudioPath() -> String? {
     hotkeys.lastSessionAudioPath()
   }
@@ -4075,6 +4511,30 @@ final class ControllerDictationEngine: DictationEngine {
   func transcribeFile(path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeFile(path: path)
   }
+  func formatArchivedTranscript(
+    archivePath: String, sourceRevision: UInt64, level: FormattingPolicyOption?
+  ) async throws -> CsArchivedFormat {
+    try await hotkeys.formatArchivedTranscript(
+      archivePath: archivePath, sourceRevision: sourceRevision, level: level?.rawValue)
+  }
+  func commitArchivedRevision(
+    archivePath: String, sourceRevision: UInt64, renderedText: String,
+    kind: CsArchiveRevisionKind, detail: String?
+  ) async throws -> CsArchivedDocument {
+    try await Task.detached {
+      try CodescribeThreads().commitHistoryRevision(
+        path: archivePath, sourceRevision: sourceRevision, renderedText: renderedText,
+        kind: kind, detail: detail)
+    }.value
+  }
+  func navigateArchivedVersion(
+    archivePath: String, sourceRevision: UInt64, step: UInt64
+  ) async throws -> CsArchivedDocument {
+    try await Task.detached {
+      try CodescribeThreads().navigateHistoryRevision(
+        path: archivePath, sourceRevision: sourceRevision, step: step)
+    }.value
+  }
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeTake(sessionId: sessionId, path: path)
   }
@@ -4086,5 +4546,595 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func archiveAgent(request: CsAgentArchiveRequest) async throws -> String {
     try await hotkeys.archiveAgentChannel(request: request)
+  }
+}
+
+/// Presentation chrome a projection paints. Kept aside while an archive owns
+/// the canvas, so leaving it returns the projected take exactly as it was.
+struct OverlayProjectedChrome: Equatable {
+  let mode: OverlayMode
+  let terminal: Bool
+  let canPaste: Bool
+  let canInsert: Bool
+  let canCopy: Bool
+  let canRetranscribe: Bool
+  let canFormat: Bool
+  let canSendToAgent: Bool
+  let coverageRefusalNotice: String?
+}
+
+// MARK: - Transcript reopened from history
+
+/// How the canvas answered one history open request.
+enum OverlayArchiveOpenOutcome: Equatable {
+  case opened
+  case refused(String)
+  /// A newer request, a dismissed list, a close or a new take took over.
+  case superseded
+}
+
+extension OverlayState {
+  /// Why history cannot take the canvas now. Opening never cancels, stops or
+  /// replaces a live capture, and never strands an unsaved edit.
+  var archiveOpenRefusal: String? {
+    let captureInFlight =
+      recording || warmingUp || transcribing
+      || (archivedTranscript == nil && !terminal
+        && (mode == .listening || mode == .finalizing)
+        && (captureStartedAtUptime != nil || latestTranscriptProjection != nil))
+    if captureInFlight {
+      return String(
+        localized: "Finish the current take before opening a saved transcript.",
+        comment: "History is disabled while a take is being recorded or finished")
+    }
+    if documentOperationPending {
+      return String(
+        localized: "Wait for the current change to finish before opening a saved transcript.",
+        comment: "History is disabled while a revision, format or retranscription runs")
+    }
+    if isRevisionDraftDirty {
+      return String(
+        localized: "Commit or discard your edit before opening a saved transcript.",
+        comment: "History is disabled while the canvas holds an unsaved edit")
+    }
+    return nil
+  }
+
+  /// Footer line naming where the canvas text came from and, once the
+  /// archive has accepted revisions, which version is shown.
+  var archivedTranscriptOrigin: String? {
+    guard let archivedTranscript else { return nil }
+    let date = archivedTranscript.recordedAt.formatted(date: .abbreviated, time: .shortened)
+    guard archivedTranscript.revision > 0 else {
+      return String(
+        localized: "From history · \(date)",
+        comment: "Footer under a transcript reopened from history; the placeholder is its date")
+    }
+    let version = Int(clamping: archivedTranscript.revision)
+    return String(
+      localized: "From history · \(date) · version \(version)",
+      comment:
+        "Footer under a revised transcript reopened from history; the placeholders are its date and the version shown"
+    )
+  }
+
+  /// Retranscription is bound to the archive's own audio. Without it, say so.
+  var retranscribeUnavailableReason: String? {
+    guard let archivedTranscript, archivedTranscript.audioPath == nil else { return nil }
+    return String(
+      localized: "The audio for this saved transcript is no longer available.",
+      comment: "Transcribe again is impossible: the archived take has no audio file")
+  }
+
+  /// Issue the ticket one history open request must present to land.
+  func admitHistoryOpen() -> UInt64 {
+    historyOpenAdmission &+= 1
+    return historyOpenAdmission
+  }
+
+  /// Every history open still in flight becomes stale: the list was
+  /// dismissed, the overlay closed or a new take took the canvas.
+  func invalidateHistoryOpens() {
+    historyOpenAdmission &+= 1
+  }
+
+  /// Put an archived take on the canvas under its admission ticket. A stale
+  /// ticket is superseded silently; a refusal names its reason in the footer.
+  func openArchivedTranscript(
+    _ archived: OverlayArchivedTranscript, admission: UInt64
+  ) -> OverlayArchiveOpenOutcome {
+    guard admission == historyOpenAdmission else { return .superseded }
+    if let reason = archiveOpenRefusal {
+      showFooterNotice(reason)
+      return .refused(reason)
+    }
+    revisionFocusCommitTask?.cancel()
+    revisionFocusCommitTask = nil
+    if archivedTranscript == nil { chromeBehindArchive = projectedChrome }
+    archiveGeneration &+= 1
+    archivedTranscript = archived
+    archiveDraft = archived.text
+    archiveGeneratedWork = nil
+    archiveActionPending = false
+    archiveActionError = nil
+    isEditingTranscript = false
+    // Taking the canvas for history is review: the take behind it is no
+    // longer auto-sent to Agent, exactly as when the user starts an edit.
+    agentAutoSendCancelled = true
+    toastTask?.cancel()
+    toast = nil
+    paintArchivedChrome()
+    cloudRetranscribeConfigured = engine?.cloudRetranscribeConfigured() ?? false
+    selectConversation(nil)
+    setPresentationMode(.expanded)
+    restartAutoHideCountdown()
+    onTranscriptPresentationChanged?()
+    return .opened
+  }
+
+  /// Open with a fresh ticket (keyboard and programmatic paths).
+  @discardableResult
+  func openArchivedTranscript(_ archived: OverlayArchivedTranscript) -> Bool {
+    openArchivedTranscript(archived, admission: admitHistoryOpen()) == .opened
+  }
+
+  /// Hand the canvas back to the projected take. Accepted revisions are
+  /// already durable in the archive's chain; an unsaved archive edit moves to
+  /// the superseded-work owner under the archive's identity, never into the
+  /// projected take. Pending archive presentation is fenced off.
+  func leaveArchivedTranscript() {
+    guard let archived = archivedTranscript else { return }
+    if isRevisionDraftDirty {
+      retainArchivedWork(archived, unsavedDraft: archiveDraft, generated: archiveGeneratedWork)
+    }
+    archiveGeneration &+= 1
+    archivedTranscript = nil
+    archiveDraft = ""
+    archiveGeneratedWork = nil
+    archiveActionPending = false
+    archiveActionError = nil
+    isEditingTranscript = false
+    if let chrome = chromeBehindArchive {
+      mode = chrome.mode
+      terminal = chrome.terminal
+      canPaste = chrome.canPaste
+      canInsert = chrome.canInsert
+      canCopy = chrome.canCopy
+      canRetranscribe = chrome.canRetranscribe
+      canFormat = chrome.canFormat
+      canSendToAgent = chrome.canSendToAgent
+      coverageRefusalNotice = chrome.coverageRefusalNotice
+    }
+    chromeBehindArchive = nil
+  }
+
+  /// Retain archive text the chain did not accept, for explicit recovery or
+  /// discard through the one superseded-work owner.
+  fileprivate func retainArchivedWork(
+    _ archived: OverlayArchivedTranscript, unsavedDraft: String,
+    generated: OverlayArchiveGeneratedWork? = nil
+  ) {
+    guard !unsavedDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let take = OverlaySupersededTake(
+      archive: OverlaySupersededArchive(
+        path: archived.path, recordedAt: archived.recordedAt, source: archived),
+      renderedText: archived.text,
+      revision: archived.revision,
+      unsavedDraft: unsavedDraft,
+      generated: generated)
+    guard !supersededTakes.contains(take) else { return }
+    supersededTakes.append(take)
+    showFooterNotice(supersededRecoveryNotice)
+  }
+
+  /// Whether recovering the oldest retained work reopens it on its own
+  /// archive instead of copying it to the clipboard.
+  var supersededRecoveryReopensArchive: Bool {
+    pendingSupersededTake?.archive?.source != nil && engine != nil && archiveOpenRefusal == nil
+  }
+
+  /// Label for the recovery action, naming what it will actually do.
+  var supersededRecoveryActionLabel: String {
+    supersededRecoveryReopensArchive
+      ? String(
+        localized: "Reopen unsaved work on its transcript",
+        comment: "Recovery puts retained work back on the saved transcript it was written for")
+      : OverlayIntent.recoverSuperseded.accessibilityLabel
+  }
+
+  /// Put retained archive work back on that archive's canvas, as the same
+  /// unsaved draft with the same provenance, so it can be committed against
+  /// the revision it was written for (Rust refuses a stale one) or discarded.
+  /// Returns false, changing nothing, when the canvas cannot take it now.
+  fileprivate func reopenRetainedArchiveWork(_ take: OverlaySupersededTake) -> Bool {
+    guard supersededRecoveryReopensArchive, let source = take.archive?.source,
+      openArchivedTranscript(source)
+    else { return false }
+    archiveDraft = take.recoverableText
+    archiveGeneratedWork = take.generated
+    recoveryFailure = nil
+    supersededTakes.removeAll { $0 == take }
+    cancelAutoHide()
+    showFooterNotice(
+      String(
+        localized: "unsaved work reopened",
+        comment: "Footer after retained work was put back on its saved transcript"))
+    return true
+  }
+
+  fileprivate var projectedChrome: OverlayProjectedChrome {
+    OverlayProjectedChrome(
+      mode: mode, terminal: terminal, canPaste: canPaste, canInsert: canInsert,
+      canCopy: canCopy, canRetranscribe: canRetranscribe, canFormat: canFormat,
+      canSendToAgent: canSendToAgent, coverageRefusalNotice: coverageRefusalNotice)
+  }
+
+  /// A finished document with the archive's own capabilities. Insert is
+  /// offered because the Rust paste route still verifies the target; Send to
+  /// Agent because the Rust send resolves its own route and destination.
+  fileprivate func paintArchivedChrome() {
+    guard let archivedTranscript else { return }
+    mode = .formatted
+    terminal = true
+    canPaste = true
+    canInsert = true
+    canCopy = true
+    canRetranscribe = archivedTranscript.audioPath != nil
+    canFormat = engine != nil
+    canSendToAgent = engine != nil
+    coverageRefusalNotice = nil
+  }
+
+  /// Paint a document Rust returned for an archive. Only the canvas still
+  /// showing that same archive moves, only forward, and never over an edit
+  /// the user is typing.
+  @discardableResult
+  fileprivate func acceptArchivedDocument(_ document: CsArchivedDocument) -> Bool {
+    guard var archived = archivedTranscript, !isRevisionDraftDirty, archived.accept(document)
+    else { return false }
+    archivedTranscript = archived
+    archiveDraft = archived.text
+    return true
+  }
+
+  /// Commit the archive edit as a new revision of that archive. The draft
+  /// stays on the canvas, dirty and recoverable, until Rust accepts it.
+  fileprivate func commitArchivedDraft() {
+    guard let source = archivedTranscript, !documentOperationPending else { return }
+    let proposed = archiveDraft
+    guard !proposed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      archiveActionError = String(localized: "A transcript revision cannot be empty")
+      return
+    }
+    guard let engine else {
+      archiveActionError = String(localized: "Transcript revision authority is unavailable")
+      return
+    }
+    // Unchanged bytes of an unaccepted retranscription are still that
+    // retranscription; anything the user changed is their edit.
+    let generated = archiveGeneratedWork.flatMap {
+      $0.sourceRevision == source.revision && $0.text.utf8.elementsEqual(proposed.utf8) ? $0 : nil
+    }
+    archiveActionPending = true
+    archiveActionError = nil
+    archiveGeneration &+= 1
+    let generation = archiveGeneration
+    cancelAutoHide()
+    Task { @MainActor [weak self] in
+      let outcome: Result<CsArchivedDocument, Error>
+      do {
+        outcome = .success(
+          try await engine.commitArchivedRevision(
+            archivePath: source.path, sourceRevision: source.revision, renderedText: proposed,
+            kind: generated == nil ? .userEdit : .retranscribe, detail: generated?.detail))
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self else { return }
+      if case .success(let document) = outcome {
+        // Accepted: a copy of this edit retained at a capture boundary is no
+        // longer unsaved work.
+        self.supersededTakes.removeAll {
+          $0.archive?.path == source.path && $0.unsavedDraft == document.renderedText
+        }
+      }
+      guard self.archiveGeneration == generation, self.archivedTranscript?.path == source.path
+      else { return }
+      self.archiveActionPending = false
+      switch outcome {
+      case .success(let document):
+        // The draft is the accepted text, so it is clean before painting.
+        self.archiveDraft = self.archivedTranscript?.text ?? proposed
+        self.archiveGeneratedWork = nil
+        self.acceptArchivedDocument(document)
+        self.showFooterNotice(
+          generated == nil
+            ? String(
+              localized: "Edit saved to this transcript. The original text is kept.",
+              comment: "Footer after an edit of a transcript reopened from history was saved")
+            : String(localized: "retranscribed"))
+      case .failure(let error):
+        // The draft stays dirty on the canvas: commit again or discard.
+        self.archiveActionError = String(
+          localized: "Couldn't save the edit to this transcript: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
+      }
+      if !self.isEditingTranscript { self.restartAutoHideCountdown() }
+    }
+  }
+
+  fileprivate func formatArchivedTranscript(level: FormattingPolicyOption?) {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
+      return
+    }
+    guard let engine else {
+      archiveActionError = String(localized: "Transcript formatter authority is unavailable")
+      showFooterNotice(String(localized: "format unavailable"))
+      return
+    }
+    archiveActionPending = true
+    archiveActionError = nil
+    archiveGeneration &+= 1
+    let generation = archiveGeneration
+    cancelAutoHide()
+    showFooterNotice(String(localized: "formatting…"), persists: true)
+    Task { @MainActor [weak self] in
+      let outcome: Result<CsArchivedFormat, Error>
+      do {
+        // Rust reads the source from this archive's chain at this revision
+        // and commits an applied result there, whatever the canvas shows by
+        // the time it returns.
+        outcome = .success(
+          try await engine.formatArchivedTranscript(
+            archivePath: source.path, sourceRevision: source.revision, level: level))
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self else { return }
+      guard self.archiveGeneration == generation, self.archivedTranscript?.path == source.path
+      else {
+        // Durable in A's chain already; repaint only if A is shown again.
+        if case .success(let result) = outcome, let document = result.document {
+          self.acceptArchivedDocument(document)
+        }
+        return
+      }
+      self.archiveActionPending = false
+      self.restartAutoHideCountdown()
+      switch outcome {
+      case .success(let result) where result.outcome == .applied:
+        guard let document = result.document, self.acceptArchivedDocument(document) else {
+          self.archiveActionError = String(
+            localized: "Formatting failed. The transcript is unchanged.",
+            comment: "The formatting provider failed for a transcript reopened from history")
+          self.showFooterNotice(String(localized: "format failed"))
+          return
+        }
+        self.showFooterNotice(String(localized: "formatted"))
+      case .success(let result) where result.outcome == .unchanged:
+        self.showFooterNotice(
+          String(
+            localized: "Formatting made no changes.",
+            comment: "The formatter returned the transcript unchanged"))
+      case .success(let result) where result.outcome == .unavailable:
+        self.archiveActionError = String(
+          localized: "Formatting is not available for this level. The transcript is unchanged.",
+          comment: "The formatter skipped the request, for example formatting is off")
+        self.showFooterNotice(String(localized: "format failed"))
+      case .success:
+        self.archiveActionError = String(
+          localized: "Formatting failed. The transcript is unchanged.",
+          comment: "The formatting provider failed for a transcript reopened from history")
+        self.showFooterNotice(String(localized: "format failed"))
+      case .failure(let error):
+        self.archiveActionError = String(
+          localized: "Couldn't format transcript: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
+        self.showFooterNotice(String(localized: "format failed"))
+      }
+    }
+  }
+
+  /// Transcribe the archive's own paired audio again and commit the result
+  /// as a revision of that archive. Never the last session, never the
+  /// projected take: no audio means a stated refusal.
+  fileprivate func retranscribeArchivedTranscript(pass: OverlayRetranscribePass) {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
+      return
+    }
+    guard let engine else {
+      presentActionFailure(
+        String(localized: "Retranscription needs the recording engine"),
+        notice: String(localized: "retranscribe unavailable"))
+      return
+    }
+    guard let audioPath = source.audioPath else {
+      archiveActionError = retranscribeUnavailableReason
+      showFooterNotice(String(localized: "take audio unavailable"))
+      return
+    }
+    guard pass != .cloud || cloudRetranscribeConfigured else {
+      archiveActionError = String(
+        localized: "Cloud transcription is not set up. Use the local pass or configure it in Settings.",
+        comment: "Cloud retranscription requested without a configured cloud provider")
+      showFooterNotice(String(localized: "retranscribe unavailable"))
+      return
+    }
+    let passDetail = "pass=\(pass.rawValue)"
+    let passEngine =
+      pass == .cloud
+      ? String(localized: "cloud", comment: "Retranscribe pass: the cloud engine")
+      : String(localized: "local Whisper HQ", comment: "Retranscribe pass: the local engine")
+    archiveActionPending = true
+    archiveActionError = nil
+    archiveGeneration &+= 1
+    let generation = archiveGeneration
+    cancelAutoHide()
+    showFooterNotice(
+      String(
+        localized: "retranscribing · \(passEngine)",
+        comment: "The placeholder is the name of the engine running the pass"),
+      persists: true)
+    Task { @MainActor [weak self] in
+      let transcribed: Result<String, Error>
+      do {
+        let result = try await engine.transcribeFile(path: "\(pass.pathPrefix)\(audioPath)")
+        transcribed = .success(result.text.trimmingCharacters(in: .whitespacesAndNewlines))
+      } catch {
+        transcribed = .failure(error)
+      }
+      // The new words belong to archive A whatever the canvas shows now, so
+      // they are committed to A's chain against the revision they replace.
+      var committed: Result<CsArchivedDocument, Error>?
+      // Equal words are still one accepted attempt: a new version, never
+      // skipped by comparing text.
+      if case .success(let text) = transcribed, !text.isEmpty {
+        do {
+          committed = .success(
+            try await engine.commitArchivedRevision(
+              archivePath: source.path, sourceRevision: source.revision, renderedText: text,
+              kind: .retranscribe, detail: passDetail))
+        } catch {
+          committed = .failure(error)
+        }
+      }
+      guard let self else { return }
+      let current =
+        self.archiveGeneration == generation && self.archivedTranscript?.path == source.path
+      guard current else {
+        switch (transcribed, committed) {
+        case (_, .success(let document)?):
+          self.acceptArchivedDocument(document)
+        case (.success(let text), .failure?):
+          // Not accepted and A is no longer on the canvas: keep the words
+          // with what produced them.
+          self.retainArchivedWork(
+            source, unsavedDraft: text,
+            generated: OverlayArchiveGeneratedWork(
+              text: text, sourceRevision: source.revision, detail: passDetail))
+        default:
+          break
+        }
+        return
+      }
+      self.archiveActionPending = false
+      self.restartAutoHideCountdown()
+      switch (transcribed, committed) {
+      case (.failure(let error), _):
+        self.archiveActionError = String(localized: "Couldn't transcribe this take again")
+          + "\n\(String(describing: error))"
+        self.showFooterNotice(String(localized: "Retranscription failed"))
+      case (.success(let text), nil) where text.isEmpty:
+        self.archiveActionError = String(
+          localized: "The \(passEngine) pass returned no text",
+          comment: "The placeholder is the name of the engine that ran the pass")
+        self.showFooterNotice(String(localized: "retranscribe returned no text"))
+      case (.success, nil):
+        self.showFooterNotice(String(localized: "retranscribed"))
+      case (_, .success(let document)?):
+        self.acceptArchivedDocument(document)
+        self.showFooterNotice(String(localized: "retranscribed"))
+      case (.success(let text), .failure(let error)?):
+        // Not accepted: the new words stay on the canvas as an unsaved draft
+        // the user can commit again (still a retranscription) or discard.
+        self.archiveDraft = text
+        self.archiveGeneratedWork = OverlayArchiveGeneratedWork(
+          text: text, sourceRevision: source.revision, detail: passDetail)
+        self.archiveActionError = String(
+          localized: "Couldn't save the new transcription: \(String(describing: error))",
+          comment: "The placeholder is the engine's own failure text")
+        self.showFooterNotice(String(localized: "Retranscription failed"))
+      }
+    }
+  }
+
+  /// Undo, Redo or a version pick on the archive that owns the canvas: Rust
+  /// selects accepted version `step` of its revision chain with one
+  /// navigation receipt. The bytes come from the chain, never from Swift.
+  private func navigateArchivedVersion(_ step: UInt64) {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
+      return
+    }
+    guard let engine else {
+      presentActionFailure(
+        String(localized: "Undo needs the recording engine"),
+        notice: String(localized: "undo unavailable"))
+      return
+    }
+    archiveActionPending = true
+    archiveActionError = nil
+    archiveGeneration &+= 1
+    let generation = archiveGeneration
+    cancelAutoHide()
+    Task { @MainActor [weak self] in
+      let outcome: Result<CsArchivedDocument, Error>
+      do {
+        outcome = .success(
+          try await engine.navigateArchivedVersion(
+            archivePath: source.path, sourceRevision: source.revision, step: step))
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self else { return }
+      guard self.archiveGeneration == generation, self.archivedTranscript?.path == source.path
+      else {
+        if case .success(let document) = outcome { self.acceptArchivedDocument(document) }
+        return
+      }
+      self.archiveActionPending = false
+      self.restartAutoHideCountdown()
+      switch outcome {
+      case .success(let document):
+        self.acceptArchivedDocument(document)
+      case .failure(let error):
+        self.archiveActionError = String(
+          localized: "overlay.versions.error.navigate",
+          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
+        self.showFooterNotice(String(localized: "undo failed — kept"))
+      }
+    }
+  }
+
+  /// The same explicit Send to Agent as a fresh take, carrying the archive's
+  /// accepted text to the chat the user currently has selected. It never
+  /// fires on open, never replays the archive's original delivery and never
+  /// touches the projected take's delivery latch.
+  fileprivate func sendArchivedTranscriptToAgent() -> Task<Void, Never>? {
+    guard let source = archivedTranscript, canSendToAgent, !isRevisionDraftDirty,
+      !documentOperationPending, let engine,
+      !source.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return nil }
+    archiveActionPending = true
+    archiveActionError = nil
+    archiveGeneration &+= 1
+    let generation = archiveGeneration
+    let text = source.text
+    cancelAutoHide()
+    return Task { @MainActor [weak self] in
+      let outcome: Result<Bool, Error>
+      do {
+        // Never `sendAssistiveTranscript`: that consumes the live take's
+        // pending context, which belongs to whatever take is live now.
+        outcome = .success(try await engine.sendArchivedTranscript(text: text))
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self, self.archiveGeneration == generation,
+        self.archivedTranscript?.path == source.path
+      else { return }
+      self.archiveActionPending = false
+      switch outcome {
+      case .success(true):
+        self.onSendToAgent?(text)
+        self.onClose?()
+      case .success(false):
+        self.showToast(String(localized: "Agent delivery is no longer available"))
+        self.restartAutoHideCountdown()
+      case .failure:
+        self.showToast(String(localized: "Couldn't send to Agent"))
+        self.restartAutoHideCountdown()
+      }
+    }
   }
 }

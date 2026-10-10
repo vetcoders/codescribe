@@ -41,8 +41,15 @@ struct ToolPermissionsSection: View {
       .padding(.top, CSSpace.control)
 
       if model.toolCapabilities.isEmpty {
-        emptyCapabilities
-          .padding(.top, 12)
+        // Discovery spawns every configured MCP server, so the first pass
+        // takes seconds: say so instead of showing an empty catalog.
+        if model.toolCatalogLoading {
+          loadingCapabilities
+            .padding(.top, 12)
+        } else {
+          emptyCapabilities
+            .padding(.top, 12)
+        }
       } else {
         // The count is the whole catalog, not the number of individual rules.
         SettingsSectionLabel(
@@ -100,6 +107,18 @@ struct ToolPermissionsSection: View {
     }
   }
 
+  private var loadingCapabilities: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+        .controlSize(.small)
+      Text("Discovering tools from the MCP servers…")
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(Color.secondary)
+    }
+    .padding(.vertical, 10)
+    .accessibilityIdentifier("settings-tool-catalog-loading")
+  }
+
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the Agent once or add an MCP server.")
       .font(CSFont.mono(11, .medium))
@@ -152,8 +171,11 @@ struct ToolPermissionItem: Equatable, Hashable, Identifiable {
     self.ruleSource = capability.ruleSource
   }
 
-  /// Readable name shown above the raw identifier.
-  var displayName: String { ToolPermissionLabels.displayName(for: name) }
+  /// Readable name shown above the raw identifier. Our own tools are named in
+  /// the interface language; an MCP server's tools keep the vendor's spelling.
+  var displayName: String {
+    ToolPermissionLabels.displayName(for: name, identity: identity)
+  }
 
   /// Only an individual rule can be cleared back to inheritance.
   var hasIndividualRule: Bool { ruleSource == "tool" }
@@ -162,8 +184,9 @@ struct ToolPermissionItem: Equatable, Hashable, Identifiable {
 /// Interface-language labels for the raw registry strings. Identifiers stay
 /// verbatim in the details line; only the UI wording changes.
 enum ToolPermissionLabels {
-  /// `apply_patch` → "Apply patch", `mcp__dc__write_file` → "Write file".
-  /// A name without separators is returned as is.
+  /// Spells a registry name out: `mcp__dc__write_file` → "Write file". Used
+  /// for tools whose wording is not ours to write. A name without separators
+  /// is returned as is.
   static func displayName(for name: String) -> String {
     var base = Substring(name)
     if let range = base.range(of: "__", options: .backwards) {
@@ -173,6 +196,133 @@ enum ToolPermissionLabels {
     guard let first = words.first else { return name }
     return ([first.prefix(1).uppercased() + first.dropFirst()] + words.dropFirst())
       .joined(separator: " ")
+  }
+
+  /// Name of a tool for the rows. A `native:` identity is one of our own
+  /// tools, so its name is interface copy ([`nativeDisplayName`]); every other
+  /// identity belongs to an MCP server and keeps the vendor's own wording,
+  /// spelled out of the registry name.
+  static func displayName(for name: String, identity: String) -> String {
+    if identity.hasPrefix("native:"), let own = nativeDisplayName(for: name) {
+      return own
+    }
+    return displayName(for: name)
+  }
+
+  /// Interface-language name of one of our own native tools, keyed by the
+  /// registry name. The name itself is identity and is never localized (R6):
+  /// it stays in the `native:<name>` line under the title. `nil` means the
+  /// registry grew a tool this table does not name yet, and the caller falls
+  /// back to the spelled-out registry name.
+  static func nativeDisplayName(for name: String) -> String? {
+    switch name {
+    case "apply_patch":
+      return String(
+        localized: "tools.native.apply_patch", defaultValue: "Apply patch",
+        comment: "Native tool name: apply a patch to a file")
+    case "fetch_github_file":
+      return String(
+        localized: "tools.native.fetch_github_file", defaultValue: "Fetch GitHub file",
+        comment: "Native tool name: read one file out of a GitHub repository")
+    case "get_frontmost_app":
+      return String(
+        localized: "tools.native.get_frontmost_app", defaultValue: "Read the active app",
+        comment: "Native tool name: observe which application is in front")
+    case "get_selected_text":
+      return String(
+        localized: "tools.native.get_selected_text", defaultValue: "Read selected text",
+        comment: "Native tool name: observe the text selected in the active app")
+    case "git_commit":
+      return String(
+        localized: "tools.native.git_commit", defaultValue: "Commit in Git",
+        comment: "Native tool name: record a Git commit")
+    case "git_diff":
+      return String(
+        localized: "tools.native.git_diff", defaultValue: "Show Git changes",
+        comment: "Native tool name: read the Git diff")
+    case "git_log":
+      return String(
+        localized: "tools.native.git_log", defaultValue: "Show Git history",
+        comment: "Native tool name: read the Git log")
+    case "git_status":
+      return String(
+        localized: "tools.native.git_status", defaultValue: "Check Git state",
+        comment: "Native tool name: read the Git status")
+    case "list_directory":
+      return String(
+        localized: "tools.native.list_directory", defaultValue: "List a folder",
+        comment: "Native tool name: list what a folder holds")
+    case "list_projects":
+      return String(
+        localized: "tools.native.list_projects", defaultValue: "List projects",
+        comment: "Native tool name: enumerate the projects in the allowed folders")
+    case "monitor_run":
+      return String(
+        localized: "tools.native.monitor_run", defaultValue: "Monitor a run",
+        comment: "Native tool name: watch a long-running job")
+    case "move_path":
+      return String(
+        localized: "tools.native.move_path", defaultValue: "Move a file or folder",
+        comment: "Native tool name: move or rename a path")
+    case "observe_process":
+      return String(
+        localized: "tools.native.observe_process", defaultValue: "Observe a process",
+        comment: "Native tool name: read the output of a running process")
+    case "project_build":
+      return String(
+        localized: "tools.native.project_build", defaultValue: "Build the project",
+        comment: "Native tool name: run the project's build")
+    case "project_test":
+      return String(
+        localized: "tools.native.project_test", defaultValue: "Run the project tests",
+        comment: "Native tool name: run the project's tests")
+    case "read_clipboard":
+      return String(
+        localized: "tools.native.read_clipboard", defaultValue: "Read the clipboard",
+        comment: "Native tool name: read what the clipboard holds")
+    case "read_file":
+      return String(
+        localized: "tools.native.read_file", defaultValue: "Read a file",
+        comment: "Native tool name: read a file's contents")
+    case "run_process":
+      return String(
+        localized: "tools.native.run_process", defaultValue: "Run a process",
+        comment: "Native tool name: start a command")
+    case "search_files":
+      return String(
+        localized: "tools.native.search_files", defaultValue: "Search in files",
+        comment: "Native tool name: search the contents of files")
+    case "search_threads":
+      return String(
+        localized: "tools.native.search_threads", defaultValue: "Search in threads",
+        comment: "Native tool name: search the Agent's own threads")
+    case "stop_process":
+      return String(
+        localized: "tools.native.stop_process", defaultValue: "Stop a process",
+        comment: "Native tool name: end a running command")
+    case "take_screenshot":
+      return String(
+        localized: "tools.native.take_screenshot", defaultValue: "Take a screenshot",
+        comment: "Native tool name: capture the screen")
+    case "transcribe_audio":
+      return String(
+        localized: "tools.native.transcribe_audio", defaultValue: "Transcribe a recording",
+        comment: "Native tool name: turn an audio recording into text")
+    case "type_text":
+      return String(
+        localized: "tools.native.type_text", defaultValue: "Type text",
+        comment: "Native tool name: insert text into the active app")
+    case "write_clipboard":
+      return String(
+        localized: "tools.native.write_clipboard", defaultValue: "Write to the clipboard",
+        comment: "Native tool name: put text on the clipboard")
+    case "write_file":
+      return String(
+        localized: "tools.native.write_file", defaultValue: "Write a file",
+        comment: "Native tool name: write a file's contents")
+    default:
+      return nil
+    }
   }
 
   /// Left-column label; `native` is a UI label, every server keeps its name.
@@ -212,9 +362,9 @@ enum ToolPermissionLabels {
   static func ruleCaption(_ source: String) -> String {
     switch source {
     case "tool": return String(localized: "Individual rule")
-    case "server": return String(localized: "Inherited from the server rule")
-    case "thread": return String(localized: "Overridden for the current thread")
-    default: return String(localized: "Inherited from the category default")
+    case "server": return String(localized: "Server rule")
+    case "thread": return String(localized: "Overridden for this thread")
+    default: return String(localized: "Category default")
     }
   }
 }
@@ -280,6 +430,11 @@ struct ToolCapabilityRow: View {
   /// Clears the individual rule so the tool inherits again; nil hides the action.
   var restoreInheritance: (() -> Void)? = nil
 
+  /// Name and identifier in full. Both lines truncate to one line on purpose —
+  /// wrapping them moved the permission picker — so the pair has to stay
+  /// reachable without resizing the window. Glue, not copy (R3).
+  private var fullIdentification: String { "\(item.displayName) · \(item.identity)" }
+
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
@@ -297,13 +452,16 @@ struct ToolCapabilityRow: View {
         )
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
-        HStack(spacing: 8) {
+        // Stacked, not side by side: the column next to a `fixedSize` picker is
+        // narrow at the minimum window width. Short nouns say where the current
+        // value comes from; the action names what it does, not "inheritance".
+        VStack(alignment: .leading, spacing: 2) {
           Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
             .font(CSFont.ui(10.5))
             .foregroundStyle(Color.secondary)
           if item.hasIndividualRule, let restoreInheritance {
             Button(action: restoreInheritance) {
-              Text("Restore inheritance")
+              Text("Remove rule")
                 .font(CSFont.ui(10.5, .medium))
             }
             .buttonStyle(.link)
@@ -312,6 +470,7 @@ struct ToolCapabilityRow: View {
         }
         .padding(.top, 2)
       }
+      .help(fullIdentification)
       Spacer(minLength: 8)
       Picker("Permission for \(item.displayName)", selection: $level) {
         Text("Allow", comment: "Tool permission level").tag("allow")

@@ -15,7 +15,7 @@
 //! it, while the destination of each event is decided by the controller.
 
 use super::config::HotkeyRuntimeConfig;
-use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding};
+use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding, WorkMode};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
@@ -1089,6 +1089,39 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => None,
+    }
+}
+
+/// Whether [`HotkeyDetector::feed`] can ever start `mode` from `binding`.
+///
+/// This is the routing of [`HotkeyDetector::handle_flags_changed`] written as
+/// one predicate, so Settings validation and the bridge setter ask the
+/// detector instead of keeping their own table:
+///
+/// - Dictation: every hold combo ([`check_hold_combo`]) and double-tap Ctrl.
+/// - Formatting: double-tap left Option only.
+/// - Assistive: double-tap right Option only; a hold reaches it only through
+///   [`assistive_hold_binding`], which maps none today.
+///
+/// `Disabled` binds nothing and is always accepted. The reachable sets are
+/// disjoint, so one gesture bound to two modes leaves exactly one of them
+/// unreachable. Cross-mode precedence (double-tap Ctrl dictation silencing the
+/// Option toggles) is pairwise and stays in `shortcut_registry`.
+pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
+    match binding {
+        ShortcutBinding::Disabled => true,
+        ShortcutBinding::HoldFn
+        | ShortcutBinding::HoldCtrl
+        | ShortcutBinding::HoldCtrlAlt
+        | ShortcutBinding::HoldCtrlShift
+        | ShortcutBinding::HoldCtrlCmd => match mode {
+            WorkMode::Dictation => true,
+            WorkMode::Formatting => false,
+            WorkMode::Assistive => assistive_hold_binding(binding).is_some(),
+        },
+        ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
+        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
+        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
     }
 }
 
@@ -2711,5 +2744,253 @@ mod tests {
         );
         assert!(!detector.hold_active);
         assert!(!detector.fn_press_pending);
+    }
+
+    /// Perform one physical gesture as synthetic modifier snapshots and return
+    /// every event the detector emitted. Holds press, wait past the hold delay
+    /// and release; double-taps press and release the same key twice inside
+    /// the double-tap window. No OS event is injected.
+    fn perform_gesture(config: HotkeyRuntimeConfig, gesture: ShortcutBinding) -> Vec<HotkeyEvent> {
+        let base = Instant::now();
+        let none = mods(false, false, false, false, false);
+        let ms = |offset: u64| base + Duration::from_millis(offset);
+        let steps: Vec<(u64, HotkeyPhysicalKey, HotkeyModifierSnapshot)> = match gesture {
+            ShortcutBinding::Disabled => Vec::new(),
+            ShortcutBinding::HoldFn => vec![
+                (
+                    0,
+                    HotkeyPhysicalKey::Fn,
+                    mods(false, false, false, false, true),
+                ),
+                (1_000, HotkeyPhysicalKey::Fn, none),
+            ],
+            ShortcutBinding::HoldCtrl => vec![
+                (
+                    0,
+                    HotkeyPhysicalKey::LeftControl,
+                    mods(true, false, false, false, false),
+                ),
+                (1_000, HotkeyPhysicalKey::LeftControl, none),
+            ],
+            ShortcutBinding::HoldCtrlAlt => vec![
+                (
+                    0,
+                    HotkeyPhysicalKey::LeftOption,
+                    mods(true, true, false, false, false),
+                ),
+                (1_000, HotkeyPhysicalKey::LeftOption, none),
+            ],
+            ShortcutBinding::HoldCtrlShift => vec![
+                (
+                    0,
+                    HotkeyPhysicalKey::Other,
+                    mods(true, false, true, false, false),
+                ),
+                (1_000, HotkeyPhysicalKey::Other, none),
+            ],
+            ShortcutBinding::HoldCtrlCmd => vec![
+                (
+                    0,
+                    HotkeyPhysicalKey::Other,
+                    mods(true, false, false, true, false),
+                ),
+                (1_000, HotkeyPhysicalKey::Other, none),
+            ],
+            ShortcutBinding::DoubleCtrl
+            | ShortcutBinding::DoubleLeftOption
+            | ShortcutBinding::DoubleRightOption => {
+                let (key, down) = match gesture {
+                    ShortcutBinding::DoubleCtrl => (
+                        HotkeyPhysicalKey::LeftControl,
+                        mods(true, false, false, false, false),
+                    ),
+                    ShortcutBinding::DoubleLeftOption => (
+                        HotkeyPhysicalKey::LeftOption,
+                        mods(false, true, false, false, false),
+                    ),
+                    _ => (
+                        HotkeyPhysicalKey::RightOption,
+                        mods(false, true, false, false, false),
+                    ),
+                };
+                vec![
+                    (0, key, down),
+                    (40, key, none),
+                    (90, key, down),
+                    (130, key, none),
+                ]
+            }
+        };
+
+        // Holding Ctrl+Command with the Shift arm would log the wrong-arm
+        // diagnostic, a callsite another test captures; the arm never changes
+        // where a hold routes, so pick the one this gesture already holds.
+        let mut config = config;
+        if gesture == ShortcutBinding::HoldCtrlCmd {
+            config.hold_arm_modifier = crate::config::HoldArmModifier::Cmd;
+        }
+        let mut detector = HotkeyDetector::default();
+        steps
+            .into_iter()
+            .filter_map(|(offset, key, modifiers)| {
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now: ms(offset),
+                        key,
+                        modifiers,
+                    },
+                    config,
+                )
+            })
+            .collect()
+    }
+
+    /// The work modes a sequence of detector events actually starts.
+    fn started_modes(events: &[HotkeyEvent]) -> Vec<WorkMode> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    mode: HoldMode::Raw,
+                }
+                | HotkeyEvent::ToggleRaw => Some(WorkMode::Dictation),
+                HotkeyEvent::ToggleNormal => Some(WorkMode::Formatting),
+                HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    mode: HoldMode::Chat | HoldMode::Selection,
+                }
+                | HotkeyEvent::ToggleAssistive => Some(WorkMode::Assistive),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const ROUTABLE_GESTURES: [ShortcutBinding; 8] = [
+        ShortcutBinding::HoldFn,
+        ShortcutBinding::HoldCtrl,
+        ShortcutBinding::HoldCtrlAlt,
+        ShortcutBinding::HoldCtrlShift,
+        ShortcutBinding::HoldCtrlCmd,
+        ShortcutBinding::DoubleCtrl,
+        ShortcutBinding::DoubleLeftOption,
+        ShortcutBinding::DoubleRightOption,
+    ];
+
+    /// P2-007 (linked: hotkeys-dead-binding-cells): `mode_binding_reachable`
+    /// is the detector's routing, cell by cell. Each mode is bound alone, the
+    /// gesture is performed through `feed`, and the predicate must agree with
+    /// what started. A cell the predicate accepts but the reducer ignores — or
+    /// the reverse — fails here, so Settings cannot drift from routing.
+    #[test]
+    fn reachability_predicate_matches_detector_routing_for_every_cell() {
+        let mut reachable = Vec::new();
+        for mode in [
+            WorkMode::Dictation,
+            WorkMode::Formatting,
+            WorkMode::Assistive,
+        ] {
+            for gesture in ROUTABLE_GESTURES {
+                let bind = |slot: WorkMode| {
+                    if slot == mode {
+                        gesture
+                    } else {
+                        ShortcutBinding::Disabled
+                    }
+                };
+                let config = test_config(
+                    bind(WorkMode::Dictation),
+                    bind(WorkMode::Formatting),
+                    bind(WorkMode::Assistive),
+                );
+                let started = started_modes(&perform_gesture(config, gesture));
+                let predicted = mode_binding_reachable(mode, gesture);
+                assert_eq!(
+                    started,
+                    if predicted { vec![mode] } else { Vec::new() },
+                    "{mode:?} bound to {gesture:?}: predicate says reachable={predicted}"
+                );
+                if predicted {
+                    reachable.push((mode, gesture));
+                }
+            }
+        }
+        assert_eq!(
+            reachable,
+            vec![
+                (WorkMode::Dictation, ShortcutBinding::HoldFn),
+                (WorkMode::Dictation, ShortcutBinding::HoldCtrl),
+                (WorkMode::Dictation, ShortcutBinding::HoldCtrlAlt),
+                (WorkMode::Dictation, ShortcutBinding::HoldCtrlShift),
+                (WorkMode::Dictation, ShortcutBinding::HoldCtrlCmd),
+                (WorkMode::Dictation, ShortcutBinding::DoubleCtrl),
+                (WorkMode::Formatting, ShortcutBinding::DoubleLeftOption),
+                (WorkMode::Assistive, ShortcutBinding::DoubleRightOption),
+            ],
+            "documented matrix in docs/HOTKEYS_CONTRACT.md"
+        );
+        for mode in [
+            WorkMode::Dictation,
+            WorkMode::Formatting,
+            WorkMode::Assistive,
+        ] {
+            assert!(mode_binding_reachable(mode, ShortcutBinding::Disabled));
+        }
+    }
+
+    /// The audited reproduction: Dictation and Formatting both on double-tap
+    /// left Option. The gesture starts Formatting only; Dictation is dead.
+    /// The defaults route each gesture to its own mode, and double-tap Ctrl
+    /// dictation silences the Option toggles (the precedence Settings reports).
+    #[test]
+    fn duplicate_left_option_starts_formatting_only_and_defaults_route_each_mode() {
+        let duplicate = test_config(
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        assert_eq!(
+            started_modes(&perform_gesture(
+                duplicate,
+                ShortcutBinding::DoubleLeftOption
+            )),
+            vec![WorkMode::Formatting]
+        );
+        assert!(!mode_binding_reachable(
+            WorkMode::Dictation,
+            ShortcutBinding::DoubleLeftOption
+        ));
+
+        let defaults = fn_hold_double_option_config();
+        for (gesture, mode) in [
+            (ShortcutBinding::HoldFn, WorkMode::Dictation),
+            (ShortcutBinding::DoubleLeftOption, WorkMode::Formatting),
+            (ShortcutBinding::DoubleRightOption, WorkMode::Assistive),
+        ] {
+            assert_eq!(
+                started_modes(&perform_gesture(defaults, gesture)),
+                vec![mode],
+                "default {gesture:?}"
+            );
+        }
+
+        let double_ctrl = test_config(
+            ShortcutBinding::DoubleCtrl,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        assert_eq!(
+            started_modes(&perform_gesture(double_ctrl, ShortcutBinding::DoubleCtrl)),
+            vec![WorkMode::Dictation]
+        );
+        for gesture in [
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        ] {
+            assert!(
+                started_modes(&perform_gesture(double_ctrl, gesture)).is_empty(),
+                "double-tap Ctrl dictation must silence {gesture:?}"
+            );
+        }
     }
 }

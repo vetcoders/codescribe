@@ -28,6 +28,11 @@ data  CsAgentArchiveRequest.bridgeHome
 data  CsAgenticReadiness.configPathDisplay
 data  CsAnnotationKind.kind
 prose CsAnnotationKind.label
+data  CsArchivedDocument.path
+data  CsArchivedDocument.originalText
+data  CsArchivedDocument.renderedText
+data  CsArchivedDocument.provenance
+data  CsArchivedDocument.receiptId
 data  CsApiKeyProbeResult.account
 prose CsApiKeyProbeResult.message
 data  CsApiKeyProbeResult.probedEndpoint
@@ -70,6 +75,12 @@ data  CsDocumentProvider.wire
 data  CsDocumentProvider.endpoint
 data  CsDocumentProvider.model
 data  CsDocumentProvider.apiKey
+data  CsDocumentVersion.provenance
+data  CsDocumentVersion.detail
+data  CsDocumentVersion.renderedText
+data  CsDocumentVersion.emittedAt
+data  CsDocumentVersion.receiptId
+prose CsDocumentVersions.archiveRefusal
 data  CsEnergyCalibrationReport.deviceName
 data  CsEnergyCalibrationReport.version
 data  CsEnergyCalibrationReport.path
@@ -235,7 +246,7 @@ data  CsSettings.asrGatewayUrl
 data  CsSpeechResult.outcome
 data  CsSttLane.id
 prose CsSttLane.title
-prose CsSttLane.accepts
+data  CsSttLane.accepts
 prose CsSttLane.placeholder
 data  CsSttLane.endpoint
 data  CsSttLane.endpointWireKey
@@ -302,6 +313,7 @@ data  CsUncertainSpan.producer
 data  CsUserRevisionResult.sessionId
 data  CsUserRevisionResult.renderedText
 data  CsUserRevisionResult.provenanceReceipt
+prose CsUserRevisionResult.archiveRefusal
 prose CsVoiceLabSaveResult.lexiconError
 data  CsWhisperModelCatalog.configured
 data  CsWhisperModelCatalog.resolvedPath

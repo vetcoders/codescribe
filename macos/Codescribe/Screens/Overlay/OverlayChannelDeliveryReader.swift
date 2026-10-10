@@ -21,6 +21,12 @@ actor OverlayChannelDeliveryReader {
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
   private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
+  // This is a restart cache, not transcript or delivery authority. Checkpoint
+  // complete snapshots, rather than fsyncing the entire roster for each bus.
+  private static let checkpointInterval: Duration = .seconds(30)
+  private static let checkpointByteLag: UInt64 = 8 << 20
+  private var lastCheckpoint: ContinuousClock.Instant?
+  private(set) var checkpointWrites: UInt64 = 0
   private struct PersistenceAttempt: Equatable {
     let offset: UInt64
     let inode: UInt64
@@ -43,6 +49,13 @@ actor OverlayChannelDeliveryReader {
   private var metadataObjects: [URL: MetadataObject] = [:]
   private var metadataCacheBytes = 0
   private var metadataAccess: UInt64 = 0
+  /// Lease and binding documents stay out of the receipt cache. A 500 ms poll
+  /// rotates through acknowledgment files and was evicting multi-megabyte
+  /// lease parses, so the next pass rebuilt them from scratch.
+  private var pinnedObjects: [URL: MetadataObject] = [:]
+  private var pinnedCacheBytes = 0
+  private static let pinnedCacheBudget = 8 << 20
+  private static let pinnedCacheEntries = 24
 
   private struct MetadataObjectStamp: Equatable {
     let device: dev_t
@@ -104,7 +117,10 @@ actor OverlayChannelDeliveryReader {
 
   func read() throws -> [OverlayChannelDelivery] { try readSnapshot().deliveries }
 
-  func readSnapshot(selectedOwner: OverlayConversationOwner? = nil) throws
+  func readSnapshot(
+    selectedOwner: OverlayConversationOwner? = nil,
+    checkpointTime: ContinuousClock.Instant = .now
+  ) throws
     -> OverlayChannelDeliverySnapshot
   {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
@@ -256,7 +272,6 @@ actor OverlayChannelDeliveryReader {
         }
       }
       buses[bus] = cursor
-      try persist(bus, cursor: cursor, size: max(cursor.offset, persisted?[bus.path]?.length ?? 0))
     }
     for index in deliveries.indices {
       let channel = deliveries[index].channel
@@ -315,6 +330,7 @@ actor OverlayChannelDeliveryReader {
         id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [],
         historyLoaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
     }
+    try checkpoint(at: checkpointTime)
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries,
       conversations: [broadcast]
@@ -370,7 +386,13 @@ actor OverlayChannelDeliveryReader {
     return result
   }
 
+  private func pinsMetadata(_ url: URL) -> Bool {
+    if url.lastPathComponent == "vc.agent-audience-binding.v1.json" { return true }
+    return url.deletingLastPathComponent().lastPathComponent == "leases"
+  }
+
   private func object(at url: URL) throws -> [String: Any] {
+    let pinned = pinsMetadata(url)
     do {
       var metadata = stat()
       guard fstatat(AT_FDCWD, url.path, &metadata, 0) == 0 else {
@@ -378,7 +400,13 @@ actor OverlayChannelDeliveryReader {
       }
       let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
-      if var cached = metadataObjects[url], cached.stamp == pathStamp {
+      if pinned {
+        if var cached = pinnedObjects[url], cached.stamp == pathStamp {
+          cached.access = metadataAccess
+          pinnedObjects[url] = cached
+          return cached.value
+        }
+      } else if var cached = metadataObjects[url], cached.stamp == pathStamp {
         cached.access = metadataAccess
         metadataObjects[url] = cached
         return cached.value
@@ -390,7 +418,11 @@ actor OverlayChannelDeliveryReader {
         throw CocoaError(.fileReadUnknown)
       }
       let stamp = MetadataObjectStamp(metadata)
-      if let old = metadataObjects.removeValue(forKey: url) { metadataCacheBytes -= old.bytes }
+      if pinned {
+        if let old = pinnedObjects.removeValue(forKey: url) { pinnedCacheBytes -= old.bytes }
+      } else if let old = metadataObjects.removeValue(forKey: url) {
+        metadataCacheBytes -= old.bytes
+      }
       let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
       guard data.count <= 16 << 20,
@@ -399,25 +431,40 @@ actor OverlayChannelDeliveryReader {
       // The open descriptor observes atomic replacement and follows symlinks.
       // In-place writes also invalidate through nanosecond mtime/ctime. Never
       // retain a parse whose file changed during that read.
-      if data.count <= Self.metadataCacheBudget,
-        fstat(handle.fileDescriptor, &metadata) == 0,
-        MetadataObjectStamp(metadata) == stamp
-      {
-        while metadataCacheBytes + data.count > Self.metadataCacheBudget
-          || metadataObjects.count >= Self.metadataCacheEntries
-        {
-          guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
-            let removed = metadataObjects.removeValue(forKey: oldest)
-          else { break }
-          metadataCacheBytes -= removed.bytes
+      if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
+        if pinned, data.count <= Self.pinnedCacheBudget {
+          while pinnedCacheBytes + data.count > Self.pinnedCacheBudget
+            || pinnedObjects.count >= Self.pinnedCacheEntries
+          {
+            guard let oldest = pinnedObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = pinnedObjects.removeValue(forKey: oldest)
+            else { break }
+            pinnedCacheBytes -= removed.bytes
+          }
+          pinnedObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          pinnedCacheBytes += data.count
+        } else if !pinned, data.count <= Self.metadataCacheBudget {
+          while metadataCacheBytes + data.count > Self.metadataCacheBudget
+            || metadataObjects.count >= Self.metadataCacheEntries
+          {
+            guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = metadataObjects.removeValue(forKey: oldest)
+            else { break }
+            metadataCacheBytes -= removed.bytes
+          }
+          metadataObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          metadataCacheBytes += data.count
         }
-        metadataObjects[url] = MetadataObject(
-          stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
-        metadataCacheBytes += data.count
       }
       return value
     } catch {
-      if let removed = metadataObjects.removeValue(forKey: url) {
+      if pinned {
+        if let removed = pinnedObjects.removeValue(forKey: url) {
+          pinnedCacheBytes -= removed.bytes
+        }
+      } else if let removed = metadataObjects.removeValue(forKey: url) {
         metadataCacheBytes -= removed.bytes
       }
       throw error
@@ -513,7 +560,6 @@ actor OverlayChannelDeliveryReader {
       }
     }
     buses[url] = cursor
-    try persist(url, cursor: cursor, size: size)
   }
 
   private func persistedCursor(for url: URL) -> Cursor? {
@@ -531,45 +577,70 @@ actor OverlayChannelDeliveryReader {
     return cursor
   }
 
-  private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
-    var marks = persisted ?? [:]
-    let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
-    let attempt = PersistenceAttempt(
-      offset: offset, inode: cursor.inode,
-      headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
-      headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    if persistenceAttempts[url] == attempt { return }
-    if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
-      previous.offset == offset, previous.inode == cursor.inode,
-      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID
+  private func checkpoint(at time: ContinuousClock.Instant) throws {
+    var changed: [(URL, Cursor, PersistenceAttempt)] = []
+    var largeLag = false
+    for url in buses.keys.sorted(by: { $0.path < $1.path }) {
+      guard let cursor = buses[url] else { continue }
+      let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
+      let attempt = PersistenceAttempt(
+        offset: offset, inode: cursor.inode,
+        headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
+        headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+      if persistenceAttempts[url] == attempt { continue }
+      let previous = persisted?[url.path]
+      if let previous, savedRevisions[url] == cursor.projection.revision,
+        previous.offset == offset, previous.inode == cursor.inode,
+        previous.headHash == cursor.headHash, previous.streamID == cursor.streamID,
+        previous.headLength == cursor.headLength,
+        previous.discardsLeadingParts == cursor.storage.discardsLeadingParts,
+        previous.dropsCutRow == cursor.dropsCutRow
+      {
+        continue
+      }
+      let savedOffset = persistenceAttempts[url]?.offset ?? previous?.offset ?? 0
+      if offset >= savedOffset, offset - savedOffset >= Self.checkpointByteLag {
+        largeLag = true
+      }
+      changed.append((url, cursor, attempt))
+    }
+    guard !changed.isEmpty else { return }
+    if let lastCheckpoint, !largeLag,
+      lastCheckpoint.duration(to: time) < Self.checkpointInterval
     {
       return
     }
-    // The durable offset points past the last consumed newline; an unfinished
-    // trailing row is re-read by the next generation once it completes.
+
+    var marks = persisted ?? [:]
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let mark = OverlayDeliveryCursorMark(
-      offset: offset,
-      inode: cursor.inode, length: size, headHash: cursor.headHash,
-      projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
-      streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    guard marks[url.path] != mark else { return }
-    marks[url.path] = mark
+    for (url, cursor, attempt) in changed {
+      // Offset and projection are one atomic unit. Never checkpoint past an
+      // unfinished row or storage transaction, even though its bytes were read.
+      marks[url.path] = OverlayDeliveryCursorMark(
+        offset: attempt.offset,
+        inode: cursor.inode, length: cursor.offset, headHash: cursor.headHash,
+        projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
+        streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+    }
     if marks.count > 16 {
       for path in marks.keys.sorted()
-      where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
+      where buses[URL(fileURLWithPath: path)] == nil {
         marks.removeValue(forKey: path)
         if marks.count <= 16 { break }
       }
     }
     persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
-    // A successfully attempted unit may be evicted by the cache budget. Keep
-    // only this in-memory fingerprint to avoid re-encoding it on idle polls.
-    persistenceAttempts[url] = attempt
-    if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    lastCheckpoint = time
+    checkpointWrites &+= 1
+    // Save failure leaves all fingerprints dirty for retry. Successful eviction
+    // still records an attempt, so an oversized unit cannot spin on idle polls.
+    for (url, cursor, attempt) in changed {
+      persistenceAttempts[url] = attempt
+      if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    }
   }
 
   /// Expand every persisted occurrence before the existing UI projection acts.
@@ -680,7 +751,9 @@ actor OverlayChannelDeliveryReader {
     init(_ root: URL) throws {
       func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
         var value = stat()
-        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else { throw CocoaError(.fileReadUnknown) }
+        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
+          throw CocoaError(.fileReadUnknown)
+        }
         guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
           throw CocoaError(.fileReadCorruptFile)
         }
@@ -708,11 +781,13 @@ actor OverlayChannelDeliveryReader {
       let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
       guard bytes.count <= 4 << 20,
         let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-        Set(manifest.keys)
+        Set(manifest.keys).subtracting(["volume_uuid"])
           == Set([
             "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
             "segments", "active", "pending",
           ]),
+        (manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+          || (manifest["volume_uuid"] as? String).flatMap { UUID(uuidString: $0) } != nil),
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,

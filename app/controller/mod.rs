@@ -37,6 +37,7 @@ mod helpers;
 mod hotkey_policy;
 /// Best-effort RMS frame feed for the loopback Voice Lab relay.
 mod lab_feed;
+pub(crate) mod live_archive;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -73,13 +74,13 @@ use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::audio::streaming_recorder::{
-    CaptureStopFailure, CaptureTurnIntent, StreamingRecorder, TerminalSealRefused,
+    CaptureStopFailure, CaptureTurnIntent, ClosedTake, StreamingRecorder, TerminalSealRefused,
 };
 use crate::config::models::ModelManager;
 use crate::config::{Config, FormattingPolicy, PasteMode, RuntimeSettingsSnapshot, UserSettings};
@@ -137,6 +138,95 @@ fn formatter_revision_level(
             "settings"
         },
     ))
+}
+
+/// What the production formatter did with a reopened archive transcript.
+/// Mirrors the reducer's formatter refusals without a reducer revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchivedFormatOutcome {
+    Applied(String),
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+impl ArchivedFormatOutcome {
+    /// Only the formatter's status decides. An applied result equal to the
+    /// source is still one accepted attempt and becomes its own version; a
+    /// provider echo on failure reports `Failed`, never `Applied`.
+    fn from_result(
+        _source: &str,
+        result: codescribe_core::llm::ai_formatting::AiFormatResult,
+    ) -> Self {
+        use codescribe_core::llm::ai_formatting::AiFormatStatus;
+        match result.status {
+            AiFormatStatus::Applied if !result.text.trim().is_empty() => Self::Applied(result.text),
+            AiFormatStatus::Applied | AiFormatStatus::AiNoop => Self::Unchanged,
+            AiFormatStatus::Failed => Self::Failed,
+            AiFormatStatus::Skipped => Self::Unavailable,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Applied(_) => "applied",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// The formatter's verdict for one archived transcript and, when it applied,
+/// the revision the history owner accepted for exactly that archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedFormatReceipt {
+    pub outcome: ArchivedFormatOutcome,
+    pub revision: Option<codescribe_core::state::history::ArchiveRevision>,
+}
+
+#[cfg(test)]
+mod archived_format_outcome_tests {
+    use super::ArchivedFormatOutcome;
+    use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
+
+    fn result(text: &str, status: AiFormatStatus) -> AiFormatResult {
+        AiFormatResult {
+            text: text.to_string(),
+            reasoning_text: None,
+            status,
+        }
+    }
+
+    /// A failed provider hands back the cleaned input; that echo must never
+    /// read as an applied archive format.
+    #[test]
+    fn every_applied_attempt_reaches_the_archive_canvas() {
+        let source = "ala ma kota";
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(
+                source,
+                result("Ala ma kota.", AiFormatStatus::Applied)
+            ),
+            ArchivedFormatOutcome::Applied("Ala ma kota.".to_string())
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Applied)),
+            ArchivedFormatOutcome::Applied(source.to_string())
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::AiNoop)),
+            ArchivedFormatOutcome::Unchanged
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Failed)),
+            ArchivedFormatOutcome::Failed
+        );
+        assert_eq!(
+            ArchivedFormatOutcome::from_result(source, result(source, AiFormatStatus::Skipped)),
+            ArchivedFormatOutcome::Unavailable
+        );
+    }
 }
 
 fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
@@ -323,17 +413,20 @@ fn finish_audio_capture(id: Option<&str>) {
     }
 }
 
-/// Copy this take's ledger before the recorder slot can move on.
+/// Observe the original take ledger after its final refinement completes.
 ///
 /// The handle belongs to the recorder that just stopped. A missing handle, a
 /// zero epoch, or a session that disagrees with the retention id is reported
 /// as unavailable evidence. Nothing here mints a receipt.
-fn freeze_take_observer(
-    recorder: &StreamingRecorder,
+fn observe_take_ledger(
+    identity: (Option<&str>, u64),
+    handle: Option<
+        Arc<std::sync::Mutex<codescribe_core::pipeline::acoustic_ledger::AcousticLedger>>,
+    >,
     retention_id: Option<&str>,
 ) -> codescribe_core::pipeline::take_truth::TakeTruth {
     use codescribe_core::pipeline::take_truth::TakeTruth;
-    let (recorder_session, raw_epoch) = recorder.capture_identity();
+    let (recorder_session, raw_epoch) = identity;
     let epoch = (raw_epoch != 0).then_some(raw_epoch);
     let session_id = match (recorder_session, retention_id) {
         (Some(session), None) => Some(session.to_string()),
@@ -350,7 +443,7 @@ fn freeze_take_observer(
         }
         (None, _) => None,
     };
-    let Some(handle) = recorder.acoustic_ledger_handle() else {
+    let Some(handle) = handle else {
         warn!(
             session_id = session_id.as_deref().unwrap_or(""),
             epoch = epoch.unwrap_or(0),
@@ -369,16 +462,18 @@ fn freeze_take_observer(
 }
 
 /// Keep full audio independently of transcript outcome on a blocking worker.
+/// Returns the archived transcript when the take persisted spoken text: the
+/// file whose revision chain becomes the durable history of this take.
 async fn retain_session_audio(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
-) {
+) -> Option<std::path::PathBuf> {
     let lease = retainable_session_id(session_id).and_then(|id| {
         codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
     });
-    retain_session_audio_with_lease(session_id, path, transcript, lease, observer).await;
+    retain_session_audio_with_lease(session_id, path, transcript, lease, observer).await
 }
 
 async fn retain_session_audio_with_lease(
@@ -387,7 +482,7 @@ async fn retain_session_audio_with_lease(
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
     lease: Option<Arc<codescribe_core::state::history::audio_retention::CaptureLease>>,
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
-) {
+) -> Option<std::path::PathBuf> {
     use codescribe_core::state::SessionTranscriptArchive;
     let session_id = session_id.map(str::to_owned);
     let path = path.to_path_buf();
@@ -405,19 +500,28 @@ async fn retain_session_audio_with_lease(
         } else {
             SessionTranscriptArchive::NoSpeech
         };
-        retain_owned_session_audio(
+        let mut archived_transcript = None;
+        let retained = retain_owned_session_audio_linked(
             session_id.as_deref(),
             &path,
             transcript,
             &observer,
             lease.as_deref(),
-        )
+            &mut archived_transcript,
+        );
+        (retained, archived_transcript)
     })
     .await;
     match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::error!("{error:#}"),
-        Err(error) => tracing::error!(%error, "audio retention worker failed; source preserved"),
+        Ok((Ok(()), archived_transcript)) => archived_transcript,
+        Ok((Err(error), archived_transcript)) => {
+            tracing::error!("{error:#}");
+            archived_transcript
+        }
+        Err(error) => {
+            tracing::error!(%error, "audio retention worker failed; source preserved");
+            None
+        }
     }
 }
 
@@ -428,6 +532,23 @@ fn retain_owned_session_audio(
     observer: &codescribe_core::pipeline::take_truth::TakeTruth,
     lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
 ) -> Result<()> {
+    retain_owned_session_audio_linked(session_id, path, transcript, observer, lease, &mut None)
+}
+
+/// [`retain_owned_session_audio`], also naming the archived transcript when
+/// the daily archive persisted spoken text beside the audio.
+fn retain_owned_session_audio_linked(
+    session_id: Option<&str>,
+    path: &std::path::Path,
+    transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
+    lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
+    archived_transcript: &mut Option<std::path::PathBuf>,
+) -> Result<()> {
+    let spoken = matches!(
+        transcript,
+        codescribe_core::state::SessionTranscriptArchive::Committed(text) if !text.trim().is_empty()
+    );
     let root = Config::config_dir();
     let mut daily_audio = None;
     let mut daily_card = None;
@@ -452,6 +573,12 @@ fn retain_owned_session_audio(
             None => None,
         },
     );
+    if spoken {
+        *archived_transcript = daily_audio
+            .as_ref()
+            .map(|audio| audio.with_extension("txt"))
+            .filter(|transcript| transcript.is_file());
+    }
     if let Some(lease) = lease {
         if result.is_err() {
             lease.protect_retry();
@@ -977,6 +1104,17 @@ fn recover_capture_stop_failure(
             return error.context(message);
         }
         if let Some(recovered) = recovered {
+            if let Some(archive) = error
+                .downcast_ref::<CaptureStopFailure>()
+                .and_then(|failure| {
+                    failure
+                        .cause
+                        .downcast_ref::<codescribe_core::audio::recorder::CaptureArchiveError>()
+                })
+                && let Err(ack) = archive.acknowledge_recovery(&recovered)
+            {
+                return error.context(format!("recovered archive ownership refused: {ack:#}"));
+            }
             if let Some(failure) = error.downcast_mut::<CaptureStopFailure>() {
                 failure.audio_path = Some(path);
             }
@@ -996,6 +1134,27 @@ fn recover_capture_stop_failure(
 /// overlay was showing a full formatted document (operator take 2026-09-24
 /// 08:23). No seal is claimed — the daily bag writes it as `Raw`. An empty
 /// document keeps the diagnostic-only retention.
+/// Archived transcript of the latest refused take that kept its committed
+/// words, keyed by session. The stop classifier that archives it has no
+/// controller; the controller that hands those words to the user takes it
+/// and links the take's live history to it. One slot: a newer refused take
+/// replaces an unclaimed older one.
+static REFUSED_TAKE_ARCHIVE: std::sync::Mutex<Option<(String, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
+fn take_refused_take_archive(session_id: &str) -> Option<std::path::PathBuf> {
+    let mut slot = REFUSED_TAKE_ARCHIVE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match slot.take() {
+        Some((session, path)) if session == session_id => Some(path),
+        other => {
+            *slot = other;
+            None
+        }
+    }
+}
+
 fn refused_take_archive(
     refusal: &TerminalSealRefused,
 ) -> codescribe_core::state::SessionTranscriptArchive<'_> {
@@ -1318,7 +1477,7 @@ where
     }
 }
 
-/// Stop the recorder for a finished take and classify the outcome.
+/// Settle the original closed take and classify the outcome.
 ///
 /// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
 /// legitimate take outcome, not a recorder failure: the capture stopped and the
@@ -1332,17 +1491,64 @@ where
 /// stop propagated the refusal with `?` past its own state reset, the
 /// controller stayed `Busy` for good, the Bus session never ended and every
 /// later Finish press was ignored until the app was restarted.
-async fn stop_recorder_for_terminal(
-    recorder: &mut StreamingRecorder,
+async fn stop_closed_take_for_terminal(
+    mut take: ClosedTake,
     session_id: Option<&str>,
-    capture_closed: Option<bool>,
+) -> (
+    Result<(String, Option<std::path::PathBuf>)>,
+    codescribe_core::pipeline::take_truth::TakeTruth,
+) {
+    // This helper runs in an already tracked, retired take tail. A timeout
+    // is an incomplete publication attempt, never permission to drop its sink.
+    let mut pending_reported = false;
+    loop {
+        let (stopped, observer, pending) =
+            try_stop_closed_take_for_terminal(take, session_id).await;
+        let Some(original) = pending else {
+            return (stopped, observer);
+        };
+        if !pending_reported {
+            warn!(session_id, error = ?stopped.as_ref().err(),
+                "closed take publication pending; original owner retained for retry");
+            pending_reported = true;
+        }
+        take = original;
+        // Permanent refusal stays visibly unsettled. Backoff prevents a
+        // disconnected publisher from creating a busy retry loop.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// One foreground attempt. An incomplete publication transfers its original
+/// owner back to the controller, before any Bus end or history classification.
+async fn try_stop_closed_take_for_terminal(
+    mut take: ClosedTake,
+    session_id: Option<&str>,
+) -> (
+    Result<(String, Option<std::path::PathBuf>)>,
+    codescribe_core::pipeline::take_truth::TakeTruth,
+    Option<ClosedTake>,
+) {
+    let (session, epoch) = take.capture_identity();
+    let session = session.map(str::to_owned);
+    let ledger = take.acoustic_ledger_handle();
+    let stopped = take.finish().await;
+    let observer = observe_take_ledger((session.as_deref(), epoch), ledger, session_id);
+    if !take.is_settled() {
+        return (stopped, observer, Some(take));
+    }
+    let classified =
+        classify_terminal_stop(stopped, session_id, session, epoch, observer.clone()).await;
+    (classified, observer, None)
+}
+
+async fn classify_terminal_stop(
+    stopped: Result<(String, Option<std::path::PathBuf>)>,
+    session_id: Option<&str>,
+    capture_session: Option<String>,
+    capture_epoch: u64,
+    observer: codescribe_core::pipeline::take_truth::TakeTruth,
 ) -> Result<(String, Option<std::path::PathBuf>)> {
-    let (capture_session, capture_epoch) = recorder.capture_identity();
-    let capture_session = capture_session.map(str::to_owned);
-    let stopped = match capture_closed {
-        Some(was_active) => recorder.finish_closed_capture(was_active).await,
-        None => recorder.stop().await,
-    };
     match stopped {
         Ok(stopped) => Ok(stopped),
         Err(err) => match err.downcast::<TerminalSealRefused>() {
@@ -1355,14 +1561,19 @@ async fn stop_recorder_for_terminal(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        let observer = freeze_take_observer(recorder, session_id);
-                        retain_session_audio(
+                        let archived = retain_session_audio(
                             session_id,
                             path,
                             refused_take_archive(&refusal),
                             &observer,
                         )
-                        .await
+                        .await;
+                        if let (Some(id), Some(archived)) = (session_id, archived) {
+                            *REFUSED_TAKE_ARCHIVE
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) =
+                                Some((id.to_string(), archived));
+                        }
                     }
                     None => warn!("refused take has no audio path to retain"),
                 }
@@ -1370,7 +1581,6 @@ async fn stop_recorder_for_terminal(
             }
             Err(err) => {
                 if err.downcast_ref::<CaptureStopFailure>().is_some() {
-                    let observer = freeze_take_observer(recorder, session_id);
                     let session_id = session_id.map(str::to_owned);
                     let lease = retainable_session_id(session_id.as_deref()).and_then(|id| {
                         codescribe_core::state::history::audio_retention::capture(
@@ -1404,15 +1614,6 @@ async fn stop_recorder_for_terminal(
                         Ok(error) => error,
                         Err(error) => anyhow::anyhow!("audio recovery worker failed: {error}"),
                     };
-                    if let Some(proof) = recovered
-                        .downcast_ref::<codescribe_core::audio::recorder::RecoveredCaptureArchive>(
-                    ) && let Err(acknowledgement) =
-                        recorder.recorder.acknowledge_archive_recovery(proof)
-                    {
-                        return Err(recovered.context(format!(
-                            "CRITICAL: recovered audio ownership could not settle: {acknowledgement:#}"
-                        )));
-                    }
                     Err(recovered)
                 } else {
                     Err(err.context("Failed to stop recorder"))
@@ -1467,7 +1668,16 @@ type CaptureSettlementResult = std::result::Result<CaptureStopOutcome, String>;
 struct CaptureSettlement {
     capture_id: String,
     result: watch::Receiver<Option<CaptureSettlementResult>>,
+    closed: watch::Receiver<bool>,
     task: JoinHandle<()>,
+}
+
+enum CaptureStopAdmission {
+    Settling(
+        watch::Receiver<Option<CaptureSettlementResult>>,
+        watch::Receiver<bool>,
+    ),
+    Immediate(CaptureStopOutcome),
 }
 
 #[cfg(test)]
@@ -1668,6 +1878,9 @@ pub struct RecordingController {
     /// admission immediately; no cleanup task is spawned without being tracked.
     capture_settlement: std::sync::Mutex<Option<CaptureSettlement>>,
     closed_capture_tails: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    /// The retained take's archived transcript, mirrored from the live
+    /// document history so a reopened take keeps every version.
+    live_archive: Arc<std::sync::Mutex<Option<live_archive::LiveArchiveMirror>>>,
     #[cfg(test)]
     settlement_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<CaptureSettlementStage>>>,
 
@@ -1952,6 +2165,7 @@ impl RecordingController {
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             capture_settlement: std::sync::Mutex::new(None),
             closed_capture_tails: std::sync::Mutex::new(Vec::new()),
+            live_archive: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             settlement_observer: std::sync::Mutex::new(None),
             delivery_disposition: Arc::new(RwLock::new(TranscriptDelivery::Unattempted)),
@@ -1988,12 +2202,20 @@ impl RecordingController {
 
     /// Resolve the controller's retained Max consultation without another
     /// recorder or a process-global conversation selection.
+    ///
+    /// Max exists only on a usable Agent lane. Without one this refuses with
+    /// the Agent's actionable reason; it never falls back to the formatting
+    /// lane or Apple. A retained consultation stays selected and resumes once
+    /// the Agent is configured again.
     async fn selected_max_consultation(
         &self,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<Option<Arc<crate::agent::max_consultation::MaxConsultation>>> {
         if settings.formatting_policy() != codescribe_core::config::FormattingPolicy::Max {
             return Ok(None);
+        }
+        if let Some(reason) = crate::agent::max_unavailable_reason(settings) {
+            anyhow::bail!("{reason}");
         }
         let mut selected = self.max_consultation.lock().await;
         if selected.is_none() {
@@ -2018,6 +2240,48 @@ impl RecordingController {
             *selected = Some(Arc::new(consultation));
         }
         Ok(selected.clone())
+    }
+
+    /// Prepare the selected Max conversation before the first formatting turn.
+    pub async fn prepare_max_consultation(
+        &self,
+    ) -> Result<Option<codescribe_core::agent::consultation::ConsultationPreparation>> {
+        let settings = self.runtime_settings_arc().await;
+        if let Some(consultation) = self.selected_max_consultation(&settings).await? {
+            return consultation.prepare(&settings).await.map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Typed chat turns share the selected consultation owner and its durable
+    /// accepted-turn identity. Reopening chat never resends an old transcript.
+    pub async fn continue_max_consultation(
+        &self,
+        expected_id: &str,
+        turn_id: String,
+        text: String,
+        attachments: Vec<codescribe_core::agent::ImageAttachment>,
+    ) -> Result<String> {
+        let settings = self.runtime_settings_arc().await;
+        // Max answers on the Agent lane, so the Agent model decides images.
+        let lane = settings.llm_lanes().assistive();
+        anyhow::ensure!(
+            attachments.is_empty() || lane.supports_vision(lane.model()),
+            "The selected Max model does not support images"
+        );
+        let consultation = self
+            .selected_max_consultation(&settings)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Max consultation is not selected"))?;
+        anyhow::ensure!(
+            consultation.id() == expected_id,
+            "The selected Max consultation changed"
+        );
+        let answer = consultation
+            .enqueue(turn_id, text, attachments, &settings)?
+            .await
+            .context("Max consultation owner stopped before replying")??;
+        Ok(answer.text)
     }
 
     /// Subscribe to invalidations; the broker remains the pending-state owner.
@@ -2135,14 +2399,139 @@ impl RecordingController {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no terminal transcript revision authority"))?;
-        presentation
+        let receipt = presentation
             .apply_user_revision(UserRevisionIntent {
                 session_id,
                 source_revision,
                 rendered_text,
                 provenance,
             })
-            .map_err(anyhow::Error::new)
+            .map_err(anyhow::Error::new)?;
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
+        Ok(receipt)
+    }
+
+    /// Undo, Redo or a version pick on the retained take: the reducer
+    /// re-selects an accepted step under the same session/revision CAS. No
+    /// transcription or formatting runs again.
+    pub async fn navigate_document_from_overlay(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        step: usize,
+    ) -> Result<UserRevisionCommit> {
+        if self.current_state().await != State::Idle {
+            return Err(anyhow::anyhow!(
+                "transcript navigation refused while recording is active"
+            ));
+        }
+        let presentation = self
+            .active_presentation
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no terminal transcript revision authority"))?;
+        let receipt = presentation
+            .navigate_document(session_id, source_revision, step)
+            .map_err(anyhow::Error::new)?;
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
+        Ok(receipt)
+    }
+
+    /// Why the versions of `session_id` are no longer saved to its archived
+    /// transcript, when the mirror stopped. Shown with the versions control.
+    pub fn live_archive_refusal(&self, session_id: &str) -> Option<String> {
+        self.live_archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|mirror| mirror.session_id() == session_id)
+            .and_then(|mirror| mirror.diverged().map(str::to_owned))
+    }
+
+    /// Accepted steps of the retained take with the selected one and the
+    /// revision a navigation names. No retained take reads as no history.
+    pub async fn document_versions(
+        &self,
+        session_id: &str,
+    ) -> (u64, crate::presentation::emitter::DocumentTimeline) {
+        match self.active_presentation.read().await.clone() {
+            Some(presentation) => presentation.document_timeline(session_id),
+            None => (0, Default::default()),
+        }
+    }
+
+    /// Link the take just archived at Stop to its live history and write
+    /// what the history already holds. A take without spoken text has no
+    /// archived transcript and keeps no link; a new link replaces the last.
+    async fn link_live_archive(
+        &self,
+        session_id: Option<&str>,
+        transcript: Option<std::path::PathBuf>,
+    ) {
+        let (Some(session_id), Some(transcript)) = (session_id, transcript) else {
+            return;
+        };
+        let Some(presentation) = self.active_presentation.read().await.clone() else {
+            warn!("archived take has no live document history to keep");
+            return;
+        };
+        // The archived bytes are the version selected at Stop. A take with no
+        // operation yet has no steps: the reducer anchors its committed
+        // document as step 0 on the first operation, and that step is the
+        // archived original. Mapped once, by position, never by text.
+        let (_, timeline) = presentation.document_timeline(session_id);
+        let archived_step = if timeline.steps().is_empty() {
+            0
+        } else {
+            timeline.cursor()
+        };
+        *self
+            .live_archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(live_archive::LiveArchiveMirror::link(
+                session_id.to_string(),
+                transcript,
+                archived_step,
+            ));
+        self.sync_live_archive(&presentation, session_id).await;
+    }
+
+    /// Admit the live history of `session_id` to its archived transcript.
+    /// Runs after every accepted operation and cursor move. The timeline is
+    /// read under the mirror lock, so syncs apply in reducer order. A refusal
+    /// stops the mirror and is reported; the live take is never undone.
+    async fn sync_live_archive(&self, presentation: &Arc<PresentationEmitter>, session_id: &str) {
+        let mirror = Arc::clone(&self.live_archive);
+        let presentation = Arc::clone(presentation);
+        let session_id = session_id.to_string();
+        let synced = tokio::task::spawn_blocking(move || {
+            let mut mirror = mirror.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(mirror) = mirror
+                .as_mut()
+                .filter(|mirror| mirror.session_id() == session_id)
+            else {
+                return Ok(());
+            };
+            let (_, timeline) = presentation.document_timeline(&session_id);
+            mirror
+                .sync(timeline.steps(), timeline.cursor())
+                .with_context(|| {
+                    format!(
+                        "versions of this take are no longer saved to {}",
+                        mirror.transcript().display()
+                    )
+                })
+        })
+        .await;
+        match synced {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => error!("{error:#}"),
+            Err(error) => error!(%error, "live history archive worker failed"),
+        }
     }
 
     /// Format the exact retained terminal document through the production
@@ -2207,7 +2596,104 @@ impl RecordingController {
             .apply_formatter_revision(session_id, source_revision, format_level, result)
             .map_err(anyhow::Error::new)?;
         log_formatter_revision(&receipt, format_level, level_source);
+        self.sync_live_archive(&presentation, &receipt.session_id)
+            .await;
         Ok(receipt)
+    }
+
+    /// Format one revision of an archived transcript through the same settings
+    /// generation, level resolution, Max consultation and production formatter
+    /// as [`Self::apply_formatter_revision_from_overlay`].
+    ///
+    /// The archive path and its revision are the compare-and-swap boundary,
+    /// exactly as session and revision are for a live take: the source text is
+    /// read here from the history owner, never accepted from Swift, and an
+    /// applied result is committed to that archive's revision chain only. The
+    /// reducer, the Bus and the latest take are not touched, so nothing is
+    /// re-delivered and a later take can never receive this result.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: String,
+        source_revision: u64,
+        requested_level: Option<FormattingPolicy>,
+    ) -> Result<ArchivedFormatReceipt> {
+        use codescribe_core::state::history;
+        anyhow::ensure!(
+            self.current_state().await == State::Idle,
+            "archived transcript formatting refused while recording is active"
+        );
+        let read_path = archive_path.clone();
+        let document = tokio::task::spawn_blocking(move || {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any read.
+            history::read_archived_document(std::path::Path::new(&read_path))
+        })
+        .await??;
+        anyhow::ensure!(
+            document.head_revision() == source_revision,
+            "stale archived transcript revision: current {}, requested {}",
+            document.head_revision(),
+            source_revision
+        );
+        let source = document.head_text().to_string();
+        anyhow::ensure!(
+            !source.trim().is_empty(),
+            "archived transcript has no text to format"
+        );
+        let runtime_settings = self.formatter_revision_settings(requested_level).await;
+        let (format_level, level_source) =
+            formatter_revision_level(requested_level, runtime_settings.as_ref())?;
+        let language = runtime_settings.values().whisper_language;
+        let consultation = self
+            .selected_max_consultation(runtime_settings.as_ref())
+            .await?;
+        // The archive and its revision name the source, as session and revision
+        // do for a live take; the uuid keeps a retry from reusing a Max turn.
+        let turn_id = format!(
+            "archive:{archive_path}:revision:{source_revision}:{}",
+            Uuid::new_v4()
+        );
+        let result = format_text_with_status_for_policy(
+            &source,
+            language.whisper_hint(),
+            runtime_settings.as_ref(),
+            consultation.as_deref().map(|agent| {
+                codescribe_core::ai_formatting::FormattingConsultation {
+                    agent,
+                    turn_id: &turn_id,
+                }
+            }),
+        )
+        .await;
+        let outcome = ArchivedFormatOutcome::from_result(&source, result);
+        let revision = match &outcome {
+            ArchivedFormatOutcome::Applied(text) => {
+                let text = text.clone();
+                let level = format_level.as_str().to_string();
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        history::commit_archived_revision(
+                            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- history::admit_archived_transcript canonicalizes the path and admits only a .txt under transcriptions_base_dir() before any write.
+                            std::path::Path::new(&archive_path),
+                            source_revision,
+                            &text,
+                            history::ArchiveRevisionProvenance::Formatter,
+                            Some(level),
+                        )
+                    })
+                    .await??,
+                )
+            }
+            _ => None,
+        };
+        info!(
+            format_level = format_level.as_str(),
+            source = level_source,
+            outcome = outcome.label(),
+            source_revision,
+            revision = revision.as_ref().map(|revision| revision.revision),
+            "archived transcript formatting settled"
+        );
+        Ok(ArchivedFormatReceipt { outcome, revision })
     }
 
     async fn formatter_revision_settings(
@@ -2483,6 +2969,80 @@ impl RecordingController {
         Ok(true)
     }
 
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    ///
+    /// The text is the archive's accepted revision, chosen by the overlay for
+    /// one named archive. Unlike the live take's send this never takes
+    /// `pending_assistive_context`, `assistive_context` or the context bucket:
+    /// those belong to whichever take is live or pending now, and an archive
+    /// send must leave them exactly as they were. The route resolution, the
+    /// delivery tagger and the Agent runtime lane (current selected thread,
+    /// configuration and permissions) are the same production seams.
+    pub async fn deliver_archived_transcript_to_agent(&self, transcript: String) -> Result<bool> {
+        let runtime_settings = self.runtime_settings_arc().await;
+        self.deliver_archived_transcript_to_agent_with(
+            transcript,
+            move |wire, language, max_tokens, persona| {
+                Box::pin(send_assistive_with_agent_runtime_lane(
+                    runtime_settings,
+                    wire,
+                    language,
+                    max_tokens,
+                    persona,
+                ))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
+        )
+        .await
+    }
+
+    /// Archive-send body with an injectable send adapter, the twin of
+    /// [`Self::deliver_pending_assistive_transcript_with`] minus every live
+    /// context take.
+    pub(crate) async fn deliver_archived_transcript_to_agent_with<F>(
+        &self,
+        transcript: String,
+        send: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(
+            String,
+            crate::config::Language,
+            i32,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    {
+        let delivery_started = std::time::Instant::now();
+        if transcript.trim().is_empty() {
+            info!("archived transcript delivery skipped: empty transcript");
+            return Ok(false);
+        }
+        let to_agent = resolve_delivery_route(
+            DeliveryIntent::OverlayToAgent,
+            overlay_insert_facts(true, false),
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(DeliveryIntent::OverlayToAgent, to_agent, None,)
+        );
+        let config = self.get_config().await;
+        let delivery_text = self
+            .delivery_tagger
+            .render(&transcript, &config, Some("agent"));
+        send(
+            delivery_text,
+            config.whisper_language,
+            config.ai_assistive_max_tokens,
+            true,
+        )
+        .await;
+        info!(
+            elapsed_secs = delivery_started.elapsed().as_secs_f64(),
+            "archived transcript delivery completed"
+        );
+        Ok(true)
+    }
+
     /// Swap the state and broadcast the transition, on `Arc` handles so spawned
     /// tasks can drive it without borrowing the controller.
     ///
@@ -2567,7 +3127,21 @@ impl RecordingController {
     /// Install one already-sealed generation. Callers must own `serial_lock`;
     /// keeping the single write site here preserves the one-generation fence.
     async fn install_runtime_settings_generation(&self, runtime_settings: RuntimeSettingsSnapshot) {
-        *self.runtime_settings.write().await = Arc::new(runtime_settings);
+        let settings = Arc::new(runtime_settings);
+        *self.runtime_settings.write().await = Arc::clone(&settings);
+        // Selecting Max after launch also prepares its provider. Do not make the
+        // next capture wait under serial_lock for tool discovery/history I/O.
+        match self.selected_max_consultation(&settings).await {
+            Ok(Some(consultation)) => {
+                tokio::spawn(async move {
+                    if let Err(error) = consultation.prepare(&settings).await {
+                        warn!(%error, "Max preparation after settings change requires attention");
+                    }
+                });
+            }
+            Ok(None) => {}
+            Err(error) => warn!(%error, "Max selection after settings change requires attention"),
+        }
     }
 
     /// Reload the just-persisted calibration into the controller before the
@@ -2797,23 +3371,11 @@ impl RecordingController {
     pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
-        let intent = DeliveryIntent::OverlayInsert;
-        let decision =
-            resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), false));
-        info!(
-            "{}",
-            format_delivery_route_line(intent, decision, target_app.as_deref())
-        );
-        if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
+        if trimmed.is_empty() {
             return Ok(OverlayPasteResult::noop());
         }
         let config = self.get_config().await;
         let payload = self.delivery_tagger.render(trimmed, &config, None);
-        if decision.route == DeliveryRoute::DeferredInsert {
-            return self
-                .arm_overlay_text(&payload, target_app, Some("Codescribe".to_string()))
-                .await;
-        }
 
         self.execute_clipboard_paste(payload, target_app, "Overlay paste")
             .await
@@ -2837,6 +3399,7 @@ impl RecordingController {
         target_app: Option<String>,
         context: &'static str,
     ) -> Result<OverlayPasteResult> {
+        let config = self.get_config().await;
         let focus_confirmed = target_app
             .as_deref()
             .map(str::trim)
@@ -2849,6 +3412,7 @@ impl RecordingController {
                             Duration::from_millis(250),
                         ))
             });
+        let target = clipboard::StopPasteTarget::capture();
         let frontmost = crate::os::selection::current_frontmost_app_name();
         let target_observed_frontmost = matches!(
             (target_app.as_deref(), frontmost.as_deref()),
@@ -2873,20 +3437,53 @@ impl RecordingController {
         // follow the external frontmost app.
         let focus_confirmed = delivery_route::clipboard_paste_may_post(
             target_app.is_some(),
-            focus_confirmed,
+            focus_confirmed && target_observed_frontmost,
             target_observed_frontmost,
             frontmost_is_external,
-        );
+        ) && frontmost
+            .as_deref()
+            .is_some_and(|name| target.matches_app_name(name));
 
-        let config = self.get_config().await;
         let preflight = clipboard::synthetic_paste_preflight();
+        let mut facts = overlay_insert_facts(!paste_text.is_empty(), false);
+        facts.paste_target = helpers::observe_paste_target(frontmost.as_deref());
+        facts.executable_payload = looks_executable(&paste_text);
+        let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts);
+        info!(
+            "{}",
+            format_delivery_route_line(
+                DeliveryIntent::OverlayInsert,
+                decision,
+                target_app.as_deref()
+            )
+        );
 
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
-        let delivery = if focus_confirmed && preflight.can_post_events() {
-            clipboard::paste_and_restore(&paste_text)
-                .with_context(|| format!("{context}: failed to paste"))?;
-            OverlayPasteDelivery::Pasted
+        let delivery = if decision.route == DeliveryRoute::ClipboardHold {
+            self.arm_or_copy_deferred_payload(
+                paste_text.clone(),
+                &config,
+                &mut deferred_insert_shortcut,
+                &mut deferred_insert_failure,
+            )?
+        } else if focus_confirmed && preflight.can_post_events() {
+            match clipboard::paste_to_stop_target(&paste_text, &target) {
+                Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
+                    OverlayPasteDelivery::PasteRequested
+                }
+                outcome => {
+                    if let Err(error) = outcome {
+                        warn!(%error, "{context}: paste failed; arming deferred insert");
+                    }
+                    self.arm_or_copy_deferred_payload(
+                        paste_text.clone(),
+                        &config,
+                        &mut deferred_insert_shortcut,
+                        &mut deferred_insert_failure,
+                    )?
+                }
+            }
         } else {
             warn!(
                 target_app = ?target_app,
@@ -2939,11 +3536,10 @@ impl RecordingController {
             &config,
             |route, text, target| async move {
                 match route {
-                    DeliveryRoute::DeferredInsert => {
+                    DeliveryRoute::DeferredInsert | DeliveryRoute::ClipboardHold => {
                         self.arm_overlay_text(&text, target, Some("Codescribe".to_string()))
                             .await
                     }
-                    DeliveryRoute::ClipboardHold => Self::hold_on_clipboard(&text, target),
                     _ => {
                         self.execute_clipboard_paste(text, target, "Stop-path paste")
                             .await
@@ -2987,7 +3583,7 @@ impl RecordingController {
     /// Settle the painted live finals before archive and terminal refinement drain.
     async fn deliver_frozen_canvas_at_stop(
         &self,
-        recorder: &mut StreamingRecorder,
+        recorder: &mut ClosedTake,
         take_id: Option<&str>,
         intent: (bool, bool, CaptureTurnIntent),
         stop: StopCanvasRequest,
@@ -3079,10 +3675,10 @@ impl RecordingController {
                         (assistive, force_ai, capture_turn, false),
                         &config,
                         |route, payload, target_app| async move {
-                            if route == DeliveryRoute::ClipboardHold {
-                                return Self::hold_on_clipboard(&payload, target_app);
-                            }
-                            if route == DeliveryRoute::DeferredInsert {
+                            if matches!(
+                                route,
+                                DeliveryRoute::ClipboardHold | DeliveryRoute::DeferredInsert
+                            ) {
                                 return self
                                     .arm_overlay_text(
                                         &payload,
@@ -3092,33 +3688,29 @@ impl RecordingController {
                                     .await;
                             }
                             let can_post = clipboard::synthetic_paste_preflight().can_post_events();
-                            let delivery = if !can_post {
-                                clipboard::set_clipboard(&payload)?;
-                                info!(
-                                    take_id,
-                                    target_readable_at_stop = stop.target.readable(),
-                                    target_readable_at_paste = false,
-                                    target_checked_at_paste = false,
-                                    "stop paste delivery receipt"
-                                );
-                                OverlayPasteDelivery::CopiedToClipboard
-                            } else {
-                                let receipt =
-                                    clipboard::paste_to_stop_target(&payload, &stop.target)?;
-                                info!(take_id,
-                                target_readable_at_stop = receipt.target_readable_at_stop,
-                                target_readable_at_paste = receipt.target_readable_at_paste,
-                                delivery = ?receipt.delivery,
-                                "stop paste delivery receipt");
-                                match receipt.delivery {
-                                    clipboard::StopPasteDelivery::Pasted => {
-                                        OverlayPasteDelivery::Pasted
-                                    }
-                                    clipboard::StopPasteDelivery::CopiedTargetChanged => {
-                                        OverlayPasteDelivery::CopiedToClipboard
-                                    }
+                            if !can_post {
+                                return self
+                                    .arm_overlay_text(
+                                        &payload,
+                                        target_app,
+                                        crate::os::selection::current_frontmost_app_name(),
+                                    )
+                                    .await;
+                            }
+                            let outcome = clipboard::paste_to_stop_target(&payload, &stop.target);
+                            if !matches!(outcome, Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted) {
+                                if let Err(error) = outcome {
+                                    warn!(%error, "Stop-path paste failed; arming deferred insert");
                                 }
-                            };
+                                return self
+                                    .arm_overlay_text(
+                                        &payload,
+                                        target_app,
+                                        crate::os::selection::current_frontmost_app_name(),
+                                    )
+                                    .await;
+                            }
+                            let delivery = OverlayPasteDelivery::PasteRequested;
                             Ok(OverlayPasteResult {
                                 delivery,
                                 // Automatic stop uses the retained AX identity;
@@ -3142,37 +3734,13 @@ impl RecordingController {
         }
     }
 
-    /// The microphone is already closed and the old paste is already settled.
-    /// Move that recorder's remaining drain into a tracked, take-owned tail.
+    /// The microphone is already closed. Transfer preempted or publication-
+    /// pending terminal work and its exact Bus into one tracked take-owned tail.
     /// It retains audio and Bus finality but has no authority over the next UI.
-    async fn detach_preempted_stop(
-        &self,
-        slot: &mut Option<StreamingRecorder>,
-        take_id: Option<&str>,
-        was_active: bool,
-    ) -> Result<()> {
-        let recorder = Self::recorder_from_guard_mut(slot, "Preempted stop")?;
-        anyhow::ensure!(
-            !recorder.recorder.is_active(),
-            "preemption requires closed capture"
-        );
-        let replacement = StreamingRecorder::with_config(recorder.recorder.config.clone())?;
-        if recorder.prepare_closed_capture_archive(was_active).is_err() {
-            // Do not replace this slot while it owns failed PCM. The ordinary
-            // stop consumes the frozen result, sends terminal failure to STT
-            // and attempts durable recovery before any controller reset.
-            return match stop_recorder_for_terminal(recorder, take_id, Some(was_active)).await {
-                Err(error) => Err(error),
-                Ok(_) => Err(anyhow::anyhow!(
-                    "closed capture archive failure lost its cause"
-                )),
-            };
-        }
+    async fn detach_preempted_stop(&self, take: ClosedTake, take_id: Option<&str>) -> Result<()> {
         if let Some(emitter) = self.active_presentation.read().await.as_ref() {
             emitter.retire_presentation();
         }
-        recorder.set_level_callback(None);
-        let mut recorder = slot.replace(replacement).expect("recorder checked above");
         let bus = self.active_transcript_bus.write().await.take();
         let take_id = take_id.map(str::to_owned);
         let retained_capture = retainable_session_id(take_id.as_deref()).and_then(|id| {
@@ -3180,13 +3748,9 @@ impl RecordingController {
         });
         let delivery = *self.delivery_disposition.read().await;
         let task = tokio::spawn(async move {
-            let stopped =
-                stop_recorder_for_terminal(&mut recorder, take_id.as_deref(), Some(was_active))
-                    .await;
-            Self::clear_recorder_callbacks(&mut recorder);
+            let (stopped, observer) = stop_closed_take_for_terminal(take, take_id.as_deref()).await;
             let reason = match &stopped {
                 Ok((text, path)) => {
-                    let observer = freeze_take_observer(&recorder, take_id.as_deref());
                     if let Some(path) = path.as_deref() {
                         retain_session_audio_with_lease(
                             take_id.as_deref(),
@@ -3203,7 +3767,7 @@ impl RecordingController {
                     TranscriptSessionEndReason::CoverageRefused
                 }
                 Err(error) => {
-                    warn!(take_id = ?take_id, %error, "preempted take terminal drain failed");
+                    warn!(take_id = ?take_id, %error, "retired take terminal drain failed");
                     TranscriptSessionEndReason::TranscriptionFailed
                 }
             };
@@ -3590,11 +4154,13 @@ impl RecordingController {
         let receipt_payload = payload.clone();
         let outcome = sink(decision.route, payload, latched_target).await;
         if let (Some(notice), Ok(result)) = (paste_hold_notice(decision), outcome.as_ref())
-            && result.delivery == OverlayPasteDelivery::CopiedToClipboard
+            && result.delivery == OverlayPasteDelivery::DeferredInsertArmed
         {
-            // The notice is the question the guard asks (Founder s04-036); the
-            // user's own ⌘V is the only answer that pastes.
-            helpers::announce_paste_hold(notice);
+            let guidance = result.deferred_insert_shortcut.as_deref().map_or_else(
+                || "Choose a Deferred Paste shortcut in Settings.".to_string(),
+                |shortcut| format!("Press {shortcut} in the target input to insert it."),
+            );
+            helpers::announce_paste_hold(&format!("{notice} {guidance}"));
         }
         let result = self.finish_stop_delivery(outcome, seal_refused).await;
         if let Some(presentation) = self.active_presentation.read().await.as_ref() {
@@ -3620,7 +4186,7 @@ impl RecordingController {
             Ok(result) => {
                 // A declined payload or missing permission is not acceptance.
                 let disposition = match result.delivery {
-                    OverlayPasteDelivery::Pasted => TranscriptDelivery::SinkAccepted,
+                    OverlayPasteDelivery::PasteRequested => TranscriptDelivery::SinkAccepted,
                     OverlayPasteDelivery::CopiedToClipboard => {
                         TranscriptDelivery::CopiedToClipboard
                     }
@@ -3698,6 +4264,10 @@ impl RecordingController {
                 "terminal refusal has no matching authenticated Bus document"
             ));
         }
+        // The retained words are this take's document: the user can revise
+        // them like any take, so their versions keep the same durable history.
+        let archived = take_refused_take_archive(refusal.finality.session_id());
+        self.link_live_archive(take_id.as_deref(), archived).await;
         match deliver(refusal.committed_text.clone()).await {
             Ok(_) => Ok(ProcessRecordingOutcome {
                 transcript_present: true,
@@ -3745,20 +4315,6 @@ impl RecordingController {
             *shortcut_label = Some(config.deferred_insert_shortcut.label().to_string());
         }
         Ok(OverlayPasteDelivery::DeferredInsertArmed)
-    }
-
-    /// Execute the throne's `ClipboardHold`: leave the transcript on the
-    /// pasteboard for the user's own ⌘V and post no synthetic keystroke. The
-    /// caller announces why (`paste_hold_notice`).
-    fn hold_on_clipboard(payload: &str, target_app: Option<String>) -> Result<OverlayPasteResult> {
-        clipboard::set_clipboard(payload).context("held paste: failed to write clipboard")?;
-        Ok(OverlayPasteResult {
-            delivery: OverlayPasteDelivery::CopiedToClipboard,
-            target_app_name: target_app,
-            frontmost_app_name: crate::os::selection::current_frontmost_app_name(),
-            deferred_insert_shortcut: None,
-            deferred_insert_failure: None,
-        })
     }
 
     /// Arm tagged overlay text for Paste Here. Shared by the throne's
@@ -4515,13 +5071,8 @@ impl RecordingController {
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
-    pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
-        let hold_generation = (event.key_type == HotkeyType::Hold
-            && event.action == HotkeyAction::Down)
-            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
-        // Stop gestures enter before mode updates: a RAW toggle during hold
-        // must not rewrite the take's destination while asking to end it.
-        let stop_gesture = {
+    fn is_stop_gesture(&self, event: &HotkeyInput) -> Result<bool> {
+        Ok({
             let Ok(state) = self.state.try_read() else {
                 return Err(anyhow::anyhow!("hotkey admission unavailable"));
             };
@@ -4540,7 +5091,46 @@ impl RecordingController {
                 && event.action == HotkeyAction::Press
                 && event.force_raw
                 && *state == State::RecHold)
-        };
+        })
+    }
+
+    /// Admit each native gesture in FIFO order. Stop returns only after its
+    /// PCM feed is closed and capture locks are released; terminal work remains
+    /// owned by the same settlement task. Explicit stop APIs await completion.
+    pub async fn admit_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        if !self.is_stop_gesture(&event)? {
+            return self.handle_hotkey_event(event).await;
+        }
+        match self.current_capture_stop() {
+            CaptureStopAdmission::Immediate(CaptureStopOutcome::NoLiveCapture) => Ok(()),
+            CaptureStopAdmission::Immediate(outcome) => {
+                Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}"))
+            }
+            CaptureStopAdmission::Settling(mut result, mut closed) => loop {
+                if *closed.borrow_and_update() {
+                    return Ok(());
+                }
+                if let Some(settled) = result.borrow_and_update().clone() {
+                    return match settled.map_err(anyhow::Error::msg)? {
+                        CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture => Ok(()),
+                        outcome => Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}")),
+                    };
+                }
+                tokio::select! {
+                    change = closed.changed() => { change.map_err(|_| anyhow::anyhow!("capture-close receipt lost"))?; }
+                    change = result.changed() => { change.map_err(|_| anyhow::anyhow!("capture settlement owner lost"))?; }
+                }
+            },
+        }
+    }
+
+    pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        let hold_generation = (event.key_type == HotkeyType::Hold
+            && event.action == HotkeyAction::Down)
+            .then(|| self.hold_start_generation.load(Ordering::SeqCst));
+        // Stop gestures enter before mode updates: a RAW toggle during hold
+        // must not rewrite the take's destination while asking to end it.
+        let stop_gesture = self.is_stop_gesture(&event)?;
         if stop_gesture {
             return self.stop_recording_from_external_surface().await;
         }
@@ -4551,8 +5141,21 @@ impl RecordingController {
         if next_start && preempt_stop_paste_for_next_take() {
             // The old owner copies and retires before this gesture may open a
             // microphone or capture a new target. Its slow drain is detached.
-            let settled = self.serial_lock.lock().await;
-            drop(settled);
+            let result = self
+                .capture_settlement
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|operation| operation.result.clone());
+            if let Some(result) = result {
+                anyhow::ensure!(
+                    matches!(
+                        Self::await_capture_stop(result).await?,
+                        CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture
+                    ),
+                    "preceding take has not retired its foreground"
+                );
+            }
         }
         let mut current_state = self.current_state().await;
 
@@ -5940,6 +6543,8 @@ impl RecordingController {
     async fn stop_toggle_and_adjudicate_inner(
         &self,
         expected: Option<&str>,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
     ) -> Result<CaptureStopOutcome> {
         // Phase-timed instrumentation retained from the original failure.
         // STOP_TIMEOUT now bounds only callers, never this owned body.
@@ -6026,28 +6631,35 @@ impl RecordingController {
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
             let was_active = recorder.close_capture().await;
+            let mut take = recorder.detach_closed_take(was_active);
+            Self::clear_recorder_callbacks(recorder);
+            drop(recorder_guard);
+            drop(serial);
+            if let Some(closed) = closed { closed.send_replace(true); }
             let StopCanvasDelivery { delivery: initial_delivery, preempted } = self
                 .deliver_frozen_canvas_at_stop(
-                    recorder,
+                    &mut take,
                     session_id_snapshot.as_deref(),
                     (assistive, force_ai, capture_turn),
                     stop,
                 )
                 .await;
             if preempted {
-                self.detach_preempted_stop(&mut recorder_guard, session_id_snapshot.as_deref(), was_active).await?;
+                self.detach_preempted_stop(take, session_id_snapshot.as_deref()).await?;
                 initial_delivery?;
                 return Ok(ProcessRecordingOutcome::default());
             }
-            let stopped =
-                stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
+            let (stopped, observer, pending) =
+                try_stop_closed_take_for_terminal(take, session_id_snapshot.as_deref()).await;
+            if let Some(take) = pending {
+                // Move the exact old Bus out before foreground timeout/reset.
+                // The tracked tail alone owns eventual publication and history.
+                self.detach_preempted_stop(take, session_id_snapshot.as_deref()).await?;
+            }
             rec_stop_secs = phase2.elapsed().as_secs_f64();
             // Read the take's own intent before the per-take state is cleared.
             // The recorder is the single owner of this fact; the stop path must
             // not re-derive it from the assistive flag or the active screen.
-            Self::clear_recorder_callbacks(recorder);
-            let observer = freeze_take_observer(recorder, session_id_snapshot.as_deref());
-            drop(recorder_guard);
             // The session is over whichever way `stop()` went; the engine that
             // served it is the same on a clean stop and on a refused seal.
             Self::publish_live_serving_verdict(serving_engine);
@@ -6096,7 +6708,7 @@ impl RecordingController {
                 self.select_paste_projection(streaming_text).await
             } else { streaming_text };
             if let Some(path) = raw_audio_path_opt.as_deref() {
-                retain_session_audio(
+                let archived = retain_session_audio(
                     session_id_snapshot.as_deref(),
                     path,
                     codescribe_core::state::SessionTranscriptArchive::from_committed(
@@ -6104,6 +6716,8 @@ impl RecordingController {
                     ),
                     &observer,
                 ).await;
+                self.link_live_archive(session_id_snapshot.as_deref(), archived)
+                    .await;
             }
             let settled = initial_delivery?;
             deliver_terminal_unless_settled(settled, || async {
@@ -6229,46 +6843,66 @@ impl RecordingController {
     /// The retained terminal owner checks that identity under the serial lock;
     /// a delayed gesture cannot discover or stop a replacement after waiting.
     pub async fn stop_current_capture(self: &Arc<Self>) -> Result<CaptureStopOutcome> {
-        let receiver = {
-            let Ok(mut slot) = self.capture_settlement.try_lock() else {
-                return Ok(CaptureStopOutcome::AdmissionUnavailable);
-            };
-            if let Some(operation) = slot
-                .as_ref()
-                .filter(|op| !op.task.is_finished() || op.result.borrow().is_none())
-            {
-                operation.result.clone()
-            } else {
-                let Ok(state) = self.state.try_read() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                if *state == State::Idle {
-                    // Idle is only conclusive once any unpublished start has
-                    // released admission. A published take below already has
-                    // its own identity and can register Stop without this lock.
-                    let Ok(_serial) = self.serial_lock.try_lock() else {
-                        return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                    };
-                    // No active terminal body to cancel. Invalidate a delayed
-                    // hold that has not crossed this same admission boundary.
-                    self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
-                    return Ok(CaptureStopOutcome::NoLiveCapture);
-                }
-                if !matches!(*state, State::RecHold | State::RecToggle) {
-                    // Conversation has a separate loop owner, and Busy without
-                    // a settlement receipt is not proof of a released resource.
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                }
-                let Ok(identity) = self.session_id.try_read() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                let Some(id) = identity.as_deref() else {
-                    return Ok(CaptureStopOutcome::AdmissionUnavailable);
-                };
-                self.register_capture_stop(&mut slot, id)
-            }
+        match self.current_capture_stop() {
+            CaptureStopAdmission::Immediate(outcome) => Ok(outcome),
+            CaptureStopAdmission::Settling(result, _) => Self::await_capture_stop(result).await,
+        }
+    }
+
+    fn current_capture_stop(self: &Arc<Self>) -> CaptureStopAdmission {
+        let Ok(mut slot) = self.capture_settlement.try_lock() else {
+            return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
         };
-        Self::await_capture_stop(receiver).await
+        if let Some(operation) = slot
+            .as_ref()
+            .filter(|op| !op.task.is_finished() || op.result.borrow().is_none())
+        {
+            CaptureStopAdmission::Settling(operation.result.clone(), operation.closed.clone())
+        } else {
+            let Ok(state) = self.state.try_read() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            if *state == State::Idle {
+                // Idle is only conclusive once any unpublished start has
+                // released admission. A published take below already has
+                // its own identity and can register Stop without this lock.
+                let Ok(_serial) = self.serial_lock.try_lock() else {
+                    return CaptureStopAdmission::Immediate(
+                        CaptureStopOutcome::AdmissionUnavailable,
+                    );
+                };
+                // No active terminal body to cancel. Invalidate a delayed
+                // hold that has not crossed this same admission boundary.
+                self.hold_start_generation.fetch_add(1, Ordering::SeqCst);
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::NoLiveCapture);
+            }
+            if !matches!(*state, State::RecHold | State::RecToggle) {
+                // Conversation has a separate loop owner, and Busy without
+                // a settlement receipt is not proof of a released resource.
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            }
+            let Ok(identity) = self.session_id.try_read() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            let Some(id) = identity.as_deref() else {
+                return CaptureStopAdmission::Immediate(CaptureStopOutcome::AdmissionUnavailable);
+            };
+            let result = self.register_capture_stop(&mut slot, id);
+            CaptureStopAdmission::Settling(
+                result,
+                slot.as_ref().expect("registered stop").closed.clone(),
+            )
+        }
+    }
+
+    /// Native dispatch may release its take-ownership claim once the owned
+    /// stop has fenced PCM. Busy still vetoes new takes until foreground reset.
+    pub fn stopped_capture_feed_closed(&self) -> bool {
+        self.capture_settlement
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|operation| *operation.closed.borrow())
     }
 
     /// Legacy void bridge surface must not turn Pending into successful Stop.
@@ -6281,8 +6915,12 @@ impl RecordingController {
 
     /// Only the registered owner calls terminal processing. Routing and identity
     /// are decided in the same serialization section as the terminal effects.
-    async fn stop_external_capture(&self, expected: Option<&str>) -> Result<CaptureStopOutcome> {
-        let _serial = self.serial_lock.lock().await;
+    async fn stop_external_capture(
+        &self,
+        expected: Option<&str>,
+        closed: watch::Sender<bool>,
+    ) -> Result<CaptureStopOutcome> {
+        let serial = Arc::clone(&self.serial_lock).lock_owned().await;
         match self.capture_gate(expected).await {
             CaptureStopOutcome::Stopped => {}
             refused => return Ok(refused),
@@ -6300,12 +6938,13 @@ impl RecordingController {
         if single_turn
             || should_use_toggle_adjudicated_stop(state, assistive, toggle_final_pass_enabled())
         {
-            self.stop_toggle_and_adjudicate_inner(expected).await
+            self.stop_toggle_and_adjudicate_inner(expected, serial, Some(closed))
+                .await
         } else if matches!(state, State::RecHold | State::RecToggle) {
             #[cfg(test)]
             self.observe_capture_settlement(CaptureSettlementStage::Admitted);
             self.cancel_pending_hold_start().await;
-            self.finish_recording_locked()
+            self.finish_recording_locked(serial, Some(closed))
                 .await
                 .map(|()| CaptureStopOutcome::Stopped)
         } else {
@@ -6406,11 +7045,12 @@ impl RecordingController {
         capture_id: &str,
     ) -> watch::Receiver<Option<CaptureSettlementResult>> {
         let (sender, receiver) = watch::channel(None);
+        let (closed_sender, closed) = watch::channel(false);
         let controller = Arc::clone(self);
         let owned_id = capture_id.to_owned();
         let task = tokio::spawn(async move {
             let settled = controller
-                .stop_external_capture(Some(&owned_id))
+                .stop_external_capture(Some(&owned_id), closed_sender)
                 .await
                 .map_err(|error| format!("{error:#}"));
             sender.send_replace(Some(settled));
@@ -6418,6 +7058,7 @@ impl RecordingController {
         *slot = Some(CaptureSettlement {
             capture_id: capture_id.to_owned(),
             result: receiver.clone(),
+            closed,
             task,
         });
         #[cfg(test)]
@@ -6580,7 +7221,11 @@ impl RecordingController {
     }
 
     /// Only the capture settlement task calls this with serial_lock held.
-    async fn finish_recording_locked(&self) -> Result<()> {
+    async fn finish_recording_locked(
+        &self,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
+    ) -> Result<()> {
         let stop_start = std::time::Instant::now();
         let current_state = *self.state.read().await;
 
@@ -6612,7 +7257,13 @@ impl RecordingController {
         let force_ai = *self.force_ai_mode.read().await;
 
         let result = self
-            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai, stop)
+            .process_recording(
+                session_id,
+                (assistive, hold_mode, force_raw, force_ai),
+                stop,
+                serial,
+                closed,
+            )
             .await;
 
         self.reset_finished_recording_state(&result).await;
@@ -6632,12 +7283,12 @@ impl RecordingController {
     async fn process_recording(
         &self,
         session_id: Option<String>,
-        assistive: bool,
-        hold_mode: HoldMode,
-        force_raw: bool,
-        force_ai: bool,
+        mode: (bool, HoldMode, bool, bool),
         stop: StopCanvasRequest,
+        serial: OwnedMutexGuard<()>,
+        closed: Option<watch::Sender<bool>>,
     ) -> Result<ProcessRecordingOutcome> {
+        let (assistive, hold_mode, force_raw, force_ai) = mode;
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
@@ -6655,28 +7306,34 @@ impl RecordingController {
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
         let was_active = recorder.close_capture().await;
+        let mut take = recorder.detach_closed_take(was_active);
+        Self::clear_recorder_callbacks(recorder);
+        drop(recorder_guard);
+        drop(serial);
+        if let Some(closed) = closed {
+            closed.send_replace(true);
+        }
         let StopCanvasDelivery {
             delivery: initial_delivery,
             preempted,
         } = self
             .deliver_frozen_canvas_at_stop(
-                recorder,
+                &mut take,
                 take_id.as_deref(),
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop,
             )
             .await;
         if preempted {
-            self.detach_preempted_stop(&mut recorder_guard, take_id.as_deref(), was_active)
-                .await?;
+            self.detach_preempted_stop(take, take_id.as_deref()).await?;
             initial_delivery?;
             return Ok(ProcessRecordingOutcome::default());
         }
-        let stopped =
-            stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
-        Self::clear_recorder_callbacks(recorder);
-        let observer = freeze_take_observer(recorder, take_id.as_deref());
-        drop(recorder_guard); // Release lock
+        let (stopped, observer, pending) =
+            try_stop_closed_take_for_terminal(take, take_id.as_deref()).await;
+        if let Some(take) = pending {
+            self.detach_preempted_stop(take, take_id.as_deref()).await?;
+        }
         Self::publish_live_serving_verdict(serving_engine);
         let (streaming_text, raw_audio_path_opt) = match stopped {
             Ok(stopped) => stopped,
@@ -6712,7 +7369,7 @@ impl RecordingController {
         };
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
-            retain_session_audio(
+            let archived = retain_session_audio(
                 take_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::from_committed(
@@ -6721,6 +7378,7 @@ impl RecordingController {
                 &observer,
             )
             .await;
+            self.link_live_archive(take_id.as_deref(), archived).await;
         }
         // Ctrl-hold literal (`force_raw`) and the hold flavour are sink-time
         // facts already consumed when the emitter was built; delivery reads
@@ -7077,7 +7735,7 @@ mod terminal_delivery_target_falsifiers {
                         assert_eq!(payload.matches("<codescribe").count(), 1);
                         Ok(OverlayPasteResult {
                             delivery: if route == DeliveryRoute::ClipboardPaste {
-                                OverlayPasteDelivery::Pasted
+                                OverlayPasteDelivery::PasteRequested
                             } else {
                                 OverlayPasteDelivery::DeferredInsertArmed
                             },
@@ -7172,7 +7830,7 @@ mod terminal_delivery_target_falsifiers {
                 |_, text, _| async move {
                     assert_eq!(text, "last words");
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -7209,7 +7867,7 @@ mod terminal_delivery_target_falsifiers {
                     assert_eq!(route, DeliveryRoute::ClipboardPaste);
                     assert_eq!(text, "all committed words");
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -7749,7 +8407,7 @@ mod refusal_recovery_tests {
                     assert_eq!(payload, expected);
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(OverlayPasteResult {
-                        delivery: OverlayPasteDelivery::Pasted,
+                        delivery: OverlayPasteDelivery::PasteRequested,
                         target_app_name: None,
                         frontmost_app_name: None,
                         deferred_insert_shortcut: None,
@@ -7970,7 +8628,7 @@ mod refusal_recovery_tests {
         // Target copy/deferred outcomes require committed text; preemption retains it.
         for (outcome, frontmost, preempted, expected, receipt) in [
             (
-                OverlayPasteDelivery::Pasted,
+                OverlayPasteDelivery::PasteRequested,
                 Some("original-editor"),
                 false,
                 TranscriptDelivery::SinkAccepted,
@@ -9360,7 +10018,7 @@ mod refusal_recovery_tests {
     async fn hold_refusal_routes_once_to_original_sink_with_exact_disposition() {
         for (delivery, expected) in [
             (
-                OverlayPasteDelivery::Pasted,
+                OverlayPasteDelivery::PasteRequested,
                 TranscriptDelivery::SinkAccepted,
             ),
             (
@@ -9882,7 +10540,17 @@ mod owned_capture_settlement_tests {
                     .contains("Pending")
             );
             assert_eq!(controller.current_state().await, State::Busy);
-            assert!(controller.serial_lock.try_lock().is_err());
+            if route == 1 || route == 2 {
+                assert!(
+                    controller.serial_lock.try_lock().is_err(),
+                    "hold intent is still being frozen before capture close"
+                );
+            } else {
+                assert!(
+                    controller.serial_lock.try_lock().is_ok(),
+                    "closed capture must release gesture admission while reset waits"
+                );
+            }
             assert_eq!(rows(&dir).len(), 1);
             assert_eq!(
                 controller.stop_capture_if_owned("owned").await.unwrap(),
@@ -10151,6 +10819,65 @@ mod owned_capture_settlement_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn native_stop_acknowledges_close_while_terminal_reset_remains_owned() {
+        let (controller, mut stages, dir) = fixture().await;
+        let held = controller.hold_mode.write().await;
+        let caller = tokio::spawn({
+            let controller = Arc::clone(&controller);
+            async move {
+                controller
+                    .admit_hotkey_event(HotkeyInput {
+                        key_type: HotkeyType::Toggle,
+                        action: HotkeyAction::Press,
+                        assistive: false,
+                        hold_mode: HoldMode::Raw,
+                        force_raw: false,
+                        force_ai: true,
+                    })
+                    .await
+            }
+        });
+        stage(&mut stages, CaptureSettlementStage::Resetting).await;
+        tokio::time::timeout(Duration::from_secs(1), caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(controller.stopped_capture_feed_closed());
+        assert!(controller.serial_lock.try_lock().is_ok());
+        assert!(controller.recorder.try_lock().is_ok());
+        assert_eq!(controller.current_state().await, State::Busy);
+        assert_eq!(
+            rows(&dir).len(),
+            1,
+            "close admission is not a terminal receipt"
+        );
+        assert!(
+            !controller
+                .capture_settlement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .task
+                .is_finished()
+        );
+        assert_eq!(
+            controller
+                .start_toggle_recording(false, CaptureTurnIntent::SingleTurn)
+                .await
+                .unwrap(),
+            CaptureAdmission::NotAdmitted
+        );
+        drop(held);
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        assert_eq!(rows(&dir).len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn held_hold_mode_cannot_block_public_stop_and_settles_once_after_release() {
         let (controller, mut stages, dir) = fixture().await;
         let held = controller.hold_mode.write().await;
@@ -10167,7 +10894,8 @@ mod owned_capture_settlement_tests {
             .unwrap();
         assert_eq!(outcome, CaptureStopOutcome::Pending);
         assert_eq!(controller.current_state().await, State::Busy);
-        assert!(controller.serial_lock.try_lock().is_err());
+        assert!(controller.serial_lock.try_lock().is_ok());
+        assert!(controller.recorder.try_lock().is_ok());
         assert_eq!(rows(&dir).len(), 1, "pending is not a terminal receipt");
         drop(held);
         assert_eq!(
@@ -10222,22 +10950,28 @@ mod owned_capture_settlement_tests {
                 .id(),
             task_id
         );
-        // A successor obeys the real start serialization boundary. It cannot
-        // install new state until every predecessor terminal side effect ends.
-        let (entered, mut successor_entered) = tokio::sync::oneshot::channel();
-        let successor = tokio::spawn({
-            let controller = Arc::clone(&controller);
-            async move {
-                let _serial = controller.serial_lock.lock().await;
-                *controller.session_id.write().await = Some("successor".to_string());
-                controller.set_state(State::RecToggle).await;
-                entered.send(()).unwrap();
-            }
-        });
-        assert!(successor_entered.try_recv().is_err());
+        // Use the production start admission, which checks Busy under the
+        // serial lock. Owning that lock alone never authorizes a successor.
+        assert_eq!(
+            controller
+                .start_toggle_recording(false, CaptureTurnIntent::SingleTurn)
+                .await
+                .unwrap(),
+            CaptureAdmission::NotAdmitted
+        );
+        assert_eq!(
+            controller.session_id.read().await.as_deref(),
+            Some("owned:stopping")
+        );
         drop(held);
-        successor_entered.await.unwrap();
-        successor.await.unwrap();
+        assert_eq!(
+            controller.stop_capture_if_owned("owned").await.unwrap(),
+            CaptureStopOutcome::Stopped
+        );
+        // After the predecessor's terminal task exits, its completed receipt
+        // cannot reset a later admitted capture.
+        *controller.session_id.write().await = Some("successor".into());
+        controller.set_state(State::RecToggle).await;
         assert_eq!(
             controller.stop_capture_if_owned("owned").await.unwrap(),
             CaptureStopOutcome::Stopped
@@ -10422,9 +11156,9 @@ mod serving_status_producer_falsifiers {
         );
         controller.set_state(State::RecToggle).await;
 
-        let _serial = controller.serial_lock.lock().await;
+        let serial = Arc::clone(&controller.serial_lock).lock_owned().await;
         controller
-            .stop_toggle_and_adjudicate_inner(None)
+            .stop_toggle_and_adjudicate_inner(None, serial, None)
             .await
             .expect("idle recorder stops cleanly");
 
@@ -11622,6 +12356,87 @@ mod explicit_startup_tests {
     }
 
     #[tokio::test]
+    async fn archive_send_cannot_consume_live_context_or_delivery_disposition() {
+        let root = tempfile::tempdir().unwrap();
+        let probe = StartupAcquisitionProbe::forbid();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        *controller.assistive_context.write().await = Some(AssistiveContext {
+            frontmost_app: Some("Live B app".into()),
+            selected_text: Some("Live B selection".into()),
+        });
+        *controller.pending_assistive_context.write().await = Some(AssistiveContext {
+            frontmost_app: Some("Next C app".into()),
+            selected_text: Some("Next C selection".into()),
+        });
+        controller
+            .context_bucket
+            .lock()
+            .await
+            .add_selection(0, "Live bucket B".into())
+            .unwrap();
+        let bucket_before = format!("{:?}", controller.context_bucket.lock().await);
+        *controller.delivery_disposition.write().await = TranscriptDelivery::ComposerPending;
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+        assert!(
+            controller
+                .deliver_archived_transcript_to_agent_with(
+                    "Archive A words".into(),
+                    |text, language, tokens, explicit| {
+                        Box::pin(async move {
+                            sent_tx.send((text, language, tokens, explicit)).unwrap();
+                        })
+                    }
+                )
+                .await
+                .unwrap()
+        );
+        let (text, language, tokens, explicit) = sent_rx.await.unwrap();
+        assert!(text.contains("Archive A words"));
+        assert!(!text.contains("Live B selection"));
+        assert!(!text.contains("Next C selection"));
+        assert!(!text.contains("Live bucket B"));
+        let config = controller.get_config().await;
+        assert_eq!(language, config.whisper_language);
+        assert_eq!(tokens, config.ai_assistive_max_tokens);
+        assert!(explicit);
+        assert_eq!(
+            controller
+                .assistive_context
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .selected_text
+                .as_deref(),
+            Some("Live B selection")
+        );
+        assert_eq!(
+            controller
+                .pending_assistive_context
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .selected_text
+                .as_deref(),
+            Some("Next C selection")
+        );
+        assert_eq!(
+            format!("{:?}", controller.context_bucket.lock().await),
+            bucket_before
+        );
+        assert_eq!(
+            *controller.delivery_disposition.read().await,
+            TranscriptDelivery::ComposerPending
+        );
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[tokio::test]
     async fn capture_shutdown_settled_requires_conversation_task_completion() {
         let root = tempfile::tempdir().unwrap();
         let probe = StartupAcquisitionProbe::forbid();
@@ -12166,5 +12981,157 @@ mod truth_retention_parent_binding_tests {
             std::fs::read(detached.join("last_session.wav.truth.json")).unwrap(),
             serde_json::to_vec_pretty(&card).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod closed_take_publication_tests {
+    use super::*;
+    use crate::presentation::transcript_bus::CleanTranscriptEvent;
+    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+
+    struct HeldPublication {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        published: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for HeldPublication {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl EventSink for HeldPublication {
+        fn on_event(&self, _: &EngineEvent) {}
+
+        fn wait_presentation_published<'a>(
+            &'a self,
+            session_id: &'a str,
+            _: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                assert_eq!(session_id, "old-take");
+                self.entered.notify_one();
+                self.release.notified().await;
+                self.published.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    fn open_bus(id: &str, path: std::path::PathBuf) -> Arc<TranscriptBus> {
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: id.into(),
+                    mode: TranscriptMode::Agent,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
+                },
+                path,
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        bus
+    }
+
+    fn events(path: &std::path::Path) -> Vec<CleanTranscriptEvent> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_publication_keeps_original_tail_and_closes_only_old_bus() {
+        let root = tempfile::tempdir().unwrap();
+        let old_path = root.path().join("old.jsonl");
+        let new_path = root.path().join("new.jsonl");
+        let controller = RecordingController::new_without_keychain();
+        *controller.active_transcript_bus.write().await =
+            Some(open_bus("old-take", old_path.clone()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut recorder = StreamingRecorder::new().unwrap();
+        let inputs =
+            codescribe_core::config::CapturedRuntimeInputs::defaults_at(root.path().to_owned(), 1);
+        recorder.bind_session_authority(
+            "old-take".into(),
+            Arc::new(Config::runtime_snapshot_from_captured(inputs)),
+        );
+        recorder.set_event_sink(Some(Arc::new(HeldPublication {
+            entered: entered.clone(),
+            release: release.clone(),
+            published: published.clone(),
+            dropped: dropped.clone(),
+        })));
+        // No microphone/provider is needed to falsify ownership of the exact
+        // production ClosedTake. Exact PCM/archive refusal is covered separately.
+        let take = recorder.detach_closed_take(false);
+        let stopping =
+            tokio::spawn(
+                async move { try_stop_closed_take_for_terminal(take, Some("old-take")).await },
+            );
+        entered.notified().await;
+        tokio::time::advance(std::time::Duration::from_millis(3001)).await;
+        let (result, _, pending) = stopping.await.unwrap();
+        assert!(result.unwrap_err().is::<CaptureStopFailure>());
+        let pending = pending.expect("timeout retains the original standalone owner");
+        assert!(!pending.is_settled());
+        assert!(!dropped.load(Ordering::SeqCst));
+        assert!(!published.load(Ordering::SeqCst));
+        assert_eq!(
+            events(&old_path).len(),
+            1,
+            "timeout is not terminal Bus proof"
+        );
+        controller
+            .detach_preempted_stop(pending, Some("old-take"))
+            .await
+            .unwrap();
+        assert!(controller.active_transcript_bus.read().await.is_none());
+        *controller.active_transcript_bus.write().await =
+            Some(open_bus("successor", new_path.clone()));
+        *controller.session_id.write().await = Some("successor".into());
+        controller.set_state(State::RecToggle).await;
+        entered.notified().await;
+        release.notify_one();
+        let tasks = std::mem::take(&mut *controller.closed_capture_tails.lock().unwrap());
+        assert_eq!(tasks.len(), 1);
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert!(published.load(Ordering::SeqCst));
+        assert!(dropped.load(Ordering::SeqCst));
+        let old_events = events(&old_path);
+        assert_eq!(
+            old_events.len(),
+            2,
+            "one original start and one original terminal"
+        );
+        assert_eq!(
+            old_events[1].end_reason,
+            Some(TranscriptSessionEndReason::Completed)
+        );
+        assert_eq!(
+            events(&new_path).len(),
+            1,
+            "old completion cannot end the successor"
+        );
+        assert_eq!(controller.current_state().await, State::RecToggle);
+        assert_eq!(
+            controller.session_id.read().await.as_deref(),
+            Some("successor")
+        );
+        assert!(controller.active_transcript_bus.read().await.is_some());
     }
 }

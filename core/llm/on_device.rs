@@ -108,6 +108,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn a_registered_formatter_is_shared_and_replaceable() {
         register_on_device_formatter(Arc::new(Fixed("first")));
         let first = on_device_formatter().expect("registered");
@@ -116,5 +117,82 @@ mod tests {
         register_on_device_formatter(Arc::new(Fixed("second")));
         let second = on_device_formatter().expect("still registered");
         assert_eq!(second.format("i", "u").await.unwrap(), "second");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn apple_formats_text_without_cloud_audio_or_seal_and_off_refuses_missing_cloud() {
+        use crate::config::{CapturedRuntimeInputs, Config};
+        use crate::llm::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Host(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl OnDeviceFormatter for Host {
+            async fn format(
+                &self,
+                instructions: &str,
+                user_message: &str,
+            ) -> Result<String, OnDeviceFormatError> {
+                assert!(!instructions.is_empty());
+                assert!(user_message.contains("please preserve every word in this sentence"));
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("Please preserve every word in this sentence.".into())
+            }
+        }
+        struct Restore(Option<Arc<dyn OnDeviceFormatter>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                *shared_formatter().write().unwrap() = self.0.take();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _restore = Restore(shared_formatter().write().unwrap().take());
+        let calls = Arc::new(AtomicUsize::new(0));
+        register_on_device_formatter(Arc::new(Host(calls.clone())));
+        // The routing contract consumes an immutable captured snapshot. Avoid
+        // a process-global settings/env read racing other loader fixtures.
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 0);
+        input.user_settings.llm_formatting_provider = Some("custom:unconfigured-formatter".into());
+        input.user_settings.llm_assistive_provider = Some("custom:unconfigured-agent".into());
+        let raw = "please preserve every word in this sentence";
+        for policy in ["correction", "smart"] {
+            input.user_settings.formatting_level = Some(policy.into());
+            input.user_settings.format_on_device = Some(true);
+            input.values.format_on_device = true;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            // Credential availability can refresh from other test fixtures;
+            // this deliberately missing provider makes cloud requests refuse
+            // regardless of any key present in the process.
+            assert!(!snapshot.llm_lanes().formatting().available());
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .request_unavailable_reason()
+                    .is_some()
+            );
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .credential()
+                    .api_key()
+                    .is_none()
+            );
+            assert!(
+                crate::llm::ai_formatting::text_formatting_unavailable_reason(&snapshot).is_none()
+            );
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Applied);
+            assert_eq!(output.text, "Please preserve every word in this sentence.");
+            input.user_settings.format_on_device = Some(false);
+            input.values.format_on_device = false;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Failed);
+            assert!(output.text.to_lowercase().contains(raw));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

@@ -151,7 +151,7 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
-  static let editablePrompts: [Self] = [.correction, .smart, .max]
+  static let editablePrompts: [Self] = [.correction, .smart]
 
   /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
   var next: Self {
@@ -263,7 +263,7 @@ extension CsPasteMode {
     switch self {
     case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
     case .comfort:
-      return String(localized: "Comfort", comment: "Paste policy: paste wherever the caret is")
+      return String(localized: "Comfort", comment: "Paste policy: verified editable destinations")
     case .off:
       return String(
         localized: "settings.paste.policy.off", defaultValue: "Off",
@@ -277,12 +277,12 @@ extension CsPasteMode {
     case .safe:
       return String(
         localized:
-          "Pastes only into a text field; terminals only when it doesn't look like a command."
+          "Pastes into a verified editable text field. Unreadable fields and terminal commands go to Deferred Paste; your clipboard stays unchanged."
       )
     case .comfort:
       return String(
         localized:
-          "Pastes wherever the caret is, terminals too; commands and password fields are held."
+          "Pastes into a verified editable text field. Without one, Deferred Paste holds the transcript without changing your clipboard."
       )
     case .off:
       return String(localized: "Never pastes automatically; the transcript stays on the overlay.")
@@ -356,7 +356,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
     case .license: return String(localized: "License", comment: "Settings section")
-    case .user: return String(localized: "User", comment: "Settings section: account profile")
+    case .user:
+      return String(localized: "About", comment: "Settings section: the app, its data and resets")
     }
   }
 
@@ -410,7 +411,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
     case .license: return "checkmark.seal"
-    case .user: return "person.crop.circle"
+    case .user: return "info.circle"
     }
   }
 
@@ -493,7 +494,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "account, profile, sign in, identity",
+          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -855,7 +856,7 @@ struct LLMLaneModel {
 
   /// Both lanes on one provider share one discovery record, so its failure
   /// would print twice. The Formatting footer defers to the Agent's line then;
-  /// availability stays per lane (an account authorizes Assistive only).
+  /// availability stays per lane (each lane seals its own credential truth).
   func repeatsDiscoveryFailure(of other: LLMLaneModel) -> Bool {
     lane == .formatting && other.lane == .assistive && providerId == other.providerId
       && discoveryFailed && other.discoveryFailed
@@ -890,13 +891,7 @@ struct LLMLaneModel {
       if runtime.accountAuth {
         return String(
           localized:
-            "The connected account covers Agent requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
-        )
-      }
-      if lane == .formatting, provider?.accountSignedIn == true {
-        return String(
-          localized:
-            "Formatting needs this provider's API key; the connected account does not cover it. Add the key under Providers."
+            "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
         )
       }
       return String(
@@ -1041,12 +1036,10 @@ enum AppRelaunch {
 }
 
 /// Quick-start actions from the Creator panel's cards. Navigation cases route
-/// the settings rail; `openOverlay` starts a real dictation session through an
-/// injectable seam so the cards are never inert decorations again
-/// (UI_DIVERGENCE_AUDIT pkt 4 — fake UX).
+/// the settings rail; `openWidget` reveals the same widget as the Tray entry.
 enum SettingsQuickStartAction: String, CaseIterable {
   case testMic
-  case openOverlay
+  case openWidget
   case tuneShortcuts
 }
 
@@ -1094,10 +1087,10 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
-  /// live tray toggle but only dereferenced on click, so unit tests can inject
-  /// a spy without ever waking `AppModel.shared`.
-  var onQuickStartDictation: () -> Void = { AppModel.shared.tray.toggleDictation() }
+  /// View-only entry for the "Open widget" card, shared with the Tray route.
+  /// Dereferenced on click so tests can inject the widget owner without waking
+  /// `AppModel.shared` or starting microphone capture.
+  var onQuickStartOpenWidget: () -> Void = { AppModel.shared.overlay.showWidget() }
 
   /// Overlay seam for the preview preset. A preset writes the "Transcription
   /// Overlay" preference; the overlay's owner closes a panel already on screen
@@ -1111,7 +1104,7 @@ final class SettingsViewModel: ObservableObject {
     switch action {
     case .testMic: section = .audio
     case .tuneShortcuts: section = .shortcuts
-    case .openOverlay: onQuickStartDictation()
+    case .openWidget: onQuickStartOpenWidget()
     }
   }
 
@@ -1157,6 +1150,10 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
   @Published private(set) var mcpTestPending: Set<String> = []
   @Published private(set) var toolCapabilities: [CsToolCapability] = []
+  /// True while the tool catalog is being discovered. Discovery spawns every
+  /// configured MCP server and waits for its `tools/list`, so the Tools tab
+  /// shows a progress row instead of an empty catalog in the meantime.
+  @Published private(set) var toolCatalogLoading = false
   @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
     defaultLevel: "ask",
     readOnlyDefault: "allow",
@@ -1168,6 +1165,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var keyProbePending: Set<String> = []
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
+  /// Every saved correction, not just the page `refreshVoiceLab()` loads:
+  /// Learn replays the whole store and the counters describe the corpus.
+  @Published private(set) var totalQualityCorrections: UInt64 = 0
   @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
   @Published private(set) var ruleCandidates: [CsRuleCandidate] = []
   @Published private(set) var voiceLabReadError: String?
@@ -1236,6 +1236,23 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var whisperModelError: String?
   @Published private(set) var whisperModelSwitchPending = false
 
+  /// Shared invalidation edges from `AppModel` (nil in tests and previews).
+  private let configurationInvalidation: ConfigurationInvalidation?
+  private var configurationInvalidationSink: AnyCancellable?
+  /// Residency wait loop; see `beginWhisperResidencyObservation`.
+  private var whisperResidencyObservation: Task<Void, Never>?
+  private var whisperResidencyObserved = false
+  /// Fence for the wait loop: a newer edge, selection or close supersedes it.
+  private var whisperResidencyGeneration: UInt64 = 0
+  /// A recorder edge made a resident-weights change expected (a take loads
+  /// the engine lazily; its tail may cold-load after the stop edge).
+  private var whisperLoadExpected = false
+  /// Catalog re-read delay while a load is pending: starts at `initial`,
+  /// doubles per read, never exceeds `ceiling`. No lifetime budget.
+  var whisperResidencyPollInterval: (initial: Duration, ceiling: Duration) = (
+    .seconds(2), .seconds(10)
+  )
+
   // MARK: - Hotkeys (mode bindings)
 
   /// Persisted per-mode bindings as last read from disk.
@@ -1246,6 +1263,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var draftBindings: [CsModeBinding] = []
   /// Conflicts for the CURRENT draft (recomputed on every edit).
   @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
+  /// What the last explicit save actually persisted, read back from disk and
+  /// cleared by the next edit or reset (`HotkeySaveReceipt.swift`).
+  @Published private(set) var bindingSaveReceipt: HotkeyBindingSaveReceipt?
 
   /// Build provenance comes from the running app bundle. The build pipeline
   /// writes all four fields in project.yml / scripts/build-app.sh.
@@ -1276,6 +1296,7 @@ final class SettingsViewModel: ObservableObject {
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
     whisperDownloadStore: WhisperDownloadStore = .shared,
+    configurationInvalidation: ConfigurationInvalidation? = nil,
     languagePreferences: UserDefaults = .standard,
     preferredLanguages: [String] = Locale.preferredLanguages,
     processInterfaceLanguage: InterfaceLanguage = .preferred(
@@ -1303,6 +1324,7 @@ final class SettingsViewModel: ObservableObject {
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
     self.whisperDownloadStore = whisperDownloadStore
+    self.configurationInvalidation = configurationInvalidation
     self.languagePreference = InterfaceLanguagePreference(
       defaults: languagePreferences, preferredLanguages: preferredLanguages,
       processLanguage: processInterfaceLanguage)
@@ -1359,6 +1381,28 @@ final class SettingsViewModel: ObservableObject {
       self?.objectWillChange.send()
     }
     lastServingVerdict = servingStatusProvider()
+    configurationInvalidationSink = configurationInvalidation?.edges(excluding: self)
+      .sink { [weak self] edge in
+        self?.handleConfigurationInvalidation(edge)
+      }
+  }
+
+  /// Already-open Settings follows writes made elsewhere (tray Quick Settings,
+  /// another surface) and recorder edges, by re-reading canonical truth only.
+  /// Editor drafts are not touched: hotkey drafts reload only through
+  /// `loadHotkeys()`, and view-local text drafts follow only fields whose
+  /// persisted value actually changed.
+  private func handleConfigurationInvalidation(_ edge: ConfigurationInvalidation.Edge) {
+    switch edge {
+    case .settingsWritten:
+      guard let engine else { return }
+      applyLoadedSettings(engine.loadSettings())
+      refreshWhisperModelCatalog()
+    case .recordingLifecycle:
+      whisperLoadExpected = true
+      refreshWhisperModelCatalog()
+    }
+    observeWhisperResidencyIfNeeded()
   }
 
   /// Passive inspection of the bundled installer; never attaches an agent.
@@ -1526,11 +1570,93 @@ final class SettingsViewModel: ObservableObject {
               localized: "Saved · an override decides the active model (see note below)",
               comment: "Whisper model picker: selection persisted but an env override shadows it"
             )
+        self.configurationInvalidation?.settingsWritten(by: self)
       } catch {
         self.whisperModelError = String(describing: error)
       }
       self.refreshWhisperModelCatalog()
       self.refreshWhisperModelStatus()
+      self.observeWhisperResidencyIfNeeded()
+    }
+  }
+
+  // MARK: - Resident Whisper observation (visible Settings only)
+
+  /// Residency moves without a Swift event: the bridge exposes no load
+  /// completion, a take loads the engine lazily, a tail decode may cold-load
+  /// after the stop edge, and a deferred switch lands at the recording-idle
+  /// boundary. While such a change is pending and Settings is visible, the
+  /// catalog alone (never the whole settings snapshot) is re-read on a
+  /// widening interval until resident weights match the selection, the
+  /// window closes, or a newer edge supersedes the wait. There is no lifetime
+  /// budget: a slow first load still reaches the open picker.
+  func beginWhisperResidencyObservation() {
+    whisperResidencyObserved = true
+    // Opening this window can happen after the recorder's start edge. Read
+    // its existing owners so a cold load still reaches the reopened picker.
+    if let controls = audioRecordingControls() {
+      let state = controls.state
+      whisperLoadExpected =
+        whisperLoadExpected || controls.tray.isRecording
+        || state.warmingUp || state.recording || state.transcribing || state.isFinalPass
+    }
+    refreshWhisperModelCatalog()
+    observeWhisperResidencyIfNeeded()
+  }
+
+  func endWhisperResidencyObservation() {
+    whisperResidencyObserved = false
+    whisperLoadExpected = false
+    whisperResidencyGeneration &+= 1
+    whisperResidencyObservation?.cancel()
+    whisperResidencyObservation = nil
+  }
+
+  /// Resident weights already match what the next recording loads, or there
+  /// is nothing a passive read could settle.
+  var whisperResidencySettled: Bool {
+    guard let catalog = whisperModelCatalog, let resolved = catalog.resolvedPath else {
+      return true
+    }
+    guard let loaded = catalog.loaded else { return false }
+    return loaded == resolved || loaded == "embedded"
+  }
+
+  /// A resident-weights change is on its way without another user action:
+  /// resident weights differ from the selection (a deferred switch drops them
+  /// at idle), or a recorder edge made a load expected. Idle and unloaded
+  /// with no such edge is stable truth ("loads on the next recording").
+  var whisperResidencyPending: Bool {
+    guard !whisperResidencySettled, whisperModelCatalog?.resolvedPath != nil else {
+      return false
+    }
+    return whisperModelCatalog?.loaded != nil || whisperLoadExpected
+  }
+
+  private func observeWhisperResidencyIfNeeded() {
+    guard whisperResidencyObserved, engine != nil else { return }
+    whisperResidencyGeneration &+= 1
+    whisperResidencyObservation?.cancel()
+    whisperResidencyObservation = nil
+    if whisperResidencySettled { whisperLoadExpected = false }
+    guard whisperResidencyPending else { return }
+    let generation = whisperResidencyGeneration
+    let cadence = whisperResidencyPollInterval
+    whisperResidencyObservation = Task { @MainActor [weak self] in
+      var delay = cadence.initial
+      while true {
+        try? await Task.sleep(for: delay)
+        guard !Task.isCancelled, let self, self.whisperResidencyGeneration == generation else {
+          return
+        }
+        self.refreshWhisperModelCatalog()
+        if self.whisperResidencySettled { self.whisperLoadExpected = false }
+        guard self.whisperResidencyPending else {
+          self.whisperResidencyObservation = nil
+          return
+        }
+        delay = min(delay * 2, cadence.ceiling)
+      }
     }
   }
 
@@ -1579,6 +1705,7 @@ final class SettingsViewModel: ObservableObject {
   /// conflicts surface inline before the user commits.
   func editDraftBinding(mode: CsWorkMode, binding: CsShortcutBinding) {
     guard let index = draftBindings.firstIndex(where: { $0.mode == mode }) else { return }
+    bindingSaveReceipt = nil
     let label =
       bindingOptions.first { $0.binding == binding }?.label
       ?? draftBindings[index].bindingLabel
@@ -1602,26 +1729,52 @@ final class SettingsViewModel: ObservableObject {
   }
 
   /// Persist every changed mode through the core `set_mode_binding` contract
-  /// (each write live-reloads the detector), then re-read disk truth. Guarded by
-  /// `canSaveBindings`, so a conflicted or unchanged draft never writes.
+  /// (each write live-reloads the detector), then report what actually landed.
+  /// Guarded by `canSaveBindings`, so a conflicted or unchanged draft never
+  /// writes.
+  ///
+  /// Every requested mode is attempted even after one is refused: the bridge
+  /// rejects some mode/gesture pairs individually, and stopping at the first
+  /// rejection used to leave earlier writes persisted with the screen still
+  /// showing the pre-save state. The receipt is then built from a re-read, not
+  /// from the draft and not from the absence of a thrown error — the core's
+  /// `save_if_changed` only warns on a failed write.
   func saveBindings() {
     guard let hotkeys, canSaveBindings else { return }
-    do {
-      for draft in draftBindings {
-        let current = modeBindings.first { $0.mode == draft.mode }
-        if current?.binding != draft.binding {
-          try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
-        }
-      }
-      loadHotkeys()
-    } catch {
-      lastError = String(describing: error)
+    let requested = draftBindings.filter { draft in
+      modeBindings.first { $0.mode == draft.mode }?.binding != draft.binding
     }
+    var failureDetail: String?
+    for draft in requested {
+      do {
+        try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
+      } catch {
+        if failureDetail == nil { failureDetail = String(describing: error) }
+      }
+    }
+
+    // Persisted truth wins over the draft, so a refused gesture snaps back to
+    // the one that is actually in effect instead of lingering in the picker.
+    let persisted = hotkeys.modeBindings()
+    modeBindings = persisted
+    bindingOptions = hotkeys.availableBindings()
+    draftBindings = persisted
+    revalidateBindings()
+
+    func landed(_ entry: CsModeBinding) -> Bool {
+      persisted.first { $0.mode == entry.mode }?.binding == entry.binding
+    }
+    bindingSaveReceipt = HotkeyBindingSaveReceipt(
+      saved: requested.filter(landed).map(\.mode),
+      rejected: requested.filter { !landed($0) }.map(\.mode),
+      failureDetail: failureDetail
+    )
   }
 
   /// Reset all bindings to the built-in defaults and re-read.
   func resetBindingsToDefaults() {
     guard let hotkeys else { return }
+    bindingSaveReceipt = nil
     do {
       try hotkeys.resetToDefaults()
       loadHotkeys()
@@ -1663,11 +1816,13 @@ final class SettingsViewModel: ObservableObject {
   /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
+    toolCatalogLoading = true
     Task { @MainActor [weak self] in
       let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
       guard let self else { return }
       self.permissionPolicy = policy
       self.toolCapabilities = capabilities
+      self.toolCatalogLoading = false
     }
   }
 
@@ -1717,13 +1872,14 @@ final class SettingsViewModel: ObservableObject {
 
   /// Add a server from the form. `args` is already split into tokens. On success
   /// the list + readiness re-probe so the panel reflects the new state and the
-  /// result is nil; on failure the store's error comes back so the form can
-  /// show it next to the fields it keeps.
+  /// result is nil; on failure the store's refusal comes back translated for
+  /// the form (user sentence, the field it points at, the store's words as
+  /// detail) so the form can show it under the field it keeps.
   @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
     endpoint: String = "", token: String = ""
-  ) -> String? {
+  ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
@@ -1736,10 +1892,31 @@ final class SettingsViewModel: ObservableObject {
       refreshAgentStatus()
       return nil
     } catch {
-      let message = String(describing: error)
-      lastError = message
-      return message
+      let failure = MCPAddFailure(error)
+      lastError = failure.detail
+      return failure
     }
+  }
+
+  /// The server the Remove button asked about. While it is set the alert is
+  /// up and nothing has been deleted: Cancel, Escape or closing the alert
+  /// clears it, only the alert's destructive button removes.
+  @Published var mcpRemovalCandidate: String?
+
+  func requestMcpServerRemoval(_ name: String) {
+    mcpRemovalCandidate = name
+  }
+
+  func cancelMcpServerRemoval() {
+    mcpRemovalCandidate = nil
+  }
+
+  /// Remove the named server after the alert confirmed it. The name comes
+  /// from the alert itself so the order in which SwiftUI runs the action and
+  /// drops the presentation does not matter.
+  func confirmMcpServerRemoval(_ name: String) {
+    mcpRemovalCandidate = nil
+    removeMcpServer(name)
   }
 
   /// Flip a server's `enabled` flag, preserving its command / args / env. The
@@ -1854,14 +2031,16 @@ final class SettingsViewModel: ObservableObject {
     if includePrompts {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will also move to Trash.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash.",
+        comment: "The four file names stay verbatim"
       )
     } else {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will be preserved.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will be preserved.",
+        comment: "The four file names stay verbatim"
       )
     }
     if includeKeys {
@@ -1907,12 +2086,22 @@ final class SettingsViewModel: ObservableObject {
     let preview = agentResetPreview
     let threads = Int(preview.threads)
     let files = Int(preview.files)
+    // The vendor API keys the Agent reset deletes are the same Keychain
+    // accounts the Formatting lane reads on that vendor (`bridge/src/config.rs`
+    // `agent_secret_accounts`), so the confirmation says so.
     let secretState =
       preview.secretsPresent
       ? String(
         localized:
           "Agent provider and MCP connector secrets are present and will be deleted permanently."
       )
+        + " "
+        + String(
+          localized:
+            "Vendor API keys (OpenAI, Anthropic, xAI, Libraxis) are shared with Formatting: if Formatting uses one of them, enter that key again afterwards.",
+          comment:
+            "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane"
+        )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
       localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
@@ -2041,10 +2230,22 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
-  /// Enabled Formatting still exposes cloud requests even with on-device execution selected.
+  /// The formatting lane is required only for Smart/Corrections without Apple
+  /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
+  /// Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
-    settings.aiFormattingEnabled
-      && FormattingPolicyOption(storedValue: settings.formattingLevel) != .off
+    guard settings.aiFormattingEnabled, !settings.formatOnDevice else { return false }
+    switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
+    case .correction, .smart: return true
+    case .off, .max, nil: return false
+    }
+  }
+
+  /// Max is selected but the Agent lane cannot serve it. Max never borrows the
+  /// formatting lane or Apple, so this is shown instead of a working Max.
+  var maxAgentUnavailable: Bool {
+    maxConsultationEnabled && providerAccessResolved && providerAccessError == nil
+      && !llmLane(.assistive).runtime.available
   }
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
@@ -2054,10 +2255,16 @@ final class SettingsViewModel: ObservableObject {
     {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
+      return String(
+        localized:
+          "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only.",
+        comment: "Formatting lane usage while the Max level is selected")
+    }
     if settings.formatOnDevice {
       return String(
         localized:
-          "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. \(llmLane(lane).availabilityDescription)",
+          "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. \(llmLane(lane).availabilityDescription)",
         comment: "The placeholder is the resolved cloud lane availability")
     }
     return llmLane(lane).availabilityDescription
@@ -2086,8 +2293,7 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
-        ?? (lane == .assistive && !runtime.keyPresent
-          ? providerAccountErrors[runtime.providerId] : nil)
+        ?? (!runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
@@ -2180,6 +2386,28 @@ final class SettingsViewModel: ObservableObject {
     languagePreference.needsRestart(for: interfaceLanguage)
   }
 
+  /// Copy about the pending restart speaks the chosen language, not the running
+  /// one, so the row already reads the way the app will after the relaunch.
+  var interfaceLanguageRestartExplanation: String {
+    String(
+      localized: LocalizedStringResource(
+        "Codescribe will restart in this language. Your recording must finish first.",
+        locale: interfaceLanguage.locale,
+        comment: "Interface language restart explanation in Settings"))
+  }
+
+  var interfaceLanguageRestartTitle: String {
+    applyingInterfaceLanguage
+      ? String(
+        localized: LocalizedStringResource(
+          "Restarting…", locale: interfaceLanguage.locale,
+          comment: "Interface language restart in flight"))
+      : String(
+        localized: LocalizedStringResource(
+          "Restart now", locale: interfaceLanguage.locale,
+          comment: "Apply the interface language"))
+  }
+
   /// Saves the choice at once; nothing else in the app changes until restart.
   /// Picking the running language again clears a pending restart.
   func selectInterfaceLanguage(_ language: InterfaceLanguage) {
@@ -2196,7 +2424,7 @@ final class SettingsViewModel: ObservableObject {
     guard interfaceLanguageNeedsRestart, !applyingInterfaceLanguage else { return }
     guard let onApplyInterfaceLanguage else {
       interfaceLanguageNotice = InterfaceLanguageRestartError.unavailable.message(
-        locale: Locale.current)
+        locale: interfaceLanguage.locale)
       return
     }
     applyingInterfaceLanguage = true
@@ -2209,7 +2437,7 @@ final class SettingsViewModel: ObservableObject {
         try await onApplyInterfaceLanguage {}
       } catch {
         interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
-          .message(locale: Locale.current)
+          .message(locale: interfaceLanguage.locale)
       }
     }
   }
@@ -2289,6 +2517,14 @@ final class SettingsViewModel: ObservableObject {
 
   func restoreDefaultTranscriptTagTemplate() {
     setTranscriptTagTemplate(defaultTranscriptTagTemplate)
+  }
+
+  /// A field chip in About appends its placeholder to the template. The edit
+  /// goes through the same persisted write as typing, so the preview, the
+  /// warning and the saved value stay one truth.
+  func insertTranscriptTagPlaceholder(_ placeholder: String) {
+    guard transcriptTagTemplatePlaceholders.contains(placeholder) else { return }
+    setTranscriptTagTemplate(settings.transcriptTagTemplate + placeholder)
   }
 
   // MARK: - Audio (live hardware + existing settings contract)
@@ -2457,12 +2693,14 @@ final class SettingsViewModel: ObservableObject {
       let listing = try engine.loadQualityRecentListing(limit: 50)
       qualityRecords = listing.records
       unchangedQualityTakes = listing.unchangedTakes
+      totalQualityCorrections = listing.totalCorrections
       customLexiconEntries = try engine.loadLexiconCustomEntries()
       ruleCandidates = try engine.loadRuleCandidates(minOccurrences: 2)
       voiceLabReadError = nil
     } catch {
       qualityRecords = []
       unchangedQualityTakes = 0
+      totalQualityCorrections = 0
       customLexiconEntries = []
       ruleCandidates = []
       voiceLabReadError = String(describing: error)
@@ -2494,7 +2732,8 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+  /// Learn from corrections: mine corrections.jsonl + proposed lexicon into
+  /// the live custom dictionary.
   /// Teach replays the whole correction store and rewrites the lexicon — real
   /// disk I/O whose cost scales with the corpus. Running it inline froze
   /// Settings for the duration; it now runs off the main actor like the key
@@ -2504,19 +2743,20 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
+    // The engine reports every eligible pair it applied, learned before or
+    // not; the growth of the flattened rules list is what is actually new.
+    // Read the list from the engine: the panel's copy may not be loaded yet.
+    let rulesBefore = (try? engine.loadLexiconCustomEntries().count) ?? customLexiconEntries.count
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
         let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        let fromCorrections = Int(result.fromCorrections)
-        let fromProposed = Int(result.fromProposed)
         let totalRules = Int(result.totalRules)
-        let correctionSourced = Int(result.rulesFromCorrectionSource)
-        self.voiceLabTeachMessage = String(
-          localized:
-            "Taught +\(fromCorrections) from corrections, +\(fromProposed) from proposed → \(totalRules) live rules (\(correctionSourced) correction-sourced).",
-          comment: "Counted teach summary; the live-rules count needs a plural variation"
+        self.voiceLabTeachMessage = learnResultMessage(
+          added: totalRules - rulesBefore,
+          fromSuggestions: Int(result.fromProposed),
+          activeRules: totalRules
         )
         self.refreshVoiceLab()
       } catch {
@@ -2907,6 +3147,7 @@ final class SettingsViewModel: ObservableObject {
     guard let engine else { return }
     try engine.updateConfig(key: key, value: value)
     applyLoadedSettings(engine.loadSettings())
+    configurationInvalidation?.settingsWritten(by: self)
   }
 
   private func persistMany(_ entries: [CsConfigEntry]) {
@@ -2914,6 +3155,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.updateConfigMany(entries: entries)
       applyLoadedSettings(engine.loadSettings())
+      configurationInvalidation?.settingsWritten(by: self)
     } catch {
       lastError = String(describing: error)
     }
@@ -2968,7 +3210,7 @@ final class SettingsViewModel: ObservableObject {
   static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color
   {
     provider.apiKeySet
-      || (lane == .assistive && provider.wire == "responses" && provider.accountSignedIn)
+      || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
       ? CSColor.oliveLight : CSColor.terracotta
   }

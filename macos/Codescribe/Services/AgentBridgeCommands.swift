@@ -295,7 +295,7 @@ extension RealAgentBridgeInstaller {
 
   /// Written user messages share the installed canonical bus publisher and follower.
   @MainActor
-  static func sendBusText(owner: OverlayConversationOwner, text: String) async throws {
+  static func sendBusText(owner: OverlayConversationOwner?, text: String) async throws {
     let installer = RealAgentBridgeInstaller()
     let executable = installer.commandURL("cs-bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
@@ -309,25 +309,29 @@ extension RealAgentBridgeInstaller {
     }
     let root = installer.bridgeRoot
     try await Task.detached(priority: .userInitiated) {
-      let lease = root.appendingPathComponent("leases/\(owner.leaseID).json")
-      guard
-        let receipt = try JSONSerialization.jsonObject(with: Data(contentsOf: lease))
-          as? [String: Any],
-        receipt["provider"] as? String == owner.provider,
-        receipt["provider_session_id"] as? String == owner.providerSessionID,
-        receipt["lease_id"] as? String == owner.leaseID,
-        let bus = receipt["bus"] as? String, bus.hasPrefix("/")
-      else {
-        throw CocoaError(.fileReadCorruptFile)
+      var arguments = ["--send-text", "--channel", "0", "--bridge-home", root.path]
+      if let owner {
+        let lease = root.appendingPathComponent("leases/\(owner.leaseID).json")
+        guard
+          let receipt = try JSONSerialization.jsonObject(with: Data(contentsOf: lease))
+            as? [String: Any],
+          receipt["provider"] as? String == owner.provider,
+          receipt["provider_session_id"] as? String == owner.providerSessionID,
+          receipt["lease_id"] as? String == owner.leaseID,
+          let bus = receipt["bus"] as? String, bus.hasPrefix("/")
+        else {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+        arguments = [
+          "--send-text", "--channel", owner.channel, "--provider", owner.provider,
+          "--session", owner.providerSessionID, "--lease", owner.leaseID, "--bus", bus,
+          "--bridge-home", root.path,
+        ]
       }
       let process = Process()
       let input = Pipe()
       process.executableURL = executable
-      process.arguments = [
-        "--send-text", "--channel", owner.channel, "--provider", owner.provider,
-        "--session", owner.providerSessionID, "--lease", owner.leaseID, "--bus", bus,
-        "--bridge-home", root.path,
-      ]
+      process.arguments = arguments
       process.standardInput = input
       process.standardOutput = FileHandle.nullDevice
       process.standardError = FileHandle.nullDevice
@@ -341,8 +345,9 @@ extension RealAgentBridgeInstaller {
         throw NSError(
           domain: "Codescribe.BusText", code: Int(process.terminationStatus),
           userInfo: [
-            NSLocalizedDescriptionKey: String(
-              localized: "Message could not be sent. Your draft is retained.")
+            NSLocalizedDescriptionKey: process.terminationStatus == 4
+              ? String(localized: "Some agents may have received this message. Check read receipts before sending again.")
+              : String(localized: "Message could not be sent. Your draft is retained.")
           ])
       }
     }.value

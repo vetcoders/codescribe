@@ -9,10 +9,11 @@
 use serde::{Deserialize, Serialize};
 use syn::{Block, Expr, ImplItemFn, Stmt, parse_quote, visit::Visit};
 
+mod closed_take;
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=4";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=5";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,9 +135,10 @@ impl<'ast> Visit<'ast> for PasteSites {
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if *node.func == parse_quote!(clipboard::paste_and_restore) {
+        let unguarded_transport = *node.func == parse_quote!(clipboard::paste_and_restore);
+        if unguarded_transport || *node.func == parse_quote!(clipboard::paste_to_stop_target) {
             self.sites += 1;
-            if !self.focus || !self.preflight || self.deferred {
+            if unguarded_transport || !self.focus || !self.preflight || self.deferred {
                 self.violations += 1;
             }
         }
@@ -190,11 +192,55 @@ fn check(body: &Body) -> Contract {
                         ) -> Result<(String, Option<std::path::PathBuf>)> {
                         }
                     ),
-                    "complete_stop" => parse_quote!(
-                        async fn complete_stop(
+                    "close_capture" => parse_quote!(
+                        pub async fn close_capture(&mut self) -> bool {}
+                    ),
+                    "release_take_pcm_feed" => parse_quote!(
+                        fn release_take_pcm_feed(&mut self) -> TakeFeedRelease {}
+                    ),
+                    "release_capture_subscriber" => parse_quote!(
+                        pub fn release_capture_subscriber(
                             &mut self,
-                            stopped: Result<Option<std::path::PathBuf>>,
+                            id: CaptureSubscriberId,
+                        ) -> bool {
+                        }
+                    ),
+                    "finish_closed_capture" => parse_quote!(
+                        pub async fn finish_closed_capture(
+                            &mut self,
+                            was_active: bool,
                         ) -> Result<(String, Option<std::path::PathBuf>)> {
+                        }
+                    ),
+                    "detach_closed_take" => parse_quote!(
+                        pub fn detach_closed_take(&mut self, was_active: bool) -> ClosedTake {}
+                    ),
+                    "detach_take_state" => parse_quote!(
+                        fn detach_take_state(
+                            &mut self,
+                            stopped: Option<Result<Option<std::path::PathBuf>>>,
+                            archive: Option<SpillSink>,
+                            physical_archive: Option<ClosedCaptureArchive>,
+                        ) -> ClosedTake {
+                        }
+                    ),
+                    "is_settled" => parse_quote!(
+                        pub fn is_settled(&self) -> bool {}
+                    ),
+                    "finish" => parse_quote!(
+                        pub async fn finish(
+                            &mut self,
+                        ) -> Result<(String, Option<std::path::PathBuf>)> {
+                        }
+                    ),
+                    "copy_stop_error" => parse_quote!(
+                        fn copy_stop_error(error: &anyhow::Error) -> anyhow::Error {}
+                    ),
+                    "finalize_take_archive" => parse_quote!(
+                        fn finalize_take_archive(
+                            archive: SpillSink,
+                            expected_samples: u64,
+                        ) -> Result<Option<std::path::PathBuf>> {
                         }
                     ),
                     "terminal_finality" => parse_quote!(
@@ -269,7 +315,26 @@ fn check(body: &Body) -> Contract {
                         ));
                     }
                     "stop" => productions::stop(&mut g, &function.block),
-                    "complete_stop" => productions::complete(&mut g, &function.block),
+                    "close_capture" => closed_take::close_capture(&mut g, &function.block),
+                    "release_take_pcm_feed" => {
+                        closed_take::release_take_pcm_feed(&mut g, &function.block)
+                    }
+                    "release_capture_subscriber" => {
+                        closed_take::release_capture_subscriber(&mut g, &function.block)
+                    }
+                    "finish_closed_capture" => {
+                        closed_take::finish_closed_capture(&mut g, &function.block)
+                    }
+                    "detach_closed_take" => {
+                        closed_take::detach_closed_take(&mut g, &function.block)
+                    }
+                    "detach_take_state" => closed_take::detach_take_state(&mut g, &function.block),
+                    "is_settled" => closed_take::is_settled(&mut g, &function.block),
+                    "finish" => closed_take::finish(&mut g, &function.block),
+                    "copy_stop_error" => closed_take::copy_stop_error(&mut g, &function.block),
+                    "finalize_take_archive" => {
+                        closed_take::finalize_take_archive(&mut g, &function.block)
+                    }
                     "terminal_finality" => finality::ledger(&mut g, &function.block),
                     "has_no_capture_facts" => finality::empty(&mut g, &function.block),
                     "matches_refused_document" => finality::bus(&mut g, &function.block),
@@ -293,7 +358,19 @@ pub fn analyze(request: Request) -> Evidence {
         ("noop", "app/controller/delivery_route.rs"),
         ("execute_clipboard_paste", "app/controller/mod.rs"),
         ("stop", "core/audio/streaming_recorder.rs"),
-        ("complete_stop", "core/audio/streaming_recorder.rs"),
+        ("close_capture", "core/audio/streaming_recorder.rs"),
+        ("release_take_pcm_feed", "core/audio/streaming_recorder.rs"),
+        (
+            "release_capture_subscriber",
+            "core/audio/streaming_recorder.rs",
+        ),
+        ("finish_closed_capture", "core/audio/streaming_recorder.rs"),
+        ("detach_closed_take", "core/audio/streaming_recorder.rs"),
+        ("detach_take_state", "core/audio/streaming_recorder.rs"),
+        ("is_settled", "core/audio/streaming_recorder.rs"),
+        ("finish", "core/audio/streaming_recorder.rs"),
+        ("copy_stop_error", "core/audio/streaming_recorder.rs"),
+        ("finalize_take_archive", "core/audio/streaming_recorder.rs"),
         ("terminal_finality", "core/pipeline/acoustic_ledger.rs"),
         ("has_no_capture_facts", "core/pipeline/acoustic_ledger.rs"),
         (
@@ -344,7 +421,7 @@ mod tests {
         let evidence = sites(parse_quote!({
             if focus_confirmed {
                 if preflight.can_post_events() {
-                    clipboard::paste_and_restore(&text);
+                    clipboard::paste_to_stop_target(&text, &target);
                 }
             }
         }));
@@ -356,7 +433,7 @@ mod tests {
         let evidence = sites(parse_quote!({
             if focus_confirmed && preflight.can_post_events() {
             } else {
-                clipboard::paste_and_restore(&text);
+                clipboard::paste_to_stop_target(&text, &target);
             }
         }));
         assert_eq!((evidence.sites, evidence.violations), (1, 1));
@@ -366,7 +443,7 @@ mod tests {
     fn closure_cannot_borrow_enclosing_guard() {
         let evidence = sites(parse_quote!({
             if focus_confirmed && preflight.can_post_events() {
-                let later = || clipboard::paste_and_restore(&text);
+                let later = || clipboard::paste_to_stop_target(&text, &target);
             }
         }));
         assert_eq!((evidence.sites, evidence.violations), (1, 1));
@@ -376,9 +453,9 @@ mod tests {
     fn duplicate_effect_and_or_condition_are_visible() {
         let evidence = sites(parse_quote!({
             if focus_confirmed || preflight.can_post_events() {
-                clipboard::paste_and_restore(&text);
+                clipboard::paste_to_stop_target(&text, &target);
             }
-            clipboard::paste_and_restore(&text);
+            clipboard::paste_to_stop_target(&text, &target);
         }));
         assert_eq!((evidence.sites, evidence.violations), (2, 2));
     }
@@ -389,6 +466,16 @@ mod tests {
             let text = "clipboard::paste_and_restore(&text)";
         }));
         assert_eq!(evidence.sites, 0);
+    }
+
+    #[test]
+    fn raw_transport_cannot_bypass_target_capability_even_under_focus_guard() {
+        let evidence = sites(parse_quote!({
+            if focus_confirmed && preflight.can_post_events() {
+                clipboard::paste_and_restore(&text);
+            }
+        }));
+        assert_eq!((evidence.sites, evidence.violations), (1, 1));
     }
 
     #[test]

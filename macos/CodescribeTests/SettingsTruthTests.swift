@@ -383,14 +383,14 @@ final class SettingsTruthTests: XCTestCase {
   /// The prompt picker moved; prompt identity did not. Each segment still maps
   /// to the same storage level; the file name lives under File details only.
   func testPromptFilesKeepTheirStorageIdentity() {
-    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, .max, nil])
+    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, nil])
     XCTAssertEqual(
       PromptFile.allCases.compactMap(\.formattingLevel),
       FormattingPolicyOption.editablePrompts
     )
     XCTAssertEqual(
       PromptFile.allCases.map(\.editorTitle),
-      ["Correction prompt", "Smart prompt", "Max prompt", "Agent prompt"]
+      ["Correction prompt", "Smart prompt", "Agent prompt"]
     )
     for file in PromptFile.allCases {
       XCTAssertFalse(
@@ -413,7 +413,9 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
+    XCTAssertTrue(model.toolCatalogLoading, "discovery is in flight until the surface lands")
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+    XCTAssertFalse(model.toolCatalogLoading)
 
     XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
     XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
@@ -462,7 +464,7 @@ final class SettingsTruthTests: XCTestCase {
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
-      (.user, "user", "User", .user),
+      (.user, "user", "About", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -543,6 +545,40 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
 
+    // Our own tools are named in the interface language; an MCP server's tools
+    // keep the vendor's wording, spelled out of the registry name.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "get_selected_text", identity: "native:get_selected_text"),
+      "Read selected text")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "fetch_github_file", identity: "native:fetch_github_file"),
+      "Fetch GitHub file", "a proper name is not mangled by the speller")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "write_file", identity: "desktop-commander:write_file"),
+      "Write file", "an MCP tool is not renamed by our own table")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "future_native", identity: "native:future_native"),
+      "Future native", "a tool the table does not name yet falls back to the speller")
+    XCTAssertNil(ToolPermissionLabels.nativeDisplayName(for: "write_file_v2"))
+
+    // Every tool the native registry installs has interface copy. The list is
+    // `app/agent/tools/mod.rs::register_native_tools`.
+    let nativeTools = [
+      "apply_patch", "fetch_github_file", "get_frontmost_app", "get_selected_text", "git_commit",
+      "git_diff", "git_log", "git_status", "list_directory", "list_projects", "monitor_run",
+      "move_path", "observe_process", "project_build", "project_test", "read_clipboard",
+      "read_file", "run_process", "search_files", "search_threads", "stop_process",
+      "take_screenshot", "transcribe_audio", "type_text", "write_clipboard", "write_file",
+    ]
+    XCTAssertEqual(nativeTools.count, 26)
+    for tool in nativeTools {
+      let name = ToolPermissionLabels.nativeDisplayName(for: tool)
+      XCTAssertNotNil(name, tool)
+      XCTAssertFalse(name?.contains("_") ?? true, "\(tool) still reads as an identifier")
+    }
+
     XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
     XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
     XCTAssertEqual(ToolPermissionLabels.origin("mcp:brave-search"), "MCP")
@@ -559,7 +595,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(inherited.identity, "native:apply_patch")
     XCTAssertFalse(inherited.hasIndividualRule)
     XCTAssertEqual(
-      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Category default")
     let individual = ToolPermissionItem(
       capability: CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
@@ -567,7 +603,7 @@ final class SettingsTruthTests: XCTestCase {
         requiresApprovalFlag: false))
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
-    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -631,19 +667,20 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(ToolPermissionGrouping.matches(items[1], query: "zzz"))
   }
 
-  func testCreatorQuickStartCardsRouteOrStartDictation() {
+  func testCreatorQuickStartCardsNavigateOrOpenWidget() {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
-    var dictationStarts = 0
-    model.onQuickStartDictation = { dictationStarts += 1 }
+    var widgetOpens = 0
+    model.onQuickStartOpenWidget = { widgetOpens += 1 }
 
     model.performQuickStart(.testMic)
     XCTAssertEqual(model.section, .audio)
     model.performQuickStart(.tuneShortcuts)
     XCTAssertEqual(model.section, .shortcuts)
-    model.performQuickStart(.openOverlay)
-    XCTAssertEqual(dictationStarts, 1)
-    XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
+    XCTAssertEqual(widgetOpens, 0)
+    model.performQuickStart(.openWidget)
+    XCTAssertEqual(widgetOpens, 1)
+    XCTAssertEqual(model.section, .shortcuts, "openWidget must not touch rail routing")
   }
 
   func testDeepLinkNotificationsReachOnlyTheirOwner() {
@@ -1466,7 +1503,8 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
       "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-        + "Your assistive.txt and three formatting prompt files will be preserved. "
+        + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
+        + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -1519,7 +1557,15 @@ final class SettingsTruthTests: XCTestCase {
       facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
     XCTAssertEqual(ready.localizedLabel, "Overall status")
     XCTAssertEqual(
-      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+      ready.localizedValue,
+      "Ready — xAI (Grok) configured, can send requests, 26 native tools",
+      "the verdict reports request readiness, never a successful provider request")
+
+    let available = CsMcpStatusRow(
+      label: "Provider:", value: "raw english", tone: .good,
+      facet: .provider, state: .accessAvailable, count: nil, subject: "xAI (Grok)",
+      detail: "XAI_API_KEY")
+    XCTAssertEqual(available.localizedValue, "xAI (Grok) — can send requests")
 
     let provider = CsMcpStatusRow(
       label: "Provider:", value: "", tone: .bad,
@@ -1676,11 +1722,11 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(
       snapshots.map { URL(fileURLWithPath: $0.path).lastPathComponent },
-      ["formatting.txt", "formatting-smart.txt", "formatting-max.txt"]
+      ["formatting.txt", "formatting-smart.txt"]
     )
     XCTAssertEqual(
       snapshots.map(\.source),
-      ["custom_file", "built_in_fallback", "built_in_fallback"]
+      ["custom_file", "built_in_fallback"]
     )
   }
 
@@ -1713,8 +1759,35 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(calls.map(\.prompts), [false, true])
     XCTAssertTrue(
       model.resetImpactDescription(includeKeys: false, includePrompts: true)
-        .contains("assistive.txt and three formatting prompt files will also move to Trash")
+        .contains(
+          "assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash"
+        )
     )
+  }
+
+  /// The chips under the template are real editing controls: each appends its
+  /// field through the persisted write, and an unknown field is refused.
+  func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    // Like settings.json, the mock serves back the template it was handed.
+    var stored = CsSettings.sample
+    stored.transcriptTagTemplate = "<codescribe lang=\""
+    var writes: [(key: String, value: String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TRANSCRIPT_TAG_TEMPLATE" { stored.transcriptTagTemplate = value }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"")
+
+    model.insertTranscriptTagPlaceholder("{lang}")
+    model.insertTranscriptTagPlaceholder("{bogus}")
+
+    XCTAssertEqual(
+      writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"], "the unknown field writes nothing")
+    XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }
 
   func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
@@ -1738,6 +1811,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+    // The deleted vendor accounts are the ones Formatting reads on that
+    // vendor; the confirmation must say so while secrets are present.
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("shared with Formatting"))
 
     try engine.resetAgentData()
     XCTAssertEqual(calls, 1)
@@ -1803,22 +1879,118 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(admin.updates, ["loctree-mcp"])
   }
 
-  /// A rejected add hands the store's message back to the form, which keeps
-  /// the typed fields; a successful add returns nil.
+  /// A rejected add hands the store's refusal back to the form translated: the
+  /// user sentence under the field it names, the store's words as detail; a
+  /// successful add returns nil.
   func testAddMcpServerReportsTheStoreFailure() {
-    let admin = ScriptedMcpAdmin(servers: [], addFailure: "server name already exists")
+    let admin = ScriptedMcpAdmin(
+      servers: [], addFailure: "MCP server \"prview\" already exists")
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
 
+    let failure = model.addMcpServer(name: "prview", command: "prview", args: ["mcp"])
+    XCTAssertEqual(failure?.field, .name)
+    XCTAssertEqual(failure?.detail, "MCP server \"prview\" already exists")
     XCTAssertEqual(
-      model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]),
-      "server name already exists")
-    XCTAssertEqual(model.lastError, "server name already exists")
+      failure?.message, "A server with this name already exists. Choose another name.")
+    XCTAssertEqual(model.lastError, "MCP server \"prview\" already exists")
     XCTAssertTrue(model.mcpServers.isEmpty)
 
     admin.addFailure = nil
     XCTAssertNil(model.addMcpServer(name: "prview", command: "prview", args: ["mcp"]))
     XCTAssertEqual(model.mcpServers.map(\.name), ["prview"])
+  }
+
+  /// The store's typed refusals (`core/mcp/config_store.rs` validate_*) map to
+  /// one sentence each and to the field they are about; the bridge's
+  /// `Config(msg: …)` wrapper never reaches the form. An unknown message keeps
+  /// the store's words and no field.
+  func testMcpAddFailureTranslatesTheStoreMessages() {
+    let endpoint = MCPAddFailure(CsError.Config(msg: "Invalid remote MCP endpoint: https://"))
+    XCTAssertEqual(endpoint.field, .endpoint)
+    XCTAssertEqual(
+      endpoint.message,
+      "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname.")
+    XCTAssertEqual(endpoint.detail, "Invalid remote MCP endpoint: https://")
+    XCTAssertFalse(endpoint.message.contains("Config(msg"))
+
+    XCTAssertEqual(
+      MCPAddFailure(storeMessage: "Remote MCP endpoint must use http or https").field, .endpoint)
+    XCTAssertEqual(
+      MCPAddFailure(
+        storeMessage: "Remote MCP credentials must be stored in Keychain, not in the endpoint URL"
+      ).field, .endpoint)
+    XCTAssertEqual(MCPAddFailure(storeMessage: "MCP server command is empty").field, .command)
+    XCTAssertEqual(
+      MCPAddFailure(storeMessage: "MCP server name must not have surrounding whitespace").field,
+      .name)
+    XCTAssertEqual(
+      MCPAddFailure(
+        storeMessage:
+          "MCP server name \"a b\" contains unsupported characters (use letters, digits, '_' or '-')"
+      ).field, .name)
+
+    let unknown = MCPAddFailure(storeMessage: "Failed to read MCP config /tmp/mcp.json")
+    XCTAssertNil(unknown.field)
+    XCTAssertEqual(unknown.message, unknown.detail)
+  }
+
+  func testMcpEmptyRemoteURLRefusalStaysVisibleAcrossTransportChanges() {
+    let command = MCPAddFailure(storeMessage: "MCP server command is empty")
+    for endpoint in ["", "  ", "\n\t"] {
+      let remote = command.forTransport(remote: true, endpoint: endpoint)
+      XCTAssertEqual(remote.field, .endpoint)
+      XCTAssertEqual(remote.visibleField(remote: true), .endpoint)
+      XCTAssertTrue(remote.message.contains("server URL"))
+      XCTAssertEqual(remote.detail, command.detail)
+      XCTAssertNil(
+        remote.visibleField(remote: false), "hidden URL refusal renders under local form")
+    }
+    XCTAssertEqual(command.forTransport(remote: false, endpoint: ""), command)
+    XCTAssertEqual(command.visibleField(remote: false), .command)
+    XCTAssertNil(
+      command.visibleField(remote: true), "hidden command refusal renders under remote form")
+    let name = MCPAddFailure(storeMessage: "MCP server name is empty")
+    XCTAssertEqual(name.forTransport(remote: true, endpoint: ""), name)
+    XCTAssertEqual(name.visibleField(remote: true), .name)
+    XCTAssertEqual(name.visibleField(remote: false), .name)
+  }
+
+  /// Remove only asks. The request sets the candidate and deletes nothing;
+  /// cancelling leaves every server in place; confirming removes the named
+  /// server and only that one, and drops its cached handshake.
+  func testMcpServerRemovalWaitsForConfirmation() async {
+    let admin = ScriptedMcpAdmin(servers: [
+      CsMcpServer(
+        name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: ""),
+      CsMcpServer(
+        name: "desktop-commander", command: "dc", args: [], envKeys: [], enabled: true,
+        transport: "stdio", endpoint: "", authRef: ""),
+    ])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer("desktop-commander")
+    for _ in 0..<100 where model.mcpTestPending.contains("desktop-commander") {
+      await Task.yield()
+    }
+    XCTAssertEqual(model.mcpTestResults["desktop-commander"]?.ok, true)
+
+    model.requestMcpServerRemoval("desktop-commander")
+    XCTAssertEqual(model.mcpRemovalCandidate, "desktop-commander")
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp", "desktop-commander"])
+
+    model.cancelMcpServerRemoval()
+    XCTAssertNil(model.mcpRemovalCandidate)
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp", "desktop-commander"])
+    XCTAssertEqual(model.mcpTestResults["desktop-commander"]?.ok, true)
+
+    model.requestMcpServerRemoval("desktop-commander")
+    model.confirmMcpServerRemoval("desktop-commander")
+    XCTAssertNil(model.mcpRemovalCandidate)
+    XCTAssertEqual(model.mcpServers.map(\.name), ["loctree-mcp"])
+    XCTAssertNil(model.mcpTestResults["desktop-commander"])
   }
 
   /// The card reads the server rule from the live policy instead of a literal.
