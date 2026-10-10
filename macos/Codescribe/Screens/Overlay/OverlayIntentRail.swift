@@ -299,9 +299,8 @@ struct OverlayIntentRail: View {
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
-    if state.revisionCommitPending || state.formatterCommitPending || state.archiveActionPending
-      || state.pendingNavigation != nil
-    {
+    // The same guard as every other entry point, retranscription included.
+    if state.documentOperationPending {
       return []
     }
     if state.archivedTranscript != nil {
