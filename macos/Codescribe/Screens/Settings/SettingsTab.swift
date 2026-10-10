@@ -119,8 +119,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentMcp:
       String(localized: "Add MCP servers and manage the tools the Agent may use.")
     case .dictationEngine:
+      // "Choose how speech becomes text" repeated the headline and the one row
+      // under it; what is left is the part the pane cannot show (Founder
+      // brief, round 13, 2026-10-10).
       String(
-        localized: "Choose how speech becomes text. Changes apply from the next recording.",
+        localized: "Changes apply from the next recording.",
         comment: "Settings tab blurb: Dictation › Engine")
     case .dictationWhisper:
       String(
