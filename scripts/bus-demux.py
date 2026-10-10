@@ -4330,40 +4330,6 @@ def say_reply(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
-class UserTextPublicationUncertain(RuntimeError):
-    """A journal write was attempted; retry can duplicate a delivered message."""
-
-
-def send_text_command(args: argparse.Namespace) -> int:
-    """Publish user text to one exact owner or the current channel-zero roster."""
-    root = args.bridge_home
-    broadcast = str(args.channel) == "0"
-    path = root / AUDIENCE_BINDING_FILENAME
-    with path.with_suffix(".lock").open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-        state = read_json(path) or {}
-        bindings = state.get("bindings")
-        if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
-            raise ValueError("channel bindings unavailable; draft retained")
-        selected = sorted(bindings.items()) if broadcast else [(str(args.channel), bindings.get(str(args.channel)))]
-        owners = []
-        for channel, binding in selected:
-            if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
-                raise ValueError("invalid channel binding; draft retained")
-            provider, session = binding.get("provider"), binding.get("provider_session_id")
-            audience, bus_name = binding.get("audience"), binding.get("bus")
-            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
-                raise ValueError("incomplete channel binding; draft retained")
-            bus = Path(bus_name).expanduser().resolve(strict=False)
-            lease_id = lease_identifier(provider, session)
-            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
-            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
-                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)):
-                raise ValueError("channel was rebound or its agent is not listening; draft retained")
-            if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
-                    or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
-                raise ValueError("selected conversation owner no longer matches")
 ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024  # mirrors core/attachment.rs MAX_ATTACHMENT_BYTES
 ATTACHMENT_MEDIA_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
@@ -4411,9 +4377,43 @@ def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
         for item in attachments)
 
 
+class UserTextPublicationUncertain(RuntimeError):
+    """A journal write was attempted; retry can duplicate a delivered message."""
+
+
+def send_text_command(args: argparse.Namespace) -> int:
+    """Publish user text to one exact owner or the current channel-zero roster."""
+    attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
+    root = args.bridge_home
+    broadcast = str(args.channel) == "0"
+    path = root / AUDIENCE_BINDING_FILENAME
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        bindings = state.get("bindings")
+        if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
+            raise ValueError("channel bindings unavailable; draft retained")
+        selected = sorted(bindings.items()) if broadcast else [(str(args.channel), bindings.get(str(args.channel)))]
+        owners = []
+        for channel, binding in selected:
+            if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
+                raise ValueError("invalid channel binding; draft retained")
+            provider, session = binding.get("provider"), binding.get("provider_session_id")
+            audience, bus_name = binding.get("audience"), binding.get("bus")
+            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
+                raise ValueError("incomplete channel binding; draft retained")
+            bus = Path(bus_name).expanduser().resolve(strict=False)
+            lease_id = lease_identifier(provider, session)
+            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
+                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)):
+                raise ValueError("channel was rebound or its agent is not listening; draft retained")
+            if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
+                    or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
+                raise ValueError("selected conversation owner no longer matches")
             owners.append({"provider": provider, "provider_session_id": session,
                            "lease_id": lease_id, "channel": channel, "audience": audience,
-    attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
                            "name": audience, "bus": str(bus)})
         if not owners:
             raise ValueError("no agents are bound; draft retained")
@@ -4423,6 +4423,10 @@ def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
         text = text.decode("utf-8")
         if not text.strip() and not attachments:
             raise ValueError("empty message")
+        if attachments:
+            text = text.rstrip() + attachment_pointer_lines(attachments)
+            if len(text.encode("utf-8")) > 65536:
+                raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
         identity = os.urandom(12).hex()
         emitted_at = utc_now()
         receipts = []
@@ -4431,6 +4435,8 @@ def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
                      **owner, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
                      "recipients": [owner]}
+            if attachments:
+                event["attachments"] = attachments
             if broadcast:
                 event["origin_channel"] = "0"
             try:
@@ -4453,10 +4459,6 @@ def send_peer_command(args: argparse.Namespace) -> int:
     The wire shape is an agent reply — the canonical publisher's only
     agent-authored text lane — extended with explicit peer routing: `peer_to`
     names the one recipient of each per-bus copy, `sender` carries the
-        if attachments:
-            text = text.rstrip() + attachment_pointer_lines(attachments)
-            if len(text.encode("utf-8")) > 65536:
-                raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
     authoring lease, and the top-level `channel` records the origin ("0" for
     a broadcast, the target's digit for a direct). Followers admit it as a
     "message" delivery with state_change_allowed=False.
@@ -4465,8 +4467,6 @@ def send_peer_command(args: argparse.Namespace) -> int:
     sender's own lease; each copy shares one message identity, so a reader
     bound to several channels still dedupes it within its lease.
     """
-            if attachments:
-                event["attachments"] = attachments
     root = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_json(root / "leases" / f"{lease_id}.json") or {}
@@ -6075,14 +6075,16 @@ def main() -> int:
         help="TTS speed; defaults to the name's profile in voices.json, "
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
+    parser.add_argument("--attach-file", metavar="PATH", action="append",
+                        help="with --send-text: pointer to a pasted file the app already stored "
+                        "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     args = parser.parse_args()
+    if args.attach_file and not args.send_text:
+        parser.error("--attach-file is only valid with --send-text")
     if args.archive_agent is not None and (
         args.archive_agent not in tuple(str(n) for n in range(1, 10))
         or not args.provider or not args.session or not args.lease or args.bus is None
         or any((args.attach, args.detach, args.takeover, args.channel is not None,
-    parser.add_argument("--attach-file", metavar="PATH", action="append",
-                        help="with --send-text: pointer to a pasted file the app already stored "
-                        "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
                 args.status, args.watch, args.follow, args.once, args.from_start,
                 args.ack, args.from_file, args.say is not None, args.send_text,
                 args.send is not None, args.to is not None, args.read_delivery,
@@ -6266,8 +6268,6 @@ def main() -> int:
         if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
                 or not args.playback_ticket or not re.fullmatch(r"[0-9a-f]{24}", args.playback_ticket)):
             parser.error("reply control requires --provider/--session, a reply id and a playback ticket")
-    if args.attach_file and not args.send_text:
-        parser.error("--attach-file is only valid with --send-text")
         if any((args.say is not None, args.ack, args.attach, args.channel is not None,
                 args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
                 args.read_delivery, args.retry_wakeup, args.all, args.become, args.active_names,
