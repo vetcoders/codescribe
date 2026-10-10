@@ -1592,6 +1592,15 @@ final class SettingsViewModel: ObservableObject {
   /// budget: a slow first load still reaches the open picker.
   func beginWhisperResidencyObservation() {
     whisperResidencyObserved = true
+    // Opening this window can happen after the recorder's start edge. Read
+    // its existing owners so a cold load still reaches the reopened picker.
+    if let controls = audioRecordingControls() {
+      let state = controls.state
+      whisperLoadExpected =
+        whisperLoadExpected || controls.tray.isRecording
+        || state.warmingUp || state.recording || state.transcribing || state.isFinalPass
+    }
+    refreshWhisperModelCatalog()
     observeWhisperResidencyIfNeeded()
   }
 

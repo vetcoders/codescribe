@@ -2581,6 +2581,25 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.pasteCallCount, 0, "a policy read never delivers")
   }
 
+  func testCanonicalPolicyInvalidationRefreshesIdleOverlayButPreservesTakeSnapshot() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .smart)
+    state.canonicalConfigurationDidChange()
+    XCTAssertEqual(state.autoFormatLevel, .smart)
+    XCTAssertEqual(engine.policyReadCount, 1)
+
+    state.handleRecordingStarted()
+    defer { state.finishControllerRecording() }
+    let readsAtStart = engine.policyReadCount
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .max)
+    state.canonicalConfigurationDidChange()
+    XCTAssertEqual(state.autoFormatLevel, .smart)
+    XCTAssertEqual(engine.policyReadCount, readsAtStart)
+    XCTAssertEqual(engine.pasteCallCount, 0)
+  }
+
   func testQuietInputAdvisoryPreservesTranscriptAndDelivery() {
     let state = OverlayState()
     state.handleRecordingPreparing()
