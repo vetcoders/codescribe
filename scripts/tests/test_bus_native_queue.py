@@ -257,6 +257,30 @@ class NativeQueueTests(unittest.TestCase):
         self.assertLess(len(message) - len(text), 220)
         self.assertNotIn("Delivery provenance", message)
 
+    def test_watch_exits_quietly_when_its_consumer_closes_the_pipe(self):
+        """``--watch | head -1`` is an exit-on-bell wakeup, not a crash."""
+        events = self.root / "notifications.jsonl"
+        rows = [dict(self.envelope(identity), schema=DEMUX.EVENT_SCHEMA,
+                     status="transcript_sealed", text=f"Iwo {identity}")
+                for identity in self.ids[:2]]
+        events.write_text(json.dumps(rows[0]) + "\n")
+        process = subprocess.Popen(
+            [sys.executable, SPEC.origin, "--watch", "--from-start", "--from-file", str(events)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            first = process.stdout.readline()
+            self.assertEqual(json.loads(first)["delivery_id"], rows[0]["delivery_id"])
+            process.stdout.close()
+            with events.open("a") as handle:
+                handle.write(json.dumps(rows[1]) + "\n")
+            stderr = process.communicate(timeout=10)[1]
+        finally:
+            if process.poll() is None:
+                process.kill()
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("BrokenPipeError", stderr)
+
     def test_twenty_complete_bells_ack_and_withdraw_before_work_without_replay(self):
         self.ids = [f"{index:024x}" for index in range(1, 21)]
         self.pending = [dict(self.envelope(identity), schema=DEMUX.EVENT_SCHEMA,
