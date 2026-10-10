@@ -80,6 +80,7 @@ data  CsDocumentVersion.detail
 data  CsDocumentVersion.renderedText
 data  CsDocumentVersion.emittedAt
 data  CsDocumentVersion.receiptId
+prose CsDocumentVersions.archiveRefusal
 data  CsEnergyCalibrationReport.deviceName
 data  CsEnergyCalibrationReport.version
 data  CsEnergyCalibrationReport.path

@@ -16122,6 +16122,17 @@
         }
       }
     },
+    "Versions of this take are no longer saved to history: %@" : {
+      "comment" : "The placeholder is the archive's own refusal text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: %@"
+          }
+        }
+      }
+    },
     "Very quiet" : {
       "comment" : "Measured microphone level",
       "localizations" : {

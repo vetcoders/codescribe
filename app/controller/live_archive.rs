@@ -51,7 +51,7 @@ pub(crate) struct LiveArchiveMirror {
     transcript: PathBuf,
     /// Live step selected when the take was archived: the bytes the `.txt`
     /// was written from. Decides, once, where the original sits in history.
-    archived_step: Option<usize>,
+    archived_step: usize,
     /// Chain head this mirror wrote last; `None` before the first sync.
     head: Option<u64>,
     mirrored: Vec<Mirrored>,
@@ -60,11 +60,7 @@ pub(crate) struct LiveArchiveMirror {
 }
 
 impl LiveArchiveMirror {
-    pub(crate) fn link(
-        session_id: String,
-        transcript: PathBuf,
-        archived_step: Option<usize>,
-    ) -> Self {
+    pub(crate) fn link(session_id: String, transcript: PathBuf, archived_step: usize) -> Self {
         Self {
             session_id,
             transcript,
@@ -185,7 +181,9 @@ impl LiveArchiveMirror {
             document.revisions.is_empty(),
             "the archived transcript already has a history the live take did not write"
         );
-        let original = self.archived_step.filter(|&index| {
+        // Position decides; the byte check only refuses to call a version
+        // the original when the archive was written from something else.
+        let original = Some(self.archived_step).filter(|&index| {
             steps
                 .get(index)
                 .is_some_and(|step| step.rendered_text.trim() == document.original_text.trim())
