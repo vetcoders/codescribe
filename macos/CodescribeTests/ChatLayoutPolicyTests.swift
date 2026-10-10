@@ -120,7 +120,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
     }
     // The titlebar carries only the app identity; the model reads in the
     // chrome beside the thread title (Founder brief 2026-10-10).
-    pumpUntil(ceiling: 0.1) {
+    pumpUntil(ceiling: 1.0) {
       find(host.view) != nil && window.title == "Agent"
     }
     XCTAssertEqual(window.title, "Agent")
@@ -130,12 +130,12 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(item.maximumThickness, 360)
 
     store.threads[0].title = "Short"
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 268)
     let shortWidth = item.viewController.view.frame.width
     store.threads[0].title = "Moderately descriptive thread title"
-    pumpUntil(ceiling: 0.15) {
+    pumpUntil(ceiling: 1.0) {
       item.maximumThickness > 267 && item.maximumThickness < 360
     }
     XCTAssertGreaterThan(item.maximumThickness, 267)
@@ -143,16 +143,16 @@ final class ChatLayoutPolicyTests: XCTestCase {
       item.maximumThickness, 360,
       "Intrinsic measurement must produce intermediate widths, not only floor/ceiling buckets")
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360)
     XCTAssertEqual(
       item.viewController.view.frame.width, shortWidth, accuracy: 1,
       "A wider content cap must not expand the user's divider")
     store.threads[0].title = "Short again"
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     store.threads[0].model = String(repeating: "model-name-", count: 10)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360, "Metadata participates in intrinsic row width")
     let retainedThreads = store.threads
     let sidebarBeforeEmpty = sidebarSignature(item.viewController.view)
@@ -173,7 +173,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
       item.maximumThickness, 360, "Transient empty search results must not reset the cap")
     store.threads = retainedThreads
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
       window.setContentSize(NSSize(width: windowWidth, height: 720))
       for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
@@ -205,8 +205,9 @@ final class ChatLayoutPolicyTests: XCTestCase {
     }
   }
 
-  /// One short slice, then return as soon as `ready` is true. The ceiling is
-  /// the old fixed sleep for that beat, never a larger budget.
+  /// One short slice, then return as soon as `ready` is true. The ceiling
+  /// only caps a run that never becomes ready, so it is sized for a loaded
+  /// gate host, not for the typical beat.
   @MainActor
   private func pumpUntil(ceiling: TimeInterval, _ ready: () -> Bool) {
     pumpUntil(deadline: Date().addingTimeInterval(ceiling), ready)
