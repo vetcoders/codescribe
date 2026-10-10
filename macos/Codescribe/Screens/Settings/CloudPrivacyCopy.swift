@@ -22,7 +22,8 @@ enum CloudPrivacyCopy {
   /// Tab title, reused as the tab headline.
   static let title = String(localized: "Cloud & privacy")
 
-  /// One rendered section: a heading and the sentences under it.
+  /// One rendered subsection of the privacy details: a heading and the
+  /// sentences under it.
   struct Block: Identifiable {
     let id: String
     let heading: String
@@ -37,42 +38,56 @@ enum CloudPrivacyCopy {
   /// Row label for the selected recognition mode. The value is the mode label
   /// the Engine picker shows, read from the view model.
   static let currentModeLabel = String(
-    localized: "Current mode", comment: "Privacy row: the selected recognition mode")
+    localized: "Recognition mode", comment: "Privacy row: the selected recognition mode")
 
   /// Row label for the stored consent record, deliberately a separate row:
   /// a granted record is not the same thing as audio leaving right now.
   static let savedConsentLabel = String(
-    localized: "Saved consent", comment: "Privacy row: the stored audio-egress consent record")
+    localized: "Cloud consent", comment: "Privacy row: the stored audio-egress consent record")
 
   static let consentGranted = String(
     localized: "Granted", comment: "Stored audio-egress consent state")
   static let consentNotGranted = String(
     localized: "Not granted", comment: "Stored audio-egress consent state")
 
-  /// The point of splitting the two rows, said out loud.
+  /// The point of splitting the two rows, said out loud. The condition that
+  /// arms audio egress reads on the Audio row below.
   static let consentIsNotLiveEgress = String(
-    localized:
-      "A saved consent does not mean audio is being sent now. Audio is sent only while Cloud mode is selected, or during a cloud re-transcription you start yourself."
+    localized: "A saved consent does not mean audio is being sent now."
   )
 
-  // MARK: - What can leave this Mac
+  // MARK: - What can leave this computer
 
   static let egressHeading = String(
-    localized: "What can leave this Mac", comment: "Privacy section: outbound data")
+    localized: "What can leave this computer?", comment: "Privacy section: outbound data")
 
-  static let egressAudio = String(
+  static let egressAudioTitle = String(
+    localized: "Audio", comment: "Privacy egress row: recorded sound")
+
+  /// Both audio egresses in one scannable condition: the live Cloud mode
+  /// session and the explicit re-transcription, which does not run through
+  /// the mode picker.
+  static let egressAudioDetail = String(
     localized:
-      "Audio — during cloud speech recognition in Cloud mode, and during an explicit cloud re-transcription of a recording. The re-transcription is a separate action you start, available whenever a cloud transcription lane is configured."
+      "In Cloud mode, and when you start a cloud re-transcription of a recording yourself."
   )
 
-  static let egressText = String(
-    localized: "Text — during AI requests to the providers you configured."
+  static let egressTextTitle = String(
+    localized: "Text", comment: "Privacy egress row: transcript and prompt text")
+
+  static let egressTextDetail = String(
+    localized: "During AI requests to the providers you configured."
   )
 
-  // MARK: - Privacy details
+  // MARK: - Privacy details (collapsed by default; nothing is removed)
 
   static let detailsHeading = String(
     localized: "Privacy details", comment: "Privacy section: diagnostics, keys, refusals")
+
+  /// What the collapsed disclosure holds, so nobody has to open it blind.
+  static let detailsCaption = String(
+    localized: "Diagnostics, API keys, safeguards, and how the local modes behave."
+  )
 
   /// Bounded to the fields the cloud session actually records.
   static let diagnostics = String(
@@ -99,16 +114,36 @@ enum CloudPrivacyCopy {
       "Choosing Local power does not download anything. Installing the on-device model is a separate action on the Whisper tab."
   )
 
-  static let providersPointer = String(
-    localized: "Endpoints and keys live on Providers › Cloud transcription."
-  )
-
-  /// Render order for the two prose sections. The status rows are live values
-  /// and stay in the view.
-  static let blocks: [Block] = [
-    Block(id: "egress", heading: egressHeading, lines: [egressAudio, egressText]),
+  /// Expanded details, split into short headed subsections instead of one
+  /// continuous wall of prose. Every safeguard stays; only the default
+  /// visibility changed.
+  static let detailBlocks: [Block] = [
     Block(
-      id: "details", heading: detailsHeading,
-      lines: [diagnostics, apiKeys, withoutConsent, localPowerInstall, providersPointer]),
+      id: "diagnostics",
+      heading: String(
+        localized: "Diagnostics", comment: "Privacy details subsection: cloud session telemetry"),
+      lines: [diagnostics]),
+    Block(
+      id: "keys",
+      heading: String(
+        localized: "API keys", comment: "Privacy details subsection: key storage and the gateway"),
+      lines: [apiKeys]),
+    Block(
+      id: "consent",
+      heading: String(
+        localized: "Consent", comment: "Privacy details subsection: refusal without a grant"),
+      lines: [withoutConsent]),
+    Block(
+      id: "local",
+      heading: String(
+        localized: "Local modes", comment: "Privacy details subsection: local lanes and installs"),
+      lines: [localPowerInstall]),
   ]
+
+  /// One discreet action instead of a prose pointer. It deep-links to
+  /// Providers › Cloud transcription through `SettingsDeepLink`, which the
+  /// open Settings window consumes — the link is live, not decorative.
+  static let configureCloudServices = String(
+    localized: "Configure cloud services",
+    comment: "Privacy action: opens Providers > Cloud transcription")
 }

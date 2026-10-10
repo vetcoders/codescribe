@@ -697,6 +697,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 enum SettingsAnchor: String, Hashable {
   case audioInput
   case audioReadiness
+  case providersCloudTranscription
 }
 
 struct SettingsDeepLinkTarget: Equatable {
