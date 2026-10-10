@@ -83,6 +83,11 @@ pub use slot_ops::{
 #[path = "acoustic_ledger/word_verdict.rs"]
 pub mod word_verdict;
 use word_verdict::WordDeletionReceipt;
+#[path = "acoustic_ledger/recovery_diagnostics.rs"]
+mod recovery_diagnostics;
+pub use recovery_diagnostics::{
+    CoverageDiagnostics, RecoveryAlternativeDiagnostic, RecoveryDiagnostic, RecoveryPinDiagnostic,
+};
 
 /// A physical acoustic occurrence: a PCM range in one capture epoch.
 ///
@@ -1990,6 +1995,15 @@ impl AcousticLedger {
         {
             return false;
         }
+        let capture = OccurrenceIdentity::new(&receipt.session_id, receipt.capture_epoch, 0, 0);
+        if super::trail::is_enabled(&capture) {
+            super::trail::record(
+                &capture,
+                super::trail::TrailEvent::CoverageDiagnostics {
+                    diagnostics: self.coverage_diagnostics(&receipt),
+                },
+            );
+        }
         self.latest_seal_coverage = Some(receipt);
         true
     }
@@ -2072,7 +2086,15 @@ impl AcousticLedger {
         if !self.evidence.contains_key(occurrence) || self.seals.contains_key(occurrence) {
             return false;
         }
-        self.pending_text_recovery.insert(occurrence.clone());
+        let newly_pending = self.pending_text_recovery.insert(occurrence.clone());
+        if newly_pending && super::trail::is_enabled(occurrence) {
+            super::trail::record(
+                occurrence,
+                super::trail::TrailEvent::RecoveryRequired {
+                    recovery: self.recovery_diagnostic(occurrence),
+                },
+            );
+        }
         true
     }
 
@@ -6728,6 +6750,123 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn recovery_diagnostics_separates_missing_pcm_from_committed_debt_without_settling_it() {
+        let (mut ledger, owner, speech) = forensic_recovery_measured_ledger();
+        let missing = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        let diagnostic = ledger.coverage_diagnostics(&missing);
+        assert_eq!(
+            diagnostic.missing_committed_speech,
+            missing
+                .uncovered_speech_ranges
+                .iter()
+                .map(OccurrenceIdentity::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(diagnostic.text_recovery.is_empty());
+
+        assert!(
+            ledger
+                .admit(&obs(ObservationProducer::Apple, 0, owner.clone()), "Iwo")
+                .grants_mutation()
+        );
+        assert!(ledger.require_text_recovery(&owner));
+        let debt = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        assert_eq!(debt.covered_samples, 0);
+        assert!(!debt.uncovered_speech_ranges.is_empty());
+        let diagnostic = ledger.coverage_diagnostics(&debt);
+        assert!(diagnostic.missing_committed_speech.is_empty());
+        assert_eq!(diagnostic.text_recovery.len(), 1);
+        assert_eq!(diagnostic.text_recovery[0].owner, owner);
+        assert!(diagnostic.text_recovery[0].committed && diagnostic.text_recovery[0].pending);
+        assert!(ledger.record_seal_coverage(debt));
+        let before = ledger.layer_trail().to_vec();
+        let truth = crate::pipeline::take_truth::TakeTruth::observe_ledger(&ledger, "s1", 1);
+        let mut value = serde_json::to_value(&truth).unwrap();
+        let restored: crate::pipeline::take_truth::TakeTruth =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            restored
+                .ledger
+                .as_ref()
+                .unwrap()
+                .coverage
+                .as_ref()
+                .unwrap()
+                .diagnostics
+                .as_ref(),
+            Some(&diagnostic)
+        );
+        let serialized = serde_json::to_string(&diagnostic).unwrap();
+        assert!(
+            !serialized.contains("Iwo"),
+            "diagnostics must not export candidate labels"
+        );
+        value["ledger"]["coverage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("diagnostics");
+        let old: crate::pipeline::take_truth::TakeTruth = serde_json::from_value(value).unwrap();
+        assert!(old.ledger.unwrap().coverage.unwrap().diagnostics.is_none());
+        assert_eq!(ledger.layer_trail(), before);
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(ledger.seal(&owner).is_err());
+
+        let returned = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        ledger.admit_word_slots(
+            &returned,
+            &forensic_recovery_word_pins("Iwo", Some((0, 16_000))),
+        );
+        assert!(!ledger.text_recovery_pending(&owner));
+        let cleared = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        let diagnostic = ledger.coverage_diagnostics(&cleared);
+        assert!(diagnostic.text_recovery.is_empty());
+        assert!(diagnostic.missing_committed_speech.is_empty());
+        assert_eq!(cleared.covered_samples, cleared.speech_samples);
+    }
+
+    #[test]
+    fn recovery_diagnostics_retains_exact_refused_pin_and_filters_foreign_capture() {
+        let (mut ledger, owner, speech) = forensic_recovery_measured_ledger();
+        ledger.admit(&obs(ObservationProducer::Apple, 0, owner.clone()), "held");
+        let rejected = obs(ObservationProducer::Whisper, 3, owner.clone());
+        let pin = WordPin::new(2_000, 8_000, "edge").with_decode_window(0, 9_000);
+        ledger.retain_rejected_decode_word(&rejected, &pin);
+        assert!(ledger.text_recovery_pending(&owner));
+        let snapshot = ledger.recovery_diagnostic(&owner);
+        assert_eq!(snapshot.rejected_pins.len(), 1);
+        let actual = &snapshot.rejected_pins[0];
+        assert_eq!(actual.observation, rejected);
+        assert_eq!((actual.sample_start, actual.sample_end), (2_000, 8_000));
+        assert_eq!(actual.decode, Some((0, 9_000)));
+        assert!(!actual.accepted_observation);
+        assert!(
+            actual
+                .refusal_reasons
+                .iter()
+                .any(|reason| reason == "decode_window_clipped")
+        );
+        let foreign = OccurrenceIdentity::new("foreign", 9, 0, 16_000);
+        ledger.pending_text_recovery.insert(foreign.clone());
+        let mut coverage = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        coverage.uncovered_speech_ranges.push(TailSampleRange {
+            session: foreign.session,
+            capture_epoch: foreign.capture_epoch,
+            sample_start: foreign.sample_start,
+            sample_end: foreign.sample_end,
+        });
+        let diagnostic = ledger.coverage_diagnostics(&coverage);
+        assert_eq!(diagnostic.text_recovery, vec![snapshot]);
+        assert!(
+            diagnostic
+                .missing_committed_speech
+                .iter()
+                .all(|range| range.same_capture(&owner))
+        );
+        assert_eq!(ledger.text_of(&owner), Some("held"));
     }
 
     // Independent terminal-observer controls: fixture PCM is measured through

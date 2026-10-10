@@ -261,6 +261,8 @@ impl TrailSpeechEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotStart {
     #[serde(default)]
+    pub recovery_pending: bool,
+    #[serde(default)]
     pub word_policy: Option<String>,
     #[serde(default)]
     pub word_evidence: Option<WordEvidenceInput>,
@@ -281,6 +283,8 @@ pub struct TrailSlotStart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotEnd {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<super::acoustic_ledger::RecoveryDiagnostic>,
     #[serde(default)]
     pub word_choices: Vec<WordChoiceReceipt>,
     pub observation: ObservationIdentity,
@@ -331,6 +335,7 @@ impl SlotTrace {
             return Self(None);
         }
         let start = TrailSlotStart {
+            recovery_pending: ledger.text_recovery_pending(&observation.occurrence),
             word_policy: Some(WORD_POLICY.into()),
             word_evidence: ledger.word_evidence_input(observation).cloned(),
             word_choices_before: ledger.word_choices().len(),
@@ -416,6 +421,9 @@ impl SlotTrace {
                 &start.observation.occurrence,
                 TrailEvent::SlotEnd {
                     operation: Box::new(TrailSlotEnd {
+                        recovery: (start.recovery_pending
+                            || ledger.text_recovery_pending(&start.observation.occurrence))
+                        .then(|| ledger.recovery_diagnostic(&start.observation.occurrence)),
                         word_choices: ledger.word_choices()[start.word_choices_before..].to_vec(),
                         observation: start.observation.clone(),
                         first_ordinal: start.first_ordinal,
@@ -516,6 +524,12 @@ pub struct TrailDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrailEvent {
+    RecoveryRequired {
+        recovery: super::acoustic_ledger::RecoveryDiagnostic,
+    },
+    CoverageDiagnostics {
+        diagnostics: super::acoustic_ledger::CoverageDiagnostics,
+    },
     DecodeWork {
         observation: ObservationIdentity,
         decode: OccurrenceIdentity,
@@ -1317,10 +1331,19 @@ fn replay_validated(
     let mut pending: Option<PendingSlotReplay<'_>> = None;
     let mut effects_due = false;
     for row in records {
+        // Snapshots are passive diagnostics, not replay inputs or decision effects.
+        if matches!(
+            row.event,
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. }
+        ) {
+            continue;
+        }
         if effects_due && !matches!(row.event, TrailEvent::DecisionEffects { .. }) {
             return Err(io::Error::other("decision lacks slot effects"));
         }
         match &row.event {
+            // Observer snapshots cannot mutate replay or interrupt a slot batch.
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
             TrailEvent::DecodeWork {
                 observation,
                 decode,
@@ -1678,6 +1701,51 @@ mod tests {
             );
             assert_eq!(projected, 0, "{fault}");
         }
+    }
+
+    #[test]
+    fn recovery_diagnostics_snapshots_cannot_grant_replay_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("passive-recovery-trail", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        let words = [
+            WordPin::new(2_000, 6_000, "Iwo").with_decode_window(0, 16_000),
+            WordPin::new(8_000, 12_000, "Iwo").with_decode_window(0, 16_000),
+        ];
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&observation, &words)
+                .grants_mutation()
+        );
+        record(
+            &owner,
+            TrailEvent::RecoveryRequired {
+                recovery: ledger.recovery_diagnostic(&owner),
+            },
+        );
+        drop(sink);
+        let mut rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let original = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        let mut changed = false;
+        for row in &mut rows {
+            if let TrailEvent::RecoveryRequired { recovery } = &mut row.event {
+                recovery.owner = OccurrenceIdentity::new("forged", 88, 0, u64::MAX);
+                recovery.committed = true;
+                recovery.pending = true;
+                changed = true;
+            }
+        }
+        assert!(changed);
+        let forged = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(forged.slots_of(&owner), original.slots_of(&owner));
+        assert_eq!(forged.layer_trail(), original.layer_trail());
+        assert_eq!(forged.rendered_text(), "Iwo Iwo");
+        assert!(!forged.text_recovery_pending(&owner));
+        assert!(!forged.is_sealed(&owner));
     }
 
     #[test]

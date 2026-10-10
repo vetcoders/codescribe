@@ -883,48 +883,57 @@ impl AcousticLedger {
     pub(super) fn retained_recovery_source(&self, owner: &OccurrenceIdentity) -> bool {
         self.slot_alternatives.iter().any(|alternative| {
             alternative.observation.occurrence == *owner
-                && !matches!(
-                    alternative.reason,
-                    "resegmentation_source_label"
-                        | "window_start_clipped"
-                        | "window_stub_superseded"
-                        | "duplicate_pcm_edge_token"
-                )
-                && alternative.sources.iter().any(|source| {
-                    source.producer != ObservationProducer::ManualHuman
-                        && source.producer.authority_rank()
-                            <= alternative.observation.producer.authority_rank()
-                        && (source.producer != alternative.observation.producer
-                            || source.observation.generation < alternative.observation.generation)
-                        && self
-                            .slots_of(owner)
-                            .is_some_and(|pins| pins.contains(source))
-                        // A complete held Word survives an unaccepted spelling
-                        // or timing proposal. That lexical dispute is retained
-                        // in word finality; it does not prove missing speech.
-                        // Both the actual refused decode and accepted work
-                        // covering this exact owner must exist, and the
-                        // scheduled producer must have returned. A stub alone,
-                        // a coarse source, or a refused partition cannot settle
-                        // the source's recovery obligation.
-                        && !(matches!(
-                            alternative.reason,
-                            "decode_window_clipped"
-                                | "incomplete_source_scope"
-                                | "word_adjudication_held"
-                                | "lexical_disagreement"
-                        )
-                            && self.complete_word_slot(source)
-                            && self.returned_word_scope_accounted(&source.observation)
-                            && self
-                                .decoded_word_windows
-                                .contains_key(&alternative.observation)
-                            && self.frontiers.get(owner).is_some_and(|frontier| {
-                                frontier.returned.contains(&alternative.observation.producer)
-                            })
-                            && self.decoded_source_scope_accounted(&alternative.observation, owner))
-                })
+                && alternative
+                    .sources
+                    .iter()
+                    .any(|source| self.recovery_source_is_pending(alternative, source))
         })
+    }
+
+    pub(super) fn recovery_source_is_pending(
+        &self,
+        alternative: &SlotAlternative,
+        source: &WordSlot,
+    ) -> bool {
+        let owner = &alternative.observation.occurrence;
+        !matches!(
+            alternative.reason,
+            "resegmentation_source_label"
+                | "window_start_clipped"
+                | "window_stub_superseded"
+                | "duplicate_pcm_edge_token"
+        ) && source.producer != ObservationProducer::ManualHuman
+            && source.producer.authority_rank()
+                <= alternative.observation.producer.authority_rank()
+            && (source.producer != alternative.observation.producer
+                || source.observation.generation < alternative.observation.generation)
+            && self
+                .slots_of(owner)
+                .is_some_and(|pins| pins.contains(source))
+            // A complete held Word survives an unaccepted spelling
+            // or timing proposal. That lexical dispute is retained
+            // in word finality; it does not prove missing speech.
+            // Both the actual refused decode and accepted work
+            // covering this exact owner must exist, and the
+            // scheduled producer must have returned. A stub alone,
+            // a coarse source, or a refused partition cannot settle
+            // the source's recovery obligation.
+            && !(matches!(
+                alternative.reason,
+                "decode_window_clipped"
+                    | "incomplete_source_scope"
+                    | "word_adjudication_held"
+                    | "lexical_disagreement"
+            )
+                && self.complete_word_slot(source)
+                && self.returned_word_scope_accounted(&source.observation)
+                && self
+                    .decoded_word_windows
+                    .contains_key(&alternative.observation)
+                && self.frontiers.get(owner).is_some_and(|frontier| {
+                    frontier.returned.contains(&alternative.observation.producer)
+                })
+                && self.decoded_source_scope_accounted(&alternative.observation, owner))
     }
 
     /// Jitter may move either fence, but may not borrow another word's centre
