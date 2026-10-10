@@ -599,11 +599,14 @@ start signal. Nothing else: the transcription overlay is set under
 [Dictation → Preview](#dictation-tabs), and the Dock icon from the menu bar
 menu — neither lives in this pane.
 
-The Settings and Agent windows cannot be minimised, with or without the Dock
-icon. With the Dock's default “Minimize windows into application icon”, a
-minimised Codescribe window leaves the screen and shows up only as an empty
-tile in App Exposé and Mission Control, so the yellow button (and ⌘M) is
-disabled on both windows; close and reopen them instead.
+The Settings and Agent windows never minimise, with or without the Dock icon:
+with the Dock's default “Minimize windows into application icon”, a minimised
+Codescribe window leaves the screen and shows up only as an empty tile in App
+Exposé and Mission Control. On the **Agent** window the yellow button and ⌘M
+stay usable and **hide** it instead; bring it back with **Open chat** in the
+menu bar menu or the summon shortcut. The **Settings** window, a SwiftUI scene
+whose window class the app does not own, keeps no minimise control; close it
+and reopen it with **Open Settings** (or ⌘,).
 
 **Microphone** — **Refresh** sits on the section header; below it one compact
 card: the **Input device** picker and the microphone actually recording.
