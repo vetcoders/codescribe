@@ -118,10 +118,12 @@ final class ChatLayoutPolicyTests: XCTestCase {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
     }
+    // The titlebar carries only the app identity; the model reads in the
+    // chrome beside the thread title (Founder brief 2026-10-10).
     pumpUntil(ceiling: 0.1) {
-      find(host.view) != nil && window.title == "Agent — gpt-6-sol"
+      find(host.view) != nil && window.title == "Agent"
     }
-    XCTAssertEqual(window.title, "Agent — gpt-6-sol")
+    XCTAssertEqual(window.title, "Agent")
     let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
     XCTAssertEqual(item.minimumThickness, 267)
