@@ -29,7 +29,11 @@ struct OverlayEvidenceChip: View {
   }
 
   var body: some View {
-    if let chip = OverlayEvidencePresentation.chip(evidence: state.liveEvidence) {
+    // CSDeveloperSurface is baked by install-app and forced off for release DMGs.
+    // Confidence paint and word correction actions remain product features.
+    if DeveloperSurface.isEnabled(),
+      let chip = OverlayEvidencePresentation.chip(evidence: state.liveEvidence)
+    {
       Button {
         selected.toggle()
       } label: {
