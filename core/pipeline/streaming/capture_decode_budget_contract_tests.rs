@@ -216,7 +216,7 @@ fn backpressure_keeps_one_exact_unsent_offer_without_advancing_it() {
 }
 
 #[test]
-fn replay_and_early_owners_consume_the_same_three_original_witnesses() {
+fn replay_and_early_owners_share_grid_and_at_most_one_bounded_numeric_witness() {
     let mut outcomes = Vec::new();
     for late in [false, true] {
         let (mut state, tx, mut jobs) = capture(32, 15);
@@ -235,6 +235,16 @@ fn replay_and_early_owners_consume_the_same_three_original_witnesses() {
             state.pump_capture_windows(&tx);
         }
         let owner = owner.unwrap();
+        let trials = take_requests(&mut jobs);
+        assert!(trials.len() <= 1, "forty components share a bounded return");
+        for trial in &trials {
+            let range = &trial.provider_request.identity.range;
+            assert!(trial.provider_request.identity.request_id >= (1_u64 << 63));
+            assert!(range.sample_start < 128_000 && range.sample_end >= 136_000);
+            assert!(range.sample_end - range.sample_start <= 9 * u64::from(RATE));
+            trial.provider_request.validate_pcm(&trial.audio).unwrap();
+            state.complete_whisper_window(&tx, completion(trial, 40, "1286"), 15.1);
+        }
         let before = state.acoustic_ledger.lock().unwrap().word_choices().len();
         for _ in 0..3 {
             state.replay_completed_windows(&tx);
@@ -258,12 +268,12 @@ fn replay_and_early_owners_consume_the_same_three_original_witnesses() {
         assert_eq!(ledger.conservation().residue(), 0);
         outcomes.push(ledger.text_of(&owner).unwrap().to_owned());
         drop(ledger);
-        assert_eq!(state.windows_admitted, 3);
+        assert_eq!(state.windows_admitted, 3 + trials.len() as u64);
         assert!(
             take_requests(&mut jobs).is_empty(),
             "disputes scheduled extra inference"
         );
-        assert_eq!(state.retained_word_decodes.len(), 3);
+        assert_eq!(state.retained_word_decodes.len(), 3 + trials.len());
     }
     assert_eq!(outcomes[0], outcomes[1]);
 }
