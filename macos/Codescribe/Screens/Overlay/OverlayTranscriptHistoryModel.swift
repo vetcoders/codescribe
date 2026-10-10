@@ -16,9 +16,7 @@ extension TranscriptHistoryReading {
   /// A reader without a revision owner sees every archive unrevised.
   func document(at path: String) async throws -> CsArchivedDocument {
     let text = try await text(at: path)
-    return CsArchivedDocument(
-      path: path, originalText: text, revision: 0, renderedText: text,
-      provenance: "original", receiptId: "", undoRevision: nil)
+    return .unrevised(path: path, text: text)
   }
 }
 
@@ -48,6 +46,21 @@ struct ArchivedTranscriptHistory: TranscriptHistoryReading {
   }
 }
 
+extension CsArchivedDocument {
+  /// An archive with no revision chain: its original is its only version.
+  static func unrevised(path: String, text: String) -> Self {
+    CsArchivedDocument(
+      path: path, originalText: text, revision: 0, renderedText: text,
+      provenance: "original", receiptId: "",
+      versions: [
+        CsDocumentVersion(
+          step: 0, provenance: "original", detail: nil, renderedText: text, emittedAt: "",
+          receiptId: "")
+      ],
+      cursor: 0)
+  }
+}
+
 /// One archived take reopened on the overlay canvas.
 ///
 /// `path` is the archive's durable identity and `audioPath` is whatever the
@@ -65,8 +78,10 @@ struct OverlayArchivedTranscript: Equatable {
   private(set) var revision: UInt64
   private(set) var provenance: String
   private(set) var receiptId: String
-  /// The version Undo restores; nil when the head has nothing to undo.
-  private(set) var undoRevision: UInt64?
+  /// Every accepted version of the archive, oldest first, and the selected
+  /// one, replayed by Rust from the revision chain.
+  private(set) var versions: [CsDocumentVersion]
+  private(set) var cursor: UInt64
 
   init(entry: CsHistoryEntry, document: CsArchivedDocument, audioPath: String?) {
     path = entry.path
@@ -77,16 +92,15 @@ struct OverlayArchivedTranscript: Equatable {
     revision = document.revision
     provenance = document.provenance
     receiptId = document.receiptId
-    undoRevision = document.undoRevision
+    versions = document.versions
+    cursor = document.cursor
   }
 
   /// An unrevised archive.
   init(entry: CsHistoryEntry, text: String, audioPath: String?) {
     self.init(
       entry: entry,
-      document: CsArchivedDocument(
-        path: entry.path, originalText: text, revision: 0, renderedText: text,
-        provenance: "original", receiptId: "", undoRevision: nil),
+      document: .unrevised(path: entry.path, text: text),
       audioPath: audioPath)
   }
 
@@ -99,7 +113,8 @@ struct OverlayArchivedTranscript: Equatable {
     revision = document.revision
     provenance = document.provenance
     receiptId = document.receiptId
-    undoRevision = document.undoRevision
+    versions = document.versions
+    cursor = document.cursor
     return true
   }
 
