@@ -1291,27 +1291,22 @@ final class SettingsTruthTests: XCTestCase {
       .offline, "the known speech failure must remain visible")
   }
 
-  func testCreatorLanguagePresentationKeepsTruthfulIdentityAndAccessibility() {
+  func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
     XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
-    XCTAssertEqual(
-      choices.map(\.accessibilityLabel),
-      ["Multilingual", "Polish, Fine-tuned", "English, Fine-tuned"]
-    )
-    XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
-    XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The footnote names the rail section literally: Polish needs the
-    // locative, so the title cannot be interpolated. A rail rename must fail
-    // here until the sentence is reworded with it.
+    // The segmented control carries only the names, so the row sentence must
+    // name both fine-tuned languages and automatic detection itself. The
+    // Dictionary footnote moved off this row (Founder walkthrough, 2026-10-10):
+    // the Dictionary page already explains its own effect on recognition.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Domain vocabulary and Dictionary entries improve speech recognition."
+      "Polish and English use fine-tuned models. Multilingual detects the language automatically."
     )
-    XCTAssertTrue(
-      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
+    XCTAssertFalse(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
   }
 
   func testCreatorLanguageSelectionWritesStableRuntimeCodes() {
