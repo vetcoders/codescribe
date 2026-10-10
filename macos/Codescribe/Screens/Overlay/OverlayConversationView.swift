@@ -114,7 +114,7 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if conversation.owner != nil {
+      if conversation.owner != nil || conversation.channel == "0" {
         OverlayConversationComposer(
           palette: palette, draft: $draft, sending: sending, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity)

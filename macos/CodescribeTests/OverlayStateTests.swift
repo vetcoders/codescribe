@@ -1312,7 +1312,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(state.textMessageErrors[owner.id])
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
     state.publishConversationText = { recipient, text in
-      XCTAssertEqual(recipient.id, owner.id)
+      XCTAssertEqual(recipient?.id, owner.id)
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
     }
@@ -1327,6 +1327,32 @@ final class OverlayStateTests: XCTestCase {
       OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.selectConversation(conversation.id)
     XCTAssertGreaterThan(state.conversationFocusRevision, focus)
+  }
+
+  @MainActor
+  func testBroadcastComposerRetainsFailureAndNewerDraft() async {
+    let state = OverlayState()
+    let conversation = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.conversationDrafts["0"] = "Do wszystkich"
+    state.publishConversationText = { owner, _ in
+      XCTAssertNil(owner)
+      throw CocoaError(.fileWriteUnknown)
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "Do wszystkich")
+    XCTAssertNotNil(state.textMessageErrors["0"])
+    state.publishConversationText = { owner, text in
+      XCTAssertNil(owner)
+      XCTAssertEqual(text, "Do wszystkich")
+      state.conversationDrafts["0"] = "Nowy szkic"
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
+    XCTAssertNil(state.textMessageErrors["0"])
+    state.publishConversationText = { _, _ in }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDrafts["0"], "")
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {

@@ -1489,6 +1489,7 @@ def consider(
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
         return {**event, "schema": EVENT_SCHEMA, "kind": "message",
+                "channel": event.get("origin_channel", event.get("channel")),
                 "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
                 "routing_match": "audience"}
     status = event.get("status")
@@ -4329,54 +4330,72 @@ def say_reply(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
+class UserTextPublicationUncertain(RuntimeError):
+    """A journal write was attempted; retry can duplicate a delivered message."""
+
+
 def send_text_command(args: argparse.Namespace) -> int:
-    """Publish explicit user text to the selected immutable channel owner."""
+    """Publish user text to one exact owner or the current channel-zero roster."""
     root = args.bridge_home
-    channel = str(args.channel)
-    bus = args.bus.expanduser().resolve(strict=False)
-    lease_id = lease_identifier(args.provider, args.session)
-    if args.lease != lease_id:
-        raise ValueError("selected conversation owner no longer matches")
+    broadcast = str(args.channel) == "0"
     path = root / AUDIENCE_BINDING_FILENAME
     with path.with_suffix(".lock").open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         state = read_json(path) or {}
-        binding = state.get("bindings", {}).get(channel)
-        lease = read_json(root / "leases" / f"{lease_id}.json") or {}
-        if (state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(binding, dict)
-                or binding.get("provider") != args.provider.casefold()
-                or binding.get("provider_session_id") != args.session
-                or Path(binding.get("bus") or "").resolve(strict=False) != bus
-                or lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-                or lease.get("provider") != args.provider.casefold()
-                or lease.get("provider_session_id") != args.session
-                or lease.get("bus") != str(bus)
-                or not live_follower_pid(root, lease_id)):
-            raise ValueError("channel was rebound or its agent is not listening; draft retained")
+        bindings = state.get("bindings")
+        if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
+            raise ValueError("channel bindings unavailable; draft retained")
+        selected = sorted(bindings.items()) if broadcast else [(str(args.channel), bindings.get(str(args.channel)))]
+        owners = []
+        for channel, binding in selected:
+            if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
+                raise ValueError("invalid channel binding; draft retained")
+            provider, session = binding.get("provider"), binding.get("provider_session_id")
+            audience, bus_name = binding.get("audience"), binding.get("bus")
+            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
+                raise ValueError("incomplete channel binding; draft retained")
+            bus = Path(bus_name).expanduser().resolve(strict=False)
+            lease_id = lease_identifier(provider, session)
+            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
+                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)):
+                raise ValueError("channel was rebound or its agent is not listening; draft retained")
+            if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
+                    or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
+                raise ValueError("selected conversation owner no longer matches")
+            owners.append({"provider": provider, "provider_session_id": session,
+                           "lease_id": lease_id, "channel": channel, "audience": audience,
+                           "name": audience, "bus": str(bus)})
+        if not owners:
+            raise ValueError("no agents are bound; draft retained")
         text = sys.stdin.buffer.read(65537)
         if len(text) > 65536:
             raise ValueError("message exceeds 64 KiB; draft retained")
         text = text.decode("utf-8")
         if not text.strip():
             raise ValueError("empty message")
-        audience = binding.get("audience")
-        if not isinstance(audience, str) or not audience:
-            raise ValueError("channel has no audience")
         identity = os.urandom(12).hex()
-        owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
-                 "lease_id": lease_id, "channel": channel, "audience": audience,
-                 "name": audience, "bus": str(bus)}
-        event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
-                 **owner, "message_id": identity, "source_event_id": identity,
-                 "source": "typed", "text": text, "emitted_at": utc_now(),
-                 "recipients": [owner]}
-        receipt = publish_reply_event(bus, event, bridge_root=root)
-        if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                for key in ("stream_dev", "stream_inode", "offset", "length"))
-                or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-            raise ValueError("publication has no durable receipt; do not automatically resend")
-    emit({"kind": "message_published", "message_id": identity, "source": receipt})
+        emitted_at = utc_now()
+        receipts = []
+        for owner in owners:
+            event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
+                     **owner, "message_id": identity, "source_event_id": identity,
+                     "source": "typed", "text": text, "emitted_at": emitted_at,
+                     "recipients": [owner]}
+            if broadcast:
+                event["origin_channel"] = "0"
+            try:
+                receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
+                if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                        for key in ("stream_dev", "stream_inode", "offset", "length"))
+                        or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                        or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                    raise ValueError("publication has no durable receipt; do not automatically resend")
+            except (OSError, ValueError, RuntimeError) as error:
+                raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
+            receipts.append(receipt)
+    emit({"kind": "message_published", "message_id": identity, "source": receipts[0], "sources": receipts})
     return 0
 
 
@@ -5953,7 +5972,7 @@ def main() -> int:
         help="append an agent reply to the canonical Bus and speak it through "
         "vendor TTS; --name defaults to the name on this session's lease",
     )
-    parser.add_argument("--send-text", action="store_true", help="send user text from stdin to an exact channel owner; --channel, --lease and --bus required")
+    parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
     parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
@@ -6138,8 +6157,10 @@ def main() -> int:
             sys.stderr.write(f"cs-bus: playback mute refused: {error}\n")
             return 3
     if args.send_text:
-        if (not args.provider or args.channel not in tuple(str(n) for n in range(1, 10))
-                or not args.lease or not args.bus_overridden
+        if ((args.channel == "0" and any((args.provider, args.session, args.lease, args.bus_overridden)))
+                or (args.channel != "0" and (not args.provider
+                    or args.channel not in tuple(str(n) for n in range(1, 10))
+                    or not args.lease or not args.bus_overridden))
                 or any((args.say is not None, args.send is not None, args.to is not None,
                         args.ack, args.attach, args.status, args.watch,
                         args.follow, args.once, args.read_delivery, args.retry_wakeup,
@@ -6147,6 +6168,9 @@ def main() -> int:
             parser.error("--send-text requires an exact --provider/--session/--lease/--channel/--bus owner")
         try:
             return send_text_command(args)
+        except UserTextPublicationUncertain as error:
+            sys.stderr.write(f"cs-bus: {error}\n")
+            return 4
         except (OSError, ValueError, RuntimeError) as error:
             sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
             return 3

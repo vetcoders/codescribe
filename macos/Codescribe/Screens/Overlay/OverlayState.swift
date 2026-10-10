@@ -1451,12 +1451,13 @@ final class OverlayState {
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner, String) async throws -> Void = {
+    @MainActor (OverlayConversationOwner?, String) async throws -> Void = {
       owner, text in try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text)
     }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
-    guard let owner = conversation.owner, let draft = conversationDrafts[conversation.id],
+    guard conversation.owner != nil || conversation.channel == "0",
+      let draft = conversationDrafts[conversation.id],
       !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !pendingTextMessages.contains(conversation.id)
     else { return }
@@ -1464,7 +1465,7 @@ final class OverlayState {
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
     do {
-      try await publishConversationText(owner, draft)
+      try await publishConversationText(conversation.owner, draft)
       // A newer draft belongs to the Founder, even if publication finishes late.
       if conversationDrafts[conversation.id] == draft { conversationDrafts[conversation.id] = "" }
     } catch {

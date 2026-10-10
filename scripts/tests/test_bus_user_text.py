@@ -41,6 +41,43 @@ class UserTextTests(unittest.TestCase):
                 self.assertEqual(len(set(ids)), 5)
                 self.assertEqual(len(lease.pending), 5)
 
+    def test_broadcast_freezes_roster_and_publishes_shared_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for channel, name in [("2", "nina"), ("7", "igor")]:
+                bus = root / f"bus-{channel}.jsonl"
+                lid = DEMUX.lease_identifier("codex", name)
+                DEMUX.write_channel_binding(root, channel, name, "codex", name, str(bus))
+                DEMUX.atomic_json(root / "leases" / f"{lid}.json", {
+                    "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                    "lease_id": lid, "bus": str(bus)})
+            args = argparse.Namespace(bridge_home=root, channel="0")
+            receipt = {"stream_id":"fixture", "stream_dev":1, "stream_inode":2, "offset":0, "length":12}
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+                events = [call.args[1] for call in publish.call_args_list]
+                self.assertEqual(len(events), 2)
+                self.assertEqual(len({event["message_id"] for event in events}), 1)
+                self.assertEqual({event["channel"] for event in events}, {"2", "7"})
+                for event in events:
+                    self.assertEqual(event["origin_channel"], "0")
+                    payload = DEMUX.consider(event, name=event["audience"], hear_all=False, drafts=False, debug=False)
+                    self.assertEqual(payload["channel"], "0")
+                    self.assertTrue(payload["state_change_allowed"])
+            with patch.object(DEMUX, "live_follower_pid", side_effect=[123, None]), \
+                 patch.object(DEMUX, "publish_reply_event") as publish:
+                with self.assertRaises(ValueError): DEMUX.send_text_command(args)
+                publish.assert_not_called()
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", side_effect=[receipt, OSError("disk")]) as publish, \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                with self.assertRaises(DEMUX.UserTextPublicationUncertain):
+                    DEMUX.send_text_command(args)
+                self.assertEqual(publish.call_count, 2)
+
+
     def test_publish_holds_binding_identity_and_refuses_rebound_owner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

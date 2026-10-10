@@ -1,6 +1,23 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "Some agents may have received this message. Check read receipts before sending again.": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Some agents may have received this message. Check read receipts before sending again."
+        }
+      },
+      "pl": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Niektórzy agenci mogli już otrzymać tę wiadomość. Przed ponownym wysłaniem sprawdź potwierdzenia odczytu."
+        }
+      }
+    }
+  },
     "" : {
       "shouldTranslate" : false
     },
