@@ -7424,6 +7424,17 @@
         }
       }
     },
+    "Languages" : {
+      "comment" : "Settings group: app language and speech language",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Języki"
+          }
+        }
+      }
+    },
     "Last test: failed" : {
       "localizations" : {
         "pl" : {
@@ -10184,6 +10195,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Polski"
+          }
+        }
+      }
+    },
+    "Polish and English use fine-tuned models. Multilingual detects the language automatically." : {
+      "comment" : "Speech recognition language row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Polski i angielski mają dostrojone modele. Wielojęzyczny wykrywa język automatycznie."
           }
         }
       }
@@ -13251,6 +13273,17 @@
         }
       }
     },
+    "Speech recognition language" : {
+      "comment" : "Settings row: dictation language",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język rozpoznawania mowy"
+          }
+        }
+      }
+    },
     "Speech recognition parameters" : {
       "comment" : "Lab group: raw recognition timings",
       "localizations" : {
@@ -13882,6 +13915,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawienia systemowe"
+          }
+        }
+      }
+    },
+    "System Settings…" : {
+      "comment" : "Permissions header action: opens the Privacy & Security pane",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienia systemowe…"
           }
         }
       }

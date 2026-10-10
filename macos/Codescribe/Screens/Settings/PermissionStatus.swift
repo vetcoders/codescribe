@@ -104,6 +104,15 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     NSWorkspace.shared.open(url)
   }
 
+  /// The Privacy & Security pane itself, for reviewing scopes that are already
+  /// granted (the per-row deep links only appear while a scope is missing).
+  static let privacySettingsURL = URL(
+    string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!
+
+  static func openPrivacySettings() {
+    NSWorkspace.shared.open(privacySettingsURL)
+  }
+
   /// Scopes that can fire a first-run system dialog from our process. Once
   /// the user has decided (granted/denied), macOS never re-prompts — callers
   /// must deep-link to System Settings instead.
