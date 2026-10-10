@@ -92,34 +92,36 @@ final class SettingsLiveProjectionTests: XCTestCase {
       "the open picker must say the model is loaded without reopening Settings")
   }
 
-  func testResidencyObservationIsBoundedAndStopsOnceSettled() async {
+  func testResidencyObservationWaitsWithoutBudgetAndStopsOnceSettled() async {
     let file = SyntheticSettingsFile(pasteMode: .safe, formattingLevel: "correction")
     let resident = SyntheticWhisperRuntime(loaded: nil)
     let scope = ConfigurationInvalidation()
     let settings = makeSettingsModel(file: file, scope: scope, whisper: resident)
-    settings.whisperResidencySettle = (.milliseconds(5), 4)
+    settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
     settings.refreshWhisperModelCatalog()
 
-    // Never settles: the loop ends on its own budget.
+    // Idle and unloaded with no recorder edge is stable truth: no reads.
     settings.beginWhisperResidencyObservation()
-    try? await Task.sleep(for: .milliseconds(200))
-    let boundedReads = resident.reads
-    XCTAssertEqual(boundedReads, 1 + 4, "one explicit read plus the bounded budget")
+    XCTAssertFalse(settings.whisperResidencyPending)
     try? await Task.sleep(for: .milliseconds(50))
-    XCTAssertEqual(resident.reads, boundedReads, "an idle window stops reading")
+    XCTAssertEqual(resident.reads, 1)
 
-    // A prewarm finishing on its own schedule is picked up, then reads stop.
-    settings.whisperResidencySettle = (.milliseconds(5), 200)
+    // A take makes a load expected; the waiting outlives the former
+    // fifteen-read budget with no further edge.
     scope.recordingLifecycleChanged()
+    await waitUntil { resident.reads > 1 + 1 + 15 }
+    XCTAssertTrue(settings.whisperResidencyPending)
+
+    // The late load lands without an edge and is shown; reads then stop.
     resident.loaded = SyntheticWhisperRuntime.resolved
     await waitUntil { settings.whisperResidencySettled }
+    XCTAssertFalse(settings.whisperResidencyPending)
     let settledReads = resident.reads
     try? await Task.sleep(for: .milliseconds(50))
     XCTAssertEqual(resident.reads, settledReads, "a settled catalog is not re-read")
 
-    // A closed window owns nothing.
+    // A closed window owns nothing, even with a load expected.
     resident.loaded = nil
-    settings.refreshWhisperModelCatalog()
     settings.endWhisperResidencyObservation()
     scope.recordingLifecycleChanged()
     let closedReads = resident.reads
