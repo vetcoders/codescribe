@@ -1658,7 +1658,10 @@ pub struct ReplayCandidate {
 pub struct DictionaryTeachResult {
     /// Pairs upserted from quality corrections.jsonl (Correction level).
     pub from_corrections: u32,
-    /// Pairs upserted from lexicon.custom.proposed.jsonl.
+    /// Rules newly added from lexicon.custom.proposed.jsonl: the growth of the
+    /// flattened rules list across the proposed upsert. A suggestion learned by
+    /// an earlier run is upserted again (idempotently) but is not counted, so
+    /// the Learn result never credits suggestions that added nothing.
     pub from_proposed: u32,
     /// Flattened custom-lexicon rows after teach (variant→canonical).
     pub total_rules: u32,
@@ -1732,8 +1735,12 @@ pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
             .iter()
             .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
             .collect();
+        let rules_before = custom_lexicon_entries()?.len();
         match upsert_corrections_in_custom_lexicon(&pairs) {
-            Ok(()) => from_proposed = pairs.len() as u32,
+            Ok(()) => {
+                let rules_after = custom_lexicon_entries()?.len();
+                from_proposed = rules_after.saturating_sub(rules_before) as u32;
+            }
             Err(e) => tracing::warn!("teach: failed to apply proposed rules: {:#}", e),
         }
     }
@@ -2367,6 +2374,28 @@ mod tests {
             custom_lexicon_entries().unwrap().is_empty(),
             "two X teaches plus one Y teach must not promote X"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn teach_counts_only_newly_added_proposed_rules() {
+        let _fixture = QualityFixture::new("temp");
+        let proposed = Config::config_dir().join("lexicon.custom.proposed.jsonl");
+        std::fs::create_dir_all(proposed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &proposed,
+            "{\"term\":\"Kubernetes\",\"mispronunciations\":[\"kubernetis\"]}\n",
+        )
+        .unwrap();
+
+        let first = teach_dictionary_from_store().expect("first teach");
+        assert_eq!(first.from_proposed, 1, "a new suggestion is credited once");
+        let second = teach_dictionary_from_store().expect("second teach");
+        assert_eq!(
+            second.from_proposed, 0,
+            "a suggestion learned by an earlier run adds nothing and is not credited"
+        );
+        assert_eq!(second.total_rules, first.total_rules);
     }
 
     /// The per-utterance Dictionary teach action uses the same three-correction

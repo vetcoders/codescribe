@@ -259,9 +259,9 @@ func learnScopeMessage(corrections: Int) -> String {
 }
 
 /// The result line after Learn. `added` is the real growth of the rules list
-/// (rows after minus rows before): the engine's own counters report every
-/// eligible pair, including ones already learned, so they cannot say what is
-/// new. Suggestions are mentioned only when they contributed.
+/// (rows after minus rows before). `fromSuggestions` is the core's count of
+/// rules the suggestions newly added — zero when every suggestion was already
+/// learned — so suggestions are mentioned only when they really contributed.
 func learnResultMessage(added: Int, fromSuggestions: Int, activeRules: Int) -> String {
   let rules = String(localized: "\(activeRules) active rules", comment: "Dictionary counter; plural")
   if added <= 0 {
