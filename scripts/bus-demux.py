@@ -5803,6 +5803,13 @@ def watch_command(args: argparse.Namespace) -> int:
             trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:
+        # The consumer closed the pipe (``--watch | head -1`` is a legitimate
+        # exit-on-bell wakeup). Leave quietly instead of a traceback, and keep
+        # the interpreter from retrying the flush at shutdown.
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     finally:
         trigger.close()
         if record is not None and (read_json(record) or {}).get("pid") == os.getpid():
