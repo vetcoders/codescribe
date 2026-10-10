@@ -453,14 +453,15 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(
       tab.contains(
-        "\"The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.\""
-      ))
+        "\"The Agent's built-in tools, and the paths it hands to MCP tools it can check, are bounded to these folders. MCP servers otherwise operate independently.\""
+      ),
+      "the 'it can check' qualifier is load-bearing: only validated MCP paths are bounded")
     XCTAssertFalse(
       tab.contains("It has no access outside them."),
       "the description must not claim a boundary around every MCP process")
 
     let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
-    XCTAssertTrue(section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
+    XCTAssertTrue(section.contains("WorkspaceSectionHeader(String(localized: \"Allowed folders\"))"))
     XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
     XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
     XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
@@ -477,11 +478,11 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Folders available to the Agent": "Foldery dostępne dla Agenta",
-      "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list.":
-        "Wbudowane narzędzia plikowe i terminalowe Agenta czytają i zapisują tylko w tych folderach; w nich zostają też ścieżki, które Codescribe przekazuje sprawdzanym narzędziom MCP. To, co serwer MCP robi samodzielnie, jest poza tą listą.",
+      "The Agent's built-in tools, and the paths it hands to MCP tools it can check, are bounded to these folders. MCP servers otherwise operate independently.":
+        "Wbudowane narzędzia Agenta i ścieżki, które przekazuje sprawdzanym narzędziom MCP, są ograniczone do tych folderów. Same serwery MCP działają niezależnie.",
       "Allowed folders": "Dozwolone foldery",
-      "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories.":
-        "W tych folderach Agent szuka projektów i repozytoriów Git. Przeszukuje też podfoldery, ale pomija foldery ukryte i katalogi build.",
+      "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories.":
+        "Agent szuka tu projektów i repozytoriów Git, pomijając ukryte foldery i katalogi build.",
       "Add folder…": "Dodaj folder…",
       "Save changes": "Zapisz zmiany",
       "Remove folder": "Usuń folder",
