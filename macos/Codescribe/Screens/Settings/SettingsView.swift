@@ -303,6 +303,25 @@ struct SettingsSectionLabel: View {
   }
 }
 
+/// Section label with one trailing action on the same line, so a helper such
+/// as refresh or a System Settings link does not take a row of its own.
+struct SettingsSectionHeaderRow<Action: View>: View {
+  let text: String
+  @ViewBuilder var action: () -> Action
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+    self.text = text
+    self.action = action
+  }
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      SettingsSectionLabel(text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      action()
+        .controlSize(.small)
+    }
+  }
+}
+
 struct SettingsMenuLabel: View {
   let text: String
   var mono: Bool = false

@@ -23,9 +23,19 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 - Menu bar icon → **Settings**
 - Chat Overlay → **Settings** tab
 
-## Interface language
+## Creator
 
-Settings → **Creator** → **Interface language** switches the app between
+The first desk groups what a new install needs: the two language rows, the
+permission checklist with a **System Settings…** link in its header (the
+Privacy & Security pane, so a granted scope can be reviewed or revoked; a
+missing scope still carries its own request or deep link on the row), voice
+and formatting, one **Max consultation** card that also holds the pending
+approval requests, the coding-agent skill rows with **Refresh status** on the
+section header, and the quick-start cards.
+
+### Languages
+
+**Interface language** switches the app between
 Polski and English. The choice is saved at once as Codescribe's per-app macOS
 language preference (the same one System Settings › General › Language & Region
 › Applications shows); it never touches `settings.json` or the dictation
@@ -35,6 +45,11 @@ Codescribe waits for an idle moment (no recording, no agent turn) and relaunches
 in the chosen language. If a take or an agent turn is in progress, the row keeps
 your choice and asks you to try again. The setup wizard's first screen offers
 the same switch.
+
+**Speech recognition language** sits directly below it with the same segmented
+control: Multilingual (automatic detection per recording), Polish or English
+(fine-tuned models). It writes the dictation language in `settings.json` and
+has nothing to do with the interface language above it.
 
 ## Transcription
 
