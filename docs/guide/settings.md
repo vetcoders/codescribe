@@ -3,7 +3,7 @@
 Codescribe now has one native Settings window with five tabs:
 
 1. **Transcription**
-2. **Modes & Shortcuts**
+2. **Hotkeys**
 3. **AI & Prompts**
 4. **Audio & Input**
 5. **Diagnostics**
@@ -127,13 +127,14 @@ Sentence pause belongs to Light+ text shaping, not to hands-free dictation.
 Selecting **Cloud** on the Engine tab is itself the audio-egress grant: it
 writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
 
-## Modes & Shortcuts
+## Shortcuts & control
 
-Open **Settings → Modes & Shortcuts**.
+Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**:
+how to start Codescribe's modes and how to control recording.
 
-The tab holds two different save contracts, and the header says so: the three
-mode gestures are a draft and need **Save mode shortcuts**; every other control
-on the page writes as soon as you change it.
+The tab holds two different save contracts, and the note under the Save
+buttons says so: the three mode gestures are a draft and need **Save mode
+shortcuts**; every other control on the page writes as soon as you change it.
 
 **Mode gestures.** One gesture per work mode — **Dictation** (turns speech into
 text), **Formatting** (dictation with AI formatting) and **Agent** (passes the
@@ -163,32 +164,33 @@ says Codescribe may intercept the short press while dictation runs, and
 explicitly that it does not block saving. The technical identifier that came
 across the bridge is not shown; the save receipt and the bridge log keep it.
 
-**Dictation context** is its own section, below the gestures. Shift or Command
-during an already-started Fn hold attaches the selected text; it does not switch
-the take to the Agent. **Arm with** chooses Shift (default) or Command.
-Fn+Shift from idle is dictation, not the Agent; further pulses during the same
-hold attach the next selections, and the take, the overlay and the destination
-do not change.
+**Dictation control** sits directly under the gestures because it shapes the
+same recording gestures; both switches write on change. **Tap Fn to dictate**:
+one tap starts, the next stops, a longer hold records only while held (set the
+macOS Fn key action to _Do Nothing_, otherwise macOS can claim a double press
+for its own dictation). **Middle mouse acts as Fn**: the middle button follows
+the same press, hold and tap rules as Fn; custom mappings in your mouse
+software can block the standard middle-click signal the app listens for.
 
-**Extra gestures** holds the three input surfaces, each described in two
-sentences and without tooltips: **Agent channel** (`Ctrl + digit`, or
-`Fn + digit`; Command is not offered because it collides with tab switching),
-**Tap Fn to dictate** (one tap starts, the next stops, a longer hold records
-only while held; set the macOS Fn key action to _Do Nothing_, otherwise macOS
-can claim a double press for its own dictation) and **Middle mouse acts as Fn**
-(whose ordinary click can still reach the app in front). The Fn gesture is
-labelled plainly as **Hold Fn**.
+**During dictation** is a quiet neutral card: pressing the chosen key during
+an already-started dictation hold attaches the selected text to the take.
+**Arm with** chooses Shift (default) or Command, and the card's gesture label
+derives from that choice. Further pulses during the same hold attach the next
+selections; the take, the overlay and the destination do not change.
+
+**Extra shortcuts** holds the two shortcuts beyond the modes. **Agent channel**
+(`Ctrl + digit`, or `Fn + digit`; Command is not offered because it collides
+with tab switching) and **Paste transcript**: the chord that pastes a
+transcript waiting to be inserted — the app in front may handle the same
+chord as well.
 
 **Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
 its own full-width row and only the selected mode explained underneath. The
 terminal, command and password-field safeguards are unchanged.
 
-**Deferred insert** holds **Paste transcript**: the shortcut that pastes a
-transcript waiting to be inserted. The target app may handle the same chord.
-
-**Indicator states** names the three dot states in full — Recording, Agent,
-Processing — and sets the pointer indicator size (Off / 4px / 8px / 12px; the
-Agent indicator stays proportionally larger).
+**Recording indicator** names the three dot states in full — Recording, Agent,
+Processing — and sets the size of the indicator next to the cursor
+(Off / 4px / 8px / 12px; the Agent indicator stays proportionally larger).
 
 `HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
 have no control on this tab; they are settings keys
