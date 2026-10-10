@@ -37,7 +37,9 @@ final class DockPresenceTests: XCTestCase {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
       styleMask: documentMask, backing: .buffered, defer: true)
-    defer { window.close() }
+    // Never shown, so it simply deallocates with the test; closing it would
+    // release it a second time under the default `isReleasedWhenClosed`.
+    window.isReleasedWhenClosed = false
 
     DockPresence.adopt(window)
 
