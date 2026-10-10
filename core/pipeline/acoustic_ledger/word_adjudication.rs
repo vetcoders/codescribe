@@ -76,6 +76,10 @@ pub struct WordTrial {
     pub targets: Vec<SlotTarget>,
     pub source_ranges: Vec<OccurrenceIdentity>,
     pub q: u32,
+    /// This trial reserves new native work rather than sharing a returned grid
+    /// frame. Persist the distinction so replay enforces the same budget.
+    #[serde(default)]
+    pub fresh_decode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +105,7 @@ struct WordAdjudication {
     whisper: Vec<WordHypothesis>,
     conflict: bool,
     attempted: bool,
+    fresh_attempted: bool,
     trial: Option<WordTrial>,
     last_trial: Option<WordTrialReceipt>,
 }
@@ -666,6 +671,7 @@ impl AcousticLedger {
             whisper: Vec::new(),
             conflict: members.iter().any(|c| c.conflict),
             attempted: members.iter().any(|c| c.attempted),
+            fresh_attempted: members.iter().any(|c| c.fresh_attempted),
             trial: None,
             last_trial: members.iter().find_map(|c| c.last_trial.clone()),
         };
@@ -1121,6 +1127,7 @@ impl AcousticLedger {
                 whisper: Vec::new(),
                 conflict: false,
                 attempted: false,
+                fresh_attempted: false,
                 trial: None,
                 last_trial: None,
             };
@@ -1146,14 +1153,41 @@ impl AcousticLedger {
         // already observed planned frames before spending a live trial.
         context: Option<(u64, std::ops::Range<u64>)>,
     ) -> Option<WordTrial> {
+        self.select_word_trial(stopping, coverage, context, u64::MAX, false)
+    }
+
+    pub(crate) fn next_word_trial_before_horizon(
+        &mut self,
+        stopping: bool,
+        coverage: Option<&OccurrenceIdentity>,
+        context: Option<(u64, std::ops::Range<u64>)>,
+        horizon: u64,
+    ) -> Option<WordTrial> {
+        self.select_word_trial(stopping, coverage, context, horizon, true)
+    }
+
+    fn select_word_trial(
+        &mut self,
+        stopping: bool,
+        coverage: Option<&OccurrenceIdentity>,
+        context: Option<(u64, std::ops::Range<u64>)>,
+        horizon: u64,
+        fresh_decode: bool,
+    ) -> Option<WordTrial> {
         let index = self
             .word_adjudication
             .components
             .iter()
             .enumerate()
             .filter(|(_, c)| {
-                if !c.conflict
-                    || c.attempted
+                if c.owner.sample_end > horizon
+                    || !c.conflict
+                    || c.trial.is_some()
+                    || if fresh_decode {
+                        c.fresh_attempted
+                    } else {
+                        c.attempted
+                    }
                     || self.is_sealed(&c.owner)
                     || (!stopping
                         && c.support()
@@ -1222,7 +1256,7 @@ impl AcousticLedger {
             })
             .max_by_key(|(_, c)| c.whisper.iter().map(|h| h.q).max().unwrap_or(0))
             .map(|(index, _)| index)?;
-        self.open_word_trial(index)
+        self.open_word_trial(index, fresh_decode)
     }
 
     /// Reissuing a retained decode frame cannot add evidence to this trial.
@@ -1256,7 +1290,7 @@ impl AcousticLedger {
                 &component.owner == owner && component.conflict && !component.attempted
             })
         {
-            let Some(trial) = self.open_word_trial(index) else {
+            let Some(trial) = self.open_word_trial(index, false) else {
                 break;
             };
             self.close_word_trial(&trial, "admission_horizon_closed");
@@ -1265,7 +1299,7 @@ impl AcousticLedger {
         closed
     }
 
-    fn open_word_trial(&mut self, index: usize) -> Option<WordTrial> {
+    fn open_word_trial(&mut self, index: usize, fresh_decode: bool) -> Option<WordTrial> {
         let component = &self.word_adjudication.components[index];
         let sources = self
             .slots_of(&component.owner)
@@ -1284,9 +1318,11 @@ impl AcousticLedger {
             targets: component.targets.clone(),
             source_ranges: self.word_source_ranges(&sources),
             q: component.whisper.iter().map(|h| h.q).max().unwrap_or(0),
+            fresh_decode,
         };
         let component = &mut self.word_adjudication.components[index];
         component.attempted = true;
+        component.fresh_attempted |= fresh_decode;
         component.trial = Some(trial.clone());
         self.word_adjudication.active_trials.push(trial.clone());
         super::super::trail::record(
@@ -1356,7 +1392,15 @@ impl AcousticLedger {
             .components
             .iter_mut()
             .find(|c| {
-                c.owner == trial.owner && c.targets == trial.targets && c.conflict && !c.attempted
+                c.owner == trial.owner
+                    && c.targets == trial.targets
+                    && c.conflict
+                    && c.trial.is_none()
+                    && if trial.fresh_decode {
+                        !c.fresh_attempted
+                    } else {
+                        !c.attempted
+                    }
             })
             .ok_or("recorded trial has no current unresolved component")?;
         if trial.id != self.word_adjudication.next_trial.saturating_add(1) {
@@ -1364,6 +1408,7 @@ impl AcousticLedger {
         }
         self.word_adjudication.next_trial = trial.id;
         component.attempted = true;
+        component.fresh_attempted |= trial.fresh_decode;
         component.trial = Some(trial.clone());
         self.word_adjudication.active_trials.push(trial.clone());
         Ok(())

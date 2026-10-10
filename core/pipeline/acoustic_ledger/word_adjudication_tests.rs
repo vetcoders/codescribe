@@ -2,6 +2,14 @@
 use super::*;
 
 pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> AcousticLedger {
+    measured_ledger_at_rate(owner, pcm, 16_000)
+}
+
+fn measured_ledger_at_rate(
+    owner: &OccurrenceIdentity,
+    pcm: &[f32],
+    sample_rate: u32,
+) -> AcousticLedger {
     use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
     assert!(owner.sample_start < owner.sample_end && owner.sample_end <= pcm.len() as u64);
     let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
@@ -9,7 +17,8 @@ pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> Acoust
     for chunk in pcm.chunks(320) {
         writer.push_samples(chunk);
     }
-    let speech = energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, 16_000);
+    let speech =
+        energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, sample_rate);
     assert_eq!(
         speech.availability().observed_samples(),
         Some(pcm.len() as u64)
@@ -26,13 +35,13 @@ pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> Acoust
     assert!(integral > 0.0 && peak > 0.0);
     let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
     let mut ledger = AcousticLedger::new();
-    ledger.bind_capture_rate(16_000);
+    ledger.bind_capture_rate(sample_rate);
     assert!(
         ledger
             .qualify(
                 &AcousticEvidence {
                     occurrence: owner.clone(),
-                    duration_ms: samples.len() as f64 / 16.0,
+                    duration_ms: samples.len() as f64 * 1000.0 / f64::from(sample_rate),
                     energy_integral: integral,
                     mean_rms_dbfs: 20.0 * (integral / samples.len() as f64).sqrt().log10(),
                     peak_dbfs: 20.0 * peak.log10(),
@@ -838,4 +847,125 @@ fn an_offset_whisper_window_cannot_drop_a_negation_apple_heard() {
     );
     let negation = words.iter().position(|word| *word == "nie").unwrap();
     assert!(words[negation + 1].starts_with("testował"), "{text}");
+}
+
+#[test]
+fn a_shared_grid_refusal_does_not_spend_the_single_fresh_decode_budget() {
+    let owner = OccurrenceIdentity::new("grid-refusal-fresh-budget", 1, 0, 160_000);
+    let mut pcm = vec![0.0; 160_000];
+    pcm[48_000..64_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    for (producer, generation, label, decode) in [
+        (ObservationProducer::Apple, 0, "56", None),
+        (ObservationProducer::Whisper, 1, "1286", Some((0, 128_000))),
+        (
+            ObservationProducer::Whisper,
+            2,
+            "1286",
+            Some((8_000, 136_000)),
+        ),
+    ] {
+        offer(&mut ledger, &owner, producer, generation, label, decode);
+    }
+    let coverage = OccurrenceIdentity::new(&owner.session, 1, 16_000, 160_000);
+    let shared = ledger
+        .next_word_trial_in(false, Some(&coverage), None)
+        .unwrap();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 38, 0, owner.clone());
+    let wrong = [WordPin::new(48_000, 64_000, "I").with_decode_window(16_000, 160_000)];
+    assert!(
+        !ledger
+            .admit_word_trial(&shared, &observation, &wrong, &wrong)
+            .grants_mutation()
+    );
+    assert_eq!(ledger.text_of(&owner), Some("56"));
+    let fresh = ledger
+        .next_word_trial_before_horizon(false, None, Some((16_000, 0..160_000)), owner.sample_end)
+        .expect("a reused wrong grid return did not request another native decode");
+    ledger.close_word_trial(&fresh, "inference_failed");
+    assert!(
+        ledger
+            .next_word_trial_before_horizon(
+                false,
+                None,
+                Some((16_000, 0..160_000)),
+                owner.sample_end,
+            )
+            .is_none(),
+        "the one freshly requested decode has now been spent"
+    );
+}
+
+#[test]
+fn measured_numeric_context_ties_require_a_fresh_bounded_witness() {
+    use super::word_adjudication::context_quality;
+    // clip10 components2/3, translated by -5040000 capture samples. This
+    // preserves their exact context ratios and distinct PCM identities.
+    for (index, old_start, old_end, new_start, new_end, old_q, new_q) in [
+        (2, 243_840, 284_160, 253_440, 278_400, 1_000_000, 693_333),
+        (3, 284_160, 306_240, 278_400, 312_000, 873_333, 933_333),
+    ] {
+        let owner = OccurrenceIdentity::new(format!("numeric-trial-{index}"), 1, 227_968, 452_736);
+        let mut pcm = vec![0.0; 624_000];
+        pcm[old_start.min(new_start) as usize..old_end.max(new_end) as usize].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 36, 0, owner.clone());
+        let old = [WordPin::new(old_start, old_end, "Czerin").with_decode_window(0, 432_000)];
+        assert_eq!(context_quality(old_start, old_end, (0, 432_000)), old_q);
+        assert!(ledger.admit_word_slots(&first, &old).grants_mutation());
+        let later = ObservationIdentity::new(ObservationProducer::Whisper, 36, 1, owner.clone());
+        let candidate =
+            [WordPin::new(new_start, new_end, "9,").with_decode_window(144_000, 576_000)];
+        assert_eq!(
+            context_quality(
+                old_start.min(new_start),
+                old_end.max(new_end),
+                (144_000, 576_000)
+            ),
+            new_q
+        );
+        assert!(
+            !ledger
+                .admit_word_slots(&later, &candidate)
+                .grants_mutation()
+        );
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some("Czerin"),
+            "q is not lexical confidence"
+        );
+        let trial = ledger
+            .next_word_trial_in(false, None, Some((48_000, 0..624_000)))
+            .unwrap();
+        let left = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_start)
+            .min()
+            .unwrap()
+            - 48_000;
+        let right = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_end)
+            .max()
+            .unwrap()
+            + 48_000;
+        assert!(right - left <= 144_000);
+        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 99, 0, owner.clone());
+        let pins = [WordPin::new(new_start, new_end, "9,").with_decode_window(left, right)];
+        assert!(
+            ledger
+                .admit_word_trial(&trial, &fresh, &pins, &pins)
+                .grants_mutation()
+        );
+        assert_eq!(ledger.text_of(&owner), Some("9,"));
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+        assert!(!ledger.has_word_conflicts());
+        assert!(
+            ledger
+                .next_word_trial_in(false, None, Some((48_000, 0..624_000)))
+                .is_none()
+        );
+    }
 }

@@ -76,7 +76,6 @@ impl LiveAudioBuffer {
     }
 
     /// Absolute sample index of the oldest retained sample.
-    #[cfg(test)]
     pub(crate) fn retained_start_sample(&self) -> u64 {
         self.start_index
     }

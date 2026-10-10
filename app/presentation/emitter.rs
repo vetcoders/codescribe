@@ -2308,38 +2308,6 @@ impl TranscriptReducer {
                 == self.sentence_break_before(occurrence, ledger, sentence_pause_sec)
     }
 
-    /// First owner the terminal Light+ pass may shape.
-    ///
-    /// Lifecycle closure grants no rewrite of presentation that settled
-    /// while the take was live: an owner whose live shape is stable keeps
-    /// its bytes. The scope opens at the first owner without one, and always
-    /// holds the last owner, the only one whose sentence end Stop decides.
-    /// `None` while a human revision owns the document. A Light+ document
-    /// re-presents the live shapes it was built over, so its scope is read
-    /// from them and a repeated terminal pass mints nothing.
-    fn terminal_shaping_scope(
-        &self,
-        ledger: &AcousticLedger,
-        sentence_pause_sec: f32,
-    ) -> Option<OccurrenceIdentity> {
-        let light_plus_document = !self.raw_human_revision
-            && self
-                .manual_document_revision_receipt
-                .as_deref()
-                .is_some_and(|id| id.starts_with("light-plus-"));
-        if self.manual_rendered_text.is_some() && !light_plus_document {
-            return None;
-        }
-        let last = self.document_by_occurrence.keys().next_back()?;
-        self.document_by_occurrence
-            .keys()
-            .find(|occurrence| {
-                *occurrence == last
-                    || !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger)
-            })
-            .cloned()
-    }
-
     /// First owner a non-terminal tick must evaluate.
     ///
     /// Empty `named` does not mean "shape nothing": a new admission still
@@ -2644,35 +2612,28 @@ impl TranscriptReducer {
     /// pass — or a document a formatter already shaped — mints nothing).
     /// Read-only: the intent enters the same corridor as a user edit.
     ///
-    /// Only the open terminal scope is shaped. The prefix keeps the exact
-    /// bytes its live shaping settled; the scope is shaped with that prefix
-    /// as left context, so a sentence end is placed where Stop closes it.
+    /// Stop may append sentence-end punctuation only. Existing bytes, including
+    /// human edits and unresolved early formatting, never reopen at closure.
     pub fn light_plus_intent(
         &self,
-        ledger: &AcousticLedger,
-        sentence_pause_sec: f32,
+        _ledger: &AcousticLedger,
+        _sentence_pause_sec: f32,
     ) -> Option<UserRevisionIntent> {
         let session_id = self.document_by_occurrence.keys().next()?.session.clone();
         let source = self.committed_rendered_text();
         if source.trim().is_empty() {
             return None;
         }
-        let shaped = match self.terminal_shaping_scope(ledger, sentence_pause_sec) {
-            Some(scope) => {
-                let mut rendered = self.rendered_occurrence_span(Some(&scope));
-                let mut open = String::new();
-                for (occurrence, entry) in self.document_by_occurrence.range(scope..) {
-                    append_exact_fragment(&mut open, self.presentation_of(occurrence, entry));
-                }
-                let shaped_open = codescribe_core::pipeline::light_plus::apply_with_left_context(
-                    &rendered, &open,
-                );
-                append_exact_fragment(&mut rendered, &shaped_open);
-                render_context_markers(&rendered, &self.context_markers)
-            }
-            // A human document owns every byte; Light+ shapes it whole.
-            None => codescribe_core::pipeline::light_plus::apply(&source),
-        };
+        // Stop supplies only the sentence-end boundary. All casing, comma and
+        // whitespace shaping happens progressively on source-bound live spans.
+        // Even a long last owner or an invalidated cache cannot reopen a prefix.
+        let mut shaped = source.clone();
+        if !matches!(
+            source.trim_end().chars().last(),
+            Some('.' | '!' | '?' | '…' | ':')
+        ) {
+            shaped.push('.');
+        }
         if shaped == source {
             return None;
         }
@@ -3715,7 +3676,11 @@ impl PresentationEmitter {
                 .unadmitted_apple_words
                 .iter()
                 .filter(|word| {
-                    state
+                    matches!(
+                        word.source,
+                        UnadmittedAppleWordSource::OpenPartial { .. }
+                            | UnadmittedAppleWordSource::RefusedUntimed { .. }
+                    ) || state
                         .committed_covering(word.sample_start, word.sample_end)
                         .is_none()
                 })
@@ -5832,6 +5797,36 @@ mod tests {
         let bus_text = std::fs::read_to_string(bus_path).unwrap();
         assert!(bus_text.contains("light-plus"));
         assert!(bus_text.contains(&paste.text));
+    }
+
+    #[test]
+    fn stop_preserves_all_existing_bytes_even_with_a_long_unshaped_owner() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let owner = OccurrenceIdentity::new("stop-boundary-only", 7, 0, 960_000);
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = admitted_mutation(
+            &mut ledger,
+            owner,
+            1,
+            "pierwszy fragment po to aby ostatni fragment",
+        )
+        else {
+            unreachable!()
+        };
+        reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .unwrap();
+        let before = reducer.committed_rendered_text();
+        let intent = reducer.light_plus_intent(&ledger, 0.8).unwrap();
+        assert_eq!(intent.rendered_text, format!("{before}."));
+        reducer.mark_terminal_lifecycle();
+        reducer.apply_user_revision(&mut ledger, &intent).unwrap();
+        assert!(reducer.light_plus_intent(&ledger, 0.8).is_none());
+        assert_eq!(reducer.committed_rendered_text(), format!("{before}."));
     }
 
     // Counters observe real reducer work without changing production behavior.
@@ -8093,7 +8088,11 @@ mod tests {
         let frozen = emitter
             .shape_frozen_canvas_at_stop(stopped.clone())
             .unwrap();
-        assert_eq!(frozen.text, "Some words some words.");
+        assert_eq!(
+            frozen.text,
+            format!("{}.", stopped.text),
+            "Stop keeps the existing casing"
+        );
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 4);
         for occurrence in stopped.committed_sources.keys() {

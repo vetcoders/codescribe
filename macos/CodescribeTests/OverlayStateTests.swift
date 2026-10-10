@@ -1666,6 +1666,30 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.activeText, "Zapisane słowa", "evidence remains outside delivery")
   }
 
+  func testFiveUncommittedRepeatedWordsRemainReviewableAfterStop() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    projectText("Zatwierdzony dokument", to: state, sessionId: "five-word-review")
+    var evidence: [CsUnanchoredEvidence] = []
+    for index in 0..<5 {
+      let start = UInt64(16_000 + index * 1600)
+      evidence.append(
+        CsUnanchoredEvidence(
+          sampleStart: start, sampleEnd: start + 1600,
+          text: "Iwo", reason: "slot_admission_rejected"))
+    }
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "five-word-review", captureEpoch: 1, sequence: 1,
+        text: "Zatwierdzony dokument Iwo Iwo Iwo Iwo Iwo", degraded: true,
+        evidence: evidence))
+    XCTAssertEqual(state.liveEvidence, evidence)
+    XCTAssertEqual(state.canvasText, "Zatwierdzony dokument")
+    projectText("Zatwierdzony dokument", to: state, terminal: true, sessionId: "five-word-review")
+    XCTAssertEqual(state.liveEvidence, evidence, "Stop cannot settle five separate refusals")
+    XCTAssertEqual(state.activeText, "Zatwierdzony dokument", "review is not delivery authority")
+  }
+
   func testForensicTerminalReviewFencesCaptureEpochSequenceAndExplicitRemoval() {
     let state = OverlayState()
     state.handleRecordingPreparing()
