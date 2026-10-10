@@ -259,29 +259,71 @@ final class AudioPanelTests: XCTestCase {
   }
 
   /// The sentence under "Keep completed recordings" describes the SELECTED
-  /// choice. "Forever" used to carry the discard warning that belongs to "Off".
-  func testRetentionSentenceIsAFunctionOfTheSelectedChoice() {
-    let forever = audioRetentionDetail("forever")
-    let off = audioRetentionDetail("off")
-    XCTAssertNotEqual(forever, off)
-    XCTAssertTrue(forever.contains("stays on this Mac"))
-    XCTAssertFalse(forever.contains("discarded"), "indefinite retention is not a discard notice")
+  /// choice, and only a choice that actually expires something carries one:
+  /// "Forever" says everything in its own value. Every sentence keeps the
+  /// distinction between recorded audio and text history.
+  func testRetentionSentenceIsAFunctionOfTheSelectedChoice() throws {
+    XCTAssertNil(audioRetentionDetail("forever"), "indefinite retention needs no sentence")
+    // The config loader resolves an unknown value to `forever`; so must the copy.
+    XCTAssertNil(audioRetentionDetail("whenever"))
+    XCTAssertNil(audioRetentionDetail(""))
+
+    let off = try XCTUnwrap(audioRetentionDetail("off"))
     XCTAssertTrue(off.contains("discarded"))
 
-    XCTAssertTrue(audioRetentionDetail("24h").contains("24 hours"))
-    XCTAssertTrue(audioRetentionDetail("7_days").contains("7 days"))
-    XCTAssertTrue(audioRetentionDetail("30_days").contains("30 days"))
-    XCTAssertEqual(
-      Set([
-        forever, off, audioRetentionDetail("24h"), audioRetentionDetail("7_days"),
-        audioRetentionDetail("30_days"),
-      ]).count,
-      5,
-      "each of the five choices states its own rule")
+    let expiring = ["off", "24h", "7_days", "30_days"].compactMap(audioRetentionDetail)
+    XCTAssertEqual(expiring.count, 4, "each expiring choice states its own rule")
+    XCTAssertEqual(Set(expiring).count, 4)
+    for sentence in expiring {
+      XCTAssertTrue(sentence.contains("Text history"), sentence)
+    }
 
-    // The config loader resolves an unknown value to `forever`; so must the copy.
-    XCTAssertEqual(audioRetentionDetail("whenever"), forever)
-    XCTAssertEqual(audioRetentionDetail(""), forever)
+    XCTAssertTrue(try XCTUnwrap(audioRetentionDetail("24h")).contains("24 hours"))
+    XCTAssertTrue(try XCTUnwrap(audioRetentionDetail("7_days")).contains("7 days"))
+    XCTAssertTrue(try XCTUnwrap(audioRetentionDetail("30_days")).contains("30 days"))
+  }
+
+  /// The microphone card answers one question — which input records — and
+  /// carries a sentence only when something is actually wrong with it.
+  func testMicrophoneCardNamesTheRuntimeInputAndNoticesOnlyRealProblems() {
+    let healthy = audioInputCardState(
+      CsAudioInputSnapshot(
+        devices: ["MacBook Pro Microphone"],
+        configuredDevice: nil,
+        runtimeDevice: "MacBook Pro Microphone",
+        configuredDeviceAvailable: true,
+        fallbackToDefault: false,
+        runtimeConfigurationMatches: true
+      ))
+    XCTAssertEqual(healthy.current, "Currently: MacBook Pro Microphone")
+    XCTAssertNil(healthy.notice, "a working microphone needs no sentence")
+    XCTAssertNil(healthy.noticeTone)
+
+    let unapplied = audioInputCardState(
+      CsAudioInputSnapshot(
+        devices: ["MacBook Pro Microphone", "USB Studio Mic"],
+        configuredDevice: "USB Studio Mic",
+        runtimeDevice: "MacBook Pro Microphone",
+        configuredDeviceAvailable: true,
+        fallbackToDefault: false,
+        runtimeConfigurationMatches: false
+      ))
+    XCTAssertEqual(unapplied.current, "Currently: MacBook Pro Microphone")
+    XCTAssertEqual(unapplied.noticeTone, .fallback)
+    XCTAssertTrue(unapplied.notice?.contains("Restart Codescribe") == true)
+
+    let noHardware = audioInputCardState(
+      CsAudioInputSnapshot(
+        devices: [],
+        configuredDevice: nil,
+        runtimeDevice: nil,
+        configuredDeviceAvailable: false,
+        fallbackToDefault: false,
+        runtimeConfigurationMatches: true
+      ))
+    XCTAssertEqual(noHardware.current, "Currently: no microphone")
+    XCTAssertEqual(noHardware.noticeTone, .unavailable)
+    XCTAssertTrue(noHardware.notice?.contains("Connect a microphone") == true)
   }
 
   /// The stored profile identifier is a diagnostic, not a readiness row. It
@@ -442,9 +484,10 @@ final class AcousticAdmissionPanelTests: XCTestCase {
         detail: "Required for committed utterances; stored in Settings."
       )
     )
+    // The switch moved to the Lab desk; the verdict names where it now lives.
     XCTAssertEqual(
       admissionDisplayState(settingsOff).title,
-      "Seal lane is off in Settings › Audio"
+      "Seal lane is off in Settings › Lab"
     )
 
     let overrideOff = readiness(armed: false, settingArmed: true, source: "env_override")
@@ -453,6 +496,119 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertFalse(overrideState.isEnabled, "env override makes Settings read-only")
     XCTAssertTrue(overrideState.detail.contains("CODESCRIBE_SILERO_FUSION"))
     XCTAssertTrue(admissionDisplayState(overrideOff).title.contains("override"))
+  }
+
+  /// The one status line is neutral only while nothing blocks recording. Every
+  /// blocker replaces it with its own problem, explanation and remedy — a
+  /// calm "Ready to record" may never sit above a failed prerequisite.
+  func testReadinessSummaryNeverMasksABlockedPrerequisite() {
+    let ready = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: .sampleGranted)
+    XCTAssertEqual(ready.tone, .healthy)
+    XCTAssertEqual(ready.title, "Ready to record")
+    XCTAssertNil(ready.detail, "a working state explains nothing")
+    XCTAssertEqual(ready.remedy, .none)
+
+    let denied = audioReadinessSummary(
+      input: .sample, microphonePermission: .denied, admission: .sampleGranted)
+    XCTAssertEqual(denied.tone, .unavailable)
+    XCTAssertEqual(denied.title, "Microphone access is off")
+    XCTAssertTrue(denied.detail?.contains("Privacy & Security") == true)
+    XCTAssertEqual(denied.remedy, .microphonePermission)
+
+    let uncalibrated = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: .sampleMissing)
+    XCTAssertEqual(uncalibrated.title, "Calibration required")
+    XCTAssertEqual(uncalibrated.remedy, .calibrate)
+
+    // The committing row is named for what it is, so as a headline it has to
+    // state the consequence instead, and send the user to the one switch.
+    let sealOff = readiness(armed: false, settingArmed: false, source: "settings")
+    let blocked = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: sealOff)
+    XCTAssertEqual(blocked.tone, .unavailable)
+    XCTAssertEqual(blocked.title, "Recording cannot start")
+    XCTAssertTrue(blocked.detail?.contains("Settings › Lab") == true)
+    XCTAssertEqual(blocked.remedy, .openLab)
+
+    // An override is removed outside the app, so Lab is not offered for it.
+    let overrideOff = readiness(armed: false, settingArmed: true, source: "env_override")
+    let overridden = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: overrideOff)
+    XCTAssertEqual(overridden.remedy, .none)
+    XCTAssertTrue(overridden.detail?.contains("CODESCRIBE_SILERO_FUSION") == true)
+
+    var vadBroken = readiness(armed: true, settingArmed: true, source: "settings")
+    vadBroken.code = "admission_seal_vad_unavailable"
+    vadBroken.message = "Silero VAD failed to load"
+    let vad = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: vadBroken)
+    XCTAssertEqual(vad.title, "Silero VAD did not load")
+    XCTAssertEqual(vad.remedy, .none, "a failed detector is not fixed from Lab")
+
+    // A take in flight is lifecycle, not a blocker: the line follows the
+    // recorder and offers nothing to repair.
+    let lifecycle: [(recording: Bool?, preparing: Bool, processing: Bool, title: String)] = [
+      (true, false, false, "Recording in progress"),
+      (true, true, false, "Starting recording…"),
+      (true, false, true, "Finishing recording…"),
+    ]
+    for state in lifecycle {
+      let live = audioReadinessSummary(
+        input: .sample, microphonePermission: .denied, admission: nil,
+        recording: state.recording, preparing: state.preparing, processing: state.processing)
+      XCTAssertEqual(live.title, state.title)
+      XCTAssertNil(live.detail)
+      XCTAssertEqual(live.remedy, .none)
+    }
+  }
+
+  /// A system-fallback microphone keeps recording working, so it belongs on
+  /// the microphone card as a notice — never as a readiness blocker.
+  func testSystemFallbackMicrophoneIsANoticeNotABlocker() {
+    let fallback = CsAudioInputSnapshot(
+      devices: ["MacBook Pro Microphone"],
+      configuredDevice: "Unplugged USB Mic",
+      runtimeDevice: "MacBook Pro Microphone",
+      configuredDeviceAvailable: false,
+      fallbackToDefault: true,
+      runtimeConfigurationMatches: true
+    )
+    let summary = audioReadinessSummary(
+      input: fallback, microphonePermission: .granted, admission: .sampleGranted)
+    XCTAssertEqual(summary.tone, .healthy)
+    XCTAssertEqual(summary.title, "Ready to record")
+    XCTAssertNil(summary.detail)
+    XCTAssertNotNil(audioInputCardState(fallback).notice, "the card still says it")
+  }
+
+  /// The two short rows carry a value and nothing else; the explanation of a
+  /// bad value belongs to the status line above them.
+  func testReadinessFactsCarryOnlyTheirCurrentValue() {
+    XCTAssertEqual(
+      audioCalibrationFact(.sampleGranted, microphonePermission: .granted),
+      AudioReadinessFact(
+        id: .calibration, label: "Microphone calibration", value: "Ready", tone: .healthy))
+    XCTAssertEqual(
+      audioCalibrationFact(.sampleMissing, microphonePermission: .granted).value, "Required")
+    XCTAssertEqual(
+      audioCalibrationFact(.sampleGranted, microphonePermission: .denied).value, "Waiting")
+    XCTAssertEqual(audioCalibrationFact(nil, microphonePermission: .granted).value, "Checking…")
+
+    let armed = readiness(armed: true, settingArmed: true, source: "settings")
+    XCTAssertEqual(
+      audioSealLaneFact(armed),
+      AudioReadinessFact(
+        id: .sealLane, label: "Committing fragments", value: "On", tone: .healthy))
+    XCTAssertEqual(
+      audioSealLaneFact(readiness(armed: false, settingArmed: false, source: "settings")).value,
+      "Off")
+    XCTAssertEqual(audioSealLaneFact(nil).value, "Checking…")
+
+    var vadBroken = armed
+    vadBroken.code = "admission_seal_vad_unavailable"
+    XCTAssertEqual(audioSealLaneFact(vadBroken).value, "Unavailable")
+    XCTAssertEqual(audioSealLaneFact(vadBroken).tone, .unavailable)
   }
 
   /// One name for the committing row in every state, a readable switch state in

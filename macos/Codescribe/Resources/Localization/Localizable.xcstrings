@@ -2935,6 +2935,46 @@
         }
       }
     },
+    "Audio is deleted 24 hours after a recording finishes. Text history stays." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie audio jest usuwane 24 godziny po zakończeniu nagrywania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
+    "Audio is deleted 30 days after a recording finishes. Text history stays." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie audio jest usuwane 30 dni po zakończeniu nagrywania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
+    "Audio is deleted 7 days after a recording finishes. Text history stays." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie audio jest usuwane 7 dni po zakończeniu nagrywania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
+    "Audio is discarded as soon as processing finishes. Text history stays." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie audio jest usuwane zaraz po zakończeniu przetwarzania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
     "Audio retention" : {
       "localizations" : {
         "pl" : {
@@ -3778,6 +3818,16 @@
         }
       }
     },
+    "Choose a microphone and adjust recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz mikrofon i dostosuj nagrywanie."
+          }
+        }
+      }
+    },
     "Choose a microphone, check that recording is ready and adjust the sound settings." : {
       "localizations" : {
         "pl" : {
@@ -4350,6 +4400,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdza ten szkic w rejestrze transkrypcji"
+          }
+        }
+      }
+    },
+    "Committing fragments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdzanie fragmentów"
           }
         }
       }
@@ -5316,6 +5376,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktualnie używane urządzenie: %@"
+          }
+        }
+      }
+    },
+    "Currently: %@" : {
+      "comment" : "The placeholder is the input device the recorder actually uses",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktualnie: %@"
+          }
+        }
+      }
+    },
+    "Currently: no microphone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktualnie: brak mikrofonu"
           }
         }
       }
@@ -8219,6 +8300,16 @@
         }
       }
     },
+    "Microphone calibration" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalibracja mikrofonu"
+          }
+        }
+      }
+    },
     "Microphone not calibrated yet" : {
       "localizations" : {
         "pl" : {
@@ -9447,6 +9538,16 @@
         }
       }
     },
+    "Off. Recording cannot start until it is turned on in Settings › Lab." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyłączone. Nagrywanie nie rozpocznie się, dopóki nie włączysz tego w Ustawieniach › Lab."
+          }
+        }
+      }
+    },
     "Off. Recording cannot start until you turn this on." : {
       "localizations" : {
         "pl" : {
@@ -9486,6 +9587,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączone przez ustawienie %@. Przełącznik jest tylko do odczytu."
+          }
+        }
+      }
+    },
+    "On. Change it with the switch in Settings › Lab." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włączone. Zmienisz to przełącznikiem w Ustawieniach › Lab."
           }
         }
       }
@@ -9546,6 +9657,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz dokumentację Codescribe"
+          }
+        }
+      }
+    },
+    "Open Lab" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Lab"
           }
         }
       }
@@ -9695,6 +9816,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API OpenAI"
+          }
+        }
+      }
+    },
+    "Opens the Lab desk, which owns the committing switch" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera zakładkę Lab, w której znajduje się przełącznik zatwierdzania"
           }
         }
       }
@@ -10102,6 +10233,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odtwórz"
+          }
+        }
+      }
+    },
+    "Play a signal" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzaj sygnał"
           }
         }
       }
@@ -10644,6 +10785,16 @@
         }
       }
     },
+    "Re-reads the microphone list; readiness is checked below" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ponownie odczytuje listę mikrofonów; gotowość sprawdzasz poniżej"
+          }
+        }
+      }
+    },
     "Read" : {
       "localizations" : {
         "en" : {
@@ -10829,6 +10980,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowy — skonfigurowano %1$@, dostęp dostępny, %2$@"
+          }
+        }
+      }
+    },
+    "Recalibrate" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalibruj ponownie"
           }
         }
       }
@@ -11497,6 +11658,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uruchamia formatowanie między nagraniami"
+          }
+        }
+      }
+    },
+    "Required before a recording can start." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagane do rozpoczęcia nagrywania."
+          }
+        }
+      }
+    },
+    "Required before a recording can start. The switch is on the Lab desk." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagane do rozpoczęcia nagrywania. Przełącznik znajduje się w zakładce Lab."
           }
         }
       }
@@ -12265,6 +12446,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdzanie zakończonych wypowiedzi jest wyłączone w Ustawieniach › Dźwięk."
+          }
+        }
+      }
+    },
+    "Seal lane is off in Settings › Lab" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatwierdzanie fragmentów jest wyłączone w Ustawieniach › Lab"
           }
         }
       }
@@ -16355,6 +16546,24 @@
         }
       }
     },
+    "audio.input.systemDefault" : {
+      "comment" : "Input device option: follow whichever microphone macOS uses",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "System default"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domyślne systemowe"
+          }
+        }
+      }
+    },
     "audio.microphone.permission.allow" : {
       "comment" : "Button: grant the microphone permission now",
       "extractionState" : "extracted_with_value",
@@ -16369,6 +16578,168 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zezwól"
+          }
+        }
+      }
+    },
+    "audio.readiness.calibration.ready" : {
+      "comment" : "Value of the microphone calibration row: a usable measurement exists",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Ready"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gotowa"
+          }
+        }
+      }
+    },
+    "audio.readiness.calibration.required" : {
+      "comment" : "Value of the microphone calibration row: no usable measurement yet",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Required"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagana"
+          }
+        }
+      }
+    },
+    "audio.readiness.sealLane.off" : {
+      "comment" : "Value of the committing fragments row; keep it as short as the UI allows",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wył."
+          }
+        }
+      }
+    },
+    "audio.readiness.sealLane.on" : {
+      "comment" : "Value of the committing fragments row; keep it as short as the UI allows",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "On"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wł."
+          }
+        }
+      }
+    },
+    "audio.readiness.sealLane.unavailable" : {
+      "comment" : "Value of the committing fragments row: the detector did not load",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Unavailable"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niedostępne"
+          }
+        }
+      }
+    },
+    "audio.readiness.start" : {
+      "comment" : "Button on the readiness status line: start a take",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Start"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpocznij"
+          }
+        }
+      }
+    },
+    "audio.readiness.stop" : {
+      "comment" : "Button on the readiness status line: stop the running take",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Stop"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatrzymaj"
+          }
+        }
+      }
+    },
+    "audio.readiness.value.checking" : {
+      "comment" : "Value of a readiness row while the controller verdict is still being read",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Checking…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie…"
+          }
+        }
+      }
+    },
+    "audio.readiness.value.waiting" : {
+      "comment" : "Value of a readiness row blocked by an earlier prerequisite",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Waiting"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oczekuje"
           }
         }
       }
