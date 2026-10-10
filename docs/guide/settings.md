@@ -661,50 +661,65 @@ learned, and where the active rules come from.
 ## About
 
 **Settings → About** (the last item under _Account_) describes the app and its
-data instead of a profile; Codescribe has no account.
+data instead of a profile; Codescribe has no account. Everyday facts stay
+visible; technical values and the resets open on demand.
 
-- **Running build** — version with build number, commit and the build date in
-  the interface language. **Details** keeps the raw `CSBuiltAt` timestamp and
-  the launch repair receipt for diagnostics.
-- **Configuration notice** — the launch repair receipt (see
-  [CONFIG.md](../CONFIG.md)) is shown as a sentence such as _An outdated
-  configuration setting was detected. It needs a review._ The original line and
-  the `.env` key names stay under **Details**. Nothing in About edits `.env`.
-- **Local data** — the app-data folder and the Transcripts folder, with a copy
-  button for each path.
-- **First dictation confirmation** — the opt-in for one anonymous event after
-  the first successful dictation. The line under the switch names the shipped
-  default (off) and the current choice. While the build ships without an
-  analytics domain (`ActivationPingConfiguration.production`), the switch is
-  disabled and the panel says that nothing is sent whatever the switch says.
-- **Transcript source markers** — the switch that wraps delivered dictation in
-  a source marker. **Template and preview** holds the editor, the field chips
-  (`{mode}`, `{lang}`, `{text}`, `{conf}`, `{flags}` — each chip appends its
-  field to the template), **Restore default template** and the rendered
-  **Template preview**. Saved templates and the marking mechanics do not change.
-- **Legal & docs** — Privacy Policy, Terms of Use and License, Codescribe
-  documentation.
+- **Version** — one line, _Codescribe 0.16.0_ with _Build 526_ under it.
+  **Version details** opens the commit and the build date in the interface
+  language.
+- **Configuration notice** — shown only when the launch repair receipt (see
+  [CONFIG.md](../CONFIG.md)) has something to say, directly under the version.
+  For `.env` keys it reads _The configuration needs a review — See which setting
+  is out of date_. Opening it names each key with what it does in this build
+  and whether anything needs doing: an unknown or retired key in the optional
+  `.env` file is not read and has no effect, so no action is required (delete
+  or correct the line and restart to clear the notice); a `FORMATTING_LEVEL`
+  note means a level set outside the app differs from the one in Settings and
+  is in effect. A completed repair or a refusal has its own sentence. The
+  original receipt line stays at the bottom for support. Nothing in About edits
+  `.env`.
+- **Local data** — the app-data folder and the Transcripts folder, shown
+  home-relative (`~/.codescribe`), with a copy button for the full path.
+- **First dictation confirmation** — appears only in a build that can send it.
+  While the build ships without an analytics domain
+  (`ActivationPingConfiguration.production`), the opt-in switch is not shown at
+  all, because no position of it would send anything. The stored choice is kept
+  and the switch returns with the service.
+- **Transcript markers** — one switch, _Add markers to text_, which marks the
+  text delivered to other apps. **Edit template and preview** is closed by
+  default and holds the editor, the field chips (`{mode}`, `{lang}`, `{text}`,
+  `{conf}`, `{flags}` — each chip appends its field to the template), the
+  warning when `{text}` is missing, **Restore default template** and the
+  rendered **Template preview**. Saved templates and the marking mechanics do
+  not change. The markers change delivered dictation, so they are expected to
+  move to the Dictation settings; until then they live here.
+- **Information and documentation** — Privacy Policy, Terms of Use,
+  Documentation.
+- **Reset data** — one closed row at the foot of the page; **Expand** shows
+  the two resets described below.
 
 ## Reset / Fresh Start
 
-Both resets live at the foot of **Settings → About**. The card names the scope
-in one sentence; the confirmation sheet shows the live counts and the full scope
-before anything moves, and asks for a typed word.
+Both resets live under **Settings → About → Reset data**, closed by default.
+Each block names its scope in one sentence; the confirmation sheet shows the
+live counts and the full scope before anything moves, and asks for a typed
+word. Only the two buttons are red.
 
-- **Reset Agent** (type `RESET AGENT`) — moves Agent conversations, MCP
-  configuration and tool state to Trash and deletes Agent provider keys and MCP
-  connector secrets from Keychain permanently. The deleted vendor accounts
-  (`LLM_OPENAI_API_KEY`, `LLM_ANTHROPIC_API_KEY`, `LLM_XAI_API_KEY`,
-  `LLM_LIBRAXIS_API_KEY`) are the same accounts the Formatting lane reads on
-  that vendor, so the confirmation says that Formatting on such a vendor needs
-  its key again afterwards. Recordings, transcripts, dictionary, prompts,
-  hotkeys, dictation settings, license and macOS permissions stay.
-- **Move app data to Trash** (type `RESET`) — moves recordings, transcripts,
-  conversations, logs, preferences and local configuration to Trash and
-  relaunches. Two opt-in checkboxes: _Also remove API keys from Keychain_ (not
-  recoverable from Trash) and _Also reset my base prompts_ — `assistive.txt`,
-  `formatting.txt`, `formatting-smart.txt` and `formatting-max.txt`, all four
-  named on the checkbox and in the confirmation.
+- **Reset Agent data** — button **Reset Agent…** (type `RESET AGENT`) — moves
+  Agent conversations, MCP configuration and tool state to Trash and deletes
+  Agent provider keys and MCP connector secrets from Keychain permanently. The
+  deleted vendor accounts (`LLM_OPENAI_API_KEY`, `LLM_ANTHROPIC_API_KEY`,
+  `LLM_XAI_API_KEY`, `LLM_LIBRAXIS_API_KEY`) are the same accounts the
+  Formatting lane reads on that vendor, so the confirmation says that
+  Formatting on such a vendor needs its key again afterwards. Recordings,
+  transcripts, dictionary, prompts, hotkeys, dictation settings, license and
+  macOS permissions stay.
+- **Reset app data** — button **Move app data to Trash…** (type `RESET`) —
+  moves recordings, transcripts, conversations, logs, preferences and local
+  configuration to Trash and relaunches. Two opt-in checkboxes: _Also remove
+  API keys from Keychain_ (not recoverable from Trash) and _Also reset my base
+  prompts_ — `assistive.txt`, `formatting.txt`, `formatting-smart.txt` and
+  `formatting-max.txt`, all four named on the checkbox and in the confirmation.
 - **New agent context**: Chat Overlay → **New thread**
 - **Reset prompts**: Settings → **Agent → Prompts** → **Restore default…**
 
