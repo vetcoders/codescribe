@@ -2138,6 +2138,28 @@ def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
     return leases
 
 
+def repository_context(workspace: Path) -> dict[str, str]:
+    """Describe the attaching agent's directory; resolve linked worktrees to the repo name."""
+    import subprocess
+
+    directory = workspace.expanduser().resolve()
+    result = {"workspace": str(directory)}
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--git-common-dir"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
+        )
+        lines = probe.stdout.splitlines()
+        if probe.returncode == 0 and len(lines) == 2:
+            root = Path(lines[0]).resolve()
+            common = (directory / lines[1]).resolve()
+            repository = common.parent if common.name == ".git" else root
+            result.update(repository_name=repository.name, repository_root=str(root))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return result
+
+
 class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
 
@@ -2154,6 +2176,7 @@ class SessionLease:
         follow_from_end: bool,
         coalesce: bool = False,
         provider_metadata_home: Path | None = None,
+        workspace: Path | None = None,
     ) -> None:
         self.root = root
         self.provider = provider.casefold()
@@ -2282,6 +2305,11 @@ class SessionLease:
                 # Native provider metadata is optional, unlike lease recovery.
                 pass
             self.refresh_provider_model()
+            self.repository_context = (
+                repository_context(workspace) if workspace is not None
+                else {key: previous[key] for key in ("workspace", "repository_name", "repository_root")
+                      if previous and isinstance(previous.get(key), str)}
+            )
             self.persist(active=True)
         except BaseException:
             self._release_lock()
@@ -2346,6 +2374,7 @@ class SessionLease:
                 "process_identity": self.process_identity,
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
+                **self.repository_context,
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
                 **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
             },
@@ -3050,6 +3079,7 @@ def run(args: argparse.Namespace) -> int:
                 ttl_seconds=args.lease_ttl,
                 follow_from_end=bool(args.follow and not args.from_start),
                 coalesce=bool(args.coalesce),
+                workspace=getattr(args, "follower_workspace", None),
             )
         except (OSError, RuntimeError, ValueError) as error:
             sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
@@ -4639,7 +4669,8 @@ def lifecycle_message_received(root: Path, lease_id: str) -> None:
 
 
 def follower_command(root: Path, *, provider: str, session: str, name: str, channel: str,
-                     bus: str, wakeup: str, on_seal: str | None) -> list[str]:
+                     bus: str, wakeup: str, on_seal: str | None,
+                     workspace: str | None = None) -> list[str]:
     _, events_path = follower_paths(root, lease_identifier(provider, session))
     command = [sys.executable, os.path.abspath(__file__),
                "--bus", bus, "--bridge-home", str(root.resolve()),
@@ -4650,6 +4681,8 @@ def follower_command(root: Path, *, provider: str, session: str, name: str, chan
                "--wakeup", wakeup]
     if on_seal:
         command += ["--on-seal", on_seal]
+    if workspace is not None:
+        command += ["--follower-workspace", workspace]
     return command
 
 
@@ -5456,6 +5489,7 @@ def attach_command(args: argparse.Namespace) -> int:
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
     configuration = wakeup_configuration(args)
+    configuration["workspace"] = str(Path.cwd().resolve())
     log_path, events_path = follower_paths(root, lease_id)
     try:
         # Old lease locks outlive the binding commit; the child owns its own
@@ -5503,7 +5537,8 @@ def attach_command(args: argparse.Namespace) -> int:
                     child = launch_follower(root, follower_command(
                         root, provider=args.provider, session=args.session, name=name,
                         channel=str(args.channel), bus=resolved_bus,
-                        wakeup=configuration["wakeup"], on_seal=args.on_seal))
+                        wakeup=configuration["wakeup"], on_seal=args.on_seal,
+                        workspace=configuration["workspace"]))
                     pid = child.pid
                     child_state = "starting"
                     confirm_follower(root, lease_id, args.session, resolved_bus, child, configuration)
@@ -6078,6 +6113,7 @@ def main() -> int:
     parser.add_argument("--attach-file", metavar="PATH", action="append",
                         help="with --send-text: pointer to a pasted file the app already stored "
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
+    parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
