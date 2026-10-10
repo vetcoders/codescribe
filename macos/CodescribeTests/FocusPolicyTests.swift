@@ -81,8 +81,8 @@ final class FocusPolicyTests: XCTestCase {
     // not "Voice chat = Hold Fn+Shift".
     let shiftLabel = ArmGestureCopy.label(for: "shift")
     let cmdLabel = ArmGestureCopy.label(for: "cmd")
-    XCTAssertEqual(shiftLabel, "Shift during Fn hold")
-    XCTAssertEqual(cmdLabel, "Command during Fn hold")
+    XCTAssertEqual(shiftLabel, "Shift during the dictation hold")
+    XCTAssertEqual(cmdLabel, "Command during the dictation hold")
     XCTAssertNotEqual(shiftLabel, cmdLabel)
     XCTAssertFalse(shiftLabel.contains("Hold Fn+Shift"))
     XCTAssertFalse(cmdLabel.contains("Hold Fn+Command"))
