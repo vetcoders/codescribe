@@ -603,10 +603,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(tab.contains("case .agentTools: String(localized: \"Tool permissions\")"))
     XCTAssertFalse(tab.contains("\"Tool permissions.\""))
     XCTAssertFalse(tab.contains("Deny wins over everything"))
-    XCTAssertTrue(
-      tab.contains(
-        "\"Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.\""
-      ))
+    XCTAssertTrue(tab.contains("\"Choose when the Agent may use tools.\""))
 
     let section = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
     XCTAssertFalse(
@@ -615,10 +612,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(section.contains("Defaults: read-only allow, side-effectful ask"))
     XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
-    XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified tools\""))
-    XCTAssertTrue(section.contains("\"Per-tool permissions · \\(model.toolCapabilities.count)\""))
+    XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified\""))
+    XCTAssertTrue(section.contains("ToolsSectionHeader(String(localized: \"Individual tools\"))"))
     XCTAssertFalse(section.contains("Tool overrides"))
-    XCTAssertTrue(section.contains("A rule set for one tool outranks its server's rule"))
+    XCTAssertTrue(section.contains("A rule for one tool outranks its server's rule"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
     XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
     XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
@@ -643,24 +640,26 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("private var fullIdentification: String"))
     XCTAssertTrue(section.contains(".help(fullIdentification)"))
 
-    let serverTab = try XCTUnwrap(sources["ToolServerTab.swift"])
-    XCTAssertTrue(serverTab.contains("Text(ToolPermissionLabels.source(server))"))
+    // Round 12: the source sidebar became a popup in the browser; the old
+    // ToolServerTab file is gone with it.
+    XCTAssertNil(sources["ToolServerTab.swift"], "the sidebar source button is cut")
     let search = try XCTUnwrap(sources["ToolSearchField.swift"])
-    XCTAssertTrue(search.contains("Text(\"\\(serverCount) tool sources\""))
-    XCTAssertFalse(search.contains("\\(serverCount) servers"))
+    XCTAssertTrue(search.contains("TextField(\"Search tools…\""))
     let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
     XCTAssertTrue(browser.contains("model.clearToolPermission(identity: item.identity)"))
+    XCTAssertTrue(browser.contains("Self.sourceLabel(server: group.server, count: group.items.count)"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Tool permissions": "Uprawnienia narzędzi",
-      "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.":
-        "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania.",
+      "Choose when the Agent may use tools.": "Wybierz, kiedy Agent może korzystać z narzędzi.",
+      "Individual tools": "Poszczególne narzędzia",
+      "Source": "Źródło",
+      "Search tools…": "Szukaj narzędzia…",
       "Deny": "Blokuj",
       "Read data": "Odczyt danych",
       "Changes, processes and network": "Zmiany, procesy i sieć",
-      "Unclassified tools": "Niesklasyfikowane narzędzia",
-      "Per-tool permissions · %lld": "Uprawnienia poszczególnych narzędzi · %lld",
+
       "Native": "Natywne",
       "Changes": "Zmiany",
       "Network": "Sieć",
@@ -679,6 +678,9 @@ final class SettingsChromeContractTests: XCTestCase {
     }
     for retired in [
       "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
+      "Per-tool permissions · %lld", "%lld tool sources", "Unclassified tools",
+      "Search server or tool",
+      "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.",
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
       "Inherited from the category default", "Inherited from the server rule", "Restore inheritance",
     ] {

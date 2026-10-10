@@ -544,6 +544,13 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+    // Always `aicx`, never `Aicx`, in display names (Founder brief, round 12);
+    // the identity string stays verbatim.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx-http__aicx_index_status"),
+      "aicx index status")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx__aicx_continuity"), "aicx continuity")
 
     // Our own tools are named in the interface language; an MCP server's tools
     // keep the vendor's wording, spelled out of the registry name.

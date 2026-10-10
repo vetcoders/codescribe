@@ -408,25 +408,30 @@ Tools is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
 - **Defaults** — one row per category: Read data, Changes/processes/network,
-  Unclassified tools. These are the stored category defaults and apply to every
+  Unclassified. These are the stored category defaults and apply to every
   tool without a more specific rule.
-- **Resolution order** — a rule set for one tool outranks its server's rule,
-  and both outrank the category defaults. External destructive tools are
+- **Resolution order** — a rule for one tool outranks its server's rule,
+  and both outrank these defaults. External destructive tools are
   always refused, and an Allow never silently covers a path that may hold
   secrets (`.env`, key material): that call asks first.
-- **Per-tool permissions · N** — N is the whole tool catalog, not the number
+- **Individual tools · N tools** — N is the whole tool catalog, not the number
   of individual rules. Opening the tab discovers the catalog by starting every
   configured MCP server and asking it for its tools, so the list appears a few
   seconds after the defaults; a "Discovering tools from the MCP servers…" row
-  stands in until then. Tool sources down the left (Native plus every MCP
-  server, names verbatim), the selected source's tools on the right. Each row
-  shows a readable name above the raw identity, the source and localized risk
-  class, and where the level comes from: "Individual rule", "Server rule" or
-  "Category default". Codescribe's own tools are named in the interface
-  language; an MCP server's tools keep the vendor's spelling. Both lines stay
-  on one line, so the row's tooltip carries the full name and the full
-  identifier. "Remove rule" drops an individual rule; the row then shows the
-  server rule or the category default again.
+  stands in until then. One column: a search field over the whole catalog
+  (name, identifier, source), a **Source** popup listing Native plus every MCP
+  server with its tool count ("Native (26)", server names verbatim), then that
+  source's tools at the full width of the pane. Each card carries the tool's
+  full name — it wraps onto a second line instead of ending in an ellipsis —
+  with the rule that produced the current level opposite it ("Individual rule",
+  "Server rule" or "Category default"), then one quiet line for source, server
+  and localized risk class ("MCP · aicx-http · Read data"), the raw identity,
+  and the Allow/Ask/Deny control across the card. Codescribe's own tools are
+  named in the interface language; an MCP server's tools keep the vendor's
+  spelling, except that `aicx` is always written in lower case. The card's
+  tooltip carries the name and the identifier together. "Remove rule" appears
+  only on a card that carries an individual rule and drops it; the card then
+  shows the server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
