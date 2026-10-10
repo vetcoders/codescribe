@@ -1078,20 +1078,6 @@ struct DictationOverlayView: View {
             ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
             : Text(verbatim: "")
       )
-      if !state.liveEvidence.isEmpty {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Also heard · not committed")
-            .font(.caption)
-          ScrollView {
-            Text(state.liveEvidence.map(\.text).joined(separator: " · "))
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(maxHeight: 96)
-        }
-        .padding(.top, 8)
-        .accessibilityIdentifier("overlay-uncommitted-recognition")
-      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
