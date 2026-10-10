@@ -1842,7 +1842,22 @@ impl LocalWhisperEngine {
         self.capture_word_alignment = false;
         let transcript = transcript?;
         let align_started = std::time::Instant::now();
-        let words = self.align_captured_words(language)?;
+        let words = {
+            let alignment_span = control.tail_execution_observation().map(|observation| {
+                let identity = &observation.identity;
+                tracing::info_span!(
+                    "tail_word_alignment",
+                    execution_id = %observation.execution_id,
+                    session_id = %identity.range.session,
+                    capture_epoch = identity.range.capture_epoch,
+                    request_id = identity.request_id,
+                    sample_start = identity.range.sample_start,
+                    sample_end = identity.range.sample_end,
+                )
+            });
+            let _entered = alignment_span.as_ref().map(|span| span.enter());
+            self.align_captured_words(language)?
+        };
         tracing::info!(
             decode_ms,
             decode_scope = "tail_inference_after_resampling_before_alignment",
@@ -1972,6 +1987,7 @@ impl LocalWhisperEngine {
             content_frames,
         ) else {
             tracing::info!(
+                reason = "measured_words_rejected",
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "tail_word_pin_alignment_unmeasured"
             );
@@ -1981,9 +1997,13 @@ impl LocalWhisperEngine {
         let duration = self.captured_sample_len as f32 / whisper::SAMPLE_RATE as f32;
         let mut segments = Vec::with_capacity(words.len());
         let mut previous_end = 0.0_f32;
-        for word in words {
+        for (word_index, word) in words.into_iter().enumerate() {
             if word.start_secs + 1.0e-3 < previous_end {
                 tracing::info!(
+                    reason = "nonmonotonic_merged_word",
+                    word_index,
+                    start_secs = word.start_secs,
+                    previous_end_secs = previous_end,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "tail_word_pin_alignment_unmeasured"
                 );
@@ -1993,6 +2013,13 @@ impl LocalWhisperEngine {
             let end = word.end_secs.min(duration);
             if end <= start {
                 tracing::info!(
+                    reason = "nonpositive_clamped_word_duration",
+                    word_index,
+                    start_secs = start,
+                    end_secs = end,
+                    source_start_secs = word.start_secs,
+                    source_end_secs = word.end_secs,
+                    duration_secs = duration,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "tail_word_pin_alignment_unmeasured"
                 );

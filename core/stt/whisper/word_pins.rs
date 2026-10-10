@@ -53,10 +53,24 @@ pub fn align_measured_words(
         || word_token_counts.len() != word_texts.len()
         || content_frames == 0
     {
+        tracing::info!(
+            reason = "invalid_alignment_inputs",
+            head_count = head_qk.len(),
+            word_count = word_token_counts.len(),
+            text_count = word_texts.len(),
+            content_frames,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let token_rows = head_qk[0].len();
     if token_rows <= sot_prefix_len + 2 || head_qk.iter().any(|head| head.len() != token_rows) {
+        tracing::info!(
+            reason = "inconsistent_token_rows",
+            token_rows,
+            sot_prefix_len,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let frame_count = head_qk[0][0].len().min(content_frames);
@@ -65,6 +79,12 @@ pub fn align_measured_words(
             .iter()
             .any(|head| head.iter().any(|row| row.len() < frame_count))
     {
+        tracing::info!(
+            reason = "inconsistent_frame_rows",
+            frame_count,
+            content_frames,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
@@ -74,11 +94,23 @@ pub fn align_measured_words(
     let row_start = sot_prefix_len + 1;
     let row_end = token_rows - 1;
     if row_end <= row_start {
+        tracing::info!(
+            reason = "missing_text_rows",
+            row_start,
+            row_end,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let rows = row_end - row_start;
     let text_tokens: usize = word_token_counts.iter().sum();
     if text_tokens != rows {
+        tracing::info!(
+            reason = "token_count_mismatch",
+            text_tokens,
+            rows,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
@@ -113,6 +145,12 @@ pub fn align_measured_words(
     let (text_indices, time_indices) = dtw(&cost);
     let jump_times = jump_times(&text_indices, &time_indices);
     if jump_times.len() < rows {
+        tracing::info!(
+            reason = "incomplete_dtw_path",
+            jump_count = jump_times.len(),
+            rows,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let path_end =
@@ -121,14 +159,25 @@ pub fn align_measured_words(
     let mut boundaries = Vec::with_capacity(word_token_counts.len() + 1);
     boundaries.push(0usize);
     let mut cursor = 0usize;
-    for count in word_token_counts {
+    for (word_index, count) in word_token_counts.iter().enumerate() {
         if *count == 0 {
+            tracing::info!(
+                reason = "zero_word_token_count",
+                word_index,
+                "tail_word_pin_alignment_refused"
+            );
             return None;
         }
         cursor += count;
         boundaries.push(cursor);
     }
     if boundaries.last().copied() != Some(text_tokens) {
+        tracing::info!(
+            reason = "word_boundary_count_mismatch",
+            boundary_token_end = ?boundaries.last().copied(),
+            text_tokens,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
@@ -142,10 +191,26 @@ pub fn align_measured_words(
             path_end
         };
         if end <= start {
+            tracing::info!(
+                reason = "nonpositive_word_duration",
+                word_index = index,
+                token_start = boundaries[index],
+                token_len = end_index - boundaries[index],
+                start_secs = start,
+                end_secs = end,
+                "tail_word_pin_alignment_refused"
+            );
             return None;
         }
         let text = text.trim();
         if text.is_empty() {
+            tracing::info!(
+                reason = "empty_word_text",
+                word_index = index,
+                token_start = boundaries[index],
+                token_len = end_index - boundaries[index],
+                "tail_word_pin_alignment_refused"
+            );
             return None;
         }
         words.push(MeasuredWord {
