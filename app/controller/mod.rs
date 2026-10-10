@@ -1601,6 +1601,14 @@ impl std::fmt::Display for StopDeliveryFailure {
 
 impl std::error::Error for StopDeliveryFailure {}
 
+/// One Max owner event with the identity needed to attribute it to a turn.
+#[derive(Debug, Clone)]
+pub struct MaxConsultationEvent {
+    pub consultation_id: String,
+    pub turn_id: String,
+    pub event: codescribe_core::agent::AgentUiEvent,
+}
+
 /// Recording controller managing state machine and lifecycle
 pub struct RecordingController {
     /// The one mutable controller generation handle. Each take clones this Arc
@@ -1650,6 +1658,10 @@ pub struct RecordingController {
     max_consultation: Mutex<Option<Arc<crate::agent::max_consultation::MaxConsultation>>>,
     /// The shared approval mechanism, scoped to this controller's Max owner.
     max_approvals: Arc<codescribe_core::agent::ApprovalBroker>,
+    /// Live Max owner events (voice and composer turns alike) for any surface
+    /// that renders a consultation turn while it runs. Lagging subscribers
+    /// lose deltas, never history: the owner persists through the gateway.
+    max_consultation_events: broadcast::Sender<MaxConsultationEvent>,
 
     /// Task handle for delayed hold-start (800ms default)
     hold_start_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -1945,6 +1957,7 @@ impl RecordingController {
             )))),
             max_consultation: Mutex::new(None),
             max_approvals: Arc::default(),
+            max_consultation_events: broadcast::channel(256).0,
             hold_start_task: Arc::new(Mutex::new(None)),
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
@@ -2002,22 +2015,73 @@ impl RecordingController {
             let approvals = Arc::clone(&self.max_approvals);
             let approval_handler: codescribe_core::agent::ToolApprovalHandler =
                 Arc::new(move |request| approvals.begin(request));
+            let events = self.max_consultation_events.clone();
             let consultation = crate::agent::max_consultation::MaxConsultation::start_deferred(
                 consultation_id,
                 settings,
                 Box::new(|| Arc::new(crate::agent::tools::configured_registry())),
                 Some(approval_handler),
                 gateway,
-                Arc::new(|_consultation, _turn, event| {
-                    if let codescribe_core::agent::AgentUiEvent::Error(error) = event {
+                Arc::new(move |consultation, turn, event| {
+                    if let codescribe_core::agent::AgentUiEvent::Error(error) = &event {
                         warn!(%error, "Max consultation failed");
                     }
+                    // No receiver is a normal state (nothing renders the turn).
+                    let _ = events.send(MaxConsultationEvent {
+                        consultation_id: consultation.to_string(),
+                        turn_id: turn.to_string(),
+                        event,
+                    });
                 }),
                 codescribe_core::config::agent_turn_lease_path(),
             );
             *selected = Some(Arc::new(consultation));
         }
         Ok(selected.clone())
+    }
+
+    /// Observe Max owner events as they happen. Subscribe before enqueueing a
+    /// turn you intend to render; the owner never replays earlier deltas.
+    pub fn subscribe_max_consultation_events(&self) -> broadcast::Receiver<MaxConsultationEvent> {
+        self.max_consultation_events.subscribe()
+    }
+
+    /// The broker holding this controller's pending Max tool approvals. Exact
+    /// (session, thread, call) matching inside the broker is the safety; it
+    /// lets the Agent window answer a Max card without an async controller hop.
+    pub fn max_approval_broker(&self) -> Arc<codescribe_core::agent::ApprovalBroker> {
+        Arc::clone(&self.max_approvals)
+    }
+
+    /// Enter a typed Agent-window turn into the selected Max consultation: same
+    /// owner, FIFO, Formatting lane, prompt and approval broker as a spoken
+    /// turn. The consultation is Max by identity, so the turn runs under Max
+    /// regardless of the dictation formatting level currently selected. Only
+    /// the selected consultation accepts new turns; an older one is history.
+    pub async fn enqueue_max_consultation_text_turn(
+        &self,
+        thread_id: &str,
+        turn_id: String,
+        text: String,
+        attachments: Vec<codescribe_core::agent::ImageAttachment>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<
+            Result<codescribe_core::agent::consultation::ConsultationAnswer>,
+        >,
+    > {
+        let settings = self
+            .runtime_settings_arc()
+            .await
+            .with_formatting_level(codescribe_core::config::FormattingPolicy::Max);
+        let consultation = self
+            .selected_max_consultation(&settings)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Max consultation is not selected"))?;
+        anyhow::ensure!(
+            consultation.id() == thread_id,
+            "This Max consultation is no longer active. Continue the current consultation, or start a new one in Settings → Creator."
+        );
+        consultation.enqueue(turn_id, text, attachments, &settings)
     }
 
     /// Subscribe to invalidations; the broker remains the pending-state owner.

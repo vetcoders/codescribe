@@ -484,7 +484,19 @@ impl ConsultationRuntime {
             session.messages().is_empty(),
             "consultation history must be loaded under its lease"
         );
-        let journal = gateway.open_consultation(&id)?;
+        let mut journal = gateway.open_consultation(&id)?;
+        // A turn interrupted by the previous process is already retired by the
+        // journal. Explain the gap in history; failing to write that note must
+        // not keep the consultation closed for a second time.
+        if let Some(recovery) = journal.take_recovery()
+            && let Err(error) = gateway.record_consultation_recovery(&id, &recovery)
+        {
+            tracing::warn!(
+                consultation_id = %id,
+                %error,
+                "Failed to record an abandoned Max consultation turn"
+            );
+        }
         let history = gateway.restore_consultation(&id, journal.has_completed_turns())?;
         session.restore_messages(history);
         session.bind_execution_thread(id.clone());
@@ -656,6 +668,42 @@ struct ConsultationOwner {
     install_lease_path: PathBuf,
 }
 
+/// Retire a turn this owner could not finish and stay open for the next one.
+///
+/// The journal refuses the abandoned identity for life, so neither the failed
+/// instruction nor the inputs waiting behind it can execute; nothing is rolled
+/// back or retried. Only a journal that cannot record that retirement falls
+/// back to requiring recovery, because then the owner cannot prove what it
+/// retired. Failing to annotate history never blocks the consultation.
+fn abandon_after_failure(
+    id: &str,
+    gateway: &ThreadDeliveryGateway,
+    journal: &Arc<std::sync::Mutex<ConsultationJournal>>,
+    reason: String,
+) {
+    let abandoned = journal
+        .lock()
+        .map_err(|_| anyhow!("consultation journal lock poisoned"))
+        .and_then(|mut journal| journal.abandon_unfinished(&reason));
+    match abandoned {
+        Ok(None) => {}
+        Ok(Some(recovery)) => {
+            if let Err(error) = gateway.record_consultation_recovery(id, &recovery) {
+                tracing::warn!(
+                    consultation_id = %id,
+                    %error,
+                    "Failed to record an abandoned Max consultation turn"
+                );
+            }
+        }
+        Err(error) => {
+            if let Ok(mut journal) = journal.lock() {
+                journal.require_recovery(format!("{error:#}"));
+            }
+        }
+    }
+}
+
 async fn run_owner(owner: ConsultationOwner) {
     let ConsultationOwner {
         id,
@@ -700,10 +748,8 @@ async fn run_owner(owner: ConsultationOwner) {
                 .lock()
                 .map_err(|_| anyhow!("consultation journal lock poisoned"))
                 .and_then(|mut journal| journal.discard_unstarted(&turn.id));
-            if let Err(ref failure) = discarded
-                && let Ok(mut journal) = journal.lock()
-            {
-                journal.require_recovery(format!("{failure:#}"));
+            if let Err(ref failure) = discarded {
+                abandon_after_failure(&id, &gateway, &journal, format!("{failure:#}"));
             }
             drop(pending);
             let _ = reply.send(Err(discarded.err().unwrap_or_else(|| {
@@ -720,10 +766,8 @@ async fn run_owner(owner: ConsultationOwner) {
                     .lock()
                     .map_err(|_| anyhow!("consultation journal lock poisoned"))
                     .and_then(|mut journal| journal.discard_unstarted(&turn.id));
-                if let Err(ref failure) = discarded
-                    && let Ok(mut journal) = journal.lock()
-                {
-                    journal.require_recovery(format!("{failure:#}"));
+                if let Err(ref failure) = discarded {
+                    abandon_after_failure(&id, &gateway, &journal, format!("{failure:#}"));
                 }
                 drop(pending);
                 let _ = reply.send(Err(discarded.err().unwrap_or(error)));
@@ -735,9 +779,7 @@ async fn run_owner(owner: ConsultationOwner) {
             .map_err(|_| anyhow!("consultation journal lock poisoned"))
             .and_then(|mut journal| journal.begin(&turn.id));
         if let Err(error) = begun {
-            if let Ok(mut journal) = journal.lock() {
-                journal.require_recovery(format!("{error:#}"));
-            }
+            abandon_after_failure(&id, &gateway, &journal, format!("{error:#}"));
             drop(pending);
             let _ = reply.send(Err(error));
             continue;
@@ -754,10 +796,14 @@ async fn run_owner(owner: ConsultationOwner) {
             });
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
-            // partially executed instruction. The host must resolve this state.
-            if let Ok(mut journal) = journal.lock() {
-                journal.require_recovery(format!("turn {turn_id}: {error:#}"));
-            }
+            // partially executed instruction. Retiring it keeps the next
+            // instruction serviceable without ever repeating this one.
+            abandon_after_failure(
+                &id,
+                &gateway,
+                &journal,
+                format!("turn {turn_id}: {error:#}"),
+            );
             events(&id, &turn_id, AgentUiEvent::Error(format!("{error:#}")));
         } else {
             events(&id, &turn_id, AgentUiEvent::Done);
@@ -2049,7 +2095,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_turn_stops_following_work_and_other_policies_cannot_enter() {
+    async fn failed_turn_is_abandoned_and_the_next_instruction_still_runs() {
         let dir = tempfile::tempdir().expect("temp directory");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let (ui_tx, ui_rx) = mpsc::channel(2);
@@ -2087,33 +2133,42 @@ mod tests {
             .expect("queued");
         assert!(first.await.expect("first reply").is_err());
         assert!(
-            second
-                .await
-                .expect("second reply")
-                .expect_err("recovery required")
-                .to_string()
-                .contains("requires recovery")
+            second.await.expect("second reply").is_err(),
+            "an instruction waiting behind a failed turn is dropped, not executed"
         );
         assert_eq!(requests.lock().expect("requests").len(), 1);
         let journal_path = dir.path().join("consultations/consultation-b.json");
-        let before = std::fs::read(&journal_path).unwrap();
-        let retained: serde_json::Value = serde_json::from_slice(&before).unwrap();
-        assert_eq!(retained["queued"].as_array().unwrap().len(), 2);
-        assert_eq!(retained["pending"], "one");
+        let settled: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
+        assert_eq!(settled["pending"], serde_json::Value::Null);
+        assert!(settled["queued"].as_array().unwrap().is_empty());
+        assert_eq!(settled["abandoned"], serde_json::json!(["one"]));
         assert!(
             runtime
-                .enqueue(turn("three", "must refuse before acknowledgement"))
+                .enqueue(turn("one", "must never repeat a started turn"))
                 .is_err()
         );
-        assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+        // The owner stays usable: a new instruction reaches the provider.
+        let third = runtime
+            .enqueue(turn("three", "a later instruction still runs"))
+            .expect("accepted after self-heal");
+        assert!(third.await.expect("third reply").is_err());
+        assert_eq!(requests.lock().expect("requests").len(), 2);
         runtime
             .close_if_idle()
             .await
             .expect("failed owner can close without replay");
         let gateway = ThreadDeliveryGateway::new_in(dir.path()).expect("gateway");
+        let mut reopened = gateway
+            .open_consultation("consultation-b")
+            .expect("a failed turn no longer blocks the consultation");
         assert!(
-            gateway.open_consultation("consultation-b").is_err(),
-            "closing must not erase unresolved turn"
+            reopened.take_recovery().is_none(),
+            "the failure already settled before the owner closed"
+        );
+        assert!(
+            reopened.begin("one").is_err() && reopened.begin("three").is_err(),
+            "both abandoned turns stay refused for life"
         );
     }
 

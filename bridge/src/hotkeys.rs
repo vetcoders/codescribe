@@ -122,7 +122,7 @@ fn event_targets_agent_ui(event: &HotkeyEvent) -> bool {
 }
 
 /// Process-global slot for the lazily-created `RecordingController`.
-fn shared_controller() -> SharedController {
+pub(crate) fn shared_controller() -> SharedController {
     /// Once-initialized shared controller store for this process.
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
     Arc::clone(CONTROLLER.get_or_init(|| Arc::new(Mutex::new(None))))
@@ -250,7 +250,9 @@ fn spawn_max_approval_forwarder(controller: &RecordingController, handle: Handle
 
 /// Snapshot the shared controller WITHOUT creating one. Query surfaces use this
 /// so a mere status read never triggers controller construction.
-fn current_controller(controller_store: &SharedController) -> Option<Arc<RecordingController>> {
+pub(crate) fn current_controller(
+    controller_store: &SharedController,
+) -> Option<Arc<RecordingController>> {
     controller_store
         .lock()
         .unwrap_or_else(|e| e.into_inner())
