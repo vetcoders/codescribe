@@ -87,6 +87,17 @@ removed from the catalog entirely: no Swift source references either any
 longer. The same review corrected the Polish value of `Refresh status` from
 „Sprawdź ponownie” to „Odśwież stan”.
 
+The Founder's round-4 compaction of the Creator desk swaps five keys for four.
+Removed with their rows' old copy: the fine-tuned-models sentence, the long Max
+consultation sentence, `Refresh pending requests`, `Refreshing…` and the
+agent-section caption `Install or update the skill directly from Codescribe.`
+Added: `Multilingual detects the language automatically.`
+(„Wielojęzyczny automatycznie wykrywa język.”), `Continue the consultation or
+start a new one. History stays.` („Kontynuuj konsultację lub rozpocznij nową.
+Historia zostaje.”) and `Check requests` („Sprawdź prośby”) — all three
+`translated`, the wording is the Founder's own — plus the busy form
+`Checking…` („Sprawdzanie…”, `needs_review`).
+
 A Founder sketch polishes the License panel's card. The single combined
 `Mode` row (no key, state readable) now shows the short `license.mode.basic`
 value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
