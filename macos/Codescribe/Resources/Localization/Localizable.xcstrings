@@ -5867,6 +5867,17 @@
         }
       }
     },
+    "Cursor indicator": {
+      "comment": "Tray row: size of the recording dot drawn next to the mouse cursor",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wskaźnik przy kursorze"
+          }
+        }
+      }
+    },
     "Custom": {
       "localizations": {
         "pl": {
@@ -5957,12 +5968,12 @@
         }
       }
     },
-    "Cycle pointer recording indicator size": {
+    "Cycle the cursor indicator size": {
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "translated",
-            "value": "Zmień rozmiar wskaźnika nagrywania przy kursorze"
+            "state": "needs_review",
+            "value": "Przełącz rozmiar wskaźnika przy kursorze"
           }
         }
       }
@@ -10873,16 +10884,6 @@
         }
       }
     },
-    "Pointer Indicator": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wskaźnik nagrywania przy kursorze"
-          }
-        }
-      }
-    },
     "Pointer indicator": {
       "localizations": {
         "pl": {
@@ -14296,8 +14297,8 @@
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
-            "value": "Rozpoczynaj w trybie agentowym"
+            "state": "translated",
+            "value": "Start w trybie Agenta"
           }
         }
       }
