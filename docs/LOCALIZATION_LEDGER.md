@@ -114,6 +114,26 @@ and the microphone hint) briefly left the catalog when the shared refresh chip
 took plain `String` labels; the chip takes `LocalizedStringKey` and they are
 back with their previous Polish in the same cut.
 
+The Founder's rounds 9–16 (Prompts, Workspace, Diagnostics, Tools, Dictation
+Engine/Whisper, Cloud & privacy with the Permissions-tab cut, Dictionary, and
+License/About) retire fifty-two keys and add seventy-five Polish rows. Founder
+wording lands as `translated` (e.g. `Wbudowany`/`Własny`, `Przeglądaj i edytuj
+prompty bazowe.`, `Stan Agenta`, `Konfiguracja gotowa`, `Oczekuje na
+uruchomienie`, `Poszczególne narzędzia`, `Problem z tokenizerem`, `Ucz z
+poprawek`, `Przed`/`Po`, `Nieaktualny wpis konfiguracji — nie wpływa na
+działanie`, `Klucz przechowywany w Pęku kluczy macOS.`); agent drafts are
+`needs_review`. Count sentences use catalog plural variations
+(one/few/many/other), and the two multi-count Diagnostics lines
+(`Capabilities: %lld native · %lld enhanced · %lld unavailable`, `%lld
+configured · %lld checked`) use per-argument substitutions so each number
+governs its own adjective („14 natywnych · 4 rozszerzone · 0 niedostępnych").
+Two Founder sentences carry a deliberate qualifier, both `needs_review` for the
+Founder's call: the consent line keeps „na urządzeniu" after Apple (without it
+the sentence could read as dictation moving to Apple's servers), and the tool
+safety note says „Narzędzia destrukcyjne" (the hard deny applies to the tool's
+risk class). The Creator search-alias row now carries the permission
+vocabulary of the removed `settings.search.tab.dictationPermissions` row.
+
 A Founder sketch polishes the License panel's card. The single combined
 `Mode` row (no key, state readable) now shows the short `license.mode.basic`
 value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
