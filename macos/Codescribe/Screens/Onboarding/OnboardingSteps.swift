@@ -424,7 +424,7 @@ struct PermissionsStepView: View {
           localized: LocalizedStringResource(
             "You can continue without granting these permissions. You can also change them later in System Settings.",
             locale: model.interfaceLocale,
-            comment: "Permissions do not block Continue; each row explains its feature consequence")
+            comment: "Permissions do not block Continue; they can be granted later in System Settings")
         )
       )
       .font(.callout)
@@ -958,37 +958,37 @@ extension PermissionKind {
         localized: LocalizedStringResource(
           "Without it, voice recording is unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Microphone scope"))
+          comment: "Consequence of a missing Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
           "Without it, automatic text insertion in other apps is unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Accessibility scope"))
+          comment: "Consequence of a missing Accessibility scope"))
     case .inputMonitoring:
       return String(
         localized: LocalizedStringResource(
           "Without it, global recording shortcuts are unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Input Monitoring scope"))
+          comment: "Consequence of a missing Input Monitoring scope"))
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
           "Optional — without it, the Agent cannot use your screen as context; dictation still works.",
           locale: locale,
-          comment: "Why the app asks for the Screen Recording scope"))
+          comment: "Consequence of a missing Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
           "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally.",
           locale: locale,
-          comment: "Why the app asks for the Speech Recognition scope"))
+          comment: "Consequence of a missing Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
           "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works.",
           locale: locale,
-          comment: "Why the app asks for the Full Disk Access scope"))
+          comment: "Consequence of a missing Full Disk Access scope"))
     }
   }
 }
