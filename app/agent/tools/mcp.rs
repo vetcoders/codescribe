@@ -15,11 +15,19 @@
 //!   readiness is decided solely by the core capability gate
 //!   ([`CoreReadiness`]), so a missing or broken `mcp.json` can never sink a
 //!   working agent.
+//!
+//! Both read one evidence owner, [`McpEvidence`]: the last runtime discovery
+//! (what the agent registered) and the last Settings connection test per
+//! server (what answered when the user pressed Test). The two never merge,
+//! each is pinned to the exact `mcp.json` entry it was gathered against, and
+//! each carries the evidence sequence number that orders them.
+//! Contract: `docs/MCP_DIAGNOSTICS.md`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{
@@ -30,7 +38,10 @@ use codescribe_core::config::RuntimeSettingsSnapshot;
 use codescribe_core::config::settings::{
     DEFAULT_AGENT_WORKSPACE_ROOT, normalize_agent_workspace_roots,
 };
-use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
+use codescribe_core::mcp::{
+    McpClient, McpConfigFile, McpProbeSummary, McpServerConfig, McpTool,
+    probe_server_config_blocking,
+};
 use tracing::{info, warn};
 
 use super::path_policy;
@@ -49,22 +60,240 @@ enum ServerRuntime {
     Disabled,
 }
 
-/// Cache of the last runtime discovery, keyed by server name. Written once per
-/// agent-runtime init, read on demand by the read-only Engine settings tab.
-static MCP_RUNTIME: OnceLock<Mutex<BTreeMap<String, ServerRuntime>>> = OnceLock::new();
-
-/// Lazily initialize and borrow the process-wide runtime discovery cache.
-fn runtime_cache() -> &'static Mutex<BTreeMap<String, ServerRuntime>> {
-    MCP_RUNTIME.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// What the last discovery pass learned about one server, pinned to the
+/// config entry it ran against.
+#[derive(Debug, Clone)]
+struct RuntimeEvidence {
+    config: McpServerConfig,
+    outcome: ServerRuntime,
+    /// `serverInfo.name` from the handshake, when the server sent one.
+    advertised: Option<String>,
+    /// [`McpEvidence::events`] value when this pass was recorded.
+    seq: u64,
 }
 
-/// Replace the cache with the outcome of one discovery pass. A whole-map
-/// replacement, so servers dropped from the config do not linger as stale rows.
-fn record_runtime(snapshot: BTreeMap<String, ServerRuntime>) {
-    let mut guard = runtime_cache()
+/// The last Settings connection test of one server, pinned to the config
+/// entry it ran against. A one-shot probe: it proves reachability, never that
+/// the agent registered the tools.
+#[derive(Debug, Clone)]
+struct TestEvidence {
+    config: McpServerConfig,
+    outcome: std::result::Result<McpProbeSummary, String>,
+    /// [`McpEvidence::events`] value when this test was recorded.
+    seq: u64,
+}
+
+/// The one owner of MCP connection evidence, keyed by server name. Runtime
+/// discovery and connection tests stay separate ledgers; readers accept an
+/// entry only while its pinned config equals the current `mcp.json` entry, so a
+/// renamed or edited server never inherits evidence it did not earn.
+#[derive(Debug, Clone, Default)]
+struct McpEvidence {
+    runtime: BTreeMap<String, RuntimeEvidence>,
+    tests: BTreeMap<String, TestEvidence>,
+    /// Count of recorded discovery passes and tests. Each record takes the
+    /// next value under the store lock, so `seq` orders evidence by when it
+    /// was recorded — no clock involved.
+    events: u64,
+}
+
+impl McpEvidence {
+    /// Discovery outcome for `name`, when it ran against this exact entry.
+    fn runtime_for(&self, name: &str, config: &McpServerConfig) -> Option<&RuntimeEvidence> {
+        self.runtime
+            .get(name)
+            .filter(|evidence| evidence.config == *config)
+    }
+
+    /// Connection test for `name`, when it ran against this exact entry.
+    fn test_for(&self, name: &str, config: &McpServerConfig) -> Option<&TestEvidence> {
+        self.tests
+            .get(name)
+            .filter(|evidence| evidence.config == *config)
+    }
+
+    /// Identity the server advertised for this exact entry: discovery first,
+    /// then the last successful connection test.
+    fn advertised_for(&self, name: &str, config: &McpServerConfig) -> Option<&str> {
+        self.runtime_for(name, config)
+            .and_then(|evidence| evidence.advertised.as_deref())
+            .or_else(|| {
+                self.test_for(name, config)
+                    .and_then(|evidence| evidence.outcome.as_ref().ok())
+                    .and_then(|summary| summary.server_name.as_deref())
+            })
+            .filter(|identity| !identity.trim().is_empty())
+    }
+
+    /// Next evidence sequence number.
+    fn next_seq(&mut self) -> u64 {
+        self.events += 1;
+        self.events
+    }
+
+    /// One server's state from the evidence that still holds for its entry.
+    ///
+    /// `enabled: false` wins. Registration (what the agent holds) is always
+    /// reported when it exists; a connection test recorded after it is
+    /// reported alongside when the two disagree — a later failed test never
+    /// hides registered tools, and a later passing test never claims a
+    /// registration that failed. A test older than the registration is
+    /// superseded by it. Without registration the last test decides.
+    fn server_state(&self, name: &str, config: &McpServerConfig) -> ServerState {
+        if !config.enabled.unwrap_or(true) {
+            return ServerState::Disabled;
+        }
+        let runtime = self.runtime_for(name, config);
+        let test = self
+            .test_for(name, config)
+            .filter(|test| runtime.is_none_or(|runtime| test.seq > runtime.seq))
+            .map(|test| &test.outcome);
+        match (runtime.map(|runtime| &runtime.outcome), test) {
+            (Some(ServerRuntime::Disabled), _) => ServerState::Disabled,
+            (Some(ServerRuntime::Tools(tools)), Some(Err(reason))) => {
+                ServerState::LiveLastTestFailed {
+                    tools: *tools,
+                    reason: reason.clone(),
+                }
+            }
+            (Some(ServerRuntime::Tools(tools)), _) => ServerState::Live(*tools),
+            (Some(ServerRuntime::Failed(reason)), Some(Ok(summary))) => {
+                ServerState::FailedLastTestPassed {
+                    reason: reason.clone(),
+                    tools: summary.tool_count,
+                }
+            }
+            (Some(ServerRuntime::Failed(reason)), _) => ServerState::Failed(reason.clone()),
+            (None, Some(Ok(summary))) => ServerState::Reachable(summary.tool_count),
+            (None, Some(Err(reason))) => ServerState::Unreachable(reason.clone()),
+            (None, None) => ServerState::Configured,
+        }
+    }
+}
+
+/// Evidence-backed state of one configured server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServerState {
+    /// Registered by the agent with this many tools.
+    Live(usize),
+    /// Registered `tools`, but a later connection test failed (`reason`).
+    LiveLastTestFailed {
+        tools: usize,
+        reason: String,
+    },
+    /// Registration failed (`reason`), but a later connection test answered
+    /// with `tools`; the agent still holds none of them.
+    FailedLastTestPassed {
+        reason: String,
+        tools: usize,
+    },
+    /// Connection test answered with this many tools; not registered yet.
+    Reachable(usize),
+    /// No evidence for the current entry yet.
+    Configured,
+    /// Runtime discovery failed (reason).
+    Failed(String),
+    /// Connection test failed (reason); no runtime registration.
+    Unreachable(String),
+    Disabled,
+}
+
+impl ServerState {
+    /// Selection order when several servers match one operator tool: the
+    /// strongest proof of a working server first.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Live(_) => 0,
+            Self::LiveLastTestFailed { .. } => 1,
+            Self::Reachable(_) | Self::FailedLastTestPassed { .. } => 2,
+            Self::Configured => 3,
+            Self::Failed(_) => 4,
+            Self::Unreachable(_) => 5,
+            Self::Disabled => 6,
+        }
+    }
+
+    /// Plain-English name used in selection explanations and logs.
+    fn describe(&self) -> &'static str {
+        match self {
+            Self::Live(_) => "live",
+            Self::LiveLastTestFailed { .. } => "live, last connection test failed",
+            Self::FailedLastTestPassed { .. } => "registration failed, last connection test passed",
+            Self::Reachable(_) => "connection test passed",
+            Self::Configured => "configured",
+            Self::Failed(_) => "failed",
+            Self::Unreachable(_) => "connection test failed",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+static MCP_EVIDENCE: OnceLock<Mutex<McpEvidence>> = OnceLock::new();
+
+/// Lazily initialize and borrow the process-wide evidence owner.
+fn evidence_store() -> &'static Mutex<McpEvidence> {
+    MCP_EVIDENCE.get_or_init(|| Mutex::new(McpEvidence::default()))
+}
+
+/// Copy of the current evidence for one probe pass.
+fn evidence_snapshot(store: &Mutex<McpEvidence>) -> McpEvidence {
+    store
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    *guard = snapshot;
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+}
+
+/// Replace the runtime ledger with the outcome of one discovery pass. A
+/// whole-map replacement, so servers dropped from the config do not linger as
+/// stale rows. Connection tests are untouched.
+fn record_runtime(store: &Mutex<McpEvidence>, mut snapshot: BTreeMap<String, RuntimeEvidence>) {
+    let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
+    let seq = evidence.next_seq();
+    for entry in snapshot.values_mut() {
+        entry.seq = seq;
+    }
+    evidence.runtime = snapshot;
+}
+
+/// Test one configured server from the Settings Test action and record the
+/// outcome as connection evidence for that exact entry. Bounded by `timeout`.
+/// Never registers tools: the running agent's registry is unchanged.
+pub fn test_configured_server(name: &str, timeout: Duration) -> Result<McpProbeSummary> {
+    let path = codescribe_core::mcp::default_mcp_config_path()?;
+    test_configured_server_at(evidence_store(), &path, name, timeout)
+}
+
+/// Testable core of [`test_configured_server`] against an explicit config and
+/// evidence owner.
+fn test_configured_server_at(
+    store: &Mutex<McpEvidence>,
+    path: &Path,
+    name: &str,
+    timeout: Duration,
+) -> Result<McpProbeSummary> {
+    let config = McpConfigFile::load(path)?;
+    let server = config
+        .servers
+        .get(name)
+        .with_context(|| format!("MCP server \"{name}\" not found"))?
+        .clone();
+    let outcome = probe_server_config_blocking(server.clone(), timeout);
+    let recorded = match &outcome {
+        Ok(summary) => Ok(summary.clone()),
+        Err(error) => Err(anyhow_root_cause(error)),
+    };
+    let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
+    let seq = evidence.next_seq();
+    evidence.tests.insert(
+        name.to_string(),
+        TestEvidence {
+            config: server,
+            outcome: recorded,
+            seq,
+        },
+    );
+    drop(evidence);
+    outcome
 }
 
 /// Innermost cause of an error, as the string shown to the user. The context
@@ -136,6 +365,21 @@ pub enum McpStatusState {
     Disabled,
     /// Configured but the agent has not run discovery yet.
     Configured,
+    /// Last connection test answered (`count` = tools); the agent has not
+    /// registered this server's tools.
+    Reachable,
+    /// Last connection test failed (`detail` = root cause); the agent has not
+    /// registered this server either.
+    Unreachable,
+    /// The agent registered tools (`count`), and a connection test recorded
+    /// after that registration failed (`detail` = root cause).
+    LiveLastTestFailed,
+    /// Registration failed (`detail` = root cause), and a connection test
+    /// recorded after it answered (`count` = tools); nothing is registered.
+    FailedLastTestPassed,
+    /// No server is identified as this operator tool, but configured servers
+    /// without identity evidence could be it (`detail` = their names).
+    Unverified,
     /// `mcp.json` unreadable or its path unavailable (`detail` = cause).
     Error,
     /// `mcp.json` present with no servers.
@@ -261,9 +505,14 @@ pub fn probe_mcp_status() -> McpStatusReport {
 }
 
 /// Testable core of [`probe_mcp_status`] against an explicit config path.
-/// Emits one row per configured server, sorted by name, merging the cached
-/// discovery outcome with the config's own enabled flag.
+/// Emits one row per configured server, sorted by name, merging the recorded
+/// evidence with the config's own enabled flag.
 fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
+    probe_mcp_status_with(path, &evidence_snapshot(evidence_store()))
+}
+
+/// [`probe_mcp_status_at`] against an explicit evidence snapshot.
+fn probe_mcp_status_with(path: &Path, evidence: &McpEvidence) -> McpStatusReport {
     let config_path_display = path.display().to_string();
 
     if !path.exists() {
@@ -306,50 +555,66 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
         );
     }
 
-    let runtime = runtime_cache()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone();
-
     let mut names: Vec<&String> = config.servers.keys().collect();
     names.sort();
     let mut rows = Vec::with_capacity(names.len());
     for name in names {
-        let enabled = config
-            .servers
-            .get(name)
-            .and_then(|server| server.enabled)
-            .unwrap_or(true);
-        let (value, tone, state, count, detail) = match runtime.get(name) {
-            Some(ServerRuntime::Tools(count)) => (
+        let state = evidence.server_state(name, &config.servers[name]);
+        let (value, tone, state, count, detail) = match state {
+            ServerState::Live(count) => (
                 format!("{count} tool(s)"),
                 McpRowTone::Good,
                 McpStatusState::Live,
-                Some(*count as u32),
+                Some(count as u32),
                 String::new(),
             ),
-            Some(ServerRuntime::Failed(reason)) => (
+            ServerState::LiveLastTestFailed { tools, reason } => (
+                format!("{tools} tool(s); last connection test failed: {reason}"),
+                McpRowTone::Warn,
+                McpStatusState::LiveLastTestFailed,
+                Some(tools as u32),
+                reason,
+            ),
+            ServerState::FailedLastTestPassed { reason, tools } => (
+                format!(
+                    "registration failed: {reason}; last connection test passed — {tools} tool(s)"
+                ),
+                McpRowTone::Warn,
+                McpStatusState::FailedLastTestPassed,
+                Some(tools as u32),
+                reason,
+            ),
+            ServerState::Reachable(count) => (
+                format!(
+                    "connection test passed — {count} tool(s), not registered by the agent yet"
+                ),
+                McpRowTone::Warn,
+                McpStatusState::Reachable,
+                Some(count as u32),
+                String::new(),
+            ),
+            ServerState::Failed(reason) => (
                 format!("failed: {reason}"),
                 McpRowTone::Bad,
                 McpStatusState::Failed,
                 None,
-                reason.clone(),
+                reason,
             ),
-            Some(ServerRuntime::Disabled) => (
+            ServerState::Unreachable(reason) => (
+                format!("connection test failed: {reason}"),
+                McpRowTone::Bad,
+                McpStatusState::Unreachable,
+                None,
+                reason,
+            ),
+            ServerState::Disabled => (
                 "disabled".to_string(),
                 McpRowTone::Neutral,
                 McpStatusState::Disabled,
                 None,
                 String::new(),
             ),
-            None if !enabled => (
-                "disabled".to_string(),
-                McpRowTone::Neutral,
-                McpStatusState::Disabled,
-                None,
-                String::new(),
-            ),
-            None => (
+            ServerState::Configured => (
                 "configured (agent not started)".to_string(),
                 McpRowTone::Warn,
                 McpStatusState::Configured,
@@ -378,23 +643,144 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
     }
 }
 
-/// Operator-tooling MCP servers surfaced as INFORMATIONAL rows in the readiness
-/// panel, each paired with the server name that satisfies it.
+/// One operator-tooling MCP server surfaced as an INFORMATIONAL readiness row.
 ///
 /// These are Vetcoders operator surfaces (Vibecrafted / AICX / Loctree); an
 /// end-user install will not have them. Per the C4 readiness-semantics decision
 /// they are context only and NEVER gate `ready` — the core capability gate
 /// (provider + key + native tools) is the sole arbiter of readiness. PRView is
 /// handled separately by [`classify_prview`], also as optional context.
-const AGENTIC_PREREQS: &[(McpStatusFacet, &str, &str)] = &[
-    (
-        McpStatusFacet::VibecraftedRuntime,
-        "Vibecrafted runtime:",
-        "vibecrafted-mcp",
-    ),
-    (McpStatusFacet::AicxMcp, "AICX MCP:", "aicx-mcp"),
-    (McpStatusFacet::LoctreeMcp, "Loctree MCP:", "loctree-mcp"),
+struct OperatorTool {
+    facet: McpStatusFacet,
+    label: &'static str,
+    /// Canonical stdio server and binary name (`loctree-mcp`).
+    canonical: &'static str,
+    /// Product name a server may advertise or be named after (`loctree`).
+    product: &'static str,
+}
+
+const OPERATOR_TOOLS: &[OperatorTool] = &[
+    OperatorTool {
+        facet: McpStatusFacet::VibecraftedRuntime,
+        label: "Vibecrafted runtime:",
+        canonical: "vibecrafted-mcp",
+        product: "vibecrafted",
+    },
+    OperatorTool {
+        facet: McpStatusFacet::AicxMcp,
+        label: "AICX MCP:",
+        canonical: "aicx-mcp",
+        product: "aicx",
+    },
+    OperatorTool {
+        facet: McpStatusFacet::LoctreeMcp,
+        label: "Loctree MCP:",
+        canonical: "loctree-mcp",
+        product: "loctree",
+    },
 ];
+
+/// Transport words accepted after the product in a server name
+/// (`loctree-http`, `aicx_mcp`). A closed list: `aicx-dragon` or
+/// `my-loctree` are not claimed by name.
+const NAME_TRANSPORT_SUFFIXES: &[&str] =
+    &["mcp", "http", "https", "sse", "stdio", "remote", "local"];
+
+/// Why a configured server is taken to be a given operator tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IdentityEvidence {
+    /// The `mcp.json` key is the canonical name (`loctree-mcp`).
+    CanonicalName,
+    /// A stdio entry spawns the canonical binary (`…/loctree-mcp`).
+    Command,
+    /// The server advertised the product identity in its handshake.
+    Advertised(String),
+    /// The key is the product plus a transport word (`loctree-http`) and the
+    /// server has not advertised a different identity.
+    NameConvention,
+}
+
+impl IdentityEvidence {
+    /// Plain-English reason, used in selection explanations and logs.
+    fn describe(&self) -> String {
+        match self {
+            Self::CanonicalName => "canonical server name".to_string(),
+            Self::Command => "canonical command".to_string(),
+            Self::Advertised(identity) => format!("advertised identity \"{identity}\""),
+            Self::NameConvention => "server name".to_string(),
+        }
+    }
+}
+
+impl OperatorTool {
+    /// Whether an advertised `serverInfo.name` is this tool.
+    fn is_identity(&self, identity: &str) -> bool {
+        let identity = identity.trim().to_ascii_lowercase();
+        identity == self.canonical || identity == self.product
+    }
+
+    /// Whether `name` is the product alone or product + separator + one of
+    /// [`NAME_TRANSPORT_SUFFIXES`].
+    fn follows_name_convention(&self, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        let Some(rest) = name.strip_prefix(self.product) else {
+            return false;
+        };
+        rest.is_empty()
+            || rest
+                .strip_prefix('-')
+                .or_else(|| rest.strip_prefix('_'))
+                .is_some_and(|suffix| NAME_TRANSPORT_SUFFIXES.contains(&suffix))
+    }
+
+    /// Evidence that the configured server `name` is this tool, or `None`.
+    /// Explicit configuration (canonical key, canonical stdio command) holds on
+    /// its own; otherwise an advertised identity decides, and the naming
+    /// convention applies only while the server has advertised nothing.
+    fn identify(
+        &self,
+        name: &str,
+        config: &McpServerConfig,
+        advertised: Option<&str>,
+    ) -> Option<IdentityEvidence> {
+        if name == self.canonical {
+            return Some(IdentityEvidence::CanonicalName);
+        }
+        if config.url.is_none()
+            && Path::new(config.command.trim())
+                .file_name()
+                .is_some_and(|binary| binary == self.canonical)
+        {
+            return Some(IdentityEvidence::Command);
+        }
+        match advertised {
+            Some(identity) if self.is_identity(identity) => {
+                Some(IdentityEvidence::Advertised(identity.to_string()))
+            }
+            Some(_) => None,
+            None => self
+                .follows_name_convention(name)
+                .then_some(IdentityEvidence::NameConvention),
+        }
+    }
+}
+
+/// One configured server matched to an operator tool, with its state.
+struct OperatorMatch<'a> {
+    name: &'a str,
+    evidence: IdentityEvidence,
+    state: ServerState,
+}
+
+/// Whether any operator tool or PRView claims `name` by config or identity.
+fn is_identified(name: &str, config: &McpServerConfig, evidence: &McpEvidence) -> bool {
+    let advertised = evidence.advertised_for(name, config);
+    advertised.is_some()
+        || is_prview_name(name)
+        || OPERATOR_TOOLS
+            .iter()
+            .any(|tool| tool.identify(name, config, None).is_some())
+}
 
 /// Core capability gate — the REAL ability of the agent to act. This is the only
 /// input that decides `ready`: a usable sealed assistive lane with current
@@ -514,73 +900,161 @@ impl AgenticReadinessReport {
     }
 }
 
-/// Classify one operator-tooling MCP server as an INFORMATIONAL row. Never
-/// blocking: a missing/failed/disabled operator server does not affect agent
-/// readiness (the core gate owns that). Absent → neutral "not configured
-/// (optional)"; live → good; configured-but-unstarted or failed → warn.
+/// Classify one operator tool as an INFORMATIONAL row. Never blocking: a
+/// missing/failed/disabled operator server does not affect agent readiness
+/// (the core gate owns that).
+///
+/// Every configured server is checked with [`OperatorTool::identify`]. With
+/// several matches the strongest state wins (live, connection test passed,
+/// configured, failed, test failed, disabled), then explicit evidence over the
+/// naming convention, then the name; `value` names the selection and the other
+/// matches. With no match, servers that carry no identity evidence at all make
+/// the row `Unverified` instead of claiming the tool is absent.
 fn classify_operator_tool(
-    facet: McpStatusFacet,
-    label: &str,
-    server_name: &str,
+    tool: &OperatorTool,
     config: &McpConfigFile,
-    runtime: &BTreeMap<String, ServerRuntime>,
+    evidence: &McpEvidence,
 ) -> McpStatusRow {
-    let configured = config.servers.get(server_name);
-    let mut row = match (configured, runtime.get(server_name)) {
-        // Not present in mcp.json — optional operator tooling is simply absent.
-        (None, _) => McpStatusRow::new(
-            facet,
-            McpStatusState::NotConfigured,
-            label,
-            "not configured (optional)",
-            McpRowTone::Neutral,
-        ),
-        // Real discovery succeeded — tools are live.
-        (Some(_), Some(ServerRuntime::Tools(count))) => McpStatusRow {
-            count: Some(*count as u32),
-            ..McpStatusRow::new(
-                facet,
-                McpStatusState::Live,
-                label,
-                format!("ready — {count} tool(s) live"),
-                McpRowTone::Good,
-            )
-        },
-        // Configured but discovery failed: surface the concrete reason (warn, not
-        // blocking — the agent still works without this operator surface).
-        (Some(_), Some(ServerRuntime::Failed(reason))) => McpStatusRow {
-            detail: reason.clone(),
-            ..McpStatusRow::new(
-                facet,
-                McpStatusState::Failed,
-                label,
-                format!("failed: {reason}"),
-                McpRowTone::Warn,
-            )
-        },
-        (Some(cfg), runtime_state) => {
-            let enabled = cfg.enabled.unwrap_or(true);
-            if matches!(runtime_state, Some(ServerRuntime::Disabled)) || !enabled {
-                McpStatusRow::new(
-                    facet,
-                    McpStatusState::Disabled,
-                    label,
-                    "disabled",
-                    McpRowTone::Neutral,
-                )
-            } else {
-                McpStatusRow::new(
-                    facet,
-                    McpStatusState::Configured,
-                    label,
-                    "configured — agent not started yet",
-                    McpRowTone::Warn,
-                )
-            }
+    let mut names: Vec<&String> = config.servers.keys().collect();
+    names.sort();
+    let mut matches: Vec<OperatorMatch<'_>> = names
+        .iter()
+        .filter_map(|name| {
+            let server = &config.servers[*name];
+            let identity = tool.identify(name, server, evidence.advertised_for(name, server))?;
+            Some(OperatorMatch {
+                name: name.as_str(),
+                evidence: identity,
+                state: evidence.server_state(name, server),
+            })
+        })
+        .collect();
+    matches.sort_by_key(|candidate| {
+        (
+            candidate.state.rank(),
+            candidate.evidence == IdentityEvidence::NameConvention,
+            candidate.name,
+        )
+    });
+
+    let Some(selected) = matches.first() else {
+        let unidentified: Vec<&str> = names
+            .iter()
+            .filter(|name| {
+                let server = &config.servers[name.as_str()];
+                server.enabled.unwrap_or(true) && !is_identified(name, server, evidence)
+            })
+            .map(|name| name.as_str())
+            .collect();
+        if unidentified.is_empty() {
+            return McpStatusRow::new(
+                tool.facet,
+                McpStatusState::NotConfigured,
+                tool.label,
+                "not configured (optional)",
+                McpRowTone::Neutral,
+            );
         }
+        let list = unidentified.join(", ");
+        return McpStatusRow {
+            detail: list.clone(),
+            ..McpStatusRow::new(
+                tool.facet,
+                McpStatusState::Unverified,
+                tool.label,
+                format!("not detected (optional) — identity unknown for: {list}"),
+                McpRowTone::Neutral,
+            )
+        };
     };
-    row.subject = server_name.to_string();
-    row
+
+    let mut why = format!(
+        "via \"{}\" ({})",
+        selected.name,
+        selected.evidence.describe()
+    );
+    if matches.len() > 1 {
+        let others: Vec<String> = matches[1..]
+            .iter()
+            .map(|other| format!("{} ({})", other.name, other.state.describe()))
+            .collect();
+        why.push_str(&format!("; also matched: {}", others.join(", ")));
+    }
+    let (state, value, tone, count, detail) = match &selected.state {
+        ServerState::Live(count) => (
+            McpStatusState::Live,
+            format!("ready — {count} tool(s) live {why}"),
+            McpRowTone::Good,
+            Some(*count as u32),
+            String::new(),
+        ),
+        ServerState::LiveLastTestFailed { tools, reason } => (
+            McpStatusState::LiveLastTestFailed,
+            format!("{tools} tool(s) live; last connection test failed: {reason} {why}"),
+            McpRowTone::Warn,
+            Some(*tools as u32),
+            reason.clone(),
+        ),
+        ServerState::FailedLastTestPassed { reason, tools } => (
+            McpStatusState::FailedLastTestPassed,
+            format!(
+                "registration failed: {reason}; last connection test passed — {tools} tool(s) {why}"
+            ),
+            McpRowTone::Warn,
+            Some(*tools as u32),
+            reason.clone(),
+        ),
+        ServerState::Reachable(count) => (
+            McpStatusState::Reachable,
+            format!(
+                "connection test passed — {count} tool(s), not registered by the agent yet {why}"
+            ),
+            McpRowTone::Warn,
+            Some(*count as u32),
+            String::new(),
+        ),
+        // Configured but discovery failed: surface the concrete reason (warn,
+        // not blocking — the agent still works without this operator surface).
+        ServerState::Failed(reason) => (
+            McpStatusState::Failed,
+            format!("failed: {reason} {why}"),
+            McpRowTone::Warn,
+            None,
+            reason.clone(),
+        ),
+        ServerState::Unreachable(reason) => (
+            McpStatusState::Unreachable,
+            format!("connection test failed: {reason} {why}"),
+            McpRowTone::Warn,
+            None,
+            reason.clone(),
+        ),
+        ServerState::Disabled => (
+            McpStatusState::Disabled,
+            format!("disabled {why}"),
+            McpRowTone::Neutral,
+            None,
+            String::new(),
+        ),
+        ServerState::Configured => (
+            McpStatusState::Configured,
+            format!("configured — agent not started yet {why}"),
+            McpRowTone::Warn,
+            None,
+            String::new(),
+        ),
+    };
+    McpStatusRow {
+        count,
+        subject: selected.name.to_string(),
+        detail,
+        ..McpStatusRow::new(tool.facet, state, tool.label, value, tone)
+    }
+}
+
+/// PRView servers are recognised by name; see [`classify_prview`].
+fn is_prview_name(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("prview")
 }
 
 /// Classify PRView as an INFORMATIONAL row. Per the C4 decision PRView is
@@ -588,58 +1062,64 @@ fn classify_operator_tool(
 /// (optional)" and never blocks readiness. The canonical wiring is a `prview`
 /// MCP server (`{"command":"prview","args":["mcp"]}`); we also honour any server
 /// whose name contains "prview" so a manually wired entry is recognised.
-fn classify_prview(
-    config: &McpConfigFile,
-    runtime: &BTreeMap<String, ServerRuntime>,
-) -> McpStatusRow {
-    let detected = config
+fn classify_prview(config: &McpConfigFile, evidence: &McpEvidence) -> McpStatusRow {
+    let mut detected: Vec<(&String, &McpServerConfig)> = config
         .servers
         .iter()
-        .find(|(name, _)| name.to_ascii_lowercase().contains("prview"));
+        .filter(|(name, _)| is_prview_name(name))
+        .collect();
+    detected.sort_by_key(|(name, _)| name.as_str());
+    let detected = detected.first().copied();
     let facet = McpStatusFacet::PrviewIntegration;
     let label = "PRView integration:";
     let (value, tone, state, count, detail) = match detected {
-        Some((name, cfg)) => match runtime.get(name) {
-            Some(ServerRuntime::Tools(count)) => (
+        // PRView keeps reporting registration alone; its last-test detail is
+        // out of scope for this row.
+        Some((name, cfg)) => match evidence.server_state(name, cfg) {
+            ServerState::Live(count) | ServerState::LiveLastTestFailed { tools: count, .. } => (
                 format!("ready — {count} tool(s) live (via \"{name}\")"),
                 McpRowTone::Good,
                 McpStatusState::Live,
-                Some(*count as u32),
+                Some(count as u32),
                 String::new(),
             ),
-            Some(ServerRuntime::Failed(reason)) => (
+            ServerState::Reachable(count) => (
+                format!(
+                    "connection test passed — {count} tool(s), not registered by the agent yet (via \"{name}\")"
+                ),
+                McpRowTone::Warn,
+                McpStatusState::Reachable,
+                Some(count as u32),
+                String::new(),
+            ),
+            ServerState::Failed(reason) | ServerState::FailedLastTestPassed { reason, .. } => (
                 format!("failed: {reason}"),
                 McpRowTone::Warn,
                 McpStatusState::Failed,
                 None,
-                reason.clone(),
+                reason,
             ),
-            Some(ServerRuntime::Disabled) => (
+            ServerState::Unreachable(reason) => (
+                format!("connection test failed: {reason}"),
+                McpRowTone::Warn,
+                McpStatusState::Unreachable,
+                None,
+                reason,
+            ),
+            ServerState::Disabled => (
                 "disabled".to_string(),
                 McpRowTone::Neutral,
                 McpStatusState::Disabled,
                 None,
                 String::new(),
             ),
-            None => {
-                if cfg.enabled.unwrap_or(true) {
-                    (
-                        format!("configured — agent not started yet (via \"{name}\")"),
-                        McpRowTone::Warn,
-                        McpStatusState::Configured,
-                        None,
-                        String::new(),
-                    )
-                } else {
-                    (
-                        "disabled".to_string(),
-                        McpRowTone::Neutral,
-                        McpStatusState::Disabled,
-                        None,
-                        String::new(),
-                    )
-                }
-            }
+            ServerState::Configured => (
+                format!("configured — agent not started yet (via \"{name}\")"),
+                McpRowTone::Warn,
+                McpStatusState::Configured,
+                None,
+                String::new(),
+            ),
         },
         None => (
             "not configured (optional)".to_string(),
@@ -676,6 +1156,7 @@ pub fn probe_agentic_readiness(
                     servers: Default::default(),
                 },
                 Some(format!("config path unavailable: {error}")),
+                &evidence_snapshot(evidence_store()),
             );
         }
     };
@@ -687,6 +1168,15 @@ pub fn probe_agentic_readiness(
 /// Keychain coupling. A missing or unparseable config yields an empty server
 /// set (plus a warn note), never an error.
 fn probe_agentic_readiness_at(path: &Path, core: CoreReadiness) -> AgenticReadinessReport {
+    probe_agentic_readiness_with(path, core, &evidence_snapshot(evidence_store()))
+}
+
+/// [`probe_agentic_readiness_at`] against an explicit evidence snapshot.
+fn probe_agentic_readiness_with(
+    path: &Path,
+    core: CoreReadiness,
+    evidence: &McpEvidence,
+) -> AgenticReadinessReport {
     let config_path_display = path.display().to_string();
 
     let (config, config_note) = if !path.exists() {
@@ -713,7 +1203,7 @@ fn probe_agentic_readiness_at(path: &Path, core: CoreReadiness) -> AgenticReadin
         }
     };
 
-    assemble_readiness(config_path_display, core, config, config_note)
+    assemble_readiness(config_path_display, core, config, config_note, evidence)
 }
 
 /// Assemble the readiness report: the core-gate verdict + provider + native-tools
@@ -724,12 +1214,8 @@ fn assemble_readiness(
     core: CoreReadiness,
     config: McpConfigFile,
     config_note: Option<String>,
+    evidence: &McpEvidence,
 ) -> AgenticReadinessReport {
-    let runtime = runtime_cache()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone();
-
     let tools_present = core.native_tool_count > 0;
     let roots_match = workspace_roots_match(&core);
     let ready = core.provider_access_available && tools_present && roots_match;
@@ -860,7 +1346,7 @@ fn assemble_readiness(
         )
     };
 
-    let mut rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 6);
+    let mut rows = Vec::with_capacity(OPERATOR_TOOLS.len() + 6);
     rows.push(verdict);
     rows.push(provider_row);
     rows.push(tools_row);
@@ -879,16 +1365,10 @@ fn assemble_readiness(
             )
         });
     }
-    for (facet, label, server_name) in AGENTIC_PREREQS {
-        rows.push(classify_operator_tool(
-            *facet,
-            label,
-            server_name,
-            &config,
-            &runtime,
-        ));
+    for tool in OPERATOR_TOOLS {
+        rows.push(classify_operator_tool(tool, &config, evidence));
     }
-    rows.push(classify_prview(&config, &runtime));
+    rows.push(classify_prview(&config, evidence));
 
     AgenticReadinessReport {
         config_path_display,
@@ -928,10 +1408,20 @@ pub(crate) fn register_mcp_tools_from_config_path(
     registry: &mut ToolRegistry,
     path: &Path,
 ) -> Result<usize> {
+    register_mcp_tools_into(registry, path, evidence_store())
+}
+
+/// [`register_mcp_tools_from_config_path`] recording discovery into an
+/// explicit evidence owner.
+fn register_mcp_tools_into(
+    registry: &mut ToolRegistry,
+    path: &Path,
+    store: &Mutex<McpEvidence>,
+) -> Result<usize> {
     let Some(config) = McpConfigFile::load_optional(path)? else {
         return Ok(0);
     };
-    register_mcp_tools_from_config(registry, config)
+    register_mcp_tools_from_config(registry, config, store)
 }
 
 /// Run discovery, then register each discovered tool behind a closure that
@@ -941,8 +1431,10 @@ pub(crate) fn register_mcp_tools_from_config_path(
 fn register_mcp_tools_from_config(
     registry: &mut ToolRegistry,
     config: McpConfigFile,
+    store: &Mutex<McpEvidence>,
 ) -> Result<usize> {
-    let discovered = discover_mcp_tools_blocking(config)?;
+    let (discovered, runtime) = discover_mcp_tools_blocking(config)?;
+    record_runtime(store, runtime);
     let mut registered = 0usize;
 
     for discovered_tool in discovered {
@@ -1363,7 +1855,9 @@ struct DiscoveredMcpTool {
 /// oversight. Servers are probed in parallel and in isolation: a failure is
 /// recorded against that server alone and never propagates, and disabled
 /// servers are still recorded so the UI can tell "off" from "missing".
-fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMcpTool>> {
+fn discover_mcp_tools_blocking(
+    config: McpConfigFile,
+) -> Result<(Vec<DiscoveredMcpTool>, BTreeMap<String, RuntimeEvidence>)> {
     // P2.4 DEFERRED (cross-cut, owned by the runtime/bin group):
     // This spawns a std::thread and builds a fresh current_thread runtime to run
     // the MCP discovery handshake, which bypasses the intentional 4-worker cap of
@@ -1382,74 +1876,85 @@ fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMc
     // domain. Until that cache exists, the dedicated thread + current_thread
     // runtime is the correct defensive choice (no runtime-nesting panic) and the
     // join() makes the discovery cost bounded and one-shot per agent-runtime init.
-    thread::spawn(move || -> Result<Vec<DiscoveredMcpTool>> {
-        // Capture EVERY configured server (enabled or not) so the runtime cache
-        // reports disabled servers truthfully instead of as "missing".
-        let mut servers: Vec<(String, McpServerConfig, bool)> = config
-            .servers
-            .iter()
-            .map(|(name, server_config)| {
-                let enabled = server_config.enabled.unwrap_or(true);
-                (name.clone(), server_config.clone(), enabled)
-            })
-            .collect();
-        servers.sort_by(|a, b| a.0.cmp(&b.0));
+    thread::spawn(
+        move || -> Result<(Vec<DiscoveredMcpTool>, BTreeMap<String, RuntimeEvidence>)> {
+            // Capture EVERY configured server (enabled or not) so the runtime cache
+            // reports disabled servers truthfully instead of as "missing".
+            let mut servers: Vec<(String, McpServerConfig, bool)> = config
+                .servers
+                .iter()
+                .map(|(name, server_config)| {
+                    let enabled = server_config.enabled.unwrap_or(true);
+                    (name.clone(), server_config.clone(), enabled)
+                })
+                .collect();
+            servers.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create MCP discovery runtime")?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create MCP discovery runtime")?;
 
-        let (discovered, status) = runtime.block_on(async move {
-            // Probe every enabled server in PARALLEL and in ISOLATION: one dead
-            // or hung server costs at most its own initialize/request timeout
-            // and can never veto the other servers' tools — the session starts
-            // degraded (that server absent, WARN in the log), never dead.
-            let probes =
-                servers
-                    .into_iter()
-                    .map(|(server_name, server_config, enabled)| async move {
-                        if !enabled {
-                            return (server_name, server_config, None);
+            let (discovered, status) = runtime.block_on(async move {
+                // Probe every enabled server in PARALLEL and in ISOLATION: one dead
+                // or hung server costs at most its own initialize/request timeout
+                // and can never veto the other servers' tools — the session starts
+                // degraded (that server absent, WARN in the log), never dead.
+                let probes =
+                    servers
+                        .into_iter()
+                        .map(|(server_name, server_config, enabled)| async move {
+                            if !enabled {
+                                return (server_name, server_config, None);
+                            }
+                            let client = McpClient::new(server_config.clone());
+                            let outcome = client.probe().await;
+                            (server_name, server_config, Some(outcome))
+                        });
+                let results = futures_util::future::join_all(probes).await;
+
+                let mut discovered = Vec::new();
+                let mut status: BTreeMap<String, RuntimeEvidence> = BTreeMap::new();
+                for (server_name, server_config, outcome) in results {
+                    let (outcome, advertised) = match outcome {
+                        None => (ServerRuntime::Disabled, None),
+                        Some(Ok(probe)) => {
+                            let advertised = probe.handshake.server_name();
+                            let count = probe.tools.len();
+                            for tool in probe.tools {
+                                discovered.push(DiscoveredMcpTool {
+                                    server_name: server_name.clone(),
+                                    server_config: server_config.clone(),
+                                    tool,
+                                });
+                            }
+                            (ServerRuntime::Tools(count), advertised)
                         }
-                        let client = McpClient::new(server_config.clone());
-                        let outcome = client.list_tools().await;
-                        (server_name, server_config, Some(outcome))
-                    });
-            let results = futures_util::future::join_all(probes).await;
-
-            let mut discovered = Vec::new();
-            let mut status: BTreeMap<String, ServerRuntime> = BTreeMap::new();
-            for (server_name, server_config, outcome) in results {
-                match outcome {
-                    None => {
-                        status.insert(server_name, ServerRuntime::Disabled);
-                    }
-                    Some(Ok(tools)) => {
-                        status.insert(server_name.clone(), ServerRuntime::Tools(tools.len()));
-                        for tool in tools {
-                            discovered.push(DiscoveredMcpTool {
-                                server_name: server_name.clone(),
-                                server_config: server_config.clone(),
-                                tool,
-                            });
+                        Some(Err(error)) => {
+                            // Concrete root cause (spawn failure, command not found,
+                            // parse error, timeout, …) — surfaced to logs AND the UI.
+                            let reason = anyhow_root_cause(&error);
+                            warn!("MCP server '{server_name}' discovery failed: {reason}");
+                            (ServerRuntime::Failed(reason), None)
                         }
-                    }
-                    Some(Err(error)) => {
-                        // Concrete root cause (spawn failure, command not found,
-                        // parse error, timeout, …) — surfaced to logs AND the UI.
-                        let reason = anyhow_root_cause(&error);
-                        warn!("MCP server '{server_name}' discovery failed: {reason}");
-                        status.insert(server_name, ServerRuntime::Failed(reason));
-                    }
+                    };
+                    status.insert(
+                        server_name,
+                        RuntimeEvidence {
+                            config: server_config,
+                            outcome,
+                            advertised,
+                            // Stamped by `record_runtime` under the store lock.
+                            seq: 0,
+                        },
+                    );
                 }
-            }
-            (discovered, status)
-        });
+                (discovered, status)
+            });
 
-        record_runtime(status);
-        Ok(discovered)
-    })
+            Ok((discovered, status))
+        },
+    )
     .join()
     .map_err(|_| anyhow::anyhow!("MCP discovery thread panicked"))?
 }
@@ -2199,3 +2704,7 @@ mod tests {
         assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_identity_tests.rs"]
+mod identity_tests;

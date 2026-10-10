@@ -631,11 +631,99 @@ final class OverlayState {
     relayIntent(intent)
   }
 
+  /// The user's choice (controls, resize gesture, explicit window entry). It
+  /// supersedes a pending automatic collapse, including a choice of the form
+  /// already on screen: a manually chosen expanded panel stays expanded.
   func setPresentationMode(_ mode: OverlayPresentationMode) {
-    guard presentationMode != mode else { return }
-    presentationMode = mode
-    if mode != .expanded { showsAgentMonitor = false }
-    onPresentationModeChanged?(mode)
+    applyPresentationMode(mode, cause: .user)
+  }
+
+  /// The one presentation write. An automatic expansion from mini/midi is
+  /// remembered once and receives a fresh idle interval, which also invalidates
+  /// any wake armed for its predecessor.
+  private func applyPresentationMode(
+    _ mode: OverlayPresentationMode, cause: OverlayPresentationCause
+  ) {
+    let automaticExpansion = cause == .automatic && mode == .expanded
+    if automaticExpansion {
+      autoCollapse.noteAutomaticExpansion(from: presentationMode)
+    } else {
+      autoCollapse.forget()
+    }
+    if presentationMode != mode {
+      presentationMode = mode
+      if mode != .expanded { showsAgentMonitor = false }
+      onPresentationModeChanged?(mode)
+    }
+    if automaticExpansion {
+      autoCollapse.suspend()
+      noteAutoCollapseActivity()
+    } else {
+      releaseAutoHideAwaitingCollapse()
+    }
+  }
+
+  /// An automatic expansion still owes its return to the remembered compact
+  /// form: the terminal hide must not close the full panel before it.
+  private var autoCollapsePending: Bool {
+    autoCollapse.restoreMode != nil && presentationMode == .expanded
+  }
+
+  /// The return happened, or a manual choice or a lost memo cancelled it. A
+  /// hide that waited for it gets an ordinary countdown, with every auto-hide
+  /// guard re-checked, unless a successor capture took over meanwhile.
+  private func releaseAutoHideAwaitingCollapse() {
+    guard let generation = autoHideAwaitingCollapse else { return }
+    autoHideAwaitingCollapse = nil
+    guard generation == captureGeneration else { return }
+    restartAutoHideCountdown()
+  }
+
+  /// Fresh transcript, presentation activity or the end of an interaction.
+  /// While an interaction holds the panel, the deadline is dropped instead;
+  /// the end of that interaction calls here again for a full interval.
+  /// Unchanged polls and repaints do not reach this method.
+  func noteAutoCollapseActivity() {
+    guard autoCollapse.restoreMode != nil, presentationMode == .expanded else { return }
+    if autoCollapseInteractionHeld {
+      autoCollapse.suspend()
+    } else {
+      autoCollapse.restartDeadline()
+    }
+  }
+
+  /// The panel left the screen. A wake armed while it was shown cannot act;
+  /// the memo survives, so the next automatic expansion still knows the form.
+  func suspendAutoCollapse() {
+    autoCollapse.suspend()
+  }
+
+  /// The compact form a pending automatic collapse returns to, if any.
+  var autoCollapseRestoreMode: OverlayPresentationMode? { autoCollapse.restoreMode }
+  var autoCollapseDeadline: TimeInterval? { autoCollapse.deadline }
+
+  /// Window-side holds (hidden panel, resize or drag in progress, open menu or
+  /// popover), supplied by the panel's owner. Standalone states have none.
+  @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
+
+  /// Editing, an uncommitted draft, the pointer over the panel, the focused
+  /// composer and a live capture are active interactions.
+  private var autoCollapseInteractionHeld: Bool {
+    isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
+      || activeCaptureOwnsPresentation || autoCollapseExternalHold()
+  }
+
+  private func autoCollapseDeadlineReached() {
+    guard presentationMode == .expanded, let restore = autoCollapse.restoreMode else {
+      autoCollapse.forget()
+      releaseAutoHideAwaitingCollapse()
+      return
+    }
+    guard !autoCollapseInteractionHeld else {
+      autoCollapse.suspend()
+      return
+    }
+    applyPresentationMode(restore, cause: .automatic)
   }
 
   func clearPointerHover() {
@@ -652,10 +740,13 @@ final class OverlayState {
     applyPreferredExpansion()
   }
 
+  /// The menu toggle is the user's choice; a take start is automatic.
   private func applyPreferredExpansion(forTake: Bool = false) {
     guard let engine else { return }
     expandedByDefault = engine.overlayExpandedByDefault()
-    setPresentationMode(expandedByDefault ? .expanded : (forTake ? .midi : .mini))
+    applyPresentationMode(
+      expandedByDefault ? .expanded : (forTake ? .midi : .mini),
+      cause: forTake ? .automatic : .user)
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -834,10 +925,19 @@ final class OverlayState {
   /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
 
+  /// Idle return of an automatic expansion; see `OverlayAutoCollapse`.
+  @ObservationIgnored private let autoCollapse: OverlayAutoCollapse
+  /// Capture generation whose terminal hide came due while an automatic
+  /// expansion still owed its return to mini/midi. The hide waits for that
+  /// return, then gets an ordinary countdown. Cleared with the auto-hide.
+  @ObservationIgnored private var autoHideAwaitingCollapse: UInt64?
+
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
-    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() }
+    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
+    autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
+      .liveScheduler
   ) {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     eventStream = channel.stream
@@ -845,12 +945,14 @@ final class OverlayState {
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
     self.micAccessProvider = micAccessProvider
+    autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
       for await event in eventStream {
         guard let self else { return }
         apply(event)
       }
     }
+    autoCollapse.onDeadline = { [weak self] in self?.autoCollapseDeadlineReached() }
   }
 
   func attach() {
@@ -1108,6 +1210,12 @@ final class OverlayState {
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
   func selectConversation(_ id: String?, expand: Bool = true) {
+    selectConversation(id, expansion: expand ? .user : nil)
+  }
+
+  /// `expansion` names who opened the surface: a click is the user's choice,
+  /// a followed reply or roster change is automatic. Nil keeps the form.
+  private func selectConversation(_ id: String?, expansion: OverlayPresentationCause?) {
     guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
@@ -1115,8 +1223,8 @@ final class OverlayState {
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
-    if id != nil && expand {
-      expandAgentSurface()
+    if id != nil, let expansion {
+      expandAgentSurface(cause: expansion)
     } else {
       onChannelPresentationChanged?()
     }
@@ -1125,14 +1233,18 @@ final class OverlayState {
 
   func showTranscription() {
     selectConversation(nil)
-    expandAgentSurface()
+    expandAgentSurface(cause: .user)
   }
 
   func showAgentMonitor(expand: Bool = true) {
+    showAgentMonitor(expansion: expand ? .user : nil)
+  }
+
+  private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
     showsAgentMonitor = true
-    if expand { expandAgentSurface() }
+    if let expansion { expandAgentSurface(cause: expansion) }
   }
 
   func toggleAgentSidebar() {
@@ -1145,9 +1257,9 @@ final class OverlayState {
     onChannelPresentationChanged?()
   }
 
-  private func expandAgentSurface() {
+  private func expandAgentSurface(cause: OverlayPresentationCause) {
     cancelAutoHide()
-    setPresentationMode(.expanded)
+    applyPresentationMode(.expanded, cause: cause)
     onChannelPresentationChanged?()
   }
 
@@ -1156,7 +1268,7 @@ final class OverlayState {
   private func followChannelConversation(_ row: CsChannelRosterState) {
     pendingChannelConversation = row
     resolveChannelConversation()
-    if expandedByDefault { expandAgentSurface() }
+    if expandedByDefault { expandAgentSurface(cause: .automatic) }
   }
 
   private func resolveChannelConversation() {
@@ -1247,10 +1359,12 @@ final class OverlayState {
   /// Neither fact is a conversation, a draft, or a document.
   func noteComposerEditorActive(_ active: Bool) {
     composerEditorActive = active
+    noteAutoCollapseActivity()
   }
 
   func noteComposerTypingActivity() {
     composerTypingDeadline = nowProvider() + Self.composerTypingHorizon
+    noteAutoCollapseActivity()
   }
 
   /// Active editor holds without a clock, blank draft included. Typing holds
@@ -1280,10 +1394,12 @@ final class OverlayState {
       let conversation = ownedConversation(forNewReplies: fresh)
     else { return }
     if selectedConversationID == conversation.id {
-      if isCollapsed && expandedByDefault { expandAgentSurface() }
+      if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
     } else {
-      selectConversation(conversation.id, expand: expandedByDefault)
+      selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
     }
+    // A fresh reply is content activity for an already expanded surface.
+    noteAutoCollapseActivity()
     // The selection callback above is an ordinary repaint. The snapshot's
     // own callback, still ahead, is the one that may ask the panel to show.
     freshReplyPresentationRequested = true
@@ -1491,9 +1607,9 @@ final class OverlayState {
       followChannelConversation(row)
     } else if newlyOpened.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
-      selectConversation(
-        conversations.first { $0.channel == "0" }?.id, expand: expandedByDefault)
-      if selectedConversationID == nil { showAgentMonitor(expand: expandedByDefault) }
+      let expansion: OverlayPresentationCause? = expandedByDefault ? .automatic : nil
+      selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
+      if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
     }
     if hasOpenChannel {
       cancelAutoHide()
@@ -2422,6 +2538,7 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
+    noteAutoCollapseActivity()
     guard isTerminalMode else { return }
     if hovering {
       cancelAutoHide()
@@ -2518,6 +2635,7 @@ final class OverlayState {
     agentAutoSendCancelled = true
     if archivedTranscript != nil { archiveActionError = nil } else { revisionCommitError = nil }
     cancelAutoHide()
+    noteAutoCollapseActivity()
   }
 
   /// The canvas gave keyboard focus back. A dirty draft commits after a short
@@ -2530,6 +2648,7 @@ final class OverlayState {
     } else if terminal {
       restartAutoHideCountdown()
     }
+    noteAutoCollapseActivity()
   }
 
   /// Canvas bytes changed under the user's caret.
@@ -2553,6 +2672,7 @@ final class OverlayState {
     } else if terminal {
       restartAutoHideCountdown()
     }
+    noteAutoCollapseActivity()
   }
 
   /// Commit on a genuine focus exit, but wait one click's worth so an explicit
@@ -2771,6 +2891,8 @@ final class OverlayState {
       finalized = true
       onRecordingStopped?()
     }
+    // The live capture hold ended.
+    noteAutoCollapseActivity()
   }
 
   /// Native hold-release / toggle-stop lifecycle evidence. It freezes capture
@@ -2848,6 +2970,9 @@ final class OverlayState {
   }
 
   private func restartAutoHideCountdown() {
+    // Every auto-hide restart is user or presentation activity (drag, resize,
+    // edit end, draft resolution, terminal status, archive action).
+    noteAutoCollapseActivity()
     if hasOpenChannel {
       cancelAutoHide()
       return
@@ -2934,6 +3059,15 @@ final class OverlayState {
       }
       return
     }
+    // The 5 s hide can come due before an automatic expansion's 10 s return.
+    // Closing then would take the full panel off screen, so the hide waits for
+    // the return. A deadline dropped without a later signal is re-armed here,
+    // otherwise neither timer would ever run.
+    if autoCollapsePending {
+      autoHideAwaitingCollapse = generation
+      if autoCollapse.deadline == nil { noteAutoCollapseActivity() }
+      return
+    }
     onClose?()
   }
 
@@ -2966,7 +3100,12 @@ final class OverlayState {
     autoHideTask?.cancel()
     autoHideTask = nil
     autoHideDeadline = nil
+    autoHideAwaitingCollapse = nil
   }
+
+  /// Whether a terminal hide that came due is waiting for the automatic
+  /// collapse; see `evaluateAutoHideDeadline`.
+  var autoHideAwaitsAutoCollapse: Bool { autoHideAwaitingCollapse != nil }
 
   @discardableResult
   private func deliverAgentTranscript() -> Task<Void, Never>? {
@@ -3253,6 +3392,7 @@ final class OverlayState {
       guard recording || transcribing else { return }
     }
     compactProjection = projection
+    noteAutoCollapseActivity()
     onTranscriptPresentationChanged?()
   }
 
@@ -3309,7 +3449,11 @@ final class OverlayState {
       return
     }
     if lifecycleTerminal { endedProjectionSessions.insert(projection.sessionId) }
-    defer { onTranscriptPresentationChanged?() }
+    defer {
+      // Runs after capture flags settle, so a terminal arms the idle interval.
+      noteAutoCollapseActivity()
+      onTranscriptPresentationChanged?()
+    }
     // A late revision of the take behind a reopened archive updates that take
     // only; any other projection takes the canvas back.
     let keepsArchive =
