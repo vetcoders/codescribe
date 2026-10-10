@@ -419,7 +419,10 @@ impl TranscriptProjectionReader {
                     .is_none_or(|id| id.is_empty())
                 || !receipt.source_occurrences.is_empty()
                 || !receipt.source_seal_receipts.is_empty()
-                || !matches!(receipt.provenance.as_str(), "user-edit" | "retranscribe")
+                || !matches!(
+                    receipt.provenance.as_str(),
+                    "user-edit" | "retranscribe" | "navigation"
+                )
                 || row.sample_start != 0
                 || row.sample_end != 0
             {

@@ -350,8 +350,12 @@ pub enum ArchiveRevisionProvenance {
     UserEdit,
     Formatter,
     Retranscribe,
-    /// An earlier version restored as a new revision (undo).
+    /// An earlier version restored as a new revision. Legacy records stay
+    /// readable and count as an operation; new writes use `Navigate`.
     Restore,
+    /// Undo, redo or a version pick: the cursor moves to an accepted step.
+    /// A receipt for the move, never a new step.
+    Navigate,
 }
 
 impl ArchiveRevisionProvenance {
@@ -361,6 +365,7 @@ impl ArchiveRevisionProvenance {
             Self::Formatter => "formatter",
             Self::Retranscribe => "retranscribe",
             Self::Restore => "restore",
+            Self::Navigate => "navigate",
         }
     }
 }
@@ -422,18 +427,62 @@ impl ArchivedDocument {
             .map(|entry| entry.rendered_text.as_str())
     }
 
-    /// The version an undo restores: what the latest format or
-    /// retranscription replaced. Edits and restores have no undo here.
-    pub fn undo_revision(&self) -> Option<u64> {
-        self.head()
-            .filter(|head| {
-                matches!(
-                    head.provenance,
-                    ArchiveRevisionProvenance::Formatter | ArchiveRevisionProvenance::Retranscribe
-                )
-            })
-            .map(|head| head.source_revision)
+    /// Replay the chain as one linear history: the original and every
+    /// accepted operation, with the selected step. An operation after an undo
+    /// ends the abandoned redo branch; a navigation only moves the cursor.
+    /// Equal texts stay separate steps: each is an attempt the user made.
+    pub fn timeline(&self) -> ArchiveTimeline {
+        let mut steps = vec![ArchiveStep {
+            revision: 0,
+            provenance: "original".to_string(),
+            detail: None,
+            rendered_text: self.original_text.clone(),
+            emitted_at: String::new(),
+            receipt_id: String::new(),
+        }];
+        let mut cursor = 0;
+        for record in &self.revisions {
+            if record.provenance == ArchiveRevisionProvenance::Navigate {
+                if let Some(target) = record
+                    .restored_revision
+                    .and_then(|target| steps.iter().position(|step| step.revision == target))
+                {
+                    cursor = target;
+                }
+                continue;
+            }
+            steps.truncate(cursor + 1);
+            steps.push(ArchiveStep {
+                revision: record.revision,
+                provenance: record.provenance.as_str().to_string(),
+                detail: record.detail.clone(),
+                rendered_text: record.rendered_text.clone(),
+                emitted_at: record.emitted_at.clone(),
+                receipt_id: record.receipt_id.clone(),
+            });
+            cursor = steps.len() - 1;
+        }
+        ArchiveTimeline { steps, cursor }
     }
+}
+
+/// One accepted step of an archived transcript. `revision` is the chain
+/// record that accepted it (0 for the archived original): its identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveStep {
+    pub revision: u64,
+    pub provenance: String,
+    pub detail: Option<String>,
+    pub rendered_text: String,
+    pub emitted_at: String,
+    pub receipt_id: String,
+}
+
+/// The replayed linear history of an archived transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveTimeline {
+    pub steps: Vec<ArchiveStep>,
+    pub cursor: usize,
 }
 
 /// Admit one archived transcript: a `.txt` file inside the transcriptions bag.
@@ -622,16 +671,21 @@ pub fn commit_archived_revision(
     detail: Option<String>,
 ) -> Result<ArchiveRevision> {
     anyhow::ensure!(
-        provenance != ArchiveRevisionProvenance::Restore,
-        "a restore names the version it restores"
+        !matches!(
+            provenance,
+            ArchiveRevisionProvenance::Restore | ArchiveRevisionProvenance::Navigate
+        ),
+        "a navigation names the version it selects"
     );
     anyhow::ensure!(
         !rendered_text.trim().is_empty(),
         "A transcript revision cannot be empty"
     );
     accept_archived_revision(transcript, source_revision, |document| {
+        // A retranscription is an attempt even when it hears the same words.
         anyhow::ensure!(
-            document.head_text() != rendered_text,
+            provenance == ArchiveRevisionProvenance::Retranscribe
+                || document.head_text() != rendered_text,
             "the revision does not change the transcript"
         );
         Ok(PlannedRevision {
@@ -643,29 +697,29 @@ pub fn commit_archived_revision(
     })
 }
 
-/// Restore an earlier version of an archived transcript as a new revision.
-pub fn restore_archived_revision(
+/// Undo, redo or pick a version of an archived transcript: select the
+/// accepted step `target_revision` names. Appends one navigation receipt;
+/// no step is added and no text is produced again.
+pub fn navigate_archived_revision(
     transcript: &Path,
     source_revision: u64,
-    restore_revision: u64,
+    target_revision: u64,
 ) -> Result<ArchiveRevision> {
-    anyhow::ensure!(
-        restore_revision < source_revision,
-        "only an earlier version can be restored"
-    );
     accept_archived_revision(transcript, source_revision, |document| {
-        let restored = document
-            .text_at(restore_revision)
-            .context("restored version is not in this transcript's history")?
-            .to_string();
+        let timeline = document.timeline();
+        let target = timeline
+            .steps
+            .iter()
+            .position(|step| step.revision == target_revision)
+            .context("selected version is not in this transcript's history")?;
         anyhow::ensure!(
-            restored != document.head_text(),
-            "the restored version matches the current transcript"
+            target != timeline.cursor,
+            "the selected version is already shown"
         );
         Ok(PlannedRevision {
-            provenance: ArchiveRevisionProvenance::Restore,
-            rendered_text: restored,
-            restored_revision: Some(restore_revision),
+            provenance: ArchiveRevisionProvenance::Navigate,
+            rendered_text: timeline.steps[target].rendered_text.clone(),
+            restored_revision: Some(target_revision),
             detail: None,
         })
     })
