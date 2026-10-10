@@ -320,7 +320,10 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 The detail chrome (`AgentChatView.swift`) carries one title — the current
 thread's — and nothing that competes with it. The native titlebar keeps the
 window title, dragging and the close / minimise / fullscreen controls; the
-content never repeats a window-level header.
+content never repeats a window-level header. The minimise button and ⌘M are
+enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
+miniaturising it, so App Exposé never shows an empty tile; the tray's
+"Open chat", the summon shortcut and the passive voice reveal bring it back.
 
 - **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
   followed by the turn count, the thread's model and the live turn status.

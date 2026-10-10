@@ -80,7 +80,8 @@ struct SettingsView: View {
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
   /// Mission Control, App Exposé and the Window menu, and never minimises
-  /// (`DockPresence`).
+  /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
+  /// keeps no minimise control rather than one that could leave an Exposé tile.
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
     window?.titleVisibility = .hidden

@@ -966,7 +966,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
     let hosting = NSHostingController(rootView: root)
-    let window = NSWindow(contentViewController: hosting)
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(contentViewController: hosting)
     window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
