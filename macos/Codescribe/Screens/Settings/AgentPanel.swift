@@ -47,7 +47,7 @@ struct LLMLanesSection: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: 12) {
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
       }
@@ -109,7 +109,7 @@ private struct LLMLaneEditor: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6) {
       VStack(alignment: .leading, spacing: 2) {
         Text(lane.title)
           .font(CSFont.ui(14.5, .bold))
@@ -125,7 +125,7 @@ private struct LLMLaneEditor: View {
 
       // The settings keys behind these rows live under "Active configuration
       // details" on the tab; the card itself stays free of identifiers.
-      SettingsControlRow(title: String(localized: "Provider")) {
+      SettingsControlRow(title: String(localized: "Provider"), inset: 10) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
             Button {
@@ -155,7 +155,7 @@ private struct LLMLaneEditor: View {
 
       // The source caption sits under the row title: a third line under the
       // field made the card tall for one short word.
-      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption) {
+      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10) {
         VStack(alignment: .trailing, spacing: 8) {
           // Discovery state ("discovering…", cached, failed) is the footer line below.
           if laneModel.usesDiscoveredPicker {
@@ -230,13 +230,10 @@ private struct LLMLaneEditor: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           Spacer(minLength: 0)
-          Button("Refresh") {
-            model.refreshModelDiscovery(providerId: laneModel.providerId)
-          }
-          .font(CSFont.ui(11, .semibold))
-          .foregroundStyle(Color.secondary)
-          .csFocusRing()
-          .accessibilityLabel("Refresh \(lane.title) models")
+          SettingsRefreshButton(
+            busy: laneModel.discovery.status == "loading",
+            axLabel: "Refresh \(lane.title) models"
+          ) { model.refreshModelDiscovery(providerId: laneModel.providerId) }
         }
         // The provider's own words, on request only; the main line stays plain.
         if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {

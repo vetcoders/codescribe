@@ -716,19 +716,10 @@ struct AudioPanel: View {
       // the card below keeps only the choice and the live input (Founder brief,
       // round 6, 2026-10-10).
       SettingsSectionHeaderRow(String(localized: "Microphone")) {
-        Button {
-          model.refreshAudioInput()
-        } label: {
-          HStack(spacing: 4) {
-            CSIconView(icon: .refresh, size: 10, weight: .semibold)
-            Text("Refresh")
-          }
-        }
-        .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
-        .accessibilityLabel("Refresh audio input devices")
-        .accessibilityHint("Re-reads the microphone list; readiness is checked below")
+        SettingsRefreshButton(
+          axLabel: "Refresh audio input devices",
+          axHint: "Re-reads the microphone list; readiness is checked below"
+        ) { model.refreshAudioInput() }
       }
       .padding(.top, CSSpace.section)
       .id(SettingsAnchor.audioInput)

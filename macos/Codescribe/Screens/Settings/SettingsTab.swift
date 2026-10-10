@@ -89,8 +89,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes:
       String(
-        localized:
-          "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers."
+        localized: "Choose the Agent and formatting models. Accounts and keys live under Providers."
       )
     case .agentPrompts:
       String(

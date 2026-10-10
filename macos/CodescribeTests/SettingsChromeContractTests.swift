@@ -389,7 +389,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(lanes.contains("@State private var detailsExpanded = false"))
     XCTAssertTrue(lanes.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
     XCTAssertTrue(lanes.contains("value: \"\\(lane.providerKey) · \\(lane.modelKey)\""))
-    let autoSend = try XCTUnwrap(lanes.range(of: "Automatic send to the Agent"))
+    let autoSend = try XCTUnwrap(lanes.range(of: "Auto-send to the Agent"))
     let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
     XCTAssertLessThan(autoSend.lowerBound, details.lowerBound)
     XCTAssertFalse(lanes.contains("Resolved runtime truth"))
@@ -403,13 +403,12 @@ final class SettingsChromeContractTests: XCTestCase {
     let expected: [String: String] = [
       "AI models": "Modele AI",
       "Model configuration.": "Konfiguracja modeli",
-      "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers.":
-        "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy.",
+      "Choose the Agent and formatting models. Accounts and keys live under Providers.":
+        "Wybierz modele Agenta i formatowania. Konta i klucze ustawisz w Dostawcach.",
       "Assistive": "Agent",
       "Formatting": "Formatowanie",
-      "The model behind the Agent and the voice assistant":
-        "Model obsługujący Agenta i asystenta głosowego",
-      "Transcript cleanup and formatting": "Poprawianie i formatowanie transkrypcji",
+      "The Agent and voice assistant model": "Model Agenta i asystenta głosowego",
+      "The transcript cleanup model": "Model poprawiania transkrypcji",
       "Connected account": "Połączone konto",
       "Stored API key": "Zapisany klucz API",
       "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
@@ -419,9 +418,11 @@ final class SettingsChromeContractTests: XCTestCase {
       "Reset model": "Przywróć model domyślny",
       "Active configuration details": "Szczegóły aktywnej konfiguracji",
       "%@ endpoint": "Adres API: %@",
-      "Automatic send to the Agent": "Automatyczne wysyłanie do Agenta",
-      "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it.":
-        "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji.",
+      "Auto-send to the Agent": "Wysyłaj automatycznie do Agenta",
+      "Sends the transcript after 5 seconds unless you start editing it.":
+        "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji.",
+      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.":
+        "Lista modeli niedostępna: zapisany klucz API został odrzucony. Połączone konto nadal obsługuje żądania. Sprawdź klucz w sekcji Dostawcy.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)

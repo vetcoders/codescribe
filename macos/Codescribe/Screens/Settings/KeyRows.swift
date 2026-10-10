@@ -95,6 +95,40 @@ struct SettingsChipButton<Label: View>: View {
   }
 }
 
+// MARK: - Refresh button (the one Settings-wide standard)
+
+/// The one refresh control in Settings (Founder brief, round 8, 2026-10-10):
+/// a small secondary chip — refresh glyph, short "Refresh" label — with the
+/// same font, padding, colours and states everywhere. `busy` swaps the glyph
+/// for a spinner and disables the chip; a section with its own progress line
+/// passes `enabled` instead. The accessibility label says what exactly is
+/// refreshed, because the visible label deliberately does not.
+struct SettingsRefreshButton: View {
+  var title: LocalizedStringKey = "Refresh"
+  var busy = false
+  var enabled = true
+  let axLabel: String
+  var axHint: String?
+  let action: () -> Void
+
+  var body: some View {
+    SettingsChipButton(enabled: enabled && !busy, action: action) {
+      HStack(spacing: 5) {
+        if busy {
+          ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 12, height: 12)
+        } else {
+          CSIconView(icon: .refresh, size: 10, weight: .semibold)
+        }
+        Text(title).font(CSFont.ui(11.5, .semibold))
+      }
+      .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
+      .frame(height: 14)
+    }
+    .accessibilityLabel(axLabel)
+    .accessibilityHint(axHint ?? "")
+  }
+}
+
 extension SettingsChipButton where Label == Text {
   /// Text-only chip.
   init(

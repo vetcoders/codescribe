@@ -131,8 +131,11 @@ struct CreatorPanel: View {
   private var agentBridgeSection: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
       SettingsSectionHeaderRow(String(localized: "Connect your coding agent")) {
-        Button("Refresh status", action: model.refreshCreatorAgentBridge)
-          .accessibilityIdentifier("settings-agent-bridge-refresh")
+        SettingsRefreshButton(
+          axLabel: "Refresh coding agent skill status",
+          action: model.refreshCreatorAgentBridge
+        )
+        .accessibilityIdentifier("settings-agent-bridge-refresh")
       }
       // One shared card: the heading, statuses and buttons already say what
       // this section does, so the old caption sentence is gone (Founder brief,
@@ -366,6 +369,8 @@ struct SettingsControlRow<Control: View>: View {
   let title: String
   /// Omitted when the title already carries the whole meaning of the row.
   var subtitle: String? = nil
+  /// Card inset; dense hosts (the AI-model lane editors) pass a tighter one.
+  var inset: CGFloat = CSSpace.card
   @ViewBuilder var control: () -> Control
 
   var body: some View {
@@ -383,7 +388,7 @@ struct SettingsControlRow<Control: View>: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: inset)
   }
 }
 
