@@ -32,15 +32,27 @@ final class AboutPanelPresentationTests: XCTestCase {
 
   // MARK: - Launch repair receipt
 
-  func testReviewKeysBecomeAUserSentenceAndStayInTheDetails() {
+  func testAnUnreadEnvKeyIsNamedWithItsEffectAndWhatToDo() throws {
     let raw = "Config: 0 repairs at launch; env key(s) need review: CODESCRIBE_STT_ENGINE"
     let notice = ConfigRepairNotice(raw: raw)
 
     XCTAssertEqual(notice.kind, .keysNeedReview)
+    XCTAssertTrue(notice.isWarning)
     XCTAssertEqual(notice.reviewKeys, ["CODESCRIBE_STT_ENGINE"])
+    XCTAssertEqual(notice.title, "The configuration needs a review")
+    XCTAssertEqual(notice.subtitle, "See which setting is out of date")
+    XCTAssertNil(notice.outcomeLine, "the key items carry the explanation")
+
+    let items = notice.reviewItems(envFile: "~/.codescribe/.env")
+    let item = try XCTUnwrap(items.first)
+    XCTAssertEqual(items.count, 1)
+    XCTAssertEqual(item.key, "CODESCRIBE_STT_ENGINE")
     XCTAssertEqual(
-      notice.headline, "An outdated configuration setting was detected. It needs a review.")
-    XCTAssertEqual(notice.reviewKeysLine, "Setting to review: CODESCRIBE_STT_ENGINE")
+      item.impact, "Codescribe does not read this entry in ~/.codescribe/.env, so it has no effect.")
+    XCTAssertEqual(
+      item.action,
+      "No action is required. To clear this notice, delete or correct the line, then restart Codescribe."
+    )
     XCTAssertEqual(notice.raw, raw, "the original line survives for diagnostics")
   }
 
@@ -52,41 +64,52 @@ final class AboutPanelPresentationTests: XCTestCase {
 
     XCTAssertEqual(notice.kind, .keysNeedReview)
     XCTAssertEqual(notice.reviewKeys, ["A_KEY", "B_KEY"])
-    XCTAssertEqual(notice.reviewKeysLine, "Setting to review: A_KEY, B_KEY")
+    XCTAssertEqual(notice.subtitle, "See which settings are out of date")
+    XCTAssertEqual(notice.reviewItems(envFile: ".env").map(\.key), ["A_KEY", "B_KEY"])
+  }
+
+  func testAFormattingLevelOverrideSaysWhichValueWinsAndHowToDropIt() throws {
+    let notice = ConfigRepairNotice(
+      raw: "Config: 0 repairs at launch; env key(s) need review: FORMATTING_LEVEL")
+    let item = try XCTUnwrap(notice.reviewItems(envFile: "~/.codescribe/.env").first)
+
+    XCTAssertEqual(item.key, ConfigRepairNotice.formattingLevelKey)
+    XCTAssertEqual(
+      item.impact,
+      "A formatting level set outside the app differs from the one chosen in Settings. The value from outside the app is in effect."
+    )
+    XCTAssertEqual(
+      item.action,
+      "To use the level from Settings, remove FORMATTING_LEVEL from the launch environment or from ~/.codescribe/.env, then restart Codescribe."
+    )
   }
 
   func testRepairWithoutReviewKeysAndRefusalsHaveTheirOwnSentences() {
     let repaired = ConfigRepairNotice(raw: "Config repaired at launch: 3 changes")
     XCTAssertEqual(repaired.kind, .repaired)
-    XCTAssertNil(repaired.reviewKeysLine)
-    XCTAssertEqual(repaired.headline, "The configuration was repaired when Codescribe started.")
+    XCTAssertFalse(repaired.isWarning, "a completed repair informs, it does not warn")
+    XCTAssertTrue(repaired.reviewItems(envFile: ".env").isEmpty)
+    XCTAssertEqual(repaired.title, "The configuration was repaired at startup")
+    XCTAssertEqual(repaired.subtitle, "No action needed. See what changed")
+    XCTAssertNotNil(repaired.outcomeLine)
 
-    let refused = ConfigRepairNotice(raw: "ConfigUnrepairable: unknown schema version 9")
+    let refused = ConfigRepairNotice(
+      raw: "Config needs attention: unknown schema version 9 (/tmp/settings.json)")
     XCTAssertEqual(refused.kind, .unresolved)
+    XCTAssertTrue(refused.isWarning)
+    XCTAssertEqual(refused.title, "The configuration could not be fully checked")
+    XCTAssertEqual(refused.subtitle, "See what to correct")
     XCTAssertEqual(
-      refused.headline, "The configuration could not be fully checked. See the details.")
+      refused.outcomeLine,
+      "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe."
+    )
   }
 
   // MARK: - First dictation confirmation
 
-  func testProductionPingIsNotLiveInThisBuild() {
+  func testProductionPingIsNotLiveSoThePanelHidesItsSwitch() {
     // `ActivationPingConfiguration.production` ships without an analytics
-    // domain, so the switch must say that nothing is sent.
+    // domain; About shows the opt-in only when the build can send it.
     XCTAssertFalse(ActivationPingConfiguration.production.isEnabled)
-    let availability = ActivationPingAvailability(optIn: true)
-    XCTAssertFalse(availability.serviceEnabled)
-    XCTAssertEqual(
-      availability.unavailableLine,
-      "Not available in this version: nothing is sent, whatever the switch says.")
-  }
-
-  func testStateLineSeparatesTheShippedDefaultFromTheCurrentChoice() {
-    XCTAssertEqual(
-      ActivationPingAvailability(serviceEnabled: true, optIn: true).stateLine,
-      "Default: off · Now: on")
-    XCTAssertEqual(
-      ActivationPingAvailability(serviceEnabled: true, optIn: false).stateLine,
-      "Default: off · Now: off")
-    XCTAssertNil(ActivationPingAvailability(serviceEnabled: true, optIn: true).unavailableLine)
   }
 }

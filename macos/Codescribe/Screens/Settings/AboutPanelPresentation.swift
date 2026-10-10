@@ -1,9 +1,9 @@
 import Foundation
 
 // Pure presenters for the About panel. They turn runtime facts (the build
-// receipt, the launch repair summary, the activation-ping contract) into
-// interface copy without touching the facts themselves: the raw values stay
-// available for diagnostics next to the readable sentence.
+// receipt and the launch repair summary) into interface copy without touching
+// the facts themselves: the raw values stay available for diagnostics next to
+// the readable sentence.
 
 /// The build timestamp as the interface language reads it. `CSBuiltAt` is an
 /// ISO 8601 instant written by the build script; anything else is shown raw.
@@ -20,12 +20,14 @@ enum BuildDatePresentation {
 
 /// What the launch repair receipt means to a person. The Rust summary is one
 /// line of operator prose ("Config: 0 repairs at launch; env key(s) need
-/// review: CODESCRIBE_STT_ENGINE"); the panel shows a sentence instead and
-/// keeps the original line and the key names in its details.
+/// review: CODESCRIBE_STT_ENGINE"); the panel shows what is out of date, what
+/// it changes and whether anything needs doing, and keeps the original line
+/// for diagnostics.
 struct ConfigRepairNotice: Equatable {
   enum Kind: Equatable {
-    /// One or more `.env` keys are unknown or shadow a setting; nothing was
-    /// changed for them and nothing will be changed here.
+    /// One or more `.env` keys are unknown or retired, or an override differs
+    /// from a saved setting; nothing was changed for them and nothing will be
+    /// changed here.
     case keysNeedReview
     /// Fields were reset or files recreated at launch; no key needs review.
     case repaired
@@ -33,11 +35,23 @@ struct ConfigRepairNotice: Equatable {
     case unresolved
   }
 
+  /// One key named by the receipt: what it does now and what, if anything,
+  /// to do about it. The receipt carries key names only, never their values.
+  struct ReviewItem: Equatable, Identifiable {
+    let key: String
+    let impact: String
+    let action: String
+    var id: String { key }
+  }
+
   let raw: String
   let kind: Kind
   let reviewKeys: [String]
 
   private static let reviewMarker = "need review: "
+  /// The only key the loader reports for a precedence conflict rather than
+  /// for an unread `.env` entry (`core/config/loader.rs`, `docs/CONFIG.md`).
+  static let formattingLevelKey = "FORMATTING_LEVEL"
 
   init(raw: String) {
     self.raw = raw
@@ -60,63 +74,93 @@ struct ConfigRepairNotice: Equatable {
     }
   }
 
-  /// The sentence shown in place of the raw line.
-  var headline: String {
+  /// Whether the row is a warning. A completed repair only informs.
+  var isWarning: Bool { kind != .repaired }
+
+  /// The collapsed row: what happened.
+  var title: String {
     switch kind {
     case .keysNeedReview:
       return String(
-        localized: "An outdated configuration setting was detected. It needs a review.",
-        comment: "About panel: a .env key is unknown or shadows a setting; nothing is changed automatically"
-      )
+        localized: "The configuration needs a review",
+        comment: "About panel: a .env key is unknown, retired or overrides a setting")
     case .repaired:
       return String(
-        localized: "The configuration was repaired when Codescribe started.",
+        localized: "The configuration was repaired at startup",
         comment: "About panel: fields were reset or files recreated at launch")
     case .unresolved:
       return String(
-        localized: "The configuration could not be fully checked. See the details.",
+        localized: "The configuration could not be fully checked",
         comment: "About panel: the launch repair receipt is a refusal or unknown")
     }
   }
 
-  /// The key names, for the details block. Empty when no key is involved.
-  var reviewKeysLine: String? {
-    guard !reviewKeys.isEmpty else { return nil }
-    return String(
-      localized: "Setting to review: \(reviewKeys.joined(separator: ", "))",
-      comment: "About panel details: the .env key names needing review, comma-separated")
-  }
-}
-
-/// Whether the first-dictation confirmation can be sent in this build, and the
-/// sentence that says so. The switch stays an opt-in preference, but a build
-/// without an analytics domain never sends anything, whatever the switch says.
-struct ActivationPingAvailability: Equatable {
-  let serviceEnabled: Bool
-  let optIn: Bool
-
-  init(serviceEnabled: Bool = ActivationPingConfiguration.production.isEnabled, optIn: Bool) {
-    self.serviceEnabled = serviceEnabled
-    self.optIn = optIn
-  }
-
-  /// "Default: off · Now: on" — the stored choice next to the shipped default.
-  var stateLine: String {
-    let current =
-      optIn
-      ? String(localized: "on", comment: "Switch state, lowercase, in a sentence")
-      : String(localized: "off", comment: "Switch state, lowercase, in a sentence")
-    return String(
-      localized: "Default: off · Now: \(current)",
-      comment: "About panel: shipped default and the current switch state")
+  /// The collapsed row: what opening it shows.
+  var subtitle: String {
+    switch kind {
+    case .keysNeedReview:
+      return reviewKeys.count == 1
+        ? String(
+          localized: "See which setting is out of date",
+          comment: "About panel: opens the one .env key needing review")
+        : String(
+          localized: "See which settings are out of date",
+          comment: "About panel: opens the several .env keys needing review")
+    case .repaired:
+      return String(
+        localized: "No action needed. See what changed",
+        comment: "About panel: opens the launch repair record")
+    case .unresolved:
+      return String(
+        localized: "See what to correct",
+        comment: "About panel: opens the refusal with the file to correct")
+    }
   }
 
-  /// Present only while the service is not live in this build.
-  var unavailableLine: String? {
-    guard !serviceEnabled else { return nil }
-    return String(
-      localized:
-        "Not available in this version: nothing is sent, whatever the switch says.",
-      comment: "About panel: the analytics domain is empty in this build")
+  /// One entry per key, worded for what the key does in this build.
+  /// `envFile` is the display path of the optional `.env` file.
+  func reviewItems(envFile: String) -> [ReviewItem] {
+    reviewKeys.map { key in
+      if key == Self.formattingLevelKey {
+        return ReviewItem(
+          key: key,
+          impact: String(
+            localized:
+              "A formatting level set outside the app differs from the one chosen in Settings. The value from outside the app is in effect.",
+            comment: "About panel: FORMATTING_LEVEL override differs from the saved level"),
+          action: String(
+            localized:
+              "To use the level from Settings, remove \(key) from the launch environment or from \(envFile), then restart Codescribe.",
+            comment:
+              "About panel: how to drop the override; the key and the file path stay verbatim"))
+      }
+      return ReviewItem(
+        key: key,
+        impact: String(
+          localized: "Codescribe does not read this entry in \(envFile), so it has no effect.",
+          comment: "About panel: an unknown or retired .env key; the file path stays verbatim"),
+        action: String(
+          localized:
+            "No action is required. To clear this notice, delete or correct the line, then restart Codescribe.",
+          comment: "About panel: what to do about an unread .env key"))
+    }
+  }
+
+  /// The sentence under the record when no key is involved.
+  var outcomeLine: String? {
+    switch kind {
+    case .keysNeedReview:
+      return nil
+    case .repaired:
+      return String(
+        localized:
+          "Codescribe corrected settings.json when it started. The record below names the number of changes and any backup it kept.",
+        comment: "About panel: a completed launch repair; settings.json stays verbatim")
+    case .unresolved:
+      return String(
+        localized:
+          "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe.",
+        comment: "About panel: a refused launch repair")
+    }
   }
 }

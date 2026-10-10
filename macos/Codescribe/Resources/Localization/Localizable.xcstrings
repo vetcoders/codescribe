@@ -1,227 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Word pins and PCM slots" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Word pins and PCM slots"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Piny słów i sloty PCM"
-          }
-        }
-      }
-    },
-    "Latest recorded slots" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Latest recorded slots"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Najnowsze zapisane sloty"
-          }
-        }
-      }
-    },
-    "Word pins could not be read. No timing was inferred." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Word pins could not be read. No timing was inferred."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się odczytać pinów słów. Nie odtworzono czasów na podstawie tekstu."
-          }
-        }
-      }
-    },
-    "No recorded word slots for this take." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No recorded word slots for this take."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brak zapisanych slotów słów dla tego nagrania."
-          }
-        }
-      }
-    },
-    "Select a pin to inspect its PCM range and source." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Select a pin to inspect its PCM range and source."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz pin, aby zobaczyć jego zakres PCM i źródło."
-          }
-        }
-      }
-    },
-    "Recorded adjudication" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Recorded adjudication"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zapisane rozstrzygnięcie"
-          }
-        }
-      }
-    },
-    "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Paski pokazują pozycję pinu w jego wystąpieniu. Czas slotu nie potwierdza dostarczenia. Brakujące dane Silero lub CTC nie są rekonstruowane."
-          }
-        }
-      }
-    },
-    "PCM range" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "PCM range"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zakres PCM"
-          }
-        }
-      }
-    },
-    "Capture epoch" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Capture epoch"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Epoka przechwytywania"
-          }
-        }
-      }
-    },
-    "Observation" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Observation"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obserwacja"
-          }
-        }
-      }
-    },
-    "Occurrence" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Occurrence"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wystąpienie"
-          }
-        }
-      }
-    },
-    "Could not save pasted image. Try pasting again." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Could not save pasted image. Try pasting again."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie udało się zapisać wklejonego obrazu. Spróbuj wkleić ponownie."
-          }
-        }
-      }
-    },
-  "Some agents may have received this message. Check read receipts before sending again.": {
-    "extractionState": "manual",
-    "localizations": {
-      "en": {
-        "stringUnit": {
-          "state": "translated",
-          "value": "Some agents may have received this message. Check read receipts before sending again."
-        }
-      },
-      "pl": {
-        "stringUnit": {
-          "state": "translated",
-          "value": "Niektórzy agenci mogli już otrzymać tę wiadomość. Przed ponownym wysłaniem sprawdź potwierdzenia odczytu."
-        }
-      }
-    }
-  },
     "" : {
       "shouldTranslate" : false
     },
@@ -1902,6 +1681,17 @@
         }
       }
     },
+    "A formatting level set outside the app differs from the one chosen in Settings. The value from outside the app is in effect." : {
+      "comment" : "About panel: FORMATTING_LEVEL override differs from the saved level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poziom formatowania ustawiony poza aplikacją różni się od wybranego w Ustawieniach. Obowiązuje wartość spoza aplikacji."
+          }
+        }
+      }
+    },
     "A longer gap in speech may be treated as a sentence boundary during automatic text formatting." : {
       "localizations" : {
         "pl" : {
@@ -2278,13 +2068,13 @@
         }
       }
     },
-    "Add markers to transcripts" : {
+    "Add markers to text" : {
       "comment" : "About panel: switch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodawaj znaczniki do transkrypcji"
+            "state" : "needs_review",
+            "value" : "Dodawaj znaczniki do tekstu"
           }
         }
       }
@@ -2988,17 +2778,6 @@
         }
       }
     },
-    "An outdated configuration setting was detected. It needs a review." : {
-      "comment" : "About panel: a .env key is unknown or shadows a setting; nothing is changed automatically",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykryto przestarzałe ustawienie konfiguracji. Wymaga sprawdzenia."
-          }
-        }
-      }
-    },
     "Anchor" : {
       "comment" : "Overlay placement menu: header above the screen positions the overlay snaps to",
       "localizations" : {
@@ -3512,6 +3291,23 @@
         }
       }
     },
+    "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paski pokazują pozycję pinu w jego wystąpieniu. Czas slotu nie potwierdza dostarczenia. Brakujące dane Silero lub CTC nie są rekonstruowane."
+          }
+        }
+      }
+    },
     "Base instructions for the Agent acting on a dictated request. Voice chat uses its own instructions." : {
       "localizations" : {
         "pl" : {
@@ -3629,13 +3425,13 @@
         }
       }
     },
-    "Build timestamp: %@" : {
-      "comment" : "About panel details: the raw CSBuiltAt value",
+    "Build %@" : {
+      "comment" : "About panel: the build number under the version",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Znacznik czasu kompilacji: %@"
+            "state" : "needs_review",
+            "value" : "Build %@"
           }
         }
       }
@@ -3872,6 +3668,23 @@
         }
       }
     },
+    "Capture epoch" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capture epoch"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Epoka przechwytywania"
+          }
+        }
+      }
+    },
     "Capture has ended and the engine is transcribing the take." : {
       "localizations" : {
         "pl" : {
@@ -4033,17 +3846,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź model"
-          }
-        }
-      }
-    },
-    "Check the Codescribe version, where your data lives and the privacy settings." : {
-      "comment" : "About panel blurb",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdź wersję Codescribe, lokalizację danych i ustawienia prywatności."
           }
         }
       }
@@ -4532,6 +4334,17 @@
         }
       }
     },
+    "Codescribe corrected settings.json when it started. The record below names the number of changes and any backup it kept." : {
+      "comment" : "About panel: a completed launch repair; settings.json stays verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Codescribe poprawił plik settings.json przy uruchomieniu. Zapis poniżej podaje liczbę zmian i ewentualną kopię zapasową."
+          }
+        }
+      }
+    },
     "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it." : {
       "comment" : "Language restart unavailable; saved preference remains valid",
       "localizations" : {
@@ -4554,13 +4367,13 @@
         }
       }
     },
-    "Codescribe documentation" : {
-      "comment" : "About panel: docs link",
+    "Codescribe does not read this entry in %@, so it has no effect." : {
+      "comment" : "About panel: an unknown or retired .env key; the file path stays verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dokumentacja Codescribe"
+            "state" : "needs_review",
+            "value" : "Codescribe nie odczytuje tego wpisu z pliku %@, więc nie ma on żadnego wpływu."
           }
         }
       }
@@ -4571,6 +4384,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
+          }
+        }
+      }
+    },
+    "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe." : {
+      "comment" : "About panel: a refused launch repair",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Codescribe nie zmienił pliku. Popraw plik wskazany w zapisie poniżej i uruchom Codescribe ponownie."
           }
         }
       }
@@ -4679,6 +4503,17 @@
         }
       }
     },
+    "Codescribe version, local data and privacy." : {
+      "comment" : "About panel blurb",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wersja Codescribe, lokalne dane i prywatność."
+          }
+        }
+      }
+    },
     "Codescribe will not overwrite %@: %@" : {
       "comment" : "First placeholder is a file path, second a technical diagnostic",
       "localizations" : {
@@ -4771,7 +4606,7 @@
       }
     },
     "Comfort" : {
-      "comment" : "Paste policy: paste wherever the caret is",
+      "comment" : "Paste policy: verified editable destinations",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5489,6 +5324,23 @@
         }
       }
     },
+    "Could not save pasted image. Try pasting again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save pasted image. Try pasting again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać wklejonego obrazu. Spróbuj wkleić ponownie."
+          }
+        }
+      }
+    },
     "Could not save the correction" : {
       "localizations" : {
         "pl" : {
@@ -5981,16 +5833,6 @@
         }
       }
     },
-    "Danger zone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Operacje wymagające ostrożności"
-          }
-        }
-      }
-    },
     "Data footprint" : {
       "localizations" : {
         "pl" : {
@@ -6008,17 +5850,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Domyślne miejsce: ~/.codescribe/models"
-          }
-        }
-      }
-    },
-    "Default: off · Now: %@" : {
-      "comment" : "About panel: shipped default and the current switch state",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domyślnie: wyłączone · Teraz: %@"
           }
         }
       }
@@ -6375,6 +6206,17 @@
         }
       }
     },
+    "Documentation" : {
+      "comment" : "About panel: docs link",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dokumentacja"
+          }
+        }
+      }
+    },
     "Domain vocabulary and Dictionary entries improve speech recognition." : {
       "comment" : "Dictionary is the name of the Voice Lab settings section",
       "localizations" : {
@@ -6561,6 +6403,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edycja zapisana w tej transkrypcji. Oryginalny tekst jest zachowany."
+          }
+        }
+      }
+    },
+    "Edit template and preview" : {
+      "comment" : "About panel: disclosure with the marker template editor",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Edytuj szablon i podgląd"
           }
         }
       }
@@ -6759,6 +6612,17 @@
         }
       }
     },
+    "Expand" : {
+      "comment" : "Opens a closed section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Rozwiń"
+          }
+        }
+      }
+    },
     "Expand sidebar (⌃⌘S)" : {
       "localizations" : {
         "pl" : {
@@ -6785,16 +6649,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozwiń transkrypt"
-          }
-        }
-      }
-    },
-    "Expand widget" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozwiń widget"
           }
         }
       }
@@ -7704,6 +7558,17 @@
         }
       }
     },
+    "Information and documentation" : {
+      "comment" : "About panel section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Informacje i dokumentacja"
+          }
+        }
+      }
+    },
     "Input Monitoring" : {
       "localizations" : {
         "pl" : {
@@ -8117,12 +7982,40 @@
         }
       }
     },
+    "Latest recorded slots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latest recorded slots"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najnowsze zapisane sloty"
+          }
+        }
+      }
+    },
     "Launch command" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Polecenie uruchomieniowe"
+          }
+        }
+      }
+    },
+    "Launch record" : {
+      "comment" : "About panel: the raw repair line",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapis z uruchomienia"
           }
         }
       }
@@ -8218,16 +8111,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ledger: %@ s do weryfikacji · zakresy: %lld"
-          }
-        }
-      }
-    },
-    "Legal & docs" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Informacje prawne i dokumentacja"
           }
         }
       }
@@ -8342,6 +8225,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktualny stan uprawnień macOS. Kliknij brakujące uprawnienie, aby je przyznać."
+          }
+        }
+      }
+    },
+    "Live preview" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podgląd na żywo"
           }
         }
       }
@@ -8639,8 +8532,19 @@
         }
       }
     },
+    "Mark text delivered to other apps" : {
+      "comment" : "About panel: switch subtitle; the template decides the marker",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oznacz tekst przekazywany do innych aplikacji"
+          }
+        }
+      }
+    },
     "Max" : {
-      "comment" : "Formatting level: maximum prose polish\nPrompt file: maximum prose polish",
+      "comment" : "Formatting level: maximum prose polish",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9495,6 +9399,28 @@
         }
       }
     },
+    "No action is required. To clear this notice, delete or correct the line, then restart Codescribe." : {
+      "comment" : "About panel: what to do about an unread .env key",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie musisz nic robić. Aby usunąć to ostrzeżenie, usuń lub popraw ten wiersz i uruchom Codescribe ponownie."
+          }
+        }
+      }
+    },
+    "No action needed. See what changed" : {
+      "comment" : "About panel: opens the launch repair record",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie musisz nic robić. Zobacz, co się zmieniło"
+          }
+        }
+      }
+    },
     "No agents connected" : {
       "localizations" : {
         "pl" : {
@@ -9760,6 +9686,23 @@
         }
       }
     },
+    "No recorded word slots for this take." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No recorded word slots for this take."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak zapisanych slotów słów dla tego nagrania."
+          }
+        }
+      }
+    },
     "No result summary was stored for this call." : {
       "localizations" : {
         "pl" : {
@@ -9889,17 +9832,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze żadnych transkrypcji"
-          }
-        }
-      }
-    },
-    "Not available in this version: nothing is sent, whatever the switch says." : {
-      "comment" : "About panel: the analytics domain is empty in this build",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Niedostępne w tej wersji: nic nie jest wysyłane, niezależnie od położenia przełącznika."
           }
         }
       }
@@ -10158,6 +10090,40 @@
         }
       }
     },
+    "Observation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Observation"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obserwacja"
+          }
+        }
+      }
+    },
+    "Occurrence" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Occurrence"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wystąpienie"
+          }
+        }
+      }
+    },
     "Off" : {
       "comment" : "Toggle state",
       "localizations" : {
@@ -10355,16 +10321,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz folder z notatkami"
-          }
-        }
-      }
-    },
-    "Open overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz overlay"
           }
         }
       }
@@ -10597,6 +10553,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmień identyfikator klienta OAuth…"
+          }
+        }
+      }
+    },
+    "PCM range" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PCM range"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakres PCM"
           }
         }
       }
@@ -11629,6 +11602,23 @@
         }
       }
     },
+    "Recorded adjudication" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recorded adjudication"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisane rozstrzygnięcie"
+          }
+        }
+      }
+    },
     "Recording" : {
       "comment" : "Recording light state\nTray status: a recording is live",
       "localizations" : {
@@ -12380,6 +12370,17 @@
         }
       }
     },
+    "Reset Agent data" : {
+      "comment" : "About panel: the Agent reset",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Resetuj dane Agenta"
+          }
+        }
+      }
+    },
     "Reset Agent. Destructive action." : {
       "localizations" : {
         "pl" : {
@@ -12410,12 +12411,34 @@
         }
       }
     },
+    "Reset app data" : {
+      "comment" : "About panel: the full app-data reset",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Resetuj dane aplikacji"
+          }
+        }
+      }
+    },
     "Reset app data. Destructive action." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Reset danych aplikacji. Uwaga: operacja usuwa dane."
+          }
+        }
+      }
+    },
+    "Reset data" : {
+      "comment" : "About panel: section holding both resets",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Resetowanie danych"
           }
         }
       }
@@ -12676,16 +12699,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ — przetwarzanie zapisanego nagrania…"
-          }
-        }
-      }
-    },
-    "Running build" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uruchomiona wersja"
           }
         }
       }
@@ -13151,12 +13164,45 @@
         }
       }
     },
+    "See what to correct" : {
+      "comment" : "About panel: opens the refusal with the file to correct",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zobacz, co poprawić"
+          }
+        }
+      }
+    },
     "See when Codescribe processes audio on this Mac and when it may use cloud services." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź, kiedy Codescribe przetwarza dźwięk lokalnie, a kiedy może korzystać z usług chmurowych."
+          }
+        }
+      }
+    },
+    "See which setting is out of date" : {
+      "comment" : "About panel: opens the one .env key needing review",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zobacz, które ustawienie jest nieaktualne"
+          }
+        }
+      }
+    },
+    "See which settings are out of date" : {
+      "comment" : "About panel: opens the several .env keys needing review",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zobacz, które ustawienia są nieaktualne"
           }
         }
       }
@@ -13168,6 +13214,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przed instalacją wybierz Codex, Claude Code lub oba narzędzia."
+          }
+        }
+      }
+    },
+    "Select a pin to inspect its PCM range and source." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a pin to inspect its PCM range and source."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz pin, aby zobaczyć jego zakres PCM i źródło."
           }
         }
       }
@@ -13385,17 +13448,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania."
-          }
-        }
-      }
-    },
-    "Setting to review: %@" : {
-      "comment" : "About panel details: the .env key names needing review, comma-separated",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawienie do sprawdzenia: %@"
           }
         }
       }
@@ -13807,6 +13859,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szybkie"
+          }
+        }
+      }
+    },
+    "Some agents may have received this message. Check read receipts before sending again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some agents may have received this message. Check read receipts before sending again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niektórzy agenci mogli już otrzymać tę wiadomość. Przed ponownym wysłaniem sprawdź potwierdzenia odczytu."
           }
         }
       }
@@ -14852,17 +14921,6 @@
         }
       }
     },
-    "Template and preview" : {
-      "comment" : "About panel: disclosure with the marker template",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szablon i podgląd"
-          }
-        }
-      }
-    },
     "Template preview" : {
       "comment" : "About panel: label over the rendered template",
       "localizations" : {
@@ -14884,6 +14942,17 @@
         }
       }
     },
+    "Terms of Use" : {
+      "comment" : "About panel: legal link",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Warunki korzystania"
+          }
+        }
+      }
+    },
     "Terms of Use & EULA" : {
       "comment" : "About panel link to the public terms page; EULA = end-user licence agreement",
       "localizations" : {
@@ -14891,17 +14960,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Warunki użytkowania i EULA"
-          }
-        }
-      }
-    },
-    "Terms of Use and License" : {
-      "comment" : "About panel: legal link",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Warunki korzystania i licencja"
           }
         }
       }
@@ -15126,24 +15184,35 @@
         }
       }
     },
-    "The configuration could not be fully checked. See the details." : {
+    "The configuration could not be fully checked" : {
       "comment" : "About panel: the launch repair receipt is a refusal or unknown",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się w pełni sprawdzić konfiguracji. Zobacz szczegóły."
+            "state" : "needs_review",
+            "value" : "Nie udało się w pełni sprawdzić konfiguracji"
           }
         }
       }
     },
-    "The configuration was repaired when Codescribe started." : {
+    "The configuration needs a review" : {
+      "comment" : "About panel: a .env key is unknown, retired or overrides a setting",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Konfiguracja wymaga sprawdzenia"
+          }
+        }
+      }
+    },
+    "The configuration was repaired at startup" : {
       "comment" : "About panel: fields were reset or files recreated at launch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konfiguracja została naprawiona przy uruchomieniu Codescribe."
+            "state" : "needs_review",
+            "value" : "Konfiguracja została naprawiona przy uruchomieniu"
           }
         }
       }
@@ -15676,6 +15745,23 @@
         }
       }
     },
+    "To use the level from Settings, remove %@ from the launch environment or from %@, then restart Codescribe." : {
+      "comment" : "About panel: how to drop the override; the key and the file path stay verbatim",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "To use the level from Settings, remove %1$@ from the launch environment or from %2$@, then restart Codescribe."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Aby używać poziomu z Ustawień, usuń %@ ze środowiska uruchomieniowego lub z pliku %@ i uruchom Codescribe ponownie."
+          }
+        }
+      }
+    },
     "Today" : {
       "comment" : "Thread rail section",
       "localizations" : {
@@ -15864,6 +15950,17 @@
         }
       }
     },
+    "Transcript markers" : {
+      "comment" : "About panel section",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Znaczniki transkrypcji"
+          }
+        }
+      }
+    },
     "Transcript revision authority is unavailable" : {
       "localizations" : {
         "pl" : {
@@ -15880,17 +15977,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się potwierdzić spójności zmian w transkrypcji."
-          }
-        }
-      }
-    },
-    "Transcript source markers" : {
-      "comment" : "About panel section",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Znaczniki źródła transkrypcji"
           }
         }
       }
@@ -16410,16 +16496,6 @@
         }
       }
     },
-    "Version" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wersja"
-          }
-        }
-      }
-    },
     "Version %llu" : {
       "comment" : "Dictionary: correction revision",
       "localizations" : {
@@ -16427,6 +16503,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wersja %llu"
+          }
+        }
+      }
+    },
+    "Version details" : {
+      "comment" : "About panel: opens the commit and the build date",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Szczegóły wersji"
           }
         }
       }
@@ -16957,6 +17044,40 @@
         }
       }
     },
+    "Word pins and PCM slots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Word pins and PCM slots"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Piny słów i sloty PCM"
+          }
+        }
+      }
+    },
+    "Word pins could not be read. No timing was inferred." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Word pins could not be read. No timing was inferred."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odczytać pinów słów. Nie odtworzono czasów na podstawie tekstu."
+          }
+        }
+      }
+    },
     "Workspace" : {
       "comment" : "Settings tab: agent workspace roots",
       "localizations" : {
@@ -16964,17 +17085,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Obszar roboczy"
-          }
-        }
-      }
-    },
-    "Wrap delivered dictation in a marker that names its source" : {
-      "comment" : "About panel: switch subtitle",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otaczaj dostarczone dyktowanie znacznikiem z nazwą źródła"
           }
         }
       }
@@ -17588,7 +17698,7 @@
       }
     },
     "dictionary.rule.origin.correction" : {
-      "comment" : "Dictionary rule origin: learned from an accepted correction",
+      "comment" : "Dictionary: lexicon rule source",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -17606,7 +17716,7 @@
       }
     },
     "dictionary.rule.origin.import" : {
-      "comment" : "Dictionary rule origin: brought in from a dictionary file",
+      "comment" : "Dictionary: lexicon rule source",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -17624,7 +17734,7 @@
       }
     },
     "dictionary.rule.origin.manual" : {
-      "comment" : "Dictionary rule origin: typed by the user",
+      "comment" : "Dictionary: lexicon rule source",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -17642,7 +17752,7 @@
       }
     },
     "dictionary.rule.origin.unknown" : {
-      "comment" : "Dictionary rule origin: the row was stored before provenance was kept",
+      "comment" : "Dictionary: lexicon rule source",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -18332,16 +18442,6 @@
         }
       }
     },
-    "inserted" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wstawiono"
-          }
-        }
-      }
-    },
     "inserting…" : {
       "localizations" : {
         "pl" : {
@@ -18699,28 +18799,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
-          }
-        }
-      }
-    },
-    "off" : {
-      "comment" : "Switch state, lowercase, in a sentence",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wyłączone"
-          }
-        }
-      }
-    },
-    "on" : {
-      "comment" : "Switch state, lowercase, in a sentence",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "włączone"
           }
         }
       }
