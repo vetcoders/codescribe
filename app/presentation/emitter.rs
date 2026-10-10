@@ -501,6 +501,87 @@ impl DerivedTranscriptProjection {
     }
 }
 
+/// One accepted operation on a terminal take's document, as Undo/Redo and the
+/// versions picker see it. The step keeps the exact bytes it accepted, so
+/// navigation re-selects them and never reruns a transcription or formatter.
+/// Two attempts with equal bytes stay two steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentVersionStep {
+    /// `raw`, `light-plus`, `user-edit`, `retranscribe` or `formatter`.
+    pub provenance: String,
+    /// Formatter mode of a formatted step.
+    pub detail: Option<String>,
+    /// Receipt of the operation that produced this step.
+    pub receipt_id: String,
+    pub emitted_at: String,
+    /// Bytes the canvas shows, Copy/Insert deliver and Format reads while this
+    /// step is selected.
+    pub rendered_text: String,
+    /// Committed document the step stands on.
+    raw_text: String,
+    raw_human_revision: bool,
+    /// Accepted formatter result presented over `raw_text`, if any.
+    presentation: Option<DerivedTranscriptProjection>,
+}
+
+/// Linear operation history of one take and the user's position in it. The
+/// reducer revision counts receipts (navigation mints one too); the cursor is
+/// where the user stands. A new operation after Undo drops the redo branch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentTimeline {
+    steps: Vec<DocumentVersionStep>,
+    cursor: usize,
+}
+
+impl DocumentTimeline {
+    pub fn steps(&self) -> &[DocumentVersionStep] {
+        &self.steps
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn current(&self) -> Option<&DocumentVersionStep> {
+        self.steps.get(self.cursor)
+    }
+}
+
+/// What one whole-document request asks the reducer corridor to do.
+enum DocumentRequest {
+    Revise(UserRevisionIntent),
+    Navigate {
+        session_id: String,
+        source_revision: u64,
+        target: usize,
+    },
+}
+
+impl DocumentRequest {
+    fn session_id(&self) -> &str {
+        match self {
+            Self::Revise(intent) => &intent.session_id,
+            Self::Navigate { session_id, .. } => session_id,
+        }
+    }
+
+    fn source_revision(&self) -> u64 {
+        match self {
+            Self::Revise(intent) => intent.source_revision,
+            Self::Navigate {
+                source_revision, ..
+            } => *source_revision,
+        }
+    }
+
+    fn provenance(&self) -> DocumentRevisionProvenance {
+        match self {
+            Self::Revise(intent) => intent.provenance,
+            Self::Navigate { .. } => DocumentRevisionProvenance::Navigation,
+        }
+    }
+}
+
 /// Typed refusal reasons for a stale or unauthenticated revision request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserRevisionRefusal {
@@ -798,6 +879,8 @@ pub struct TranscriptReducer {
     /// the earliest memo instead of trusting [`Self::shaping_affected_from`].
     shaping_pause_bits: Option<u32>,
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
+    /// Accepted operations of the terminal document and the user's position.
+    document_timeline: DocumentTimeline,
     revision: u64,
     /// The worker publishes complete replacements. Revision orders snapshots,
     /// never the identity of the words they contain.
@@ -1653,6 +1736,161 @@ impl TranscriptReducer {
         ledger: &mut AcousticLedger,
         intent: &UserRevisionIntent,
     ) -> Result<TranscriptRevision, UserRevisionRefusal> {
+        if intent.provenance == DocumentRevisionProvenance::Navigation {
+            return Err(UserRevisionRefusal::LedgerRefusal(
+                "navigation_requires_accepted_step",
+            ));
+        }
+        self.apply_document_text(ledger, intent, None)
+    }
+
+    /// Re-select one accepted step: Undo, Redo or a version pick. Mints one
+    /// navigation receipt revision carrying the step's committed bytes; every
+    /// step stays and only the cursor moves. A formatted step also returns its
+    /// accepted presentation rebased onto that receipt, published after it.
+    pub fn navigate_document(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        session_id: &str,
+        source_revision: u64,
+        target: usize,
+    ) -> Result<(TranscriptRevision, Option<DerivedTranscriptProjection>), UserRevisionRefusal>
+    {
+        let step = self.document_timeline.steps.get(target).cloned().ok_or(
+            UserRevisionRefusal::LedgerRefusal("navigation_step_missing"),
+        )?;
+        if target == self.document_timeline.cursor {
+            return Err(UserRevisionRefusal::Unchanged);
+        }
+        let intent = UserRevisionIntent {
+            session_id: session_id.to_string(),
+            source_revision,
+            rendered_text: step.raw_text.clone(),
+            provenance: DocumentRevisionProvenance::Navigation,
+        };
+        let revision = self.apply_document_text(ledger, &intent, Some(target))?;
+        let presentation = step
+            .presentation
+            .as_ref()
+            .map(|accepted| self.rebase_presentation(accepted));
+        Ok((revision, presentation))
+    }
+
+    /// The linear operation history and the selected step.
+    pub fn document_timeline(&self) -> &DocumentTimeline {
+        &self.document_timeline
+    }
+
+    /// Bytes the canvas shows for the selected step: its accepted formatter
+    /// result when it is a formatted step, the committed document otherwise.
+    fn selected_text(&self) -> String {
+        self.document_timeline
+            .current()
+            .and_then(|step| step.presentation.as_ref())
+            .map_or_else(
+                || self.committed_rendered_text(),
+                |presentation| presentation.rendered_text.clone(),
+            )
+    }
+
+    fn snapshot_step(
+        &self,
+        provenance: &str,
+        detail: Option<String>,
+        receipt_id: String,
+        presentation: Option<DerivedTranscriptProjection>,
+    ) -> DocumentVersionStep {
+        let raw_text = self.committed_rendered_text();
+        DocumentVersionStep {
+            provenance: provenance.to_string(),
+            detail,
+            receipt_id,
+            emitted_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            rendered_text: presentation
+                .as_ref()
+                .map_or_else(|| raw_text.clone(), |shown| shown.rendered_text.clone()),
+            raw_text,
+            raw_human_revision: self.raw_human_revision,
+            presentation,
+        }
+    }
+
+    /// Record the document as accepted before its first explicit operation.
+    /// An empty document is no version: the first operation becomes step 0.
+    fn anchor_document_timeline(&mut self, session_id: &str) {
+        if !self.document_timeline.steps.is_empty()
+            || self.committed_rendered_text().trim().is_empty()
+        {
+            return;
+        }
+        let receipt = self.manual_document_revision_receipt.clone();
+        let provenance = match receipt.as_deref() {
+            Some(id) if id.starts_with("light-plus-") => "light-plus",
+            Some(id) if id.starts_with("retranscribe-") => "retranscribe",
+            Some(id) if id.starts_with("user-edit-") => "user-edit",
+            _ => "raw",
+        };
+        let receipt_id = receipt.unwrap_or_else(|| format!("raw-{session_id}-{}", self.revision));
+        let base = self.snapshot_step(provenance, None, receipt_id, None);
+        self.document_timeline = DocumentTimeline {
+            steps: vec![base],
+            cursor: 0,
+        };
+    }
+
+    /// Accept one operation after the cursor; an abandoned redo branch ends.
+    fn push_document_step(&mut self, step: DocumentVersionStep) {
+        let timeline = &mut self.document_timeline;
+        timeline.steps.truncate(timeline.cursor.saturating_add(1));
+        timeline.steps.push(step);
+        timeline.cursor = timeline.steps.len() - 1;
+    }
+
+    /// Light+ reshapes the committed document in place; it is not an
+    /// operation the user undoes, so the selected step follows its bytes.
+    fn refresh_selected_step_raw(&mut self) {
+        let raw_text = self.committed_rendered_text();
+        let raw_human_revision = self.raw_human_revision;
+        let cursor = self.document_timeline.cursor;
+        if let Some(step) = self.document_timeline.steps.get_mut(cursor) {
+            if step.presentation.is_none() {
+                step.rendered_text.clone_from(&raw_text);
+            }
+            step.raw_text = raw_text;
+            step.raw_human_revision = raw_human_revision;
+        }
+    }
+
+    /// Present an accepted formatter result again over the receipt navigation
+    /// just minted. Same bytes and mode, no provider call: only a new derived
+    /// identity, so the Bus binds the paint to the current committed revision.
+    fn rebase_presentation(
+        &mut self,
+        accepted: &DerivedTranscriptProjection,
+    ) -> DerivedTranscriptProjection {
+        let mut projection = accepted.clone();
+        projection.revision = (1_u64 << 63) | (self.derived_projections.len() as u64 + 1);
+        projection.source_raw_revision = self.revision;
+        projection.source_raw_text = self.committed_rendered_text();
+        projection.emitted_at =
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        projection.receipt_id = format!(
+            "formatter-navigation-{}-{}-{}",
+            projection.session_id, projection.source_raw_revision, projection.revision
+        );
+        projection.publication_digest = projection.digest();
+        self.derived_projections.push(projection.clone());
+        projection
+    }
+
+    /// The one text corridor for edits, retranscriptions, Light+ and
+    /// navigation. `navigation` names the step being re-selected.
+    fn apply_document_text(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        intent: &UserRevisionIntent,
+        navigation: Option<usize>,
+    ) -> Result<TranscriptRevision, UserRevisionRefusal> {
         if intent.provenance == DocumentRevisionProvenance::Formatter {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "formatter_requires_derived_projection",
@@ -1664,7 +1902,9 @@ impl TranscriptReducer {
         let source_occurrences = if self.document_by_occurrence.is_empty() {
             if !matches!(
                 intent.provenance,
-                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+                DocumentRevisionProvenance::UserEdit
+                    | DocumentRevisionProvenance::Retranscribe
+                    | DocumentRevisionProvenance::Navigation
             ) {
                 return Err(UserRevisionRefusal::NoCommittedDocument);
             }
@@ -1690,13 +1930,30 @@ impl TranscriptReducer {
         } else {
             self.authenticated_revision_occurrences(&intent.session_id, intent.source_revision)?
         };
-        if self.committed_rendered_text() == intent.rendered_text {
+        // An accepted retranscription is an attempt even when its bytes repeat,
+        // and navigation re-selects bytes it already accepted. An edit is
+        // compared with what the canvas shows, Light+ with the document.
+        let unchanged = match intent.provenance {
+            DocumentRevisionProvenance::UserEdit => self.selected_text() == intent.rendered_text,
+            DocumentRevisionProvenance::LightPlus => {
+                self.committed_rendered_text() == intent.rendered_text
+            }
+            _ => false,
+        };
+        if unchanged {
             return Err(UserRevisionRefusal::Unchanged);
         }
         let revision = self
             .revision
             .checked_add(1)
             .ok_or(UserRevisionRefusal::RevisionExhausted)?;
+        let accepted_operation = matches!(
+            intent.provenance,
+            DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+        );
+        if accepted_operation {
+            self.anchor_document_timeline(&intent.session_id);
+        }
         let receipt = ledger
             .record_manual_document_revision(
                 &intent.session_id,
@@ -1707,7 +1964,16 @@ impl TranscriptReducer {
                 intent.provenance,
             )
             .map_err(UserRevisionRefusal::LedgerRefusal)?;
-        self.raw_human_revision |= intent.provenance != DocumentRevisionProvenance::LightPlus;
+        let navigated_human_revision = navigation
+            .and_then(|target| self.document_timeline.steps.get(target))
+            .map(|step| step.raw_human_revision);
+        match navigated_human_revision {
+            Some(human) => self.raw_human_revision = human,
+            None => {
+                self.raw_human_revision |=
+                    intent.provenance != DocumentRevisionProvenance::LightPlus;
+            }
+        }
         self.manual_rendered_text = Some(intent.rendered_text.clone());
         if intent.provenance != DocumentRevisionProvenance::LightPlus {
             self.consultation_presentations.clear();
@@ -1719,6 +1985,19 @@ impl TranscriptReducer {
         // clears it. The cursor then starts at the first physical owner.
         self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
         self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
+        match navigation {
+            Some(target) => self.document_timeline.cursor = target,
+            None if accepted_operation => {
+                let step = self.snapshot_step(
+                    intent.provenance.as_str(),
+                    None,
+                    receipt.receipt_id.clone(),
+                    None,
+                );
+                self.push_document_step(step);
+            }
+            None => self.refresh_selected_step_raw(),
+        }
         Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
     }
 
@@ -2198,8 +2477,9 @@ impl TranscriptReducer {
         (shaped.source_label == entry.label).then_some(shaped.receipt_id.as_str())
     }
 
-    /// Return the exact current terminal document after authenticating the
-    /// session/revision compare-and-swap boundary. This is read-only formatter
+    /// Return the version the user has selected after authenticating the
+    /// session/revision compare-and-swap boundary: a formatted step's accepted
+    /// bytes, otherwise the committed document. This is read-only formatter
     /// input and cannot mint a ledger or Bus event.
     pub fn terminal_revision_source(
         &self,
@@ -2207,7 +2487,7 @@ impl TranscriptReducer {
         source_revision: u64,
     ) -> Result<String, UserRevisionRefusal> {
         self.authenticated_revision_occurrences(session_id, source_revision)?;
-        Ok(self.committed_rendered_text())
+        Ok(self.selected_text())
     }
 
     /// The single paid formatter pass a one-turn take is owed at terminal
@@ -3454,7 +3734,54 @@ impl PresentationEmitter {
             .as_ref()
             .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-        self.commit_document_revision(&mut ledger, intent)
+        self.commit_document_revision(&mut ledger, DocumentRequest::Revise(intent))
+    }
+
+    /// Undo, Redo or a version pick: re-select accepted step `target` of the
+    /// linear history. Saved bytes only; nothing is transcribed or formatted
+    /// again. The projection callback repaints, as for every revision.
+    pub fn navigate_document(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        target: usize,
+    ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        let ledger = self
+            .acoustic_ledger
+            .as_ref()
+            .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+        let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+        self.commit_document_revision(
+            &mut ledger,
+            DocumentRequest::Navigate {
+                session_id,
+                source_revision,
+                target,
+            },
+        )
+    }
+
+    /// Steps and cursor of the take the reducer holds, with the revision a
+    /// navigation must name. Another session reads as no history.
+    pub fn document_timeline(&self, session_id: &str) -> (u64, DocumentTimeline) {
+        let state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let owns_session = self
+            .transcript_bus
+            .as_ref()
+            .map(|bus| bus.session_id())
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.as_str())
+            })
+            .is_some_and(|session| session == session_id);
+        if !owns_session {
+            return (state.revision, DocumentTimeline::default());
+        }
+        (state.revision, state.document_timeline().clone())
     }
 
     /// Publish a settled Agent answer through the same reducer, Bus and ordered
@@ -3533,7 +3860,7 @@ impl PresentationEmitter {
     fn commit_document_revision(
         &self,
         ledger: &mut AcousticLedger,
-        intent: UserRevisionIntent,
+        request: DocumentRequest,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
         let mut state = self
             .session_state
@@ -3541,8 +3868,10 @@ impl PresentationEmitter {
             .unwrap_or_else(|error| error.into_inner());
         if state.document_by_occurrence.is_empty() {
             if !matches!(
-                intent.provenance,
-                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+                request.provenance(),
+                DocumentRevisionProvenance::UserEdit
+                    | DocumentRevisionProvenance::Retranscribe
+                    | DocumentRevisionProvenance::Navigation
             ) {
                 return Err(UserRevisionRefusal::NoCommittedDocument);
             }
@@ -3550,20 +3879,22 @@ impl PresentationEmitter {
                 .cursor_capture
                 .get()
                 .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
-            if session != &intent.session_id {
+            if session != request.session_id() {
                 return Err(UserRevisionRefusal::SessionMismatch);
             }
-            if state.revision != intent.source_revision {
+            if state.revision != request.source_revision() {
                 return Err(UserRevisionRefusal::StaleRevision {
                     expected: state.revision,
-                    actual: intent.source_revision,
+                    actual: request.source_revision(),
                 });
             }
             state
                 .revision
                 .checked_add(1)
                 .ok_or(UserRevisionRefusal::RevisionExhausted)?;
-            if intent.rendered_text.trim().is_empty() {
+            if let DocumentRequest::Revise(intent) = &request
+                && intent.rendered_text.trim().is_empty()
+            {
                 return Err(UserRevisionRefusal::EmptyText);
             }
             if self
@@ -3576,7 +3907,7 @@ impl PresentationEmitter {
                 return Err(UserRevisionRefusal::AuthorityUnavailable);
             }
             if !self.transcript_bus.as_ref().is_some_and(|bus| {
-                bus.completed_capture_revision(session, *epoch, intent.source_revision)
+                bus.completed_capture_revision(session, *epoch, request.source_revision())
             }) {
                 return Err(UserRevisionRefusal::NotTerminal);
             }
@@ -3598,7 +3929,14 @@ impl PresentationEmitter {
             }
             state.mark_terminal_lifecycle();
         }
-        let revision = state.apply_user_revision(ledger, &intent)?;
+        let (revision, presentation) = match &request {
+            DocumentRequest::Revise(intent) => (state.apply_user_revision(ledger, intent)?, None),
+            DocumentRequest::Navigate {
+                session_id,
+                source_revision,
+                target,
+            } => state.navigate_document(ledger, session_id, *source_revision, *target)?,
+        };
         drop(state);
         if !self.authenticates_revision(&revision, ledger) {
             return Err(UserRevisionRefusal::LedgerRefusal(
@@ -3615,6 +3953,10 @@ impl PresentationEmitter {
             self.emit_overlay_events(&events);
         }
         self.send_committed_paint(revision.rendered_text.clone());
+        // A formatted step is presented again over the receipt just published.
+        if let Some(presentation) = &presentation {
+            self.publish_derived_paint(presentation);
+        }
         let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
             unreachable!("apply_user_revision must mint an ApplyUserRevision action")
         };
@@ -3936,14 +4278,41 @@ impl PresentationEmitter {
         if source == result.text {
             return Err(UserRevisionRefusal::Unchanged);
         }
-        let projection = reducer.mint_derived_projection(
+        let committed = reducer.committed_rendered_text();
+        reducer.anchor_document_timeline(&session_id);
+        let mut projection = reducer.mint_derived_projection(
             session_id,
             source_revision,
-            source,
+            source.clone(),
             policy,
             result,
             None,
         );
+        // A refused word receipt keeps its evidence row but is no version:
+        // nothing is painted and the cursor does not move.
+        if projection.status != "applied" {
+            return Err(UserRevisionRefusal::LedgerRefusal(
+                "formatter_result_not_applied",
+            ));
+        }
+        if source != committed {
+            // Formatted from the selected version; the paint still binds to
+            // the committed document the Bus last published.
+            projection.source_raw_text = committed;
+            projection.source_state = "selected_version".into();
+            projection.publication_digest = projection.digest();
+            *reducer
+                .derived_projections
+                .last_mut()
+                .expect("minted formatter projection") = projection.clone();
+        }
+        let step = reducer.snapshot_step(
+            "formatter",
+            Some(policy.as_str().to_string()),
+            projection.receipt_id.clone(),
+            Some(projection.clone()),
+        );
+        reducer.push_document_step(step);
         drop(reducer);
         self.publish_derived_paint(&projection);
         Ok(UserRevisionCommit {
@@ -4075,6 +4444,23 @@ impl PresentationEmitter {
                 .derived_projections
                 .last_mut()
                 .expect("minted selection") = projection.clone();
+        }
+        // A formatted delivery over the exact committed document is the take's
+        // first accepted format: Undo returns to the Raw behind it.
+        if exact_raw
+            && policy != FormattingPolicy::Off
+            && projection.status == "applied"
+            && projection.rendered_text != raw_at_handoff
+        {
+            let session_id = projection.session_id.clone();
+            reducer.anchor_document_timeline(&session_id);
+            let step = reducer.snapshot_step(
+                "formatter",
+                Some(policy.as_str().to_string()),
+                projection.receipt_id.clone(),
+                Some(projection.clone()),
+            );
+            reducer.push_document_step(step);
         }
         reducer.delivery_selection = Some(projection.clone());
         drop(reducer);

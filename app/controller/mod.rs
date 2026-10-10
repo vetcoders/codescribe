@@ -2342,6 +2342,43 @@ impl RecordingController {
             .map_err(anyhow::Error::new)
     }
 
+    /// Undo, Redo or a version pick on the retained take: the reducer
+    /// re-selects an accepted step under the same session/revision CAS. No
+    /// transcription or formatting runs again.
+    pub async fn navigate_document_from_overlay(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        step: usize,
+    ) -> Result<UserRevisionCommit> {
+        if self.current_state().await != State::Idle {
+            return Err(anyhow::anyhow!(
+                "transcript navigation refused while recording is active"
+            ));
+        }
+        let presentation = self
+            .active_presentation
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no terminal transcript revision authority"))?;
+        presentation
+            .navigate_document(session_id, source_revision, step)
+            .map_err(anyhow::Error::new)
+    }
+
+    /// Accepted steps of the retained take with the selected one and the
+    /// revision a navigation names. No retained take reads as no history.
+    pub async fn document_versions(
+        &self,
+        session_id: &str,
+    ) -> (u64, crate::presentation::emitter::DocumentTimeline) {
+        match self.active_presentation.read().await.clone() {
+            Some(presentation) => presentation.document_timeline(session_id),
+            None => (0, Default::default()),
+        }
+    }
+
     /// Format the exact retained terminal document through the production
     /// postprocess lane, then commit only an applied result through the same
     /// ledger CAS + projection corridor as an explicit user edit.
