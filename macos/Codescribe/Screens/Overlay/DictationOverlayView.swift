@@ -717,6 +717,10 @@ struct DictationOverlayView: View {
         .foregroundStyle(palette.primaryText.color)
         .fixedSize()
         .accessibilityIdentifier("overlay-mini-brand")
+        .allowsHitTesting(false)
+        .background {
+          OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
+        }
       Spacer(minLength: 4)
       recordingControls(compact: false)
     }
