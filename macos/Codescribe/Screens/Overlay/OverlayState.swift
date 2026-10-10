@@ -2190,7 +2190,7 @@ final class OverlayState {
             // history, so Undo returns to the version it replaced. The CAS
             // is the revision this pass started from: an Undo or another
             // change in between refuses the result instead of stacking it.
-            _ = try await engine.commitRetranscribeRevision(
+            let receipt = try await engine.commitRetranscribeRevision(
               sessionId: projection.sessionId,
               sourceRevision: projection.reducerRevision,
               renderedText: text
@@ -2198,6 +2198,7 @@ final class OverlayState {
             guard generation == self.captureGeneration,
               self.latestTranscriptProjection?.sessionId == projection.sessionId
             else { return }
+            self.noteArchiveRefusal(receipt.archiveRefusal)
           } else {
             self.engineChip = previousChip
             self.presentActionFailure(
@@ -2592,6 +2593,7 @@ final class OverlayState {
           pendingRevisionSource == projection.reducerRevision,
           latestTranscriptProjection?.sessionId == projection.sessionId
         else { return }
+        noteArchiveRefusal(receipt.archiveRefusal)
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
           receipt.revision > receipt.sourceRevision,
@@ -3614,6 +3616,7 @@ final class OverlayState {
           pendingRevisionSource == projection.reducerRevision,
           latestTranscriptProjection?.sessionId == projection.sessionId
         else { return }
+        noteArchiveRefusal(receipt.archiveRefusal)
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
           receipt.revision > receipt.sourceRevision,
@@ -3729,6 +3732,7 @@ final class OverlayState {
         let receipt = try await engine.navigateDocumentVersion(
           sessionId: pending.sessionId, sourceRevision: pending.sourceRevision, step: step)
         guard self.pendingNavigation == pending else { return }
+        self.noteArchiveRefusal(receipt.archiveRefusal)
         guard receipt.sessionId == pending.sessionId,
           receipt.sourceRevision == pending.sourceRevision,
           receipt.revision > receipt.sourceRevision
@@ -3757,6 +3761,16 @@ final class OverlayState {
 
   /// Read the projected take's linear history from Rust. A reply for another
   /// session, or overtaken by a newer read, never lands.
+  /// An operation the live take accepted but its archived transcript did
+  /// not save. The live versions still work; reopening the take from history
+  /// will not show the ones after this point, and the user is told so.
+  func noteArchiveRefusal(_ refusal: String?) {
+    guard let refusal else { return }
+    revisionCommitError = String(
+      localized: "Versions of this take are no longer saved to history: \(refusal)",
+      comment: "The placeholder is the archive's own refusal text")
+  }
+
   func loadDocumentVersions() {
     guard terminal, let projection = latestTranscriptProjection, let engine else { return }
     let sessionId = projection.sessionId
@@ -3770,13 +3784,7 @@ final class OverlayState {
         else { return }
         self.documentVersions = versions
         self.documentVersionsSessionId = sessionId
-        if let refusal = versions.archiveRefusal {
-          // The live versions still work; reopening this take from history
-          // will not show the ones after this point.
-          self.revisionCommitError = String(
-            localized: "Versions of this take are no longer saved to history: \(refusal)",
-            comment: "The placeholder is the archive's own refusal text")
-        }
+        self.noteArchiveRefusal(versions.archiveRefusal)
       } catch {
         guard let self, self.documentVersionsReadGeneration == generation,
           self.latestTranscriptProjection?.sessionId == sessionId

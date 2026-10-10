@@ -1134,6 +1134,27 @@ fn recover_capture_stop_failure(
 /// overlay was showing a full formatted document (operator take 2026-09-24
 /// 08:23). No seal is claimed — the daily bag writes it as `Raw`. An empty
 /// document keeps the diagnostic-only retention.
+/// Archived transcript of the latest refused take that kept its committed
+/// words, keyed by session. The stop classifier that archives it has no
+/// controller; the controller that hands those words to the user takes it
+/// and links the take's live history to it. One slot: a newer refused take
+/// replaces an unclaimed older one.
+static REFUSED_TAKE_ARCHIVE: std::sync::Mutex<Option<(String, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
+fn take_refused_take_archive(session_id: &str) -> Option<std::path::PathBuf> {
+    let mut slot = REFUSED_TAKE_ARCHIVE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match slot.take() {
+        Some((session, path)) if session == session_id => Some(path),
+        other => {
+            *slot = other;
+            None
+        }
+    }
+}
+
 fn refused_take_archive(
     refusal: &TerminalSealRefused,
 ) -> codescribe_core::state::SessionTranscriptArchive<'_> {
@@ -1540,13 +1561,19 @@ async fn classify_terminal_stop(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        retain_session_audio(
+                        let archived = retain_session_audio(
                             session_id,
                             path,
                             refused_take_archive(&refusal),
                             &observer,
                         )
                         .await;
+                        if let (Some(id), Some(archived)) = (session_id, archived) {
+                            *REFUSED_TAKE_ARCHIVE
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) =
+                                Some((id.to_string(), archived));
+                        }
                     }
                     None => warn!("refused take has no audio path to retain"),
                 }
@@ -4228,6 +4255,10 @@ impl RecordingController {
                 "terminal refusal has no matching authenticated Bus document"
             ));
         }
+        // The retained words are this take's document: the user can revise
+        // them like any take, so their versions keep the same durable history.
+        let archived = take_refused_take_archive(refusal.finality.session_id());
+        self.link_live_archive(take_id.as_deref(), archived).await;
         match deliver(refusal.committed_text.clone()).await {
             Ok(_) => Ok(ProcessRecordingOutcome {
                 transcript_present: true,

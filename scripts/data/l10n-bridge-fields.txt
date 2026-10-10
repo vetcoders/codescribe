@@ -313,6 +313,7 @@ data  CsUncertainSpan.producer
 data  CsUserRevisionResult.sessionId
 data  CsUserRevisionResult.renderedText
 data  CsUserRevisionResult.provenanceReceipt
+prose CsUserRevisionResult.archiveRefusal
 prose CsVoiceLabSaveResult.lexiconError
 data  CsWhisperModelCatalog.configured
 data  CsWhisperModelCatalog.resolvedPath
