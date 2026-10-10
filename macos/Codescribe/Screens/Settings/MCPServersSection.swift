@@ -33,7 +33,7 @@ struct MCPServersSection: View {
               permissionLevel: model.mcpServerPermissionLevel(server.name),
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
-              onRemove: { model.removeMcpServer(server.name) }
+              onRemove: { model.requestMcpServerRemoval(server.name) }
             )
           }
         }
@@ -85,6 +85,25 @@ struct MCPServersSection: View {
     } message: {
       Text(
         "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched."
+      )
+    }
+    // Removing one server is the same class of action as clearing the file:
+    // it edits mcp.json and deletes the server's Keychain token, with no undo.
+    // The row's Remove button only asks; the alert names the server and the
+    // consequence, Cancel and Escape leave the configuration as it was.
+    .alert(
+      Text("Remove \(model.mcpRemovalCandidate ?? "") from MCP servers?"),
+      isPresented: Binding(
+        get: { model.mcpRemovalCandidate != nil },
+        set: { presented in if !presented { model.cancelMcpServerRemoval() } }
+      ),
+      presenting: model.mcpRemovalCandidate
+    ) { name in
+      Button("Cancel", role: .cancel) { model.cancelMcpServerRemoval() }
+      Button("Remove server", role: .destructive) { model.confirmMcpServerRemoval(name) }
+    } message: { name in
+      Text(
+        "Removes \(name) from mcp.json and deletes its Keychain token. The Agent loses this server's tools until you add it again."
       )
     }
   }
@@ -350,20 +369,22 @@ private struct MCPServerRow: View {
     }
     .csFocusRing()
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
-    .help("Remove this server from mcp.json")
+    .accessibilityHint("Asks for confirmation before removing the server from mcp.json.")
+    .help("Remove this server from mcp.json…")
   }
 }
 
 // MARK: - Add-server form
 
 private struct MCPAddServerForm: View {
-  /// Returns nil on success, otherwise the error the store reported. A failed
-  /// add keeps every field as typed so the fix is one edit away.
+  /// Returns nil on success, otherwise the store's refusal translated for the
+  /// form. A failed add keeps every field as typed so the fix is one edit away,
+  /// and the message sits under the field it names.
   let onAdd:
     (
       _ name: String, _ command: String, _ args: [String],
       _ endpoint: String, _ token: String
-    ) -> String?
+    ) -> MCPAddFailure?
 
   @State private var remote = false
   @State private var name: String = ""
@@ -371,16 +392,27 @@ private struct MCPAddServerForm: View {
   @State private var argsText: String = ""
   @State private var endpoint: String = ""
   @State private var token: String = ""
-  @State private var addError: String?
+  @State private var addError: MCPAddFailure?
   @FocusState private var focusedField: Field?
 
   private enum Field { case name, endpoint, token, command, args }
 
+  /// The field a refusal points at, if the form has one for it.
+  private static func field(for failure: MCPAddFailure.Field?) -> Field? {
+    switch failure {
+    case .name: return .name
+    case .command: return .command
+    case .endpoint: return .endpoint
+    case nil: return nil
+    }
+  }
+
+  /// Add is live as soon as the form has anything in it. The store is the one
+  /// validator (`core/mcp/config_store.rs` `validate_*`): a bad name, an empty
+  /// command or a non-HTTP endpoint come back as a refusal the form can show
+  /// under the right field, instead of a button that stays grey without a word.
   private var canAdd: Bool {
-    !name.trimmingCharacters(in: .whitespaces).isEmpty
-      && (remote
-        ? endpoint.trimmingCharacters(in: .whitespaces).hasPrefix("http")
-        : !command.trimmingCharacters(in: .whitespaces).isEmpty)
+    !name.isEmpty || !(remote ? endpoint : command).isEmpty
   }
 
   var body: some View {
@@ -404,7 +436,10 @@ private struct MCPAddServerForm: View {
           "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
         VStack(alignment: .leading, spacing: 4) {
           fieldLabel("Access token (optional)")
-          SecureField(text: $token, prompt: nil) { EmptyView() }
+          // The label is the field's accessibility name; the visible caption
+          // above stays a plain Text so the chrome matches the other fields.
+          SecureField(text: $token, prompt: nil) { Text("Access token (optional)") }
+            .labelsHidden()
             .focused($focusedField, equals: .token)
             .settingsInputChrome(isFocused: focusedField == .token)
             .onSubmit(submit)
@@ -420,13 +455,11 @@ private struct MCPAddServerForm: View {
           "Command arguments", placeholder: "e.g. mcp", text: $argsText, focus: .args)
       }
 
-      if let addError {
-        Text(verbatim: addError)
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.terracotta)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("settings-mcp-add-error")
+      // A refusal without a field of its own (store I/O, an unknown message)
+      // still shows under the form; field-specific ones render under their
+      // field inside `labeledField`.
+      if let addError, Self.field(for: addError.field) == nil {
+        errorLine(addError)
       }
 
       HStack {
@@ -452,17 +485,37 @@ private struct MCPAddServerForm: View {
       .foregroundStyle(Color.secondary)
   }
 
+  /// A field with its caption. The caption is also the field's accessibility
+  /// name (`TextField(title…)` with the label hidden), so VoiceOver reads
+  /// "Server name" and not the placeholder or the typed text. A refusal that
+  /// names this field renders right under it.
   private func labeledField(
     _ title: LocalizedStringKey, placeholder: LocalizedStringKey, text: Binding<String>,
     focus: Field
   ) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       fieldLabel(title)
-      TextField(placeholder, text: text)
+      TextField(title, text: text, prompt: Text(placeholder))
+        .labelsHidden()
         .focused($focusedField, equals: focus)
         .settingsInputChrome(isFocused: focusedField == focus)
         .onSubmit(submit)
+      if let addError, Self.field(for: addError.field) == focus {
+        errorLine(addError)
+      }
     }
+  }
+
+  /// The user sentence in the accent colour; the store's own words, when they
+  /// differ, stay one hover away instead of on the screen.
+  private func errorLine(_ failure: MCPAddFailure) -> some View {
+    Text(verbatim: failure.message)
+      .font(CSFont.mono(10.5, .medium))
+      .foregroundStyle(CSColor.terracotta)
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)
+      .help(failure.detail == failure.message ? "" : failure.detail)
+      .accessibilityIdentifier("settings-mcp-add-error")
   }
 
   private func submit() {
@@ -471,14 +524,19 @@ private struct MCPAddServerForm: View {
       argsText
       .split(whereSeparator: { $0 == " " || $0 == "\t" })
       .map(String.init)
+    // The name goes through untouched: the store rejects surrounding
+    // whitespace rather than trimming it, and the form shows that refusal.
     addError = onAdd(
-      name.trimmingCharacters(in: .whitespaces),
+      name,
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
       remote ? [] : args,
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
       remote ? token : ""
     )
-    guard addError == nil else { return }
+    guard addError == nil else {
+      if let field = Self.field(for: addError?.field) { focusedField = field }
+      return
+    }
     name = ""
     command = ""
     argsText = ""
