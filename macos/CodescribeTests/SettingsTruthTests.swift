@@ -1296,13 +1296,12 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
-    // The segmented control carries only the names, so the row sentence must
-    // name both fine-tuned languages and automatic detection itself. The
-    // Dictionary footnote moved off this row (Founder walkthrough, 2026-10-10):
-    // the Dictionary page already explains its own effect on recognition.
+    // The row sentence explains only the one non-obvious choice; the
+    // fine-tuned-models detail left the base view (Founder brief, round 4,
+    // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Polish and English use fine-tuned models. Multilingual detects the language automatically."
+      "Multilingual detects the language automatically."
     )
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
     XCTAssertFalse(
