@@ -181,3 +181,33 @@ fn grid_uses_original_sample_rate_and_preserves_half_open_three_visit_bound() {
     }
     assert!(plan(0).next_due(100, true).is_none());
 }
+
+#[test]
+fn bounded_trial_keeps_grid_cursor_and_spends_one_capture_bucket() {
+    let mut owner = plan(100);
+    collect(&mut owner, 1800, false);
+    let horizon = owner.admission_horizon();
+    let trial = owner.offer_trial(800, 1450, 1800, false).unwrap();
+    assert_eq!(owner.next_due(1800, false), Some(trial.clone()));
+    assert!(owner.account(&trial));
+    assert_eq!(owner.admission_horizon(), horizon);
+    assert!(owner.offer_trial(850, 1500, 1800, false).is_none());
+    assert!(owner.next_due(1800, false).is_none());
+    assert!(!owner.account(&trial));
+    collect(&mut owner, 2700, false);
+    assert!(owner.offer_trial(1800, 2450, 2700, false).is_some());
+}
+
+#[test]
+fn bounded_trial_cannot_reopen_early_pcm_at_stop_or_exceed_window_budget() {
+    let mut owner = plan(100);
+    collect(&mut owner, 2700, true);
+    assert!(owner.offer_trial(1000, 1600, 2700, true).is_none());
+    assert!(owner.offer_trial(1799, 2700, 2700, true).is_none());
+    assert!(owner.offer_trial(1800, 2701, 2700, true).is_none());
+    let tail = owner.offer_trial(1850, 2650, 2700, true).unwrap();
+    assert!(!owner.is_finished());
+    assert!(owner.account(&tail));
+    assert!(owner.is_finished());
+    assert!(owner.next_due(4000, true).is_none());
+}
