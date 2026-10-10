@@ -95,20 +95,30 @@ This tab owns the transcript pipeline itself:
 
 The Dictation pane is one tab per concern:
 
-1. **Engine** — _Recognition mode_ first (Apple only, Local power, Cloud), with a
-   one-line description of the selected mode under the picker. Below it, _Last
-   transcription_: the engine that served the last take (runtime truth from the
-   serving verdict, “No transcription in this app session” before the first take,
-   no readiness dot), the local Whisper model row only in Local power (the saved
-   selection; Cloud shows no model row), and the spoken language as “Polish (pl)”.
+1. **Engine** — **Recognition mode** is the first and only editable row (Apple
+   only, Local power, Cloud). The two on-device modes carry a one-line
+   description; Cloud carries none — choosing it _is_ the consent, and the pane
+   does not restate that in a permanent caption. A missing consent never shows
+   as Cloud at all: the mode reads Apple only until it is granted. Below it,
+   _Last transcription_ is one compact card — **Engine** (runtime truth from the
+   serving verdict, “No transcription in this app session” before the first
+   take, no readiness dot), the local Whisper model row only in Local power (the
+   saved selection; Cloud shows no model row), and **Language** as “Polish (pl)”.
    The language applies to Apple live recognition, local Whisper and the cloud
-   tail alike.
-2. **Whisper** — _Selected model_ (picker, install state with **Check model**, a
-   resident-vs-next-load row that never calls the next load “in use”), _Other
-   detected models_ (models on disk the loader refuses, with a plain reason),
-   _Data footprint_ (installed directories with state, size and **Remove**; the
-   selected model explains why it cannot be removed). Full paths, sources and raw
-   validation errors live under the collapsed **Model details**.
+   tail alike. The selected mode and the engine that actually served the last
+   take are two different facts and may disagree.
+2. **Whisper** — one card of two rows: **Model** (the picker; the name is not
+   repeated under it) and the install state — **Installed** / **Not installed**
+   in bold, the residency line under it, which never calls the next load “in
+   use”, and **Check model** on the trailing edge. Then _Other detected models_
+   (models on disk the loader refuses, each with one short status such as
+   “Tokenizer problem” or “Unsupported”) and _Disk space_ (one row per installed
+   model: the directory, its size and state, and **Remove**, locked for the
+   selected model). An environment override, the engine's notice and its last
+   error all stay visible under the card. Full paths, sources and raw validation
+   errors live under the collapsed **Model details**, grouped as _Selected
+   model_, _Detected models_ and _On disk_, each path printed once and
+   selectable.
 3. **Preview** — the transcript display pace; the presets, sliders and what they
    really drive are described under [Transcription](#transcription) above.
 4. **Privacy** — see [Cloud & privacy](#cloud--privacy) below.

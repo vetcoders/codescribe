@@ -11,33 +11,31 @@ final class AudioPanelTests: XCTestCase {
   }
 
   func testStorageStatusCodesMapToReadableLabelsAndUnknownStaysVerbatim() {
-    XCTAssertEqual(DictationWhisperModelTab.statusLabel("active"), "Selected")
+    XCTAssertEqual(DictationWhisperModelTab.statusLabel("active"), "Selected model")
     XCTAssertEqual(DictationWhisperModelTab.statusLabel("usable"), "Ready")
     XCTAssertEqual(DictationWhisperModelTab.statusLabel("refused"), "Refused")
     XCTAssertEqual(DictationWhisperModelTab.statusLabel("broken"), "Broken")
     XCTAssertEqual(DictationWhisperModelTab.statusLabel("weird"), "weird")
   }
 
-  /// Bridge refusal prose is English; the row shows one plain sentence and
-  /// keeps the raw text for the details disclosure.
-  func testRefusalReasonsCollapseToPlainSentences() {
+  /// Bridge refusal prose is English; the row shows one short status and
+  /// keeps the raw text for the details disclosure (round 13).
+  func testRefusalReasonsCollapseToShortStatuses() {
     XCTAssertEqual(
-      DictationWhisperModelTab.reasonSummary(
+      DictationWhisperModelTab.reasonTag(
         "Quantized weights are not supported by the local engine"),
-      "The local engine does not support quantized (Q8) models.")
+      "Unsupported")
     XCTAssertEqual(
-      DictationWhisperModelTab.reasonSummary("invalid Whisper tokenizer at /x/tokenizer.json"),
-      "The model's tokenizer is invalid. See Model details.")
+      DictationWhisperModelTab.reasonTag("invalid Whisper tokenizer at /x/tokenizer.json"),
+      "Tokenizer problem")
     XCTAssertEqual(
-      DictationWhisperModelTab.reasonSummary("Whisper tokenizer is missing required token"),
-      "The model's tokenizer is invalid. See Model details.")
+      DictationWhisperModelTab.reasonTag("Whisper tokenizer is missing required token"),
+      "Tokenizer problem")
     XCTAssertEqual(
-      DictationWhisperModelTab.reasonSummary("model weights file missing"),
-      "The model files are incomplete. See Model details.")
+      DictationWhisperModelTab.reasonTag("model weights file missing"), "Incomplete files")
     XCTAssertEqual(
-      DictationWhisperModelTab.reasonSummary("something else"),
-      "The model failed validation. See Model details.")
-    XCTAssertEqual(DictationWhisperModelTab.reasonSummary(nil), "Unavailable")
+      DictationWhisperModelTab.reasonTag("something else"), "Failed validation")
+    XCTAssertEqual(DictationWhisperModelTab.reasonTag(nil), "Unavailable")
   }
 
   /// `loaded` (resident weights) and `resolvedPath` (next load) are distinct
