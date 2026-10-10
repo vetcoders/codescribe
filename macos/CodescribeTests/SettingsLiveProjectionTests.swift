@@ -56,7 +56,8 @@ final class SettingsLiveProjectionTests: XCTestCase {
     settings.editDraftBinding(mode: .dictation, binding: .doubleCtrl)
     XCTAssertTrue(settings.hasPendingBindingChanges)
     let draft = settings.draftBindings
-    let tray = TrayViewModel(engine: SyntheticTrayEngine(file: file), configurationInvalidation: scope)
+    let tray = TrayViewModel(
+      engine: SyntheticTrayEngine(file: file), configurationInvalidation: scope)
 
     tray.setPasteMode(.comfort)
 
@@ -103,13 +104,14 @@ final class SettingsLiveProjectionTests: XCTestCase {
     // Idle and unloaded with no recorder edge is stable truth: no reads.
     settings.beginWhisperResidencyObservation()
     XCTAssertFalse(settings.whisperResidencyPending)
+    let idleReads = resident.reads
     try? await Task.sleep(for: .milliseconds(50))
-    XCTAssertEqual(resident.reads, 1)
+    XCTAssertEqual(resident.reads, idleReads)
 
     // A take makes a load expected; the waiting outlives the former
     // fifteen-read budget with no further edge.
     scope.recordingLifecycleChanged()
-    await waitUntil { resident.reads > 1 + 1 + 15 }
+    await waitUntil { resident.reads > idleReads + 1 + 15 }
     XCTAssertTrue(settings.whisperResidencyPending)
 
     // The late load lands without an edge and is shown; reads then stop.
@@ -144,13 +146,39 @@ final class SettingsLiveProjectionTests: XCTestCase {
     XCTAssertEqual(tray.pasteMode, .safe)
   }
 
+  func testReopenedSettingsObservesColdLoadWithoutAnotherRecorderEdge() async {
+    let file = SyntheticSettingsFile(pasteMode: .safe, formattingLevel: "correction")
+    let resident = SyntheticWhisperRuntime(loaded: nil)
+    let state = OverlayState(autoSendEnabled: { false }, micAccessProvider: { true })
+    let tray = TrayViewModel(engine: MockTrayEngine())
+    let settings = makeSettingsModel(
+      file: file, scope: ConfigurationInvalidation(), whisper: resident,
+      recordingControls: { (state: state, tray: tray) })
+    settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
+    settings.beginWhisperResidencyObservation()
+    settings.endWhisperResidencyObservation()
+
+    // The window missed this take's edge while closed.
+    state.handleRecordingStarted()
+    defer {
+      settings.endWhisperResidencyObservation()
+      state.finishControllerRecording()
+    }
+    settings.beginWhisperResidencyObservation()
+    XCTAssertTrue(settings.whisperResidencyPending)
+    resident.loaded = SyntheticWhisperRuntime.resolved
+    await waitUntil { settings.whisperResidencySettled }
+    XCTAssertEqual(settings.whisperModelCatalog?.loaded, SyntheticWhisperRuntime.resolved)
+  }
+
   // MARK: - Fixtures
 
   private func makeSettingsModel(
     file: SyntheticSettingsFile,
     scope: ConfigurationInvalidation?,
     hotkeys: HotkeysEngine? = nil,
-    whisper: SyntheticWhisperRuntime = SyntheticWhisperRuntime(loaded: nil)
+    whisper: SyntheticWhisperRuntime = SyntheticWhisperRuntime(loaded: nil),
+    recordingControls: (() -> (state: OverlayState, tray: TrayViewModel)?)? = nil
   ) -> SettingsViewModel {
     // The mock's default selection outcome is "applied"; residency is the
     // separate catalog fact under test.
@@ -166,6 +194,7 @@ final class SettingsLiveProjectionTests: XCTestCase {
       whisperDownloadStore: WhisperDownloadStore(
         statusProvider: { .sampleUnavailable }, download: { _ in .sampleUnavailable }),
       configurationInvalidation: scope,
+      audioRecordingControlProvider: recordingControls,
       servingStatusProvider: { nil }
     )
   }
