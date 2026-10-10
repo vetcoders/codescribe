@@ -2666,6 +2666,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func documentHistory(sessionId: String) async throws  -> [CsDocumentHistoryEntry]
 
     /**
+     * The take's accepted versions and the selected one, read from the
+     * reducer that owns them. Swift keeps no copy it could restore from.
+     */
+    func documentVersions(sessionId: String) async throws  -> CsDocumentVersions
+
+    /**
      * Format one revision of a transcript reopened from history with the
      * production formatter and an optional one-shot level. The source text is
      * read in Rust from the archive's revision chain; an applied result is
@@ -2707,6 +2713,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Stable path of the last retained session WAV, if it exists.
      */
     func lastSessionAudioPath()  -> String?
+
+    /**
+     * Undo, Redo or a version pick: re-select accepted version `step` under
+     * the session/revision CAS. Saved bytes only; Whisper and the formatter
+     * do not run. Swift repaints from the projection callback alone.
+     */
+    func navigateDocumentVersion(sessionId: String, sourceRevision: UInt64, step: UInt64) async throws  -> CsUserRevisionResult
 
     /**
      * Forward a macOS sleep/wake boundary to the active recorder, if any.
@@ -2775,13 +2788,6 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Answer a Max card using the exact session, consultation and call identity.
      */
     func resolveMaxToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool) async throws  -> Bool
-
-    /**
-     * Restore a selected journal version as a fresh ledger UserEdit revision.
-     * The historical bytes are selected in Rust, then submitted through the
-     * existing session/revision compare-and-swap corridor.
-     */
-    func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64) async throws  -> CsUserRevisionResult
 
     /**
      * Send a transcript reopened from history to Agent on an explicit click.
@@ -3320,6 +3326,27 @@ open func documentHistory(sessionId: String)async throws  -> [CsDocumentHistoryE
 }
 
     /**
+     * The take's accepted versions and the selected one, read from the
+     * reducer that owns them. Swift keeps no copy it could restore from.
+     */
+open func documentVersions(sessionId: String)async throws  -> CsDocumentVersions  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_document_versions(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsDocumentVersions_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Format one revision of a transcript reopened from history with the
      * production formatter and an optional one-shot level. The source text is
      * read in Rust from the archive's revision chain; an applied result is
@@ -3430,6 +3457,28 @@ open func lastSessionAudioPath() -> String?  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+
+    /**
+     * Undo, Redo or a version pick: re-select accepted version `step` under
+     * the session/revision CAS. Saved bytes only; Whisper and the formatter
+     * do not run. Swift repaints from the projection callback alone.
+     */
+open func navigateDocumentVersion(sessionId: String, sourceRevision: UInt64, step: UInt64)async throws  -> CsUserRevisionResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_navigate_document_version(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision),FfiConverterUInt64.lower(step)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -3614,28 +3663,6 @@ open func resolveMaxToolApproval(sessionId: String, threadId: String, callId: St
             completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
             freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
             liftFunc: FfiConverterBool.lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Restore a selected journal version as a fresh ledger UserEdit revision.
-     * The historical bytes are selected in Rust, then submitted through the
-     * existing session/revision compare-and-swap corridor.
-     */
-open func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64)async throws  -> CsUserRevisionResult  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribehotkeys_restore_document_revision(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision),FfiConverterUInt64.lower(restoreRevision)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -4679,6 +4706,14 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
     func loadThread(id: String) throws  -> CsThread
 
     /**
+     * Undo, Redo or a version pick on the archived transcript at `path`:
+     * select accepted version `step` against `source_revision`. Rust maps
+     * the step to its chain record and appends one navigation receipt; the
+     * bytes come from the chain, never from Swift.
+     */
+    func navigateHistoryRevision(path: String, sourceRevision: UInt64, step: UInt64) throws  -> CsArchivedDocument
+
+    /**
      * Read the full text of a transcript artifact at `path`. Wraps
      * `std::fs::read_to_string`.
      */
@@ -4696,12 +4731,6 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
      * Wraps `ThreadStore::set_thread_title` (`thread_store.rs`).
      */
     func renameThread(id: String, title: String) throws  -> Bool
-
-    /**
-     * Restore an earlier version of the archived transcript at `path` as a
-     * new revision (Undo). The restored bytes are selected here, in Rust.
-     */
-    func restoreHistoryRevision(path: String, sourceRevision: UInt64, restoreRevision: UInt64) throws  -> CsArchivedDocument
 
     /**
      * Full-text search over indexed threads (all query words must match),
@@ -4904,6 +4933,23 @@ open func loadThread(id: String)throws  -> CsThread  {
 }
 
     /**
+     * Undo, Redo or a version pick on the archived transcript at `path`:
+     * select accepted version `step` against `source_revision`. Rust maps
+     * the step to its chain record and appends one navigation receipt; the
+     * bytes come from the chain, never from Swift.
+     */
+open func navigateHistoryRevision(path: String, sourceRevision: UInt64, step: UInt64)throws  -> CsArchivedDocument  {
+    return try  FfiConverterTypeCsArchivedDocument_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_navigate_history_revision(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),
+        FfiConverterUInt64.lower(sourceRevision),
+        FfiConverterUInt64.lower(step),$0
+    )
+})
+}
+
+    /**
      * Read the full text of a transcript artifact at `path`. Wraps
      * `std::fs::read_to_string`.
      */
@@ -4940,21 +4986,6 @@ open func renameThread(id: String, title: String)throws  -> Bool  {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
         FfiConverterString.lower(title),$0
-    )
-})
-}
-
-    /**
-     * Restore an earlier version of the archived transcript at `path` as a
-     * new revision (Undo). The restored bytes are selected here, in Rust.
-     */
-open func restoreHistoryRevision(path: String, sourceRevision: UInt64, restoreRevision: UInt64)throws  -> CsArchivedDocument  {
-    return try  FfiConverterTypeCsArchivedDocument_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
-    uniffi_codescribe_ffi_fn_method_codescribethreads_restore_history_revision(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(path),
-        FfiConverterUInt64.lower(sourceRevision),
-        FfiConverterUInt64.lower(restoreRevision),$0
     )
 })
 }
@@ -8847,10 +8878,14 @@ public struct CsArchivedDocument: Equatable, Hashable {
      */
     public var receiptId: String
     /**
-     * The version Undo restores (what the last format or retranscription
-     * replaced); `None` when there is nothing to undo.
+     * Every accepted version, oldest first: the original, then each format,
+     * retranscription and edit. Undo and Redo move `cursor` between them.
      */
-    public var undoRevision: UInt64?
+    public var versions: [CsDocumentVersion]
+    /**
+     * The selected version; `rendered_text` is its text.
+     */
+    public var cursor: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -8862,16 +8897,20 @@ public struct CsArchivedDocument: Equatable, Hashable {
          * Durable receipt of the head revision; empty for the original.
          */receiptId: String,
         /**
-         * The version Undo restores (what the last format or retranscription
-         * replaced); `None` when there is nothing to undo.
-         */undoRevision: UInt64?) {
+         * Every accepted version, oldest first: the original, then each format,
+         * retranscription and edit. Undo and Redo move `cursor` between them.
+         */versions: [CsDocumentVersion],
+        /**
+         * The selected version; `rendered_text` is its text.
+         */cursor: UInt64) {
         self.path = path
         self.originalText = originalText
         self.revision = revision
         self.renderedText = renderedText
         self.provenance = provenance
         self.receiptId = receiptId
-        self.undoRevision = undoRevision
+        self.versions = versions
+        self.cursor = cursor
     }
 
 
@@ -8894,7 +8933,8 @@ public struct FfiConverterTypeCsArchivedDocument: FfiConverterRustBuffer {
                 renderedText: FfiConverterString.read(from: &buf),
                 provenance: FfiConverterString.read(from: &buf),
                 receiptId: FfiConverterString.read(from: &buf),
-                undoRevision: FfiConverterOptionUInt64.read(from: &buf)
+                versions: FfiConverterSequenceTypeCsDocumentVersion.read(from: &buf),
+                cursor: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -8905,7 +8945,8 @@ public struct FfiConverterTypeCsArchivedDocument: FfiConverterRustBuffer {
         FfiConverterString.write(value.renderedText, into: &buf)
         FfiConverterString.write(value.provenance, into: &buf)
         FfiConverterString.write(value.receiptId, into: &buf)
-        FfiConverterOptionUInt64.write(value.undoRevision, into: &buf)
+        FfiConverterSequenceTypeCsDocumentVersion.write(value.versions, into: &buf)
+        FfiConverterUInt64.write(value.cursor, into: &buf)
     }
 }
 
@@ -9940,6 +9981,174 @@ public func FfiConverterTypeCsDocumentProvider_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeCsDocumentProvider_lower(_ value: CsDocumentProvider) -> RustBuffer {
     return FfiConverterTypeCsDocumentProvider.lower(value)
+}
+
+
+/**
+ * One accepted operation of the take: the base transcript, a format, a
+ * retranscription or a committed edit. Navigation never adds a version.
+ */
+public struct CsDocumentVersion: Equatable, Hashable {
+    /**
+     * Position in the linear history; Undo and Redo move between positions.
+     */
+    public var step: UInt64
+    /**
+     * `raw`, `light-plus`, `formatter`, `retranscribe` or `user-edit`.
+     */
+    public var provenance: String
+    /**
+     * Formatter level for a formatted version.
+     */
+    public var detail: String?
+    /**
+     * Bytes this version shows and delivers.
+     */
+    public var renderedText: String
+    public var emittedAt: String
+    public var receiptId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Position in the linear history; Undo and Redo move between positions.
+         */step: UInt64,
+        /**
+         * `raw`, `light-plus`, `formatter`, `retranscribe` or `user-edit`.
+         */provenance: String,
+        /**
+         * Formatter level for a formatted version.
+         */detail: String?,
+        /**
+         * Bytes this version shows and delivers.
+         */renderedText: String, emittedAt: String, receiptId: String) {
+        self.step = step
+        self.provenance = provenance
+        self.detail = detail
+        self.renderedText = renderedText
+        self.emittedAt = emittedAt
+        self.receiptId = receiptId
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentVersion: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentVersion: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentVersion {
+        return
+            try CsDocumentVersion(
+                step: FfiConverterUInt64.read(from: &buf),
+                provenance: FfiConverterString.read(from: &buf),
+                detail: FfiConverterOptionString.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf),
+                emittedAt: FfiConverterString.read(from: &buf),
+                receiptId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDocumentVersion, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.step, into: &buf)
+        FfiConverterString.write(value.provenance, into: &buf)
+        FfiConverterOptionString.write(value.detail, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterString.write(value.emittedAt, into: &buf)
+        FfiConverterString.write(value.receiptId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentVersion_lift(_ buf: RustBuffer) throws -> CsDocumentVersion {
+    return try FfiConverterTypeCsDocumentVersion.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentVersion_lower(_ value: CsDocumentVersion) -> RustBuffer {
+    return FfiConverterTypeCsDocumentVersion.lower(value)
+}
+
+
+/**
+ * The take's linear history: every accepted version, oldest first, and the
+ * selected one. `source_revision` is the CAS a navigation must name.
+ */
+public struct CsDocumentVersions: Equatable, Hashable {
+    public var sourceRevision: UInt64
+    public var cursor: UInt64
+    public var versions: [CsDocumentVersion]
+    /**
+     * Why these versions are no longer saved to the take's archived
+     * transcript. `None` while every accepted step is durable.
+     */
+    public var archiveRefusal: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sourceRevision: UInt64, cursor: UInt64, versions: [CsDocumentVersion],
+        /**
+         * Why these versions are no longer saved to the take's archived
+         * transcript. `None` while every accepted step is durable.
+         */archiveRefusal: String? = nil) {
+        self.sourceRevision = sourceRevision
+        self.cursor = cursor
+        self.versions = versions
+        self.archiveRefusal = archiveRefusal
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentVersions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentVersions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentVersions {
+        return
+            try CsDocumentVersions(
+                sourceRevision: FfiConverterUInt64.read(from: &buf),
+                cursor: FfiConverterUInt64.read(from: &buf),
+                versions: FfiConverterSequenceTypeCsDocumentVersion.read(from: &buf),
+                archiveRefusal: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDocumentVersions, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.sourceRevision, into: &buf)
+        FfiConverterUInt64.write(value.cursor, into: &buf)
+        FfiConverterSequenceTypeCsDocumentVersion.write(value.versions, into: &buf)
+        FfiConverterOptionString.write(value.archiveRefusal, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentVersions_lift(_ buf: RustBuffer) throws -> CsDocumentVersions {
+    return try FfiConverterTypeCsDocumentVersions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentVersions_lower(_ value: CsDocumentVersions) -> RustBuffer {
+    return FfiConverterTypeCsDocumentVersions.lower(value)
 }
 
 
@@ -15025,15 +15234,27 @@ public struct CsUserRevisionResult: Equatable, Hashable {
     public var revision: UInt64
     public var renderedText: String
     public var provenanceReceipt: String
+    /**
+     * The operation was accepted on the live take, but its versions are no
+     * longer saved to the take's archived transcript: why. `None` while the
+     * archive holds every accepted step.
+     */
+    public var archiveRefusal: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(sessionId: String, sourceRevision: UInt64, revision: UInt64, renderedText: String, provenanceReceipt: String) {
+    public init(sessionId: String, sourceRevision: UInt64, revision: UInt64, renderedText: String, provenanceReceipt: String,
+        /**
+         * The operation was accepted on the live take, but its versions are no
+         * longer saved to the take's archived transcript: why. `None` while the
+         * archive holds every accepted step.
+         */archiveRefusal: String? = nil) {
         self.sessionId = sessionId
         self.sourceRevision = sourceRevision
         self.revision = revision
         self.renderedText = renderedText
         self.provenanceReceipt = provenanceReceipt
+        self.archiveRefusal = archiveRefusal
     }
 
 
@@ -15054,7 +15275,8 @@ public struct FfiConverterTypeCsUserRevisionResult: FfiConverterRustBuffer {
                 sourceRevision: FfiConverterUInt64.read(from: &buf),
                 revision: FfiConverterUInt64.read(from: &buf),
                 renderedText: FfiConverterString.read(from: &buf),
-                provenanceReceipt: FfiConverterString.read(from: &buf)
+                provenanceReceipt: FfiConverterString.read(from: &buf),
+                archiveRefusal: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -15064,6 +15286,7 @@ public struct FfiConverterTypeCsUserRevisionResult: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.revision, into: &buf)
         FfiConverterString.write(value.renderedText, into: &buf)
         FfiConverterString.write(value.provenanceReceipt, into: &buf)
+        FfiConverterOptionString.write(value.archiveRefusal, into: &buf)
     }
 }
 
@@ -16082,6 +16305,10 @@ public enum CsDocumentRevisionProvenance: Equatable, Hashable {
     case retranscribe
     case formatter
     case lightPlus
+    /**
+     * Undo, redo or a version pick re-selected an accepted version.
+     */
+    case navigation
 
 
 
@@ -16109,6 +16336,8 @@ public struct FfiConverterTypeCsDocumentRevisionProvenance: FfiConverterRustBuff
 
         case 4: return .lightPlus
 
+        case 5: return .navigation
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -16131,6 +16360,10 @@ public struct FfiConverterTypeCsDocumentRevisionProvenance: FfiConverterRustBuff
 
         case .lightPlus:
             writeInt(&buf, Int32(4))
+
+
+        case .navigation:
+            writeInt(&buf, Int32(5))
 
         }
     }
@@ -18866,6 +19099,31 @@ fileprivate struct FfiConverterSequenceTypeCsDocumentHistoryEntry: FfiConverterR
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsDocumentVersion: FfiConverterRustBuffer {
+    typealias SwiftType = [CsDocumentVersion]
+
+    public static func write(_ value: [CsDocumentVersion], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsDocumentVersion.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsDocumentVersion] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsDocumentVersion]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsDocumentVersion.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsHistoryEntry: FfiConverterRustBuffer {
     typealias SwiftType = [CsHistoryEntry]
 
@@ -20367,6 +20625,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_document_history() != 45148) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_document_versions() != 26693) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_archived_transcript() != 42195) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20386,6 +20647,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_last_session_audio_path() != 51069) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_navigate_document_version() != 34123) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_note_sleep_wake() != 35265) {
@@ -20413,9 +20677,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_restore_document_revision() != 52565) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_archived_transcript() != 30118) {
@@ -20556,6 +20817,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_load_thread() != 23264) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_navigate_history_revision() != 63951) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_read_history_text() != 24342) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20563,9 +20827,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_rename_thread() != 27435) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_restore_history_revision() != 58712) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_search_threads() != 18770) {

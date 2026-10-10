@@ -110,7 +110,11 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     let item = entry("a_raw.txt", timestamp: 1, preview: "Raw A")
     let document = CsArchivedDocument(
       path: item.path, originalText: "Raw A", revision: 4, renderedText: "Saved formatted A",
-      provenance: "formatter", receiptId: "durable-four", undoRevision: 3)
+      provenance: "formatter", receiptId: "durable-four", versions: [
+        CsDocumentVersion(step: 0, provenance: "original", detail: nil, renderedText: "Raw A",
+          emittedAt: "", receiptId: ""),
+        CsDocumentVersion(step: 1, provenance: "formatter", detail: "smart", renderedText: "Saved formatted A",
+          emittedAt: "", receiptId: "durable-four")], cursor: 1)
     let reader = HistoryReader(
       entries: [item], texts: [item.path: "Raw A"], documents: [item.path: document])
     let result = await OverlayTranscriptHistoryModel(reader: reader).open(item)
@@ -119,7 +123,8 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     XCTAssertEqual(opened.text, "Saved formatted A")
     XCTAssertEqual(opened.revision, 4)
     XCTAssertEqual(opened.receiptId, "durable-four")
-    XCTAssertEqual(opened.undoRevision, 3)
+    XCTAssertEqual(opened.cursor, 1)
+    XCTAssertEqual(opened.versions.count, 2)
     XCTAssertNil(opened.audioPath)
   }
 
@@ -180,9 +185,7 @@ private struct HistoryReader: TranscriptHistoryReading {
   func document(at path: String) async throws -> CsArchivedDocument {
     if let document = documents[path] { return document }
     let raw = try await text(at: path)
-    return CsArchivedDocument(
-      path: path, originalText: raw, revision: 0, renderedText: raw, provenance: "original",
-      receiptId: "", undoRevision: nil)
+    return .unrevised(path: path, text: raw)
   }
 
   func entries() async -> [CsHistoryEntry] { saved }

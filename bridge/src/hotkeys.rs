@@ -57,6 +57,61 @@ impl From<DocumentHistoryEntry> for CsDocumentHistoryEntry {
     }
 }
 
+/// One accepted operation of the take: the base transcript, a format, a
+/// retranscription or a committed edit. Navigation never adds a version.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentVersion {
+    /// Position in the linear history; Undo and Redo move between positions.
+    pub step: u64,
+    /// `raw`, `light-plus`, `formatter`, `retranscribe` or `user-edit`.
+    pub provenance: String,
+    /// Formatter level for a formatted version.
+    pub detail: Option<String>,
+    /// Bytes this version shows and delivers.
+    pub rendered_text: String,
+    pub emitted_at: String,
+    pub receipt_id: String,
+}
+
+/// The take's linear history: every accepted version, oldest first, and the
+/// selected one. `source_revision` is the CAS a navigation must name.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentVersions {
+    pub source_revision: u64,
+    pub cursor: u64,
+    pub versions: Vec<CsDocumentVersion>,
+    /// Why these versions are no longer saved to the take's archived
+    /// transcript. `None` while every accepted step is durable.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<String>,
+}
+
+impl CsDocumentVersions {
+    fn from_timeline(
+        source_revision: u64,
+        timeline: &codescribe::presentation::emitter::DocumentTimeline,
+    ) -> Self {
+        Self {
+            source_revision,
+            archive_refusal: None,
+            cursor: timeline.cursor() as u64,
+            versions: timeline
+                .steps()
+                .iter()
+                .enumerate()
+                .map(|(step, version)| CsDocumentVersion {
+                    step: step as u64,
+                    provenance: version.provenance.clone(),
+                    detail: version.detail.clone(),
+                    rendered_text: version.rendered_text.clone(),
+                    emitted_at: version.emitted_at.clone(),
+                    receipt_id: version.receipt_id.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
 type SharedController = Arc<Mutex<Option<Arc<RecordingController>>>>;
@@ -1220,7 +1275,7 @@ impl CodescribeHotkeys {
             controller
                 .apply_user_revision_from_overlay(session_id, source_revision, rendered_text)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1248,44 +1303,51 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Restore a selected journal version as a fresh ledger UserEdit revision.
-    /// The historical bytes are selected in Rust, then submitted through the
-    /// existing session/revision compare-and-swap corridor.
-    pub async fn restore_document_revision(
+    /// The take's accepted versions and the selected one, read from the
+    /// reducer that owns them. Swift keeps no copy it could restore from.
+    pub async fn document_versions(
+        &self,
+        session_id: String,
+    ) -> Result<CsDocumentVersions, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return CsDocumentVersions {
+                    source_revision: 0,
+                    cursor: 0,
+                    versions: Vec::new(),
+                    archive_refusal: None,
+                };
+            };
+            let (revision, timeline) = controller.document_versions(&session_id).await;
+            CsDocumentVersions {
+                archive_refusal: controller.live_archive_refusal(&session_id),
+                ..CsDocumentVersions::from_timeline(revision, &timeline)
+            }
+        })
+        .await
+    }
+
+    /// Undo, Redo or a version pick: re-select accepted version `step` under
+    /// the session/revision CAS. Saved bytes only; Whisper and the formatter
+    /// do not run. Swift repaints from the projection callback alone.
+    pub async fn navigate_document_version(
         &self,
         session_id: String,
         source_revision: u64,
-        restore_revision: u64,
+        step: u64,
     ) -> Result<CsUserRevisionResult, CsError> {
+        let step = usize::try_from(step).map_err(|_| CsError::Recording {
+            msg: "Selected transcript version is out of range".to_string(),
+        })?;
         application_runtime::run(async move {
-            let history_session_id = session_id.clone();
-            let selected = tokio::task::spawn_blocking(move || {
-                transcript_bus::document_history(&history_session_id)
-            })
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })?
-            .map_err(|error| CsError::Recording {
-                msg: format!("Transcript history unavailable: {error}"),
-            })?
-            .into_iter()
-            .find(|entry| entry.revision == restore_revision)
-            .ok_or_else(|| CsError::Recording {
-                msg: "Selected transcript revision is not in the Bus history".to_string(),
-            })?;
             let controller =
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
-                    msg: "no recording controller for transcript restoration".to_string(),
+                    msg: "no recording controller for transcript navigation".to_string(),
                 })?;
             controller
-                .apply_user_revision_from_overlay(
-                    session_id,
-                    source_revision,
-                    selected.rendered_text,
-                )
+                .navigate_document_from_overlay(session_id, source_revision, step)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1311,7 +1373,7 @@ impl CodescribeHotkeys {
                     rendered_text,
                 )
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| {
                     tracing::warn!(refusal = %error, "retranscription revision refused");
                     CsError::Recording {
@@ -1358,7 +1420,7 @@ impl CodescribeHotkeys {
             controller
                 .apply_formatter_revision_from_overlay(session_id, source_revision, level)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1837,6 +1899,25 @@ pub struct CsUserRevisionResult {
     pub revision: u64,
     pub rendered_text: String,
     pub provenance_receipt: String,
+    /// The operation was accepted on the live take, but its versions are no
+    /// longer saved to the take's archived transcript: why. `None` while the
+    /// archive holds every accepted step.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<String>,
+}
+
+impl CsUserRevisionResult {
+    /// The acknowledgement, with the durable-history refusal when there is
+    /// one, so an accepted operation never reads as saved when it is not.
+    fn acknowledged(
+        value: codescribe::presentation::emitter::UserRevisionCommit,
+        controller: &RecordingController,
+    ) -> Self {
+        Self {
+            archive_refusal: controller.live_archive_refusal(&value.session_id),
+            ..Self::from(value)
+        }
+    }
 }
 
 impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevisionResult {
@@ -1847,6 +1928,7 @@ impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevis
             revision: value.revision,
             rendered_text: value.rendered_text,
             provenance_receipt: value.provenance_receipt,
+            archive_refusal: None,
         }
     }
 }
