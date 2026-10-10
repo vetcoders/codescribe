@@ -98,6 +98,22 @@ Historia zostaje.”) and `Check requests` („Sprawdź prośby”) — all thre
 `translated`, the wording is the Founder's own — plus the busy form
 `Checking…` („Sprawdzanie…”, `needs_review`).
 
+The Founder's rounds 5–8 (Shortcuts & control, the microphone card, Providers
+and AI models, plus the one Settings-wide Refresh chip) retire twenty-two keys
+whose rows were shortened or whose headings were deduplicated, and add
+twenty-six Polish rows. Founder-provided wording lands as `translated`: the
+save buttons (`Zapisz skróty`, `Przywróć domyślne`) and their note, the
+shortened Fn note (identifier key `settings.shortcuts.note.fnTapOwnedByMacos`),
+the dictation-control and extra-shortcut sentences, `Aktualnie używany: %@`,
+the cloud-transcription description, the AI-models blurb, both lane subtitles
+and the auto-send pair. Agent drafts are `needs_review`: the no-microphone
+form, the conditional egress warning, the key-rejected-with-account sentence
+and the three new refresh accessibility labels. Four refresh accessibility
+keys (`Refresh %@ models`, `Refresh %@ data`, `Refresh audio input devices`
+and the microphone hint) briefly left the catalog when the shared refresh chip
+took plain `String` labels; the chip takes `LocalizedStringKey` and they are
+back with their previous Polish in the same cut.
+
 A Founder sketch polishes the License panel's card. The single combined
 `Mode` row (no key, state readable) now shows the short `license.mode.basic`
 value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
