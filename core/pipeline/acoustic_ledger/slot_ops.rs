@@ -1058,18 +1058,18 @@ impl AcousticLedger {
             .collect::<Vec<_>>();
         let crossed_partitions = self.crossed_source_partitions(&prior, &pins, &ordinary_targets);
         // A bounded trial reserves its addressed group before dispatch. Both
-        // its return and later evidence for an unresolved trial must answer
+        // its return and later evidence for an unresolved group must answer
         // that whole question, including unchanged neighbour labels. Reverting
         // to per-word decisions would discard group witnesses and budgets.
-        let mut trial_targets = self.retained_word_trial_targets(&observation.occurrence);
+        let mut group_targets = self.unresolved_word_target_groups(&observation.occurrence);
         if let Some(trial) = self
             .word_evidence_input(observation)
             .and_then(|input| input.trial.as_ref())
-            && !trial_targets.contains(&trial.targets)
+            && !group_targets.contains(&trial.targets)
         {
-            trial_targets.push(trial.targets.clone());
+            group_targets.push(trial.targets.clone());
         }
-        let trial_groups = trial_targets
+        let source_groups = group_targets
             .iter()
             .filter_map(|targets| {
                 let sources = prior
@@ -1104,7 +1104,7 @@ impl AcousticLedger {
                 // Borrow the ledger only while discovering this component.
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
-                    if trial_groups.iter().any(|(sources, words)| {
+                    if source_groups.iter().any(|(sources, words)| {
                         words.contains(&pin) && sources.contains(&source)
                     }) {
                         return true;
@@ -1206,7 +1206,7 @@ impl AcousticLedger {
             // proves that no current word was collapsed by that timing jitter.
             // This only admits a geometric question; lexical confirmation is
             // still required below before any label or partition can change.
-            let preserves_trial_words = trial_groups
+            let preserves_group_words = source_groups
                 .iter()
                 .any(|(sources, _)| *sources == source_indices)
                 && sources.len() == outputs.len()
@@ -1267,7 +1267,7 @@ impl AcousticLedger {
             // A completed word-grain window proves which PCM was observed.
             // It does not authorize a merge of already distinct complete Words.
             // Pin or speech coverage alone cannot retire their word evidence.
-            let geometry = (!collapses_complete_words || preserves_trial_words)
+            let geometry = (!collapses_complete_words || preserves_group_words)
                 && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                     == sources.len()
                 && outputs
@@ -1355,7 +1355,7 @@ impl AcousticLedger {
             // Scope proof stays available for a real partition. It cannot
             // clear ambiguity or speech debt for an unproved contraction.
             let window_partition =
-                window_refinement && (!collapses_complete_words || preserves_trial_words);
+                window_refinement && (!collapses_complete_words || preserves_group_words);
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
