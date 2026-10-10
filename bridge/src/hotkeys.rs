@@ -1273,7 +1273,7 @@ impl CodescribeHotkeys {
             controller
                 .apply_user_revision_from_overlay(session_id, source_revision, rendered_text)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1345,7 +1345,7 @@ impl CodescribeHotkeys {
             controller
                 .navigate_document_from_overlay(session_id, source_revision, step)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1371,7 +1371,7 @@ impl CodescribeHotkeys {
                     rendered_text,
                 )
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| {
                     tracing::warn!(refusal = %error, "retranscription revision refused");
                     CsError::Recording {
@@ -1418,7 +1418,7 @@ impl CodescribeHotkeys {
             controller
                 .apply_formatter_revision_from_overlay(session_id, source_revision, level)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1897,6 +1897,25 @@ pub struct CsUserRevisionResult {
     pub revision: u64,
     pub rendered_text: String,
     pub provenance_receipt: String,
+    /// The operation was accepted on the live take, but its versions are no
+    /// longer saved to the take's archived transcript: why. `None` while the
+    /// archive holds every accepted step.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<String>,
+}
+
+impl CsUserRevisionResult {
+    /// The acknowledgement, with the durable-history refusal when there is
+    /// one, so an accepted operation never reads as saved when it is not.
+    fn acknowledged(
+        value: codescribe::presentation::emitter::UserRevisionCommit,
+        controller: &RecordingController,
+    ) -> Self {
+        Self {
+            archive_refusal: controller.live_archive_refusal(&value.session_id),
+            ..Self::from(value)
+        }
+    }
 }
 
 impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevisionResult {
@@ -1907,6 +1926,7 @@ impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevis
             revision: value.revision,
             rendered_text: value.rendered_text,
             provenance_receipt: value.provenance_receipt,
+            archive_refusal: None,
         }
     }
 }
