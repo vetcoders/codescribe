@@ -10,6 +10,10 @@ struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var manualSkillClient: AgentBridgeClient?
 
+  private static let permissionKinds: [PermissionKind] = [
+    .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
+  ]
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
@@ -35,21 +39,19 @@ struct CreatorPanel: View {
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
       .padding(.top, CSSpace.section)
-      VStack(spacing: 8) {
-        ForEach([
-          PermissionKind.microphone,
-          .accessibility,
-          .inputMonitoring,
-          .screenRecording,
-          .speechRecognition,
-        ]) { kind in
+      VStack(spacing: 0) {
+        ForEach(Self.permissionKinds) { kind in
           PermissionChecklistRow(
             kind: kind,
             state: model.permissions.state(kind),
             onStateChanged: { model.refreshPermissions() }
           )
+          if kind != Self.permissionKinds.last {
+            Divider().padding(.leading, 47)
+          }
         }
       }
+      .settingsGroupedInset(padding: 0)
       .padding(.top, CSSpace.control)
 
       SettingsSectionLabel(String(localized: "Voice & formatting"))
@@ -132,31 +134,47 @@ struct CreatorPanel: View {
         Button("Refresh status", action: model.refreshCreatorAgentBridge)
           .accessibilityIdentifier("settings-agent-bridge-refresh")
       }
-      Text("Install or update the skill directly from Codescribe.")
-        .font(.callout)
-        .foregroundStyle(Color.primary)
-      ForEach(AgentBridgeClient.allCases) { client in
-        let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
-        SettingsControlRow(
-          title: client.displayName,
-          subtitle: installed
-            ? String(
-              localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
-              comment: "Status on an agent client row: the Codescribe skill is installed")
-            : nil
-        ) {
-          Button(installed ? "Update skill" : "Install skill") {
-            model.installCreatorAgentBridge(for: client)
+      // One shared card: the heading, statuses and buttons already say what
+      // this section does, so the old caption sentence is gone (Founder brief,
+      // round 4, 2026-10-10).
+      VStack(spacing: 0) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
+          HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(client.displayName)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+              if installed {
+                Text(
+                  String(
+                    localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
+                    comment: "Status on an agent client row: the Codescribe skill is installed")
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(installed ? "Update skill" : "Install skill") {
+              model.installCreatorAgentBridge(for: client)
+            }
+            .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+            .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+            if model.creatorAgentBridgeError != nil {
+              Button("Replace manual copy…") { manualSkillClient = client }
+                .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+                .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+            }
           }
-          .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-          .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
-          if model.creatorAgentBridgeError != nil {
-            Button("Replace manual copy…") { manualSkillClient = client }
-              .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-              .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+          .padding(.horizontal, 15)
+          .padding(.vertical, 8)
+          if client != AgentBridgeClient.allCases.last {
+            Divider().padding(.leading, 15)
           }
         }
       }
+      .settingsGroupedInset(padding: 0)
       if !model.creatorAgentBridgeStatus.payloadAvailable {
         Text(model.creatorAgentBridgeStatus.detail)
           .font(.callout)
@@ -213,7 +231,7 @@ private struct MaxConsultationCard: View {
             Text("Max consultation")
               .font(.body.weight(.semibold))
               .foregroundStyle(.primary)
-            Text("Continue across takes, or start fresh without deleting previous history.")
+            Text("Continue the consultation or start a new one. History stays.")
               .font(.subheadline)
               .foregroundStyle(.secondary)
           }
@@ -281,7 +299,9 @@ struct MaxApprovalCards: View {
   }
 
   private var refreshButton: some View {
-    Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
+    // The neighbouring "Max permissions" heading carries the context, so the
+    // label stays short (Founder brief, round 4, 2026-10-10).
+    Button(model.maxApprovalBusy ? "Checking…" : "Check requests") {
       Task { await model.refreshMaxToolApprovals() }
     }
     .disabled(model.maxApprovalBusy)
@@ -297,11 +317,11 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
 
   var id: String { language.shortCode }
 
-  /// Row explanation: the segmented control carries only the names, so the
-  /// fine-tuned models and automatic detection are named here once.
+  /// Row explanation: one sentence about the only non-obvious choice. The
+  /// fine-tuned-models detail moved out of the base view (Founder brief,
+  /// round 4, 2026-10-10).
   static let supportingCopy = String(
-    localized:
-      "Polish and English use fine-tuned models. Multilingual detects the language automatically.",
+    localized: "Multilingual detects the language automatically.",
     comment: "Speech recognition language row explanation"
   )
 
@@ -427,6 +447,10 @@ private struct InterfaceLanguageRow: View {
 
 // MARK: - Permission checklist row
 
+/// One compact line inside the shared permissions group: status badge, name,
+/// and — only while something is missing — the repair action. The five rows
+/// share a single bordered card (Founder brief, round 4, 2026-10-10); the
+/// per-row olive/terracotta wash lives on in the badge and the action link.
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
@@ -467,15 +491,7 @@ private struct PermissionChecklistRow: View {
       }
     }
     .padding(.horizontal, 15)
-    .padding(.vertical, 13)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.08))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder((granted ? CSColor.olive : CSColor.terracotta).opacity(0.22), lineWidth: 1)
-    )
+    .padding(.vertical, 7)
   }
 
   @ViewBuilder
