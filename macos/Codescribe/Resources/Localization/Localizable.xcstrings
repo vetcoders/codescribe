@@ -3169,13 +3169,13 @@
         }
       }
     },
-    "Auto-detect also works when you speak several languages." : {
+    "Auto-detect when you speak several languages." : {
       "comment" : "Detail under the Auto-detect dictation language choice",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatyczne wykrywanie sprawdza się również wtedy, gdy mówisz w kilku językach."
+            "value" : "Automatyczne wykrywanie mowy, gdy mówisz w kilku językach."
           }
         }
       }
@@ -4039,8 +4039,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz funkcje, na które chcesz zezwolić"
+            "state" : "translated",
+            "value" : "Wybierz funkcje, na które wyrażasz zgodę"
           }
         }
       }
@@ -4329,6 +4329,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
+          }
+        }
+      }
+    },
+    "Codescribe is ready." : {
+      "comment" : "Setup chapter heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe jest gotowy."
           }
         }
       }
@@ -5881,17 +5892,6 @@
         }
       }
     },
-    "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable." : {
-      "comment" : "Why the app asks for the Input Monitoring scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wykrywa skróty klawiszowe rozpoczynające i kończące nagrywanie. Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
-          }
-        }
-      }
-    },
     "Diagnostic details" : {
       "comment" : "Dictionary: disclosure over telemetry coverage",
       "localizations" : {
@@ -6166,13 +6166,13 @@
         }
       }
     },
-    "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers." : {
+    "Download the dedicated Whisper model to transcribe entirely on your computer, without configuring cloud providers." : {
       "comment" : "Explain the benefit of the local transcription model",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pobierz dedykowany model Whisper, aby transkrybować mowę w całości na swoim Macu, bez konfigurowania dostawców chmurowych."
+            "state" : "translated",
+            "value" : "Pobierz dedykowany model Whisper, aby transkrypcje odbywały się w całości na Twoim komputerze, bez konfigurowania dostawców chmurowych."
           }
         }
       }
@@ -7187,7 +7187,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jak chcesz rozpocząć nagrywanie?"
+            "value" : "Jak chcesz rozpoczynać nagrywanie?"
           }
         }
       }
@@ -8224,7 +8224,7 @@
       }
     },
     "Manage" : {
-      "comment" : "Setup Agent account row action for a connected account",
+      "comment" : "Setup account and API key row action once connected or stored",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10028,24 +10028,24 @@
         }
       }
     },
-    "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works." : {
-      "comment" : "Why the app asks for the Full Disk Access scope",
+    "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works." : {
+      "comment" : "Consequence of a missing Full Disk Access scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Opcjonalne — pozwala Agentowi czytać chronione pliki, które wybierzesz jako kontekst. Bez tego uprawnienia te pliki pozostają niedostępne; dyktowanie nadal działa."
+            "state" : "translated",
+            "value" : "Opcjonalne — bez tego uprawnienia chronione pliki pozostają niedostępne dla Agenta jako kontekst; dyktowanie nadal działa."
           }
         }
       }
     },
-    "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works." : {
-      "comment" : "Why the app asks for the Screen Recording scope",
+    "Optional — without it, the Agent cannot use your screen as context; dictation still works." : {
+      "comment" : "Consequence of a missing Screen Recording scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Opcjonalne — pozwala Agentowi korzystać z ekranu jako kontekstu. Bez tego uprawnienia kontekst ekranu jest niedostępny; dyktowanie nadal działa."
+            "state" : "translated",
+            "value" : "Opcjonalne — bez tego uprawnienia Agent nie może korzystać z ekranu jako kontekstu; dyktowanie nadal działa."
           }
         }
       }
@@ -10480,17 +10480,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozycja nakładki"
-          }
-        }
-      }
-    },
-    "Powers Apple live dictation on your computer. Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
-      "comment" : "Why the app asks for the Speech Recognition scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Umożliwia dyktowanie na żywo przez Apple na Twoim komputerze. Bez tego uprawnienia dyktowanie Apple jest niedostępne; pobrany Whisper nadal może transkrybować lokalnie."
           }
         }
       }
@@ -11346,17 +11335,6 @@
         }
       }
     },
-    "Records your voice for dictation. Without it, voice recording is unavailable." : {
-      "comment" : "Why the app asks for the Microphone scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nagrywa Twój głos do dyktowania. Bez tego uprawnienia nagrywanie głosu jest niedostępne."
-          }
-        }
-      }
-    },
     "Recovered text — review before using" : {
       "localizations" : {
         "pl" : {
@@ -12172,8 +12150,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Sprawdź swoją konfigurację."
+            "state" : "translated",
+            "value" : "Sprawdź konfigurację."
           }
         }
       }
@@ -12960,34 +12938,12 @@
         }
       }
     },
-    "Setup is complete." : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konfiguracja jest gotowa."
-          }
-        }
-      }
-    },
     "Setup progress" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Postęp konfiguracji"
-          }
-        }
-      }
-    },
-    "Setup summary" : {
-      "comment" : "Setup step eyebrow",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Podsumowanie konfiguracji"
           }
         }
       }
@@ -14248,6 +14204,17 @@
         }
       }
     },
+    "Summary" : {
+      "comment" : "Setup step eyebrow",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podsumowanie"
+          }
+        }
+      }
+    },
     "System Settings" : {
       "comment" : "Button: open the System Settings pane",
       "localizations" : {
@@ -14702,17 +14669,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się odczytać pliku własnego promptu, dlatego używany jest wbudowany prompt."
-          }
-        }
-      }
-    },
-    "The download continues in the background when you leave this step or close setup. Check its progress in Settings." : {
-      "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pobieranie trwa w tle także po przejściu do kolejnego kroku lub zamknięciu konfiguracji. Postęp znajdziesz w Ustawieniach."
           }
         }
       }
@@ -15502,13 +15458,13 @@
         }
       }
     },
-    "Transcription on your Mac" : {
+    "Transcription on your device" : {
       "comment" : "Setup chapter heading for fully local transcription",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Transkrypcja na Twoim Macu"
+            "state" : "translated",
+            "value" : "Transkrypcja na Twoim urządzeniu"
           }
         }
       }
@@ -15582,17 +15538,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Napisz wiadomość…"
-          }
-        }
-      }
-    },
-    "Types dictated text into other apps. Without it, automatic text insertion is unavailable." : {
-      "comment" : "Why the app asks for the Accessibility scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wpisuje dyktowany tekst w innych aplikacjach. Bez tego uprawnienia automatyczne wstawianie tekstu jest niedostępne."
           }
         }
       }
@@ -16431,6 +16376,50 @@
         }
       }
     },
+    "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
+      "comment" : "Consequence of a missing Speech Recognition scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia dyktowanie Apple jest niedostępne; pobrany Whisper nadal może transkrybować lokalnie."
+          }
+        }
+      }
+    },
+    "Without it, automatic text insertion in other apps is unavailable." : {
+      "comment" : "Consequence of a missing Accessibility scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia automatyczne wstawianie tekstu w innych aplikacjach jest niedostępne."
+          }
+        }
+      }
+    },
+    "Without it, global recording shortcuts are unavailable." : {
+      "comment" : "Consequence of a missing Input Monitoring scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
+          }
+        }
+      }
+    },
+    "Without it, voice recording is unavailable." : {
+      "comment" : "Consequence of a missing Microphone scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia nagrywanie głosu jest niedostępne."
+          }
+        }
+      }
+    },
     "Without your consent Cloud never arms. Codescribe refuses the unauthorized cloud use and keeps dictating with Apple on-device plus your dictionary; no local model is loaded in its place." : {
       "localizations" : {
         "pl" : {
@@ -16543,13 +16532,13 @@
         }
       }
     },
-    "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings." : {
-      "comment" : "Permissions do not block Continue; each row explains its feature consequence",
+    "You can continue without granting these permissions. You can also change them later in System Settings." : {
+      "comment" : "Permissions do not block Continue; they can be granted later in System Settings",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Możesz kontynuować bez tych uprawnień. Wymienione poniżej funkcje będą niedostępne, dopóki nie przyznasz dostępu w Ustawieniach systemowych."
+            "state" : "translated",
+            "value" : "Możesz kontynuować bez nadania tych uprawnień. Uprawnienia zmienisz również później w Ustawieniach systemowych."
           }
         }
       }
@@ -16560,6 +16549,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Możesz zmienić skróty już teraz, ale zaczną działać dopiero po przyznaniu obu wymaganych uprawnień.\n\nKliknij, aby otworzyć Ustawienia systemowe."
+          }
+        }
+      }
+    },
+    "You can move on to the next step. The download finishes in the background." : {
+      "comment" : "Whisper download never blocks navigation, closing the wizard or completing setup",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Możesz przejść do kolejnego kroku. Pobieranie zakończy się w tle."
           }
         }
       }
