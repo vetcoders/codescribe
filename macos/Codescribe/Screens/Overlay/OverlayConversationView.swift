@@ -331,6 +331,10 @@ struct OverlayConversationView: View {
         if message.unsolicited && message.kind == .reply {
           Text("Unsolicited reply").font(.system(size: 10 * textScale))
         }
+        Spacer(minLength: 8)
+        CopyMessageButton(text: message.text)
+          .buttonStyle(.borderless)
+          .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
       if let question = addressedQuestion(for: message) {

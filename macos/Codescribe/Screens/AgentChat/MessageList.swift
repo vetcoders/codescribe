@@ -1585,9 +1585,9 @@ private struct RenderModeButton: View {
 
 /// Puts a message's raw text on the general pasteboard — the single copy path
 /// shared by the bubble context menu and the inline copy button.
-private func chatCopy(_ text: String) {
-  NSPasteboard.general.clearContents()
-  NSPasteboard.general.setString(text, forType: .string)
+func chatCopy(_ text: String, to pasteboard: NSPasteboard = .general) {
+  pasteboard.clearContents()
+  pasteboard.setString(text, forType: .string)
 }
 
 /// Right-click "Copy" that puts a message's raw text on the pasteboard.
@@ -1602,7 +1602,7 @@ private struct CopyButton: View {
 /// hovered). Copies the raw pre-render text via the same `chatCopy` path the
 /// context menu uses, then flips to a green "copied" for ~1.5s. Disabled when
 /// there is nothing to copy.
-private struct CopyMessageButton: View {
+struct CopyMessageButton: View {
   let text: String
   @State private var copied = false
   @State private var hovering = false
