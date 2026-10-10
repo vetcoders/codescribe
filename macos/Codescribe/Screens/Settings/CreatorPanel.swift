@@ -85,6 +85,7 @@ struct CreatorPanel: View {
             .disabled(model.newMaxConsultationPending)
             .accessibilityIdentifier("settings-new-max-consultation")
           }
+          .id(SettingsAnchor.maxConsultation)
           if let notice = model.maxConsultationNotice {
             Text(notice)
               .font(.callout)

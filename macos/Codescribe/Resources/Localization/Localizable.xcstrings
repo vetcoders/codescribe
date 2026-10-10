@@ -1,6 +1,296 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Max settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia Maxa…"
+          }
+        }
+      }
+    },
+    "Consultation settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Consultation settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia konsultacji…"
+          }
+        }
+      }
+    },
+    "Agent connection settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agent connection settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia połączenia Agenta…"
+          }
+        }
+      }
+    },
+    "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max korzysta z połączenia Agenta. Sprawdź dostawcę i logowanie lub rozpocznij nową konsultację. Dotychczasowa historia zostanie zachowana."
+          }
+        }
+      }
+    },
+    "Word pins and PCM slots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Word pins and PCM slots"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Piny słów i sloty PCM"
+          }
+        }
+      }
+    },
+    "Latest recorded slots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latest recorded slots"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najnowsze zapisane sloty"
+          }
+        }
+      }
+    },
+    "Word pins could not be read. No timing was inferred." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Word pins could not be read. No timing was inferred."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odczytać pinów słów. Nie odtworzono czasów na podstawie tekstu."
+          }
+        }
+      }
+    },
+    "No recorded word slots for this take." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No recorded word slots for this take."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak zapisanych slotów słów dla tego nagrania."
+          }
+        }
+      }
+    },
+    "Select a pin to inspect its PCM range and source." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a pin to inspect its PCM range and source."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz pin, aby zobaczyć jego zakres PCM i źródło."
+          }
+        }
+      }
+    },
+    "Recorded adjudication" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recorded adjudication"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisane rozstrzygnięcie"
+          }
+        }
+      }
+    },
+    "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paski pokazują pozycję pinu w jego wystąpieniu. Czas slotu nie potwierdza dostarczenia. Brakujące dane Silero lub CTC nie są rekonstruowane."
+          }
+        }
+      }
+    },
+    "PCM range" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "PCM range"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakres PCM"
+          }
+        }
+      }
+    },
+    "Capture epoch" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capture epoch"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Epoka przechwytywania"
+          }
+        }
+      }
+    },
+    "Observation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Observation"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obserwacja"
+          }
+        }
+      }
+    },
+    "Occurrence" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Occurrence"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wystąpienie"
+          }
+        }
+      }
+    },
+    "Could not save pasted image. Try pasting again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save pasted image. Try pasting again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać wklejonego obrazu. Spróbuj wkleić ponownie."
+          }
+        }
+      }
+    },
+  "Some agents may have received this message. Check read receipts before sending again.": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Some agents may have received this message. Check read receipts before sending again."
+        }
+      },
+      "pl": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Niektórzy agenci mogli już otrzymać tę wiadomość. Przed ponownym wysłaniem sprawdź potwierdzenia odczytu."
+        }
+      }
+    }
+  },
+
     "" : {
       "shouldTranslate" : false
     },
