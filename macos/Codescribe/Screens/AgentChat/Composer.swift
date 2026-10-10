@@ -124,9 +124,12 @@ struct Composer: View {
       .padding(.vertical, 6)
       .background(Color.primary.opacity(isDragging ? 0.07 : 0.04))
       .overlay(
+        // 0.14, not 0.09: in an empty thread the composer is the second
+        // point of gravity, and the old border sank into the canvas
+        // (Founder brief 2026-10-10).
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(
-            isDragging ? CSColor.chromeAccent : Color.primary.opacity(0.09),
+            isDragging ? CSColor.chromeAccent : Color.primary.opacity(0.14),
             lineWidth: isDragging ? 1.5 : 1
           )
       )

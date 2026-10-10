@@ -38,7 +38,7 @@ struct AgentChatView: View {
     }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
-    .background(AgentWindowCapabilities(isPinned: isPinned, model: store.currentThread?.model))
+    .background(AgentWindowCapabilities(isPinned: isPinned))
     .frame(
       minWidth: AgentWindowMetrics.minWidth,
       idealWidth: AgentWindowMetrics.idealWidth,
@@ -107,7 +107,6 @@ enum AgentWindowLevelPolicy {
 
 private struct AgentWindowCapabilities: NSViewRepresentable {
   let isPinned: Bool
-  let model: String?
 
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
@@ -121,11 +120,12 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
-    let name = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    window?.title =
-      name.isEmpty
-      ? String(localized: "Agent", comment: "Agent window title")
-      : String(localized: "Agent — \(name)", comment: "The placeholder is a model name")
+    // Only the app identity. The model belongs to the conversation, so it
+    // reads next to the thread title in the chrome — a second copy in the
+    // native titlebar stacked two headers over one window (Founder brief
+    // 2026-10-10). The titlebar itself stays native: it owns dragging and
+    // the window controls.
+    window?.title = String(localized: "Agent", comment: "Agent window title")
   }
 }
 
@@ -314,19 +314,35 @@ private struct ThreadDetail: View {
           .fixedSize()
       }
 
+      // The model is conversation information, so it reads here beside the
+      // thread title — not in the native titlebar. First to give way when
+      // the window narrows.
+      if let model = store.currentThread?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !model.isEmpty
+      {
+        Text(verbatim: model)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+
       liveStatusPill
         .layoutPriority(2)
 
       Spacer(minLength: 8)
 
-      HStack(spacing: 10) {
+      // One visual weight for the whole trailing cluster: 14 pt glyphs,
+      // tertiary at rest, accent only for an active state (the pin). Even
+      // 12 pt gaps — no control is louder than its neighbours.
+      HStack(spacing: 12) {
         widthModeMenu
 
         Button {
           isPinned.toggle()
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 14, weight: .medium))
             .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
         }
         .csFocusRing()
@@ -346,14 +362,13 @@ private struct ThreadDetail: View {
             : String(localized: "Unpinned", comment: "Always-on-top state"))
 
         Button(action: { openWindow.presentSettings() }) {
-          CSIconView(icon: .settings, size: 14)
+          CSIconView(icon: .settings, size: 14, color: CSColor.textTertiary)
         }
         .csFocusRing()
         .help("Settings")
 
         threadMenu
       }
-      .foregroundStyle(CSColor.chromeAccent)
     }
     .padding(
       .leading,
@@ -367,6 +382,9 @@ private struct ThreadDetail: View {
   }
 
   /// Comfortable / Wide / Full — persists via `ChatLayoutPolicy.defaultsKey`.
+  /// A small selector with a disclosure chevron: it is a layout setting, not
+  /// a headline Agent feature, and the sparkle glyph read as an AI function
+  /// rather than a width choice (Founder brief 2026-10-10).
   private var widthModeMenu: some View {
     Menu {
       ForEach(ChatWidthMode.allCases) { mode in
@@ -381,11 +399,13 @@ private struct ThreadDetail: View {
         }
       }
     } label: {
-      HStack(spacing: 4) {
-        CSIconView(icon: .setupWizard, size: 12)
+      HStack(spacing: 3) {
         Text(widthMode.label)
           .font(CSFont.mono(10, .medium))
+        Image(systemName: "chevron.down")
+          .font(.system(size: 8, weight: .semibold))
       }
+      .foregroundStyle(CSColor.textTertiary)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
@@ -421,7 +441,7 @@ private struct ThreadDetail: View {
         Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
       }
     } label: {
-      CSIconView(icon: .more, size: 14, weight: .bold)
+      CSIconView(icon: .more, size: 14, color: CSColor.textTertiary)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)

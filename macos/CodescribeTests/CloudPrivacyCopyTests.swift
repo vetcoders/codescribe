@@ -10,27 +10,39 @@ import XCTest
 /// while the enforced behavior stays described truthfully.
 @MainActor
 final class CloudPrivacyCopyTests: XCTestCase {
-  /// Every rendered line is non-empty and every block is headed, so a block
-  /// cannot ship as an unlabelled wall of text.
-  func testBlocksAreHeadedAndNonEmpty() {
-    XCTAssertFalse(CloudPrivacyCopy.blocks.isEmpty)
-    for block in CloudPrivacyCopy.blocks {
+  /// Every detail subsection is headed and non-empty, and collapsing the
+  /// details did not drop a safeguard: all four enforced promises still render.
+  func testDetailBlocksAreHeadedAndKeepEverySafeguard() {
+    XCTAssertFalse(CloudPrivacyCopy.detailBlocks.isEmpty)
+    for block in CloudPrivacyCopy.detailBlocks {
       XCTAssertFalse(block.heading.isEmpty, "block \(block.id) needs a heading")
       XCTAssertFalse(block.lines.isEmpty, "block \(block.id) needs at least one line")
       for line in block.lines {
         XCTAssertFalse(line.isEmpty, "block \(block.id) carries an empty line")
       }
     }
+    let rendered = CloudPrivacyCopy.detailBlocks.flatMap(\.lines)
+    for safeguard in [
+      CloudPrivacyCopy.diagnostics, CloudPrivacyCopy.apiKeys,
+      CloudPrivacyCopy.withoutConsent, CloudPrivacyCopy.localPowerInstall,
+    ] {
+      XCTAssertTrue(
+        rendered.contains(safeguard),
+        "hiding the details behind a disclosure must not remove a safeguard")
+    }
+    XCTAssertFalse(CloudPrivacyCopy.detailsCaption.isEmpty)
+    XCTAssertFalse(CloudPrivacyCopy.configureCloudServices.isEmpty)
   }
 
   /// Cloud audio egress is consent-gated, and the copy says the consent is
-  /// explicit rather than implied by picking a mode.
+  /// explicit rather than implied by picking a mode. The arming condition
+  /// reads on the Audio egress row.
   func testCopyStatesConsentGatesCloudAudioEgress() {
     XCTAssertTrue(
       CloudPrivacyCopy.withoutConsent.localizedCaseInsensitiveContains("without your consent"),
       "the refusal line must name the missing consent as the cause")
     XCTAssertTrue(
-      CloudPrivacyCopy.consentIsNotLiveEgress.localizedCaseInsensitiveContains("cloud mode"),
+      CloudPrivacyCopy.egressAudioDetail.localizedCaseInsensitiveContains("cloud mode"),
       "the egress condition must name the mode that arms it")
   }
 
@@ -70,14 +82,15 @@ final class CloudPrivacyCopyTests: XCTestCase {
   /// explicit re-transcription of a finished recording, which does not run
   /// through the mode picker.
   func testEgressNamesBothCloudModeAndExplicitRetranscription() {
-    let audio = CloudPrivacyCopy.egressAudio
+    let audio = CloudPrivacyCopy.egressAudioDetail
     XCTAssertTrue(audio.localizedCaseInsensitiveContains("Cloud mode"))
     XCTAssertTrue(
       audio.localizedCaseInsensitiveContains("re-transcription"),
       "the second audio egress must be named, not folded into Cloud mode")
     XCTAssertTrue(
-      CloudPrivacyCopy.egressText.localizedCaseInsensitiveContains("AI requests"),
+      CloudPrivacyCopy.egressTextDetail.localizedCaseInsensitiveContains("AI requests"),
       "text egress belongs to configured AI providers")
+    XCTAssertNotEqual(CloudPrivacyCopy.egressAudioTitle, CloudPrivacyCopy.egressTextTitle)
   }
 
   /// Telemetry is bounded exactly like the typed core telemetry: identifiers
@@ -109,8 +122,14 @@ final class CloudPrivacyCopyTests: XCTestCase {
   /// The copy stays provider-neutral: the vendor lives behind the gateway.
   func testCopyNeverNamesACloudVendor() {
     let vendors = ["OpenAI", "Deepgram", "AssemblyAI", "Google", "Azure", "Speechmatics", "Groq"]
-    var lines = CloudPrivacyCopy.blocks.flatMap(\.lines)
-    lines.append(CloudPrivacyCopy.consentIsNotLiveEgress)
+    var lines = CloudPrivacyCopy.detailBlocks.flatMap(\.lines)
+    lines.append(contentsOf: [
+      CloudPrivacyCopy.consentIsNotLiveEgress,
+      CloudPrivacyCopy.egressAudioDetail,
+      CloudPrivacyCopy.egressTextDetail,
+      CloudPrivacyCopy.detailsCaption,
+      CloudPrivacyCopy.configureCloudServices,
+    ])
     for line in lines {
       for vendor in vendors {
         XCTAssertFalse(
