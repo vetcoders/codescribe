@@ -5646,9 +5646,16 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
 
 
 def wait_for_pending_command(args: argparse.Namespace) -> int:
-    """A finite notification task for providers that wake on process completion."""
+    """A notification task for providers that wake on process completion.
+
+    Without --max-wait the process ends only when the owned mailbox has an unread
+    non-draft message, so an idle agent costs no model turn. --max-wait keeps a
+    bounded diagnostic variant that may also end with watch_timeout.
+    """
     lease_id = lease_identifier(args.provider, args.session)
-    deadline = time.monotonic() + args.max_wait
+    # No --max-wait: wait without a deadline. A provider that wakes its agent on
+    # task completion would otherwise get one empty turn per deadline.
+    deadline = None if args.max_wait is None else time.monotonic() + args.max_wait
     source = args.bridge_home / "leases" / f"{lease_id}.json"
     trigger = BusEventTrigger(source, args.interval)
     try:
@@ -5660,6 +5667,9 @@ def wait_for_pending_command(args: argparse.Namespace) -> int:
                       "pending_count": len(rows),
                       "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
                 return 0
+            if deadline is None:
+                trigger.wait(timeout=1.0)
+                continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 emit({"kind": "watch_timeout", "lease_id": lease_id,
@@ -5926,7 +5936,8 @@ def main() -> int:
     parser.add_argument("--until-event", action="store_true",
                         help="with --watch: exit when the owned mailbox has unread non-draft messages; never ACK")
     parser.add_argument("--max-wait", type=float, default=None,
-                        help="with --watch --until-event: bounded wait in seconds, default 55 (0 < seconds <= 60)")
+                        help="with --watch --until-event: diagnostic deadline in seconds (0 < seconds <= 60); "
+                        "omit it to wait without a deadline until a message arrives")
     watch_format = parser.add_mutually_exclusive_group()
     watch_format.add_argument("--human", action="store_true", help="diagnostic --watch as readable one-line envelopes")
     watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: bell and complete message")
@@ -6118,8 +6129,7 @@ def main() -> int:
                         args.name, args.voice, args.speed is not None, args.tts_vendor,
                         args.drafts, args.coalesce, args.on_seal))):
             parser.error("--until-event requires only --watch --provider/--session and optional --max-wait")
-        args.max_wait = 55.0 if args.max_wait is None else args.max_wait
-        if not 0 < args.max_wait <= 60:
+        if args.max_wait is not None and not 0 < args.max_wait <= 60:
             parser.error("--max-wait must be greater than zero and at most 60 seconds")
         return wait_for_pending_command(args)
     if args.read_pending:

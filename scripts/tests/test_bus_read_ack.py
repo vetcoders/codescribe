@@ -116,6 +116,41 @@ class ReadAckTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 self.assertEqual(self.bounded_watch(*extra).returncode, 2)
 
+    def open_watch(self, timeout):
+        """--until-event without --max-wait: no deadline, so no empty turn."""
+        return subprocess.run(
+            [sys.executable, str(SOURCE), "--watch", "--until-event",
+             "--provider", "codex", "--session", self.session,
+             "--bridge-home", str(self.root)],
+            capture_output=True, text=True, timeout=timeout)
+
+    def test_open_watch_never_ends_on_an_empty_mailbox(self):
+        self.ack(self.ids)
+        self.save()
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            self.open_watch(timeout=1.5)
+        self.assertFalse((caught.exception.stdout or b"").strip())
+        self.assertFalse((self.root / "acknowledgments" / self.lease / "watch_timeout").exists())
+
+    def test_open_watch_ends_only_when_a_message_arrives(self):
+        import threading
+        self.pending = []
+        self.save()
+        def arrive():
+            self.pending = [self.envelope(self.ids[0])]
+            self.save()
+        timer = threading.Timer(0.4, arrive)
+        timer.start()
+        try:
+            result = self.open_watch(timeout=5)
+        finally:
+            timer.join()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notice = json.loads(result.stdout)
+        self.assertEqual(notice["kind"], "mailbox_ready")
+        self.assertEqual(notice["pending_count"], 1)
+        self.assertFalse((self.root / "acknowledgments").exists())
+
     def test_bounded_watch_refuses_missing_lease_without_creating_one(self):
         (self.root / "leases" / f"{self.lease}.json").unlink()
         result = self.bounded_watch()

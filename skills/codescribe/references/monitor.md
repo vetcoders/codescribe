@@ -131,24 +131,32 @@ command **finishes**. Streaming output in its tool card does not itself deliver
 another model turn. Do not run an infinite `cs-bus --watch` in foreground or rely
 on its background process ever completing.
 
-Use one finite background task with this command (replace SESSION with the
-current Kimi session ID, retaining any explicit bridge-home override):
+Use one background task with this command (replace SESSION with the current
+Kimi session ID, retaining any explicit bridge-home override):
 
 ```bash
-cs-bus --watch --until-event --max-wait 55 --provider kimi-code --session SESSION
+cs-bus --watch --until-event --provider kimi-code --session SESSION
 ```
 
-Pass it to Kimi's `Bash` with `run_in_background=true` and a short `description`.
-Then return control; its completion notification resumes the agent. The helper
-checks the canonical owned mailbox, including messages queued before it started,
-and exits with one small `mailbox_ready` notice or `watch_timeout`. It does not
-read messages into the conversation, ACK them, consume the cursor, or start a
-second follower. Drafts and already acknowledged deliveries do not wake it.
+Pass it to Kimi's `Bash` with `run_in_background=true`, `disable_timeout=true`
+and a short `description`. Kimi's background tasks otherwise end after 10 minutes,
+and every task end is a wakeup. Then return control; the completion notification
+resumes the agent. Without `--max-wait` the helper ends **only** when the owned
+mailbox has an unread non-draft message, so an idle agent costs no model turn:
+a deadline-based variant wakes a 500K-token context once per deadline for
+nothing. `--max-wait N` (0 < N <= 60) remains a diagnostic that may also end with
+`watch_timeout`; do not use it as the standing wakeup. The helper checks the
+canonical owned mailbox, including messages queued before it started, and exits
+with one small `mailbox_ready` notice. It does not read messages into the
+conversation, ACK them, consume the cursor, or start a second follower. Drafts
+and already acknowledged deliveries do not wake it.
 
 On `mailbox_ready`, run `--read-pending`, read complete messages and immediately
-ACK only `read_delivery_ids`, reply, drain, and rearm one finite background task.
-On `watch_timeout`, rearm without ACK or a user-facing reply. On refusal/nonzero
-exit, inspect the error; do not rearm a failing task in a loop. Do not leave an
+ACK only `read_delivery_ids`, reply, drain, and rearm one background task. On a
+diagnostic `watch_timeout`, rearm without ACK or a user-facing reply. On
+refusal/nonzero exit, inspect the error; do not rearm a failing task in a loop.
+A per-minute cron that injects a prompt is not a substitute: it runs a model turn
+on an empty mailbox. Do not leave an
 old infinite watch running alongside it: stop that tool task from its owning
 Kimi session before switching. This bounded wait does not supervise/restart a
 dead follower; use `--status` and the same-session recovery procedure if the
