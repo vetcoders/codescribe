@@ -3770,6 +3770,13 @@ final class OverlayState {
         else { return }
         self.documentVersions = versions
         self.documentVersionsSessionId = sessionId
+        if let refusal = versions.archiveRefusal {
+          // The live versions still work; reopening this take from history
+          // will not show the ones after this point.
+          self.revisionCommitError = String(
+            localized: "Versions of this take are no longer saved to history: \(refusal)",
+            comment: "The placeholder is the archive's own refusal text")
+        }
       } catch {
         guard let self, self.documentVersionsReadGeneration == generation,
           self.latestTranscriptProjection?.sessionId == sessionId

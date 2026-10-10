@@ -78,6 +78,10 @@ pub struct CsDocumentVersions {
     pub source_revision: u64,
     pub cursor: u64,
     pub versions: Vec<CsDocumentVersion>,
+    /// Why these versions are no longer saved to the take's archived
+    /// transcript. `None` while every accepted step is durable.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<String>,
 }
 
 impl CsDocumentVersions {
@@ -87,6 +91,7 @@ impl CsDocumentVersions {
     ) -> Self {
         Self {
             source_revision,
+            archive_refusal: None,
             cursor: timeline.cursor() as u64,
             versions: timeline
                 .steps()
@@ -1308,10 +1313,14 @@ impl CodescribeHotkeys {
                     source_revision: 0,
                     cursor: 0,
                     versions: Vec::new(),
+                    archive_refusal: None,
                 };
             };
             let (revision, timeline) = controller.document_versions(&session_id).await;
-            CsDocumentVersions::from_timeline(revision, &timeline)
+            CsDocumentVersions {
+                archive_refusal: controller.live_archive_refusal(&session_id),
+                ..CsDocumentVersions::from_timeline(revision, &timeline)
+            }
         })
         .await
     }

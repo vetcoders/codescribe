@@ -2413,6 +2413,17 @@ impl RecordingController {
         Ok(receipt)
     }
 
+    /// Why the versions of `session_id` are no longer saved to its archived
+    /// transcript, when the mirror stopped. Shown with the versions control.
+    pub fn live_archive_refusal(&self, session_id: &str) -> Option<String> {
+        self.live_archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|mirror| mirror.session_id() == session_id)
+            .and_then(|mirror| mirror.diverged().map(str::to_owned))
+    }
+
     /// Accepted steps of the retained take with the selected one and the
     /// revision a navigation names. No retained take reads as no history.
     pub async fn document_versions(
@@ -2440,14 +2451,16 @@ impl RecordingController {
             warn!("archived take has no live document history to keep");
             return;
         };
+        // The archived bytes are the version selected at Stop. A take with no
+        // operation yet has no steps: the reducer anchors its committed
+        // document as step 0 on the first operation, and that step is the
+        // archived original. Mapped once, by position, never by text.
         let (_, timeline) = presentation.document_timeline(session_id);
-        if timeline.steps().is_empty() {
-            warn!(
-                session_id,
-                "archived take has no live document history to keep"
-            );
-        }
-        let archived_step = (!timeline.steps().is_empty()).then(|| timeline.cursor());
+        let archived_step = if timeline.steps().is_empty() {
+            0
+        } else {
+            timeline.cursor()
+        };
         *self
             .live_archive
             .lock()
@@ -2476,9 +2489,6 @@ impl RecordingController {
             else {
                 return Ok(());
             };
-            if mirror.diverged().is_some() {
-                return Ok(());
-            }
             let (_, timeline) = presentation.document_timeline(&session_id);
             mirror
                 .sync(timeline.steps(), timeline.cursor())
