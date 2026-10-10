@@ -176,7 +176,8 @@ private final class OverlayStateTestEngine: DictationEngine {
       sourceRevision: historySourceRevision ?? historyEntries.last?.revision ?? 0,
       cursor: historyCursor ?? UInt64(max(0, historyEntries.count - 1)),
       versions: historyEntries.enumerated().map { index, entry in
-        CsDocumentVersion(step: UInt64(index), provenance: entry.provenance, detail: nil,
+        CsDocumentVersion(
+          step: UInt64(index), provenance: entry.provenance, detail: nil,
           renderedText: entry.renderedText, emittedAt: entry.emittedAt,
           receiptId: "version-\(entry.revision)")
       })
@@ -185,8 +186,10 @@ private final class OverlayStateTestEngine: DictationEngine {
     guard !historyEntries.isEmpty else { return }
     let cursor = Int(historyCursor ?? UInt64(historyEntries.count - 1))
     historyEntries = Array(historyEntries.prefix(cursor + 1))
-    historyEntries.append(CsDocumentHistoryEntry(revision: source + 1, renderedText: text,
-      provenance: provenance, emittedAt: "2026-10-10T00:00:00Z"))
+    historyEntries.append(
+      CsDocumentHistoryEntry(
+        revision: source + 1, renderedText: text,
+        provenance: provenance, emittedAt: "2026-10-10T00:00:00Z"))
     historyCursor = UInt64(historyEntries.count - 1)
     historySourceRevision = source + 1
   }
@@ -308,12 +311,15 @@ private final class OverlayStateTestEngine: DictationEngine {
     path: String, revision: UInt64, text: String, provenance: String, undo: UInt64? = nil
   ) -> CsArchivedDocument {
     let prior = archivedDocuments[path]
-    var versions = prior?.versions ?? CsArchivedDocument.unrevised(path: path, text: "tekst A").versions
+    var versions =
+      prior?.versions ?? CsArchivedDocument.unrevised(path: path, text: "tekst A").versions
     if revision > (prior?.revision ?? 0) {
       versions = Array(versions.prefix(Int(prior?.cursor ?? 0) + 1))
-      versions.append(CsDocumentVersion(step: UInt64(versions.count), provenance: provenance,
-        detail: nil, renderedText: text, emittedAt: "2026-10-10T00:00:00Z",
-        receiptId: "archive-test-\(revision)"))
+      versions.append(
+        CsDocumentVersion(
+          step: UInt64(versions.count), provenance: provenance,
+          detail: nil, renderedText: text, emittedAt: "2026-10-10T00:00:00Z",
+          receiptId: "archive-test-\(revision)"))
     }
     return CsArchivedDocument(
       path: path, originalText: prior?.originalText ?? "tekst A",
@@ -1332,7 +1338,8 @@ final class OverlayStateTests: XCTestCase {
   @MainActor
   func testBroadcastComposerRetainsFailureAndNewerDraft() async {
     let state = OverlayState()
-    let conversation = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let conversation = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
     state.conversationDrafts["0"] = "Do wszystkich"
     state.publishConversationText = { owner, _ in
       XCTAssertNil(owner)
@@ -2086,6 +2093,17 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.transcriptStorageError, failure)
     state.setTranscriptStorageError(nil)
     XCTAssertNil(state.transcriptStorageError)
+  }
+
+  func testMaxPreparationWarningSurvivesNewTakeWithoutExposingRawFailure() {
+    let state = OverlayState()
+    state.setMaxPreparationError("private endpoint token and provider exception")
+    XCTAssertEqual(
+      state.maxPreparationError, String(localized: "Max could not prepare its conversation."))
+    state.prepareForExternalStart()
+    XCTAssertNotNil(state.maxPreparationError)
+    state.setMaxPreparationError(nil)
+    XCTAssertNil(state.maxPreparationError)
   }
 
   func testPostedPasteEventsDoNotClaimConfirmedInsertion() async {
@@ -3861,7 +3879,8 @@ final class OverlayStateTests: XCTestCase {
     projectText("raw", to: state, canFormat: true, terminal: true, reducerRevision: 7)
     engine.formatterArchiveRefusal = "disk full"
     engine.onFormatter = {
-      self.projectText("raw", to: state, canFormat: true, terminal: true,
+      self.projectText(
+        "raw", to: state, canFormat: true, terminal: true,
         lifecycleTerminal: false, reducerRevision: 8, reducerAction: "derived_projection",
         label: "formatter-derived-overlay-state-tests-8-9223372036854775809",
         deliveryText: engine.formatterRenderedText)
@@ -3869,14 +3888,16 @@ final class OverlayStateTests: XCTestCase {
     state.formatTranscript(at: .smart)
     for _ in 0..<50 { await Task.yield() }
     XCTAssertFalse(state.formatterCommitPending)
-    XCTAssertTrue(state.revisionCommitError?.contains("disk full") == true,
+    XCTAssertTrue(
+      state.revisionCommitError?.contains("disk full") == true,
       "the later receipt must reveal failed durability even after paint cleared pending")
   }
 
   func testVersionPickMovesCursorWithoutAppendingAnAttemptOrOptimisticPaint() async {
     let engine = OverlayStateTestEngine()
     engine.historyEntries = ["first", "second", "third"].enumerated().map { index, text in
-      CsDocumentHistoryEntry(revision: UInt64(index + 1), renderedText: text,
+      CsDocumentHistoryEntry(
+        revision: UInt64(index + 1), renderedText: text,
         provenance: "retranscribe", emittedAt: "2026-10-10T00:00:00Z")
     }
     let state = OverlayState()
@@ -3895,9 +3916,11 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.formattedText, "third", "only the reducer projection repaints")
     let refreshed = expectation(description: "cursor read")
     engine.onHistoryRead = { refreshed.fulfill() }
-    projectText("first", to: state, terminal: true, lifecycleTerminal: false,
+    projectText(
+      "first", to: state, terminal: true, lifecycleTerminal: false,
       reducerRevision: 4, reducerAction: "apply_manual_edit",
-      documentReceipt: emptyRecoveryReceipt(text: "first", provenance: .navigation,
+      documentReceipt: emptyRecoveryReceipt(
+        text: "first", provenance: .navigation,
         sessionId: "overlay-state-tests", source: 3, revision: 4))
     await fulfillment(of: [refreshed], timeout: 1)
     XCTAssertEqual(state.formattedText, "first")
@@ -4409,10 +4432,14 @@ final class OverlayStateTests: XCTestCase {
     let engine = OverlayStateTestEngine()
     engine.lastSessionAudioPathValue = "/tmp/take-undo.wav"
     engine.transcriptionText = "gorsza wersja"
-    engine.historyEntries = [CsDocumentHistoryEntry(revision: 7, renderedText: "dobra wersja",
-      provenance: "raw", emittedAt: "2026-10-10T00:00:00Z")]
+    engine.historyEntries = [
+      CsDocumentHistoryEntry(
+        revision: 7, renderedText: "dobra wersja",
+        provenance: "raw", emittedAt: "2026-10-10T00:00:00Z")
+    ]
     state.engine = engine
-    projectText("dobra wersja", to: state, canRetranscribe: true, terminal: true,
+    projectText(
+      "dobra wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 7)
     for _ in 0..<30 { await Task.yield() }
     let committed = expectation(description: "retranscribe committed")
@@ -4420,7 +4447,8 @@ final class OverlayStateTests: XCTestCase {
     state.retranscribe(pass: .fullHq)
     await fulfillment(of: [committed], timeout: 2)
     XCTAssertEqual(engine.revisionRequests.first?.renderedText, "gorsza wersja")
-    projectText("gorsza wersja", to: state, canRetranscribe: true, terminal: true,
+    projectText(
+      "gorsza wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit")
     for _ in 0..<30 { await Task.yield() }
     XCTAssertTrue(state.transcriptVersions.canUndo)
@@ -4428,9 +4456,11 @@ final class OverlayStateTests: XCTestCase {
     engine.onRestore = { restored.fulfill() }
     state.undoDocumentVersion()
     await fulfillment(of: [restored], timeout: 2)
-    projectText("dobra wersja", to: state, terminal: true, lifecycleTerminal: false,
+    projectText(
+      "dobra wersja", to: state, terminal: true, lifecycleTerminal: false,
       sessionId: "take-undo", reducerRevision: 9, reducerAction: "apply_manual_edit",
-      documentReceipt: emptyRecoveryReceipt(text: "dobra wersja", provenance: .navigation,
+      documentReceipt: emptyRecoveryReceipt(
+        text: "dobra wersja", provenance: .navigation,
         sessionId: "take-undo", source: 8, revision: 9))
     for _ in 0..<30 { await Task.yield() }
     XCTAssertEqual(engine.restoredSelections, [0])
@@ -4500,7 +4530,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
     engine.historyEntries = ["stary", "nowy"].enumerated().map { index, text in
-      CsDocumentHistoryEntry(revision: UInt64(index + 2), renderedText: text,
+      CsDocumentHistoryEntry(
+        revision: UInt64(index + 2), renderedText: text,
         provenance: "retranscribe", emittedAt: "2026-10-10T00:00:00Z")
     }
     state.engine = engine

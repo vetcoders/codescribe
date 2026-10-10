@@ -697,6 +697,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 enum SettingsAnchor: String, Hashable {
   case audioInput
   case audioReadiness
+  case maxConsultation
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -1128,6 +1129,8 @@ final class SettingsViewModel: ObservableObject {
   private let languagePreference: InterfaceLanguagePreference
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
+  /// Called only after the Rust owner accepts a fresh consultation.
+  var onNewMaxConsultation: (() -> Void)?
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?
@@ -2453,6 +2456,7 @@ final class SettingsViewModel: ObservableObject {
     defer { newMaxConsultationPending = false }
     do {
       _ = try await engine.beginNewMaxConsultation()
+      onNewMaxConsultation?()
       maxConsultationNotice = String(
         localized: "New consultation started. Previous history is preserved."
       )
