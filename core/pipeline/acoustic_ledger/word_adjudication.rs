@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 /// A repeated PCM frame cannot corroborate a trial. Replay rejects earlier
 /// policies rather than reinterpret their recorded lexical decisions.
-pub const WORD_POLICY: &str = "word-adjudication/v3";
+/// v4: an uncorroborated disagreement is settled by PCM authority, not by
+/// which decode arrived first (`band_authority`).
+pub const WORD_POLICY: &str = "word-adjudication/v4";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +166,21 @@ pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
     let margin = (start - left).min(right - end);
     ((u128::from(margin) * 3 * u128::from(FULL_CONTEXT_QUALITY) / u128::from(right - left))
         .min(u128::from(FULL_CONTEXT_QUALITY))) as u32
+}
+
+/// PCM authority a Whisper witness holds over its own source scope: 2 when
+/// the scope sits in its window's publication band (the grid gives every
+/// instant one such window), 1 with label-changing rights, 0 for edge
+/// evidence. A tier, not a score: two witnesses in the same tier are equal
+/// and their dispute stays with the agreement machinery.
+fn pcm_authority(q: u32) -> u8 {
+    if q >= FULL_CONTEXT_QUALITY {
+        2
+    } else if q >= BAND_RIGHTS_FLOOR {
+        1
+    } else {
+        0
+    }
 }
 
 impl WordHypothesis {
@@ -902,6 +919,55 @@ impl AcousticLedger {
                 && agreement
                 && fresh
                 && band_rights);
+        // First placement is ungated, so an edge or off-band decode can hold a
+        // word only because it arrived first; the same decode arriving second
+        // would be refused above. Without corroboration on either side, the
+        // witness whose PCM context places this exact scope higher keeps the
+        // label. The dispute stays open: no agreement was reached, so the
+        // conflict, its trial and the word finality still say so.
+        let band_authority = trial.is_none()
+            && !lexical_resolved
+            && raw_disagrees
+            && fresh
+            && complete
+            && candidate.acoustic_boundaries_complete
+            && geometry_preserves_complete_source
+            && candidate.family() == ObservationProducer::Whisper
+            && component.incumbent.family() == ObservationProducer::Whisper
+            && {
+                let incumbent_label = component.incumbent.original_text.as_deref();
+                let witnesses = prior_support
+                    .iter()
+                    .filter(|h| {
+                        h.family() == ObservationProducer::Whisper
+                            && h.complete
+                            && h.acoustic_boundaries_complete
+                            && h.decode != candidate.decode
+                            && h.original_text
+                                .as_deref()
+                                .zip(incumbent_label)
+                                .is_some_and(|(a, b)| label_equal(a, b))
+                    })
+                    .collect::<Vec<_>>();
+                let incumbent_authority = witnesses
+                    .iter()
+                    .map(|h| pcm_authority(h.q))
+                    .max()
+                    .unwrap_or(0);
+                // Two rights-holding frames, or the current Apple label, are
+                // corroboration the candidate does not have.
+                let corroborated = witnesses
+                    .iter()
+                    .filter(|h| pcm_authority(h.q) > 0)
+                    .filter_map(|h| h.decode)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    >= 2
+                    || apple
+                        .zip(incumbent_label)
+                        .is_some_and(|(a, b)| label_equal(a, b));
+                !corroborated && pcm_authority(candidate.q) > incumbent_authority
+            };
         let (accepted, reason) = if provisional_apple {
             // A still-provisional Apple word may evolve on the same exact
             // pins. Once Whisper supplies evidence, normal adjudication owns it.
@@ -932,6 +998,8 @@ impl AcousticLedger {
             )
         } else if lexical_resolved {
             (true, "source_agreement")
+        } else if band_authority {
+            (true, "band_authority")
         } else {
             (false, "lexical_disagreement")
         };

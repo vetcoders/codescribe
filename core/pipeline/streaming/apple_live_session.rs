@@ -1855,6 +1855,14 @@ struct AppleSealState {
     open_partial: String,
     open_partial_segments: Vec<TranscriptSegment>,
     open_partial_pin: u64,
+    /// Capture sample at which each open-partial word index first appeared:
+    /// an upper bound on where that word's speech ends. The last word is
+    /// re-stamped on every revision, because the recognizer is still
+    /// extending it. Cleared when the phrase closes.
+    open_partial_arrivals: Vec<u64>,
+    /// Lower bound on the open phrase's first PCM sample: the end of the
+    /// last timed word of the phrase closed before it.
+    open_phrase_floor: u64,
     /// Next open phrase; closing it advances this independently of PCM clocks.
     phrase_id: u64,
     /// A forced close can still receive its recognizer final during finish.
@@ -2121,9 +2129,13 @@ impl AppleSealState {
         let mut words = Vec::new();
         // The pin is diagnostic only, including when Apple supplied segments.
         // Repeated lexical words in one phrase must retain their multiplicity.
+        // A leading run the committed document already holds leaves the
+        // mirror: one PCM occurrence, one visible representation.
+        let represented = self.represented_open_partial_words();
         words.extend(
             self.open_partial
                 .split_whitespace()
+                .skip(represented)
                 .map(|text| UnadmittedAppleWord {
                     text: text.to_string(),
                     sample_start: self.open_partial_pin,
@@ -2203,6 +2215,120 @@ impl AppleSealState {
             words,
             closed_phrases: self.closed_phrases.clone(),
         });
+    }
+
+    /// Leading open-partial words whose speech committed text already holds.
+    ///
+    /// A recognizer partial has no usable word timing, but every word has a
+    /// capture-clock arrival that bounds where its speech ends. A word that
+    /// arrived inside speech the ledger already represents, past the open
+    /// phrase's floor, restates committed text. Measured speech without
+    /// committed text stops that frontier: qualified owners still waiting for
+    /// text, speech still open at the observed head, and any uncovered span
+    /// wider than the observer's own resolution. Never more words than the
+    /// committed text holds there, so words a committed label lacks stay
+    /// visible. Without an observer that certifies speech and silence for
+    /// this take, nothing is retired.
+    fn represented_open_partial_words(&self) -> usize {
+        if self.open_partial_arrivals.is_empty() {
+            return 0;
+        }
+        let speech = coverage_speech_evidence(self);
+        if !speech.identity().matches(&self.session_id, self.capture_epoch) {
+            return 0;
+        }
+        let Some(observed) = speech.availability().observed_samples() else {
+            return 0;
+        };
+        let floor = self.open_phrase_floor;
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let in_capture = |occurrence: &&OccurrenceIdentity| {
+            occurrence.session == self.session_id && occurrence.capture_epoch == self.capture_epoch
+        };
+        let holds_text = |occurrence: &OccurrenceIdentity| {
+            ledger
+                .text_of(occurrence)
+                .is_some_and(|text| !text.trim().is_empty())
+        };
+        let mut committed = ledger
+            .occurrences()
+            .filter(in_capture)
+            .filter(|occurrence| holds_text(*occurrence))
+            .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+            .collect::<Vec<_>>();
+        committed.sort_unstable();
+        let mut represented: Vec<(u64, u64)> = Vec::with_capacity(committed.len());
+        for (start, end) in committed {
+            if let Some(last) = represented.last_mut()
+                && start <= last.1
+            {
+                last.1 = last.1.max(end);
+                continue;
+            }
+            represented.push((start, end));
+        }
+        let mut through = observed;
+        for owner in ledger.qualified_occurrences().filter(in_capture) {
+            if owner.sample_end > floor && !holds_text(owner) {
+                through = through.min(owner.sample_start.max(floor));
+            }
+        }
+        // Padding and gap merging can leave a sliver of measured speech beside
+        // a committed owner; anything wider is speech no committed text holds.
+        let resolution = ((super::silero_fusion::ACOUSTIC_SPEECH_MERGE_GAP_SECS
+            + 2.0 * super::silero_fusion::ACOUSTIC_SPEECH_PAD_SECS)
+            * self.sample_rate.max(1) as f32)
+            .round() as u64;
+        for range in speech.ranges() {
+            if range.sample_end <= floor || range.sample_start >= through {
+                continue;
+            }
+            let mut cursor = range.sample_start.max(floor);
+            let mut after_committed = false;
+            let mut gaps = Vec::new();
+            for &(start, end) in &represented {
+                if end <= cursor || start >= range.sample_end {
+                    continue;
+                }
+                if start > cursor {
+                    gaps.push((cursor, start, true));
+                }
+                cursor = cursor.max(end);
+                after_committed = true;
+                if cursor >= range.sample_end {
+                    break;
+                }
+            }
+            if cursor < range.sample_end {
+                gaps.push((cursor, range.sample_end, after_committed));
+            }
+            if let Some(&(start, _, _)) = gaps.iter().find(|(start, end, beside_committed)| {
+                !beside_committed || end - start > resolution || *end >= observed
+            }) {
+                through = through.min(start);
+            }
+        }
+        let held_words = ledger
+            .occurrences()
+            .filter(in_capture)
+            .filter(|occurrence| occurrence.sample_end > floor && occurrence.sample_start < through)
+            .flat_map(|occurrence| ledger.slots_of(occurrence).unwrap_or(&[]))
+            .filter(|slot| {
+                let midpoint =
+                    slot.sample_start + slot.sample_end.saturating_sub(slot.sample_start) / 2;
+                floor <= midpoint && midpoint < through
+            })
+            .map(|slot| slot.text.split_whitespace().count())
+            .sum::<usize>();
+        drop(ledger);
+        self.open_partial_arrivals
+            .iter()
+            .take_while(|arrived| **arrived <= through)
+            .count()
+            .min(held_words)
     }
 
     /// Current partial or accepted capture label; a refused raw callback alone
@@ -2335,6 +2461,8 @@ impl AppleSealState {
             open_partial: String::new(),
             open_partial_segments: Vec::new(),
             open_partial_pin: 0,
+            open_partial_arrivals: Vec::new(),
+            open_phrase_floor: 0,
             phrase_id: 1,
             finishing_phrase_id: None,
             last_closed_phrase_id: None,
@@ -2577,7 +2705,11 @@ impl AppleSealState {
     ) {
         match notice {
             CloudWorkerNotice::LaneLost => self.return_cloud_live_lost(ev_tx),
-            CloudWorkerNotice::Final(event) => self.admit_cloud_final(ev_tx, *event),
+            CloudWorkerNotice::Final(event) => {
+                self.admit_cloud_final(ev_tx, *event);
+                // A cloud final commits speech the open partial may restate.
+                self.publish_unadmitted_words(ev_tx);
+            }
             CloudWorkerNotice::EndSettled => {}
         }
     }
@@ -3250,9 +3382,13 @@ impl AppleSealState {
             })
             .cloned()
             .collect::<Vec<_>>();
+        if returned.is_empty() {
+            return;
+        }
         for payload in returned {
             self.admit_completed_window(ev_tx, &payload, false);
         }
+        self.publish_unadmitted_words(ev_tx);
     }
 
     fn complete_word_trial(
@@ -3979,6 +4115,9 @@ impl AppleSealState {
             self.settle_failed_window_members(ev_tx, &job.member_occurrences);
         }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
+        // Committed words may now hold speech the open partial restates. A
+        // silent pause sends no new partial, so the mirror is refreshed here.
+        self.publish_unadmitted_words(ev_tx);
     }
 
     /// One authenticated returned frame, shared by physical owners. Replay
@@ -7088,6 +7227,9 @@ fn close_apple_phrase(
     audio_secs: f32,
     closes_open: bool,
 ) -> (bool, Vec<EngineEvent>) {
+    // Every caller has already cleared the open partial; its word clock ends
+    // with it, so the next phrase cannot inherit stale arrivals.
+    state.open_partial_arrivals.clear();
     let timed = apple_segments_on_pcm_clock(state, &segments);
     let (seal_tx, mut seal_rx) = mpsc::unbounded_channel();
     let committed = seal_utterance_final(state, &seal_tx, raw, segments, audio_secs);
@@ -7096,6 +7238,13 @@ fn close_apple_phrase(
     // reconciled callback. Without an open phrase this is not another close.
     if events.is_empty() && !closes_open {
         return (committed, events);
+    }
+    // The next phrase is spoken after this one's last timed word. Committed
+    // words before that point belong to this phrase and can never be counted
+    // as speech the next partial restates. Untimed segments sit at zero and
+    // leave the floor where it was.
+    if let Some(end) = timed.iter().map(|word| word.range.sample_end).max() {
+        state.open_phrase_floor = state.open_phrase_floor.max(end);
     }
     let untimed = events.iter().any(|event| {
         matches!(event,
@@ -8237,6 +8386,16 @@ fn emit_stream_events(
                         })
                     }
                 };
+                // The recognizer cannot have heard past the PCM already written
+                // to it: a word's first appearance bounds where its speech ends.
+                // The last word is still being extended, so it takes this stamp.
+                let arrived = state.audio.session_sample_end();
+                let count = text.split_whitespace().count();
+                state.open_partial_arrivals.truncate(count);
+                state.open_partial_arrivals.resize(count, arrived);
+                if let Some(last) = state.open_partial_arrivals.last_mut() {
+                    *last = arrived;
+                }
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
@@ -8350,6 +8509,7 @@ fn emit_stream_events(
                     state.phrase_id = state.phrase_id.saturating_add(1);
                     state.open_partial.clear();
                     state.open_partial_segments.clear();
+                    state.open_partial_arrivals.clear();
                 }
             }
         }
