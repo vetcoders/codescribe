@@ -97,9 +97,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       // (Founder brief, round 9, 2026-10-10).
       String(localized: "Browse and edit the base prompts.")
     case .agentWorkspace:
+      // "it can check" is load-bearing, not filler: only the MCP calls
+      // Codescribe validates (today, Desktop Commander's path arguments) are
+      // bounded by this list; an unvalidated MCP server is not (Founder
+      // brief, round 10, 2026-10-10).
       String(
         localized:
-          "The Agent's built-in file and terminal tools read and write only inside these folders, and so do the paths Codescribe hands to MCP tools it can check. What an MCP server does on its own is outside this list."
+          "The Agent's built-in tools, and the paths it hands to MCP tools it can check, are bounded to these folders. MCP servers otherwise operate independently.",
+        comment: "Settings tab blurb: Agent › Workspace"
       )
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
