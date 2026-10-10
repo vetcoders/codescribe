@@ -8,6 +8,7 @@ import OSLog
 enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
   case codex
   case claudeCode = "claude-code"
+  case agents
 
   var id: String { rawValue }
 
@@ -15,6 +16,7 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
     switch self {
     case .codex: return "Codex"
     case .claudeCode: return "Claude Code"
+    case .agents: return "Other agents (~/.agents)"
     }
   }
 
@@ -24,6 +26,8 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
       return home.appendingPathComponent(".codex/skills/codescribe", isDirectory: true)
     case .claudeCode:
       return home.appendingPathComponent(".claude/skills/codescribe", isDirectory: true)
+    case .agents:
+      return home.appendingPathComponent(".agents/skills/codescribe", isDirectory: true)
     }
   }
 }
@@ -264,7 +268,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let receiptMatchesManagedFolder =
         marker.map { marker in
           guard let receipt else { return false }
-          return recorded && receipt.managedID == marker.managedID
+          return recorded && marker.client == client && receipt.managedID == marker.managedID
             && receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
             && managedSkillPayloadMatchesReceipt(
               client: client, destination: destination, receipt: receipt, manifest: manifest)
@@ -1090,7 +1094,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       markerValues.isRegularFile == true, markerValues.isSymbolicLink != true,
       let marker = try? decode(AgentBridgeManagedMarker.self, from: markerURL),
       marker.schema == Self.markerSchema,
-      marker.client == client,
+      (marker.client == client
+        || (client == .agents && marker.client == .claudeCode
+          && destination.standardizedFileURL == client.skillDirectory(home: homeDirectory).standardizedFileURL)),
       marker.agentBridgeRoot == bridgeRoot.standardizedFileURL.path
     else { return nil }
     return marker
