@@ -49,6 +49,13 @@ actor OverlayChannelDeliveryReader {
   private var metadataObjects: [URL: MetadataObject] = [:]
   private var metadataCacheBytes = 0
   private var metadataAccess: UInt64 = 0
+  /// Lease and binding documents stay out of the receipt cache. A 500 ms poll
+  /// rotates through acknowledgment files and was evicting multi-megabyte
+  /// lease parses, so the next pass rebuilt them from scratch.
+  private var pinnedObjects: [URL: MetadataObject] = [:]
+  private var pinnedCacheBytes = 0
+  private static let pinnedCacheBudget = 8 << 20
+  private static let pinnedCacheEntries = 24
 
   private struct MetadataObjectStamp: Equatable {
     let device: dev_t
@@ -379,7 +386,13 @@ actor OverlayChannelDeliveryReader {
     return result
   }
 
+  private func pinsMetadata(_ url: URL) -> Bool {
+    if url.lastPathComponent == "vc.agent-audience-binding.v1.json" { return true }
+    return url.deletingLastPathComponent().lastPathComponent == "leases"
+  }
+
   private func object(at url: URL) throws -> [String: Any] {
+    let pinned = pinsMetadata(url)
     do {
       var metadata = stat()
       guard fstatat(AT_FDCWD, url.path, &metadata, 0) == 0 else {
@@ -387,7 +400,13 @@ actor OverlayChannelDeliveryReader {
       }
       let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
-      if var cached = metadataObjects[url], cached.stamp == pathStamp {
+      if pinned {
+        if var cached = pinnedObjects[url], cached.stamp == pathStamp {
+          cached.access = metadataAccess
+          pinnedObjects[url] = cached
+          return cached.value
+        }
+      } else if var cached = metadataObjects[url], cached.stamp == pathStamp {
         cached.access = metadataAccess
         metadataObjects[url] = cached
         return cached.value
@@ -399,7 +418,11 @@ actor OverlayChannelDeliveryReader {
         throw CocoaError(.fileReadUnknown)
       }
       let stamp = MetadataObjectStamp(metadata)
-      if let old = metadataObjects.removeValue(forKey: url) { metadataCacheBytes -= old.bytes }
+      if pinned {
+        if let old = pinnedObjects.removeValue(forKey: url) { pinnedCacheBytes -= old.bytes }
+      } else if let old = metadataObjects.removeValue(forKey: url) {
+        metadataCacheBytes -= old.bytes
+      }
       let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
       guard data.count <= 16 << 20,
@@ -408,25 +431,40 @@ actor OverlayChannelDeliveryReader {
       // The open descriptor observes atomic replacement and follows symlinks.
       // In-place writes also invalidate through nanosecond mtime/ctime. Never
       // retain a parse whose file changed during that read.
-      if data.count <= Self.metadataCacheBudget,
-        fstat(handle.fileDescriptor, &metadata) == 0,
-        MetadataObjectStamp(metadata) == stamp
-      {
-        while metadataCacheBytes + data.count > Self.metadataCacheBudget
-          || metadataObjects.count >= Self.metadataCacheEntries
-        {
-          guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
-            let removed = metadataObjects.removeValue(forKey: oldest)
-          else { break }
-          metadataCacheBytes -= removed.bytes
+      if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
+        if pinned, data.count <= Self.pinnedCacheBudget {
+          while pinnedCacheBytes + data.count > Self.pinnedCacheBudget
+            || pinnedObjects.count >= Self.pinnedCacheEntries
+          {
+            guard let oldest = pinnedObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = pinnedObjects.removeValue(forKey: oldest)
+            else { break }
+            pinnedCacheBytes -= removed.bytes
+          }
+          pinnedObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          pinnedCacheBytes += data.count
+        } else if !pinned, data.count <= Self.metadataCacheBudget {
+          while metadataCacheBytes + data.count > Self.metadataCacheBudget
+            || metadataObjects.count >= Self.metadataCacheEntries
+          {
+            guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = metadataObjects.removeValue(forKey: oldest)
+            else { break }
+            metadataCacheBytes -= removed.bytes
+          }
+          metadataObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          metadataCacheBytes += data.count
         }
-        metadataObjects[url] = MetadataObject(
-          stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
-        metadataCacheBytes += data.count
       }
       return value
     } catch {
-      if let removed = metadataObjects.removeValue(forKey: url) {
+      if pinned {
+        if let removed = pinnedObjects.removeValue(forKey: url) {
+          pinnedCacheBytes -= removed.bytes
+        }
+      } else if let removed = metadataObjects.removeValue(forKey: url) {
         metadataCacheBytes -= removed.bytes
       }
       throw error
