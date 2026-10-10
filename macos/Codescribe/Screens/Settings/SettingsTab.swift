@@ -21,7 +21,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   case dictationWhisper
   case dictationPreview
   case dictationPrivacy
-  case dictationPermissions
 
   var id: String { rawValue }
 
@@ -29,8 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes, .agentPrompts, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
       .agent
-    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-      .dictationPermissions:
+    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy:
       .engine
     }
   }
@@ -57,8 +55,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationPreview:
       String(localized: "Preview", comment: "Settings tab: live transcript preview timing")
     case .dictationPrivacy: String(localized: "Privacy", comment: "Settings tab: cloud and privacy")
-    case .dictationPermissions:
-      String(localized: "Permissions", comment: "Settings tab: macOS permission matrix")
     }
   }
 
@@ -81,7 +77,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(
         localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
     case .dictationPrivacy: CloudPrivacyCopy.title
-    case .dictationPermissions: String(localized: "Permission matrix.")
     }
   }
 
@@ -89,31 +84,41 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes:
       String(
-        localized:
-          "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers."
+        localized: "Choose the Agent and formatting models. Accounts and keys live under Providers."
       )
     case .agentPrompts:
-      String(
-        localized:
-          "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs."
-      )
+      // One sentence only: each subtab names its own prompt's purpose, and the
+      // runtime-appended instructions are explained in the guide, not here
+      // (Founder brief, round 9, 2026-10-10).
+      String(localized: "Browse and edit the base prompts.")
     case .agentWorkspace:
+      // "it can check" is load-bearing, not filler: only the MCP calls
+      // Codescribe validates (today, Desktop Commander's path arguments) are
+      // bounded by this list; an unvalidated MCP server is not (Founder
+      // brief, round 10, 2026-10-10).
       String(
         localized:
-          "The Agent can read and write only inside these folders. It has no access outside them."
+          "The Agent's built-in tools, and the paths it hands to MCP tools it can check, are bounded to these folders. MCP servers otherwise operate independently.",
+        comment: "Settings tab blurb: Agent › Workspace"
       )
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
     case .agentTools:
+      // One sentence: the three levels name themselves on the segmented
+      // controls below, and the resolution order has its own note next to the
+      // defaults it governs (Founder brief, round 12, 2026-10-10).
       String(
-        localized:
-          "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse."
+        localized: "Choose when the Agent may use tools.",
+        comment: "Settings tab blurb: Agent › Tools"
       )
     case .agentMcp:
       String(localized: "Add MCP servers and manage the tools the Agent may use.")
     case .dictationEngine:
+      // "Choose how speech becomes text" repeated the headline and the one row
+      // under it; what is left is the part the pane cannot show (Founder
+      // brief, round 13, 2026-10-10).
       String(
-        localized: "Choose how speech becomes text. Changes apply from the next recording.",
+        localized: "Changes apply from the next recording.",
         comment: "Settings tab blurb: Dictation › Engine")
     case .dictationWhisper:
       String(
@@ -124,12 +129,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Adjust how quickly text appears in the preview window while recording."
       )
     case .dictationPrivacy:
-      String(
-        localized:
-          "See when Codescribe processes audio on this Mac and when it may use cloud services."
-      )
-    case .dictationPermissions:
-      String(localized: "Live macOS permission status. Click a missing permission to grant it.")
+      String(localized: "See when Codescribe uses online services.")
     }
   }
 
@@ -215,15 +215,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: String(
           localized: "settings.search.tab.dictationPrivacy",
           defaultValue: "cloud, privacy, consent, egress",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
-    case .dictationPermissions:
-      settingsSearchTerms(
-        fixed: ["tcc"],
-        localized: String(
-          localized: "settings.search.tab.dictationPermissions",
-          defaultValue: "permission, accessibility, input monitoring",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

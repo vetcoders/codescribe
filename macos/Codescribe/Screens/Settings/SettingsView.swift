@@ -79,10 +79,13 @@ struct SettingsView: View {
   }
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
-  /// Mission Control, App Exposé and the Window menu.
+  /// Mission Control, App Exposé and the Window menu, and never minimises
+  /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
+  /// keeps no minimise control rather than one that could leave an Exposé tile.
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
     window?.titleVisibility = .hidden
+    if let window { DockPresence.adopt(window) }
   }
 
   private var brandToolbar: some ToolbarContent {
@@ -300,6 +303,25 @@ struct SettingsSectionLabel: View {
       .font(.subheadline.weight(.semibold))
       .foregroundStyle(.secondary)
       .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// Section label with one trailing action on the same line, so a helper such
+/// as refresh or a System Settings link does not take a row of its own.
+struct SettingsSectionHeaderRow<Action: View>: View {
+  let text: String
+  @ViewBuilder var action: () -> Action
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+    self.text = text
+    self.action = action
+  }
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      SettingsSectionLabel(text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      action()
+        .controlSize(.small)
+    }
   }
 }
 

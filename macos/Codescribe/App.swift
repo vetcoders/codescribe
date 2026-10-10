@@ -382,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
     let trayToggles = config.trayToggles()
-    NSApp.setActivationPolicy(trayToggles.showDockIcon ? .regular : .accessory)
+    DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
 
     do {
       let runtime = try startApplicationRuntime()
@@ -506,7 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let priorPolicy = NSApp.activationPolicy()
     if priorPolicy == .accessory {
-      NSApp.setActivationPolicy(.regular)
+      DockPresence.apply(showDockIcon: true)
     }
     NSApp.activate(ignoringOtherApps: true)
     Task { @MainActor [weak self] in
@@ -515,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
         if !self.config.trayToggles().showDockIcon {
-          NSApp.setActivationPolicy(.accessory)
+          DockPresence.apply(showDockIcon: false)
         }
       }
       appLogger.info(
@@ -966,16 +966,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
     let hosting = NSHostingController(rootView: root)
-    let window = NSWindow(contentViewController: hosting)
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(contentViewController: hosting)
     window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
-    window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+    window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
     // LSUIElement accessory: join the active Space so a passive
     // `orderFrontRegardless` is actually visible during voice delivery.
     window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     window.center()
+    DockPresence.adopt(window)
     agentWindow = window
     return window
   }

@@ -315,6 +315,38 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### Agent window header
+
+The detail chrome (`AgentChatView.swift`) carries one title — the current
+thread's — and nothing that competes with it. The native titlebar keeps the
+window title, dragging and the close / minimise / fullscreen controls; the
+content never repeats a window-level header. The minimise button and ⌘M are
+enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
+miniaturising it, so App Exposé never shows an empty tile; the tray's
+"Open chat", the summon shortcut and the passive voice reveal bring it back.
+
+- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
+  followed by the turn count, the thread's model and the live turn status.
+  The toggle lives in the detail chrome so it stays reachable while the
+  native sidebar is collapsed.
+- **Right:** exactly two controls. The pin (always on top) shows its state
+  rather than hinting at it — pinned is the filled glyph on an accent plate
+  with the `selected` trait and an "On" Accessibility value, unpinned is the
+  outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
+  `AgentWindowCapabilities` applies the window level.
+- **"•••" menu:** the single home for the header's actions — thread section
+  (Rename, Add to / Remove from favorites, Markdown exports when the thread
+  is persisted), the "Conversation width" submenu (Standard / Wide / Full
+  width, the conversation column's density — not the window size), "Open
+  settings", and the destructive "Delete Thread" last, behind the shared
+  confirmation. There is no separate width selector or Settings gear in the
+  chrome.
+
+An empty thread does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
+no-turns block to the viewport minus everything else the scroll document
+carries (list padding on both edges, the stack gap and the live-edge anchor),
+so the content fits exactly instead of overshooting by those points.
+
 ### Thread history interactions
 
 The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
@@ -324,7 +356,8 @@ share three contracts:
   row's Accessibility activation and the keyboard all call the same `select`
   path in `ThreadRail`. To Accessibility a row is a single button labelled
   with the thread title, with the `selected` trait on the open thread and
-  Rename / Favorite / Delete as named actions; while a title is being renamed
+  Rename / Add to favorites / Delete as named actions, worded exactly as the
+  header menu words them; while a title is being renamed
   the row exposes its children so the text field stays reachable. Rows are
   keyboard focus targets: Return or Space opens the focused row, Up / Down
   opens the neighbouring row in visible order (`ThreadRailNavigation`,
@@ -334,13 +367,69 @@ share three contracts:
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
   thread and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
-  destination (the Transcripts folder from Settings › User › Local data) in a
+  destination (the Transcripts folder from Settings › About › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
   "Export failed" alert naming the thread and the folder to check. Finder is
   never opened as a side effect of the menu action. `ThreadExportOutcome`
   carries the result; `RealThreadsEngine` still collapses the bridge error
   into `nil`, so the failure alert cannot quote the underlying reason.
+
+### Max consultation continuity
+
+A Max consultation is an ordinary `Thread` in the shared `ThreadStore`,
+distinguished by `mode == "max"` (`MAX_CONSULTATION_MODE`) and the
+`max-consultation` tag. One consultation is _selected_
+(`threads/consultations/selection/current.json`); only the explicit
+"New consultation" action (`begin_new_max_consultation`) changes that file.
+Viewing or selecting an older consultation in the Agent window never changes
+the selection.
+
+Continuity is logical, not a provider chain: the consultation owner
+(`ConsultationRuntime`, held by `RecordingController`) restores the thread's
+messages under its lease and replays them with every request; the provider's
+response chain is reset per turn. The same owner serves both entry points:
+
+- **Voice.** A Max dictation take enters the owner through
+  `FormattingConsultation` (`format_text_with_status_for_policy`).
+- **Agent window.** A typed turn on a thread whose stored mode is `max` is
+  routed by the bridge (`CodescribeAgent::run_max_consultation_turn`) into
+  `RecordingController::enqueue_max_consultation_text_turn`: same FIFO,
+  Formatting lane, Max prompt and Max approval broker as speech. The turn runs
+  under Max regardless of the dictation formatting level selected at the
+  moment, because the consultation is Max by identity. The window renders the
+  owner's events for that turn (`subscribe_max_consultation_events`); the
+  owner persists history once, in `max` mode, so the Assistive lane and its
+  `assistive` delivery never touch a consultation.
+
+Guards:
+
+- `ThreadDeliveryGateway::deliver` refuses to rewrite a `max` thread with any
+  other mode, so no lane can silently convert a consultation and break the
+  next `restore_consultation`.
+- Only the selected consultation accepts new typed turns; typing into an older
+  one fails with a readable error. Older consultations stay readable.
+- Max tool approvals suspend in the controller's broker. The Agent window
+  shows the card for the turn it is rendering and answers it through the same
+  exact (session, thread, call) match (`CodescribeAgent::resolve_tool_approval`
+  falls through to that broker). The Settings › Creator panel keeps showing
+  the same pending cards.
+- Stop cannot abort an admitted Max instruction: the owner never replays or
+  rolls back tool effects. The window settles its bubble; the answer still
+  lands in history and appears on the next refresh.
+- A turn interrupted by a crash or a failure is **abandoned**, not retained for
+  recovery. The journal (`core/agent/thread_store/consultation.rs`) retires
+  that identity into `abandoned` on the next `ConsultationJournal::open` — or
+  immediately, when this owner observes the failure — drops the instructions
+  still waiting behind it, and the conversation continues. An abandoned
+  identity is refused for life exactly like a completed one, so nothing is
+  replayed and no tool effect is rolled back or retried. The gap is explained
+  in history as a thread note
+  (`ThreadDeliveryGateway::record_consultation_recovery`); a consultation with
+  no thread file yet is only logged. "New consultation" is never required to
+  get a consultation working again. The one state that still blocks execution
+  is a journal that cannot be written, because then the owner cannot prove
+  what it retired.
 
 ### Restored tool inspector metadata
 

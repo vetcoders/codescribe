@@ -10,38 +10,53 @@ struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var manualSkillClient: AgentBridgeClient?
 
+  private static let permissionKinds: [PermissionKind] = [
+    .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
+  ]
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
 
-      SettingsSectionLabel(String(localized: "Interface", comment: "Settings group: app language"))
-        .padding(.top, CSSpace.section)
-      InterfaceLanguageRow(model: model)
-        .padding(.top, CSSpace.control)
-
-      SettingsSectionLabel(String(localized: "Permissions"))
-        .padding(.top, CSSpace.section)
+      SettingsSectionLabel(
+        String(localized: "Languages", comment: "Settings group: app language and speech language")
+      )
+      .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
-        ForEach([
-          PermissionKind.microphone,
-          .accessibility,
-          .inputMonitoring,
-          .screenRecording,
-          .speechRecognition,
-        ]) { kind in
+        InterfaceLanguageRow(model: model)
+        RecognitionLanguageRow(selection: languageBinding)
+      }
+      .padding(.top, CSSpace.control)
+
+      // The checklist shows live status; the header link opens the privacy
+      // pane itself so a granted scope can still be reviewed or revoked.
+      SettingsSectionHeaderRow(String(localized: "Permissions")) {
+        Button(
+          String(
+            localized: "System Settings…",
+            comment: "Permissions header action: opens the Privacy & Security pane")
+        ) { PermissionKind.openPrivacySettings() }
+        .accessibilityIdentifier("settings-permissions-system-settings")
+      }
+      .padding(.top, CSSpace.section)
+      VStack(spacing: 0) {
+        ForEach(Self.permissionKinds) { kind in
           PermissionChecklistRow(
             kind: kind,
             state: model.permissions.state(kind),
             onStateChanged: { model.refreshPermissions() }
           )
+          if kind != Self.permissionKinds.last {
+            Divider().padding(.leading, 47)
+          }
         }
       }
+      .settingsGroupedInset(padding: 0)
       .padding(.top, CSSpace.control)
 
       SettingsSectionLabel(String(localized: "Voice & formatting"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
-        LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
             .toggleStyle(.switch)
@@ -56,36 +71,14 @@ struct CreatorPanel: View {
           }
           .pickerStyle(.segmented)
           .labelsHidden()
-          .frame(width: 330)
+          .fixedSize()
           .disabled(!model.settings.aiFormattingEnabled)
         }
-        if model.maxConsultationEnabled {
-          SettingsControlRow(
-            title: String(localized: "Max consultation"),
-            subtitle: String(
-              localized:
-                "Continue across takes, or start fresh without deleting previous history."
-            )
-          ) {
-            Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
-              Task { await model.beginNewMaxConsultation() }
-            }
-            .disabled(model.newMaxConsultationPending)
-            .accessibilityIdentifier("settings-new-max-consultation")
-          }
-          if let notice = model.maxConsultationNotice {
-            Text(notice)
-              .font(.callout)
-              .foregroundStyle(Color.primary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
+        if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
+          MaxConsultationCard(model: model)
         }
       }
       .padding(.top, CSSpace.control)
-
-      if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
-        MaxApprovalCards(model: model).padding(.top, CSSpace.section)
-      }
 
       agentBridgeSection
         .padding(.top, CSSpace.section)
@@ -137,33 +130,54 @@ struct CreatorPanel: View {
 
   private var agentBridgeSection: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
-      SettingsSectionLabel(String(localized: "Connect your coding agent"))
-      Text("Install or update the skill directly from Codescribe.")
-        .font(.callout)
-        .foregroundStyle(Color.primary)
-      ForEach(AgentBridgeClient.allCases) { client in
-        let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
-        SettingsControlRow(
-          title: client.displayName,
-          subtitle: installed
-            ? String(
-              localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
-              comment: "Status on an agent client row: the Codescribe skill is installed")
-            : nil
-        ) {
-          Button(installed ? "Update skill" : "Install skill") {
-            model.installCreatorAgentBridge(for: client)
+      SettingsSectionHeaderRow(String(localized: "Connect your coding agent")) {
+        SettingsRefreshButton(
+          axLabel: "Refresh coding agent skill status",
+          action: model.refreshCreatorAgentBridge
+        )
+        .accessibilityIdentifier("settings-agent-bridge-refresh")
+      }
+      // One shared card: the heading, statuses and buttons already say what
+      // this section does, so the old caption sentence is gone (Founder brief,
+      // round 4, 2026-10-10).
+      VStack(spacing: 0) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
+          HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(client.displayName)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+              if installed {
+                Text(
+                  String(
+                    localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
+                    comment: "Status on an agent client row: the Codescribe skill is installed")
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(installed ? "Update skill" : "Install skill") {
+              model.installCreatorAgentBridge(for: client)
+            }
+            .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+            .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+            if model.creatorAgentBridgeError != nil {
+              Button("Replace manual copy…") { manualSkillClient = client }
+                .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+                .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+            }
           }
-          .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-          .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
-          if model.creatorAgentBridgeError != nil {
-            Button("Replace manual copy…") { manualSkillClient = client }
-              .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-              .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+          .padding(.horizontal, 15)
+          .padding(.vertical, 8)
+          if client != AgentBridgeClient.allCases.last {
+            Divider().padding(.leading, 15)
           }
         }
       }
-      Button("Refresh status", action: model.refreshCreatorAgentBridge)
+      .settingsGroupedInset(padding: 0)
       if !model.creatorAgentBridgeStatus.payloadAvailable {
         Text(model.creatorAgentBridgeStatus.detail)
           .font(.callout)
@@ -206,17 +220,66 @@ struct CreatorPanel: View {
   }
 }
 
-/// The same permission cards are used by settings recovery and automatic display.
-struct MaxApprovalCards: View {
+/// One card for everything Max: the consultation row with its action, then the
+/// approval requests underneath. Two separate blocks read as two features
+/// (Founder walkthrough, 2026-10-10).
+private struct MaxConsultationCard: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
-      SettingsSectionLabel(String(localized: "Max permissions"))
-      Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
-        Task { await model.refreshMaxToolApprovals() }
+      if model.maxConsultationEnabled {
+        HStack(spacing: 12) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Max consultation")
+              .font(.body.weight(.semibold))
+              .foregroundStyle(.primary)
+            Text("Continue the consultation or start a new one. History stays.")
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
+            Task { await model.beginNewMaxConsultation() }
+          }
+          .disabled(model.newMaxConsultationPending)
+          .accessibilityIdentifier("settings-new-max-consultation")
+        }
+        if let notice = model.maxConsultationNotice {
+          Text(notice)
+            .font(.callout)
+            .foregroundStyle(Color.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        Divider()
       }
-      .disabled(model.maxApprovalBusy)
+      MaxApprovalCards(model: model, embedded: true)
+    }
+    .settingsGroupedInset()
+  }
+}
+
+/// The same permission cards are used by settings recovery and automatic display.
+/// `embedded` draws the heading as a row title inside a host card (Creator);
+/// the Agent window keeps the standalone section label.
+struct MaxApprovalCards: View {
+  @ObservedObject var model: SettingsViewModel
+  var embedded: Bool = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      if embedded {
+        HStack(spacing: 12) {
+          Text("Max permissions")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          refreshButton
+        }
+      } else {
+        SettingsSectionLabel(String(localized: "Max permissions"))
+        refreshButton
+      }
       ForEach(model.maxToolApprovals) { request in
         ToolApprovalCard(
           request: request,
@@ -237,6 +300,15 @@ struct MaxApprovalCards: View {
       }
     }
   }
+
+  private var refreshButton: some View {
+    // The neighbouring "Max permissions" heading carries the context, so the
+    // label stays short (Founder brief, round 4, 2026-10-10).
+    Button(model.maxApprovalBusy ? "Checking…" : "Check requests") {
+      Task { await model.refreshMaxToolApprovals() }
+    }
+    .disabled(model.maxApprovalBusy)
+  }
 }
 
 // MARK: - Language identity
@@ -248,23 +320,12 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
 
   var id: String { language.shortCode }
 
-  var accessibilityLabel: String {
-    isFineTuned
-      ? String(
-        localized: "\(title), Fine-tuned",
-        comment: "VoiceOver label for a language choice with a specialized model")
-      : title
-  }
-
-  func accessibilityValue(isSelected: Bool) -> String {
-    isSelected
-      ? String(localized: "Selected", comment: "VoiceOver value for a chosen language")
-      : String(localized: "Not selected", comment: "VoiceOver value for a language not chosen")
-  }
-
+  /// Row explanation: one sentence about the only non-obvious choice. The
+  /// fine-tuned-models detail moved out of the base view (Founder brief,
+  /// round 4, 2026-10-10).
   static let supportingCopy = String(
-    localized: "Domain vocabulary and Dictionary entries improve speech recognition.",
-    comment: "Dictionary is the name of the Voice Lab settings section"
+    localized: "Multilingual detects the language automatically.",
+    comment: "Speech recognition language row explanation"
   )
 
   static let choices: [LanguageIdentityPresentation] = [
@@ -274,88 +335,31 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   ]
 }
 
-private struct LanguageIdentityRow: View {
+/// Same shape as the interface-language row directly above it: label, one
+/// sentence, segmented control (Founder walkthrough, 2026-10-10).
+private struct RecognitionLanguageRow: View {
   @Binding var selection: CsLanguage
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Recognition language")
-        .font(CSFont.ui(13.5, .semibold))
-        .foregroundStyle(Color.primary)
-
-      LanguageIdentityPicker(selection: $selection)
-
-      Text(LanguageIdentityPresentation.supportingCopy)
-        .font(CSFont.ui(10.5))
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.05))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
-  }
-}
-
-private struct LanguageIdentityPicker: View {
-  @Binding var selection: CsLanguage
-
-  var body: some View {
-    HStack(spacing: 5) {
-      ForEach(LanguageIdentityPresentation.choices) { choice in
-        let isSelected = selection == choice.language
-        Button {
-          selection = choice.language
-        } label: {
-          VStack(spacing: 3) {
-            Text(choice.title)
-              .font(CSFont.ui(11.5, .semibold))
-              .lineLimit(1)
-            if choice.isFineTuned {
-              Text("Fine-tuned")
-                .font(CSFont.ui(8.5, .semibold))
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1.5)
-                .background(
-                  Capsule().fill(CSColor.chromeAccent.opacity(0.16))
-                )
-            } else {
-              Text("Automatic detection")
-                .font(CSFont.ui(8.5, .medium))
-                .foregroundStyle(Color.secondary)
-            }
-          }
-          .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-          .frame(maxWidth: .infinity, minHeight: 43)
-          .padding(.horizontal, 5)
-          .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .fill(isSelected ? CSColor.chromeAccent.opacity(0.12) : Color.clear)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .strokeBorder(
-                isSelected ? CSColor.chromeAccent.opacity(0.5) : Color.primary.opacity(0.12),
-                lineWidth: 1
-              )
-          )
+    SettingsControlRow(
+      title: String(
+        localized: "Speech recognition language",
+        comment: "Settings row: dictation language"),
+      subtitle: LanguageIdentityPresentation.supportingCopy
+    ) {
+      Picker("", selection: $selection) {
+        ForEach(LanguageIdentityPresentation.choices) { choice in
+          Text(choice.title).tag(choice.language)
         }
-        .csFocusRing()
-        .accessibilityLabel(choice.accessibilityLabel)
-        .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityLabel(
+        String(localized: "Speech recognition language", comment: "Settings row: dictation language")
+      )
+      .accessibilityIdentifier("settings-recognition-language")
     }
-    .frame(maxWidth: 460)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Recognition language")
   }
 }
 
@@ -365,6 +369,8 @@ struct SettingsControlRow<Control: View>: View {
   let title: String
   /// Omitted when the title already carries the whole meaning of the row.
   var subtitle: String? = nil
+  /// Card inset; dense hosts (the AI-model lane editors) pass a tighter one.
+  var inset: CGFloat = CSSpace.card
   @ViewBuilder var control: () -> Control
 
   var body: some View {
@@ -382,7 +388,7 @@ struct SettingsControlRow<Control: View>: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: inset)
   }
 }
 
@@ -416,21 +422,14 @@ private struct InterfaceLanguageRow: View {
       }
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
-          Text(
-            "Codescribe will restart in this language. Your recording must finish first.",
-            comment: "Interface language restart explanation in Settings"
-          )
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          Button(
-            model.applyingInterfaceLanguage
-              ? String(localized: "Restarting…", comment: "Interface language restart in flight")
-              : String(localized: "Restart now", comment: "Apply the interface language")
-          ) { model.applyInterfaceLanguage() }
-          .disabled(model.applyingInterfaceLanguage)
-          .accessibilityIdentifier("settings-interface-language-restart")
+          Text(model.interfaceLanguageRestartExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Button(model.interfaceLanguageRestartTitle) { model.applyInterfaceLanguage() }
+            .disabled(model.applyingInterfaceLanguage)
+            .accessibilityIdentifier("settings-interface-language-restart")
         }
       }
       if let notice = model.interfaceLanguageNotice {
@@ -453,6 +452,10 @@ private struct InterfaceLanguageRow: View {
 
 // MARK: - Permission checklist row
 
+/// One compact line inside the shared permissions group: status badge, name,
+/// and — only while something is missing — the repair action. The five rows
+/// share a single bordered card (Founder brief, round 4, 2026-10-10); the
+/// per-row olive/terracotta wash lives on in the badge and the action link.
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
@@ -493,15 +496,7 @@ private struct PermissionChecklistRow: View {
       }
     }
     .padding(.horizontal, 15)
-    .padding(.vertical, 13)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.08))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder((granted ? CSColor.olive : CSColor.terracotta).opacity(0.22), lineWidth: 1)
-    )
+    .padding(.vertical, 7)
   }
 
   @ViewBuilder

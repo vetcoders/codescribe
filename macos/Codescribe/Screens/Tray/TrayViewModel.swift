@@ -190,8 +190,8 @@ final class TrayViewModel: ObservableObject {
     engine?.setQuickToggle(.showDockIcon, enabled: enabled)
     // Persisting the flag isn't enough: the app launches as an accessory
     // (LSUIElement), so flip the activation policy to actually show/hide the
-    // Dock icon at runtime.
-    NSApp.setActivationPolicy(enabled ? .regular : .accessory)
+    // Dock icon at runtime, and with it the minimise button of the windows.
+    DockPresence.apply(showDockIcon: enabled)
   }
 
   func setOverlayEnabled(_ enabled: Bool) {

@@ -356,7 +356,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
     case .license: return String(localized: "License", comment: "Settings section")
-    case .user: return String(localized: "User", comment: "Settings section: account profile")
+    case .user:
+      return String(localized: "About", comment: "Settings section: the app, its data and resets")
     }
   }
 
@@ -410,7 +411,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
     case .license: return "checkmark.seal"
-    case .user: return "person.crop.circle"
+    case .user: return "info.circle"
     }
   }
 
@@ -420,10 +421,15 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var searchKeywords: [String] {
     switch self {
     case .creator:
+      // Creator owns the permission checklist, so the permission vocabulary
+      // lands here — there is no second permission surface under Dictation
+      // (Founder brief, round 14, 2026-10-10).
       settingsSearchTerms(
+        fixed: ["tcc"],
         localized: String(
           localized: "settings.search.section.creator",
-          defaultValue: "setup, onboarding, permissions, quick start, language",
+          defaultValue:
+            "setup, onboarding, permissions, accessibility, input monitoring, quick start, language",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -493,7 +499,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "account, profile, sign in, identity",
+          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -696,6 +702,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 enum SettingsAnchor: String, Hashable {
   case audioInput
   case audioReadiness
+  case providersCloudTranscription
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -779,8 +786,8 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
 
   var subtitle: String {
     self == .assistive
-      ? String(localized: "The model behind the Agent and the voice assistant")
-      : String(localized: "Transcript cleanup and formatting")
+      ? String(localized: "The Agent and voice assistant model")
+      : String(localized: "The transcript cleanup model")
   }
 
   var providerKey: String {
@@ -906,7 +913,16 @@ struct LLMLaneModel {
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
-      // any other failure stays generic so a bad key is never guessed.
+      // any other failure stays generic so a bad key is never guessed. With a
+      // signed-in account the sentence says the account still works: the model
+      // list and the account are independent states (Founder brief, round 8).
+      if runtime.accountAuth {
+        return String(
+          localized:
+            "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.",
+          comment: "Model discovery failed while the provider account stays signed in"
+        )
+      }
       return String(
         localized:
           "Could not fetch \(providerDisplayName) models. The API key was rejected. Check it under Providers.",
@@ -1157,6 +1173,10 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
   @Published private(set) var mcpTestPending: Set<String> = []
   @Published private(set) var toolCapabilities: [CsToolCapability] = []
+  /// True while the tool catalog is being discovered. Discovery spawns every
+  /// configured MCP server and waits for its `tools/list`, so the Tools tab
+  /// shows a progress row instead of an empty catalog in the meantime.
+  @Published private(set) var toolCatalogLoading = false
   @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
     defaultLevel: "ask",
     readOnlyDefault: "allow",
@@ -1168,6 +1188,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var keyProbePending: Set<String> = []
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
+  /// Every saved correction, not just the page `refreshVoiceLab()` loads:
+  /// Learn replays the whole store and the counters describe the corpus.
+  @Published private(set) var totalQualityCorrections: UInt64 = 0
   @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
   @Published private(set) var ruleCandidates: [CsRuleCandidate] = []
   @Published private(set) var voiceLabReadError: String?
@@ -1246,6 +1269,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var draftBindings: [CsModeBinding] = []
   /// Conflicts for the CURRENT draft (recomputed on every edit).
   @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
+  /// What the last explicit save actually persisted, read back from disk and
+  /// cleared by the next edit or reset (`HotkeySaveReceipt.swift`).
+  @Published private(set) var bindingSaveReceipt: HotkeyBindingSaveReceipt?
 
   /// Build provenance comes from the running app bundle. The build pipeline
   /// writes all four fields in project.yml / scripts/build-app.sh.
@@ -1579,6 +1605,7 @@ final class SettingsViewModel: ObservableObject {
   /// conflicts surface inline before the user commits.
   func editDraftBinding(mode: CsWorkMode, binding: CsShortcutBinding) {
     guard let index = draftBindings.firstIndex(where: { $0.mode == mode }) else { return }
+    bindingSaveReceipt = nil
     let label =
       bindingOptions.first { $0.binding == binding }?.label
       ?? draftBindings[index].bindingLabel
@@ -1602,26 +1629,52 @@ final class SettingsViewModel: ObservableObject {
   }
 
   /// Persist every changed mode through the core `set_mode_binding` contract
-  /// (each write live-reloads the detector), then re-read disk truth. Guarded by
-  /// `canSaveBindings`, so a conflicted or unchanged draft never writes.
+  /// (each write live-reloads the detector), then report what actually landed.
+  /// Guarded by `canSaveBindings`, so a conflicted or unchanged draft never
+  /// writes.
+  ///
+  /// Every requested mode is attempted even after one is refused: the bridge
+  /// rejects some mode/gesture pairs individually, and stopping at the first
+  /// rejection used to leave earlier writes persisted with the screen still
+  /// showing the pre-save state. The receipt is then built from a re-read, not
+  /// from the draft and not from the absence of a thrown error — the core's
+  /// `save_if_changed` only warns on a failed write.
   func saveBindings() {
     guard let hotkeys, canSaveBindings else { return }
-    do {
-      for draft in draftBindings {
-        let current = modeBindings.first { $0.mode == draft.mode }
-        if current?.binding != draft.binding {
-          try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
-        }
-      }
-      loadHotkeys()
-    } catch {
-      lastError = String(describing: error)
+    let requested = draftBindings.filter { draft in
+      modeBindings.first { $0.mode == draft.mode }?.binding != draft.binding
     }
+    var failureDetail: String?
+    for draft in requested {
+      do {
+        try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
+      } catch {
+        if failureDetail == nil { failureDetail = String(describing: error) }
+      }
+    }
+
+    // Persisted truth wins over the draft, so a refused gesture snaps back to
+    // the one that is actually in effect instead of lingering in the picker.
+    let persisted = hotkeys.modeBindings()
+    modeBindings = persisted
+    bindingOptions = hotkeys.availableBindings()
+    draftBindings = persisted
+    revalidateBindings()
+
+    func landed(_ entry: CsModeBinding) -> Bool {
+      persisted.first { $0.mode == entry.mode }?.binding == entry.binding
+    }
+    bindingSaveReceipt = HotkeyBindingSaveReceipt(
+      saved: requested.filter(landed).map(\.mode),
+      rejected: requested.filter { !landed($0) }.map(\.mode),
+      failureDetail: failureDetail
+    )
   }
 
   /// Reset all bindings to the built-in defaults and re-read.
   func resetBindingsToDefaults() {
     guard let hotkeys else { return }
+    bindingSaveReceipt = nil
     do {
       try hotkeys.resetToDefaults()
       loadHotkeys()
@@ -1663,11 +1716,13 @@ final class SettingsViewModel: ObservableObject {
   /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
+    toolCatalogLoading = true
     Task { @MainActor [weak self] in
       let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
       guard let self else { return }
       self.permissionPolicy = policy
       self.toolCapabilities = capabilities
+      self.toolCatalogLoading = false
     }
   }
 
@@ -1876,14 +1931,16 @@ final class SettingsViewModel: ObservableObject {
     if includePrompts {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will also move to Trash.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash.",
+        comment: "The four file names stay verbatim"
       )
     } else {
       message += " "
       message += String(
-        localized: "Your assistive.txt and three formatting prompt files will be preserved.",
-        comment: "assistive.txt is a file name — keep it verbatim"
+        localized:
+          "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will be preserved.",
+        comment: "The four file names stay verbatim"
       )
     }
     if includeKeys {
@@ -1929,12 +1986,21 @@ final class SettingsViewModel: ObservableObject {
     let preview = agentResetPreview
     let threads = Int(preview.threads)
     let files = Int(preview.files)
+    // The vendor API keys the Agent reset deletes are the same Keychain
+    // accounts the Formatting lane reads on that vendor (`bridge/src/config.rs`
+    // `agent_secret_accounts`), so the confirmation says so.
     let secretState =
       preview.secretsPresent
       ? String(
         localized:
           "Agent provider and MCP connector secrets are present and will be deleted permanently."
       )
+        + " "
+        + String(
+          localized:
+            "Vendor API keys (OpenAI, Anthropic, xAI, Libraxis) are shared with Formatting: if Formatting uses one of them, enter that key again afterwards.",
+          comment: "Agent reset confirmation: the deleted Keychain accounts are also read by the Formatting lane"
+        )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
       localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
@@ -2202,6 +2268,28 @@ final class SettingsViewModel: ObservableObject {
     languagePreference.needsRestart(for: interfaceLanguage)
   }
 
+  /// Copy about the pending restart speaks the chosen language, not the running
+  /// one, so the row already reads the way the app will after the relaunch.
+  var interfaceLanguageRestartExplanation: String {
+    String(
+      localized: LocalizedStringResource(
+        "Codescribe will restart in this language. Your recording must finish first.",
+        locale: interfaceLanguage.locale,
+        comment: "Interface language restart explanation in Settings"))
+  }
+
+  var interfaceLanguageRestartTitle: String {
+    applyingInterfaceLanguage
+      ? String(
+        localized: LocalizedStringResource(
+          "Restarting…", locale: interfaceLanguage.locale,
+          comment: "Interface language restart in flight"))
+      : String(
+        localized: LocalizedStringResource(
+          "Restart now", locale: interfaceLanguage.locale,
+          comment: "Apply the interface language"))
+  }
+
   /// Saves the choice at once; nothing else in the app changes until restart.
   /// Picking the running language again clears a pending restart.
   func selectInterfaceLanguage(_ language: InterfaceLanguage) {
@@ -2218,7 +2306,7 @@ final class SettingsViewModel: ObservableObject {
     guard interfaceLanguageNeedsRestart, !applyingInterfaceLanguage else { return }
     guard let onApplyInterfaceLanguage else {
       interfaceLanguageNotice = InterfaceLanguageRestartError.unavailable.message(
-        locale: Locale.current)
+        locale: interfaceLanguage.locale)
       return
     }
     applyingInterfaceLanguage = true
@@ -2231,7 +2319,7 @@ final class SettingsViewModel: ObservableObject {
         try await onApplyInterfaceLanguage {}
       } catch {
         interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
-          .message(locale: Locale.current)
+          .message(locale: interfaceLanguage.locale)
       }
     }
   }
@@ -2311,6 +2399,14 @@ final class SettingsViewModel: ObservableObject {
 
   func restoreDefaultTranscriptTagTemplate() {
     setTranscriptTagTemplate(defaultTranscriptTagTemplate)
+  }
+
+  /// A field chip in About appends its placeholder to the template. The edit
+  /// goes through the same persisted write as typing, so the preview, the
+  /// warning and the saved value stay one truth.
+  func insertTranscriptTagPlaceholder(_ placeholder: String) {
+    guard transcriptTagTemplatePlaceholders.contains(placeholder) else { return }
+    setTranscriptTagTemplate(settings.transcriptTagTemplate + placeholder)
   }
 
   // MARK: - Audio (live hardware + existing settings contract)
@@ -2479,12 +2575,14 @@ final class SettingsViewModel: ObservableObject {
       let listing = try engine.loadQualityRecentListing(limit: 50)
       qualityRecords = listing.records
       unchangedQualityTakes = listing.unchangedTakes
+      totalQualityCorrections = listing.totalCorrections
       customLexiconEntries = try engine.loadLexiconCustomEntries()
       ruleCandidates = try engine.loadRuleCandidates(minOccurrences: 2)
       voiceLabReadError = nil
     } catch {
       qualityRecords = []
       unchangedQualityTakes = 0
+      totalQualityCorrections = 0
       customLexiconEntries = []
       ruleCandidates = []
       voiceLabReadError = String(describing: error)
@@ -2516,7 +2614,8 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+  /// Learn from corrections: mine corrections.jsonl + proposed lexicon into
+  /// the live custom dictionary.
   /// Teach replays the whole correction store and rewrites the lexicon — real
   /// disk I/O whose cost scales with the corpus. Running it inline froze
   /// Settings for the duration; it now runs off the main actor like the key
@@ -2526,19 +2625,21 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
+    // The growth of the flattened rules list is what is actually new; the
+    // core's `fromProposed` likewise counts only rules the suggestions newly
+    // added, so a suggestion learned by an earlier run is never credited.
+    // Read the list from the engine: the panel's copy may not be loaded yet.
+    let rulesBefore = (try? engine.loadLexiconCustomEntries().count) ?? customLexiconEntries.count
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
         let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        let fromCorrections = Int(result.fromCorrections)
-        let fromProposed = Int(result.fromProposed)
         let totalRules = Int(result.totalRules)
-        let correctionSourced = Int(result.rulesFromCorrectionSource)
-        self.voiceLabTeachMessage = String(
-          localized:
-            "Taught +\(fromCorrections) from corrections, +\(fromProposed) from proposed → \(totalRules) live rules (\(correctionSourced) correction-sourced).",
-          comment: "Counted teach summary; the live-rules count needs a plural variation"
+        self.voiceLabTeachMessage = learnResultMessage(
+          added: totalRules - rulesBefore,
+          fromSuggestions: Int(result.fromProposed),
+          activeRules: totalRules
         )
         self.refreshVoiceLab()
       } catch {

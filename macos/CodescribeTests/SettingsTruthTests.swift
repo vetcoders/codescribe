@@ -299,7 +299,6 @@ final class SettingsTruthTests: XCTestCase {
       SettingsTab.tabs(in: .engine),
       [
         .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-        .dictationPermissions,
       ],
       "every Dictation concern is a tab; the raw recognition timings live in Lab"
     )
@@ -356,7 +355,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "mcp"), .agentMcp)
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "permission"), .agentTools)
     XCTAssertEqual(
-      SettingsTab.searchLanding(in: .engine, query: "permission"), .dictationPermissions)
+      SettingsTab.searchLanding(in: .engine, query: "permission"), nil,
+      "the duplicated Permissions tab is gone; Creator owns the checklist")
+    XCTAssertTrue(SettingsSection.revealed(by: "permission").contains(.creator))
+    XCTAssertTrue(SettingsSection.revealed(by: "tcc").contains(.creator))
     XCTAssertNil(SettingsTab.searchLanding(in: .agent, query: "  "))
     XCTAssertNil(
       SettingsTab.searchLanding(in: .agent, query: "agent"),
@@ -413,7 +415,9 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
+    XCTAssertTrue(model.toolCatalogLoading, "discovery is in flight until the surface lands")
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+    XCTAssertFalse(model.toolCatalogLoading)
 
     XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
     XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
@@ -462,7 +466,7 @@ final class SettingsTruthTests: XCTestCase {
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
-      (.user, "user", "User", .user),
+      (.user, "user", "About", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -542,6 +546,47 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+    // Always `aicx`, never `Aicx`, in display names (Founder brief, round 12);
+    // the identity string stays verbatim.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx-http__aicx_index_status"),
+      "aicx index status")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx__aicx_continuity"), "aicx continuity")
+
+    // Our own tools are named in the interface language; an MCP server's tools
+    // keep the vendor's wording, spelled out of the registry name.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "get_selected_text", identity: "native:get_selected_text"),
+      "Read selected text")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "fetch_github_file", identity: "native:fetch_github_file"),
+      "Fetch GitHub file", "a proper name is not mangled by the speller")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "write_file", identity: "desktop-commander:write_file"),
+      "Write file", "an MCP tool is not renamed by our own table")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "future_native", identity: "native:future_native"),
+      "Future native", "a tool the table does not name yet falls back to the speller")
+    XCTAssertNil(ToolPermissionLabels.nativeDisplayName(for: "write_file_v2"))
+
+    // Every tool the native registry installs has interface copy. The list is
+    // `app/agent/tools/mod.rs::register_native_tools`.
+    let nativeTools = [
+      "apply_patch", "fetch_github_file", "get_frontmost_app", "get_selected_text", "git_commit",
+      "git_diff", "git_log", "git_status", "list_directory", "list_projects", "monitor_run",
+      "move_path", "observe_process", "project_build", "project_test", "read_clipboard",
+      "read_file", "run_process", "search_files", "search_threads", "stop_process",
+      "take_screenshot", "transcribe_audio", "type_text", "write_clipboard", "write_file",
+    ]
+    XCTAssertEqual(nativeTools.count, 26)
+    for tool in nativeTools {
+      let name = ToolPermissionLabels.nativeDisplayName(for: tool)
+      XCTAssertNotNil(name, tool)
+      XCTAssertFalse(name?.contains("_") ?? true, "\(tool) still reads as an identifier")
+    }
 
     XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
     XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
@@ -559,7 +604,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(inherited.identity, "native:apply_patch")
     XCTAssertFalse(inherited.hasIndividualRule)
     XCTAssertEqual(
-      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Category default")
     let individual = ToolPermissionItem(
       capability: CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
@@ -567,7 +612,7 @@ final class SettingsTruthTests: XCTestCase {
         requiresApprovalFlag: false))
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
-    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -1255,27 +1300,21 @@ final class SettingsTruthTests: XCTestCase {
       .offline, "the known speech failure must remain visible")
   }
 
-  func testCreatorLanguagePresentationKeepsTruthfulIdentityAndAccessibility() {
+  func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
     XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
-    XCTAssertEqual(
-      choices.map(\.accessibilityLabel),
-      ["Multilingual", "Polish, Fine-tuned", "English, Fine-tuned"]
-    )
-    XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
-    XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The footnote names the rail section literally: Polish needs the
-    // locative, so the title cannot be interpolated. A rail rename must fail
-    // here until the sentence is reworded with it.
+    // The row sentence explains only the one non-obvious choice; the
+    // fine-tuned-models detail left the base view (Founder brief, round 4,
+    // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Domain vocabulary and Dictionary entries improve speech recognition."
+      "Multilingual detects the language automatically."
     )
-    XCTAssertTrue(
-      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
+    XCTAssertFalse(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
   }
 
   func testCreatorLanguageSelectionWritesStableRuntimeCodes() {
@@ -1466,7 +1505,8 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
       "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-        + "Your assistive.txt and three formatting prompt files will be preserved. "
+        + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
+        + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -1488,7 +1528,11 @@ final class SettingsTruthTests: XCTestCase {
       promptFileStatus(source: "custom_file", fileExists: true), "Custom prompt file in use.")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: false),
-      "No custom prompt file yet. Saving creates one at this path.")
+      "The custom file is created on save.")
+    // The quiet header tag; the spelled-out source stays as its VoiceOver value.
+    XCTAssertEqual(promptSourceTag("custom_file"), "Custom")
+    XCTAssertEqual(promptSourceTag("built_in_fallback"), "Built-in")
+    XCTAssertNil(promptSourceTag(nil), "no empty capsule for an unknown source")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: true),
       "The file exists but is empty, so the built-in prompt is in use.")
@@ -1519,7 +1563,15 @@ final class SettingsTruthTests: XCTestCase {
       facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
     XCTAssertEqual(ready.localizedLabel, "Overall status")
     XCTAssertEqual(
-      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+      ready.localizedValue,
+      "Ready — xAI (Grok) configured, can send requests, 26 native tools",
+      "the verdict reports request readiness, never a successful provider request")
+
+    let available = CsMcpStatusRow(
+      label: "Provider:", value: "raw english", tone: .good,
+      facet: .provider, state: .accessAvailable, count: nil, subject: "xAI (Grok)",
+      detail: "XAI_API_KEY")
+    XCTAssertEqual(available.localizedValue, "xAI (Grok) — can send requests")
 
     let provider = CsMcpStatusRow(
       label: "Provider:", value: "", tone: .bad,
@@ -1559,7 +1611,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(summary.native, 1)
     XCTAssertEqual(summary.enhanced, 1)
     XCTAssertEqual(summary.unavailable, 1)
-    XCTAssertEqual(summary.line, "Native: 1 · Enhanced: 1 · Unavailable: 1")
+    XCTAssertEqual(summary.line, "Capabilities: 1 native · 1 enhanced · 1 unavailable")
 
     let rows = CsCapabilityRow.sampleMatrix
     XCTAssertEqual(rows[0].localizedTier, "Native")
@@ -1713,8 +1765,34 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(calls.map(\.prompts), [false, true])
     XCTAssertTrue(
       model.resetImpactDescription(includeKeys: false, includePrompts: true)
-        .contains("assistive.txt and three formatting prompt files will also move to Trash")
+        .contains(
+          "assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash"
+        )
     )
+  }
+
+  /// The chips under the template are real editing controls: each appends its
+  /// field through the persisted write, and an unknown field is refused.
+  func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    // Like settings.json, the mock serves back the template it was handed.
+    var stored = CsSettings.sample
+    stored.transcriptTagTemplate = "<codescribe lang=\""
+    var writes: [(key: String, value: String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TRANSCRIPT_TAG_TEMPLATE" { stored.transcriptTagTemplate = value }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"")
+
+    model.insertTranscriptTagPlaceholder("{lang}")
+    model.insertTranscriptTagPlaceholder("{bogus}")
+
+    XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"], "the unknown field writes nothing")
+    XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }
 
   func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
@@ -1738,6 +1816,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+    // The deleted vendor accounts are the ones Formatting reads on that
+    // vendor; the confirmation must say so while secrets are present.
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("shared with Formatting"))
 
     try engine.resetAgentData()
     XCTAssertEqual(calls, 1)

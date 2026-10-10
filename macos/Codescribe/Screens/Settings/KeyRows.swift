@@ -95,6 +95,42 @@ struct SettingsChipButton<Label: View>: View {
   }
 }
 
+// MARK: - Refresh button (the one Settings-wide standard)
+
+/// The one refresh control in Settings (Founder brief, round 8, 2026-10-10):
+/// a small secondary chip — refresh glyph, short "Refresh" label — with the
+/// same font, padding, colours and states everywhere. `busy` swaps the glyph
+/// for a spinner and disables the chip; a section with its own progress line
+/// passes `enabled` instead. The accessibility label says what exactly is
+/// refreshed, because the visible label deliberately does not.
+struct SettingsRefreshButton: View {
+  var title: LocalizedStringKey = "Refresh"
+  var busy = false
+  var enabled = true
+  /// `LocalizedStringKey`, not `String`: these reach VoiceOver and must keep
+  /// their catalog entries.
+  let axLabel: LocalizedStringKey
+  var axHint: LocalizedStringKey?
+  let action: () -> Void
+
+  var body: some View {
+    SettingsChipButton(enabled: enabled && !busy, action: action) {
+      HStack(spacing: 5) {
+        if busy {
+          ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 12, height: 12)
+        } else {
+          CSIconView(icon: .refresh, size: 10, weight: .semibold)
+        }
+        Text(title).font(CSFont.ui(11.5, .semibold))
+      }
+      .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
+      .frame(height: 14)
+    }
+    .accessibilityLabel(Text(axLabel))
+    .accessibilityHint(axHint.map { Text($0) } ?? Text(verbatim: ""))
+  }
+}
+
 extension SettingsChipButton where Label == Text {
   /// Text-only chip.
   init(
@@ -216,6 +252,10 @@ struct KeyRow: View {
   let label: String
   let isSet: Bool
   var optional: Bool = false
+  /// Inside a provider or lane card the row drops its own tinted card — the
+  /// presence dot and state text carry the colour — so the host card stays one
+  /// card, not a card in a card (Founder brief, round 7, 2026-10-10).
+  var embedded: Bool = false
   let probeResult: CsApiKeyProbeResult?
   let probePending: Bool
   var mutationPending = false
@@ -311,16 +351,17 @@ struct KeyRow: View {
           .textSelection(.enabled)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional) when not.
-    .padding(.horizontal, 15)
-    .padding(.vertical, 13)
+    // Presence-tinted card: green when set, red (required) / grey (optional)
+    // when not. Embedded rows keep the tint on the dot and state text only.
+    .padding(.horizontal, embedded ? 0 : 15)
+    .padding(.vertical, embedded ? 2 : 13)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(accent.opacity(0.06))
+        .fill(accent.opacity(embedded ? 0 : 0.06))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(accent.opacity(0.18), lineWidth: 1)
+        .strokeBorder(accent.opacity(embedded ? 0 : 0.18), lineWidth: 1)
     )
   }
 
@@ -356,10 +397,11 @@ struct KeyRow: View {
 extension KeyRow {
   /// Row wired to the view-model's save / clear / test for one account.
   init(
-    model: SettingsViewModel, account: String, label: String, isSet: Bool, optional: Bool = false
+    model: SettingsViewModel, account: String, label: String, isSet: Bool,
+    optional: Bool = false, embedded: Bool = false
   ) {
     self.init(
-      account: account, label: label, isSet: isSet, optional: optional,
+      account: account, label: label, isSet: isSet, optional: optional, embedded: embedded,
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
       mutationPending: model.providerMutationPending,

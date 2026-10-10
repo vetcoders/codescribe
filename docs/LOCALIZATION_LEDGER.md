@@ -87,6 +87,47 @@ removed from the catalog entirely: no Swift source references either any
 longer. The same review corrected the Polish value of `Refresh status` from
 „Sprawdź ponownie” to „Odśwież stan”.
 
+The Founder's round-4 compaction of the Creator desk swaps five keys for four.
+Removed with their rows' old copy: the fine-tuned-models sentence, the long Max
+consultation sentence, `Refresh pending requests`, `Refreshing…` and the
+agent-section caption `Install or update the skill directly from Codescribe.`
+Added: `Multilingual detects the language automatically.`
+(„Wielojęzyczny automatycznie wykrywa język.”), `Continue the consultation or start a new one. History stays.` („Kontynuuj konsultację lub rozpocznij nową.
+Historia zostaje.”) and `Check requests` („Sprawdź prośby”) — all three
+`translated`, the wording is the Founder's own — plus the busy form
+`Checking…` („Sprawdzanie…”, `needs_review`).
+
+The Founder's rounds 5–8 (Shortcuts & control, the microphone card, Providers
+and AI models, plus the one Settings-wide Refresh chip) retire twenty-two keys
+whose rows were shortened or whose headings were deduplicated, and add
+twenty-six Polish rows. Founder-provided wording lands as `translated`: the
+save buttons (`Zapisz skróty`, `Przywróć domyślne`) and their note, the
+shortened Fn note (identifier key `settings.shortcuts.note.fnTapOwnedByMacos`),
+the dictation-control and extra-shortcut sentences, `Aktualnie używany: %@`,
+the cloud-transcription description, the AI-models blurb, both lane subtitles
+and the auto-send pair. Agent drafts are `needs_review`: the no-microphone
+form, the conditional egress warning, the key-rejected-with-account sentence
+and the three new refresh accessibility labels. Four refresh accessibility
+keys (`Refresh %@ models`, `Refresh %@ data`, `Refresh audio input devices`
+and the microphone hint) briefly left the catalog when the shared refresh chip
+took plain `String` labels; the chip takes `LocalizedStringKey` and they are
+back with their previous Polish in the same cut.
+
+The Founder's rounds 9–16 (Prompts, Workspace, Diagnostics, Tools, Dictation
+Engine/Whisper, Cloud & privacy with the Permissions-tab cut, Dictionary, and
+License/About) retire fifty-two keys and add seventy-five Polish rows. Founder
+wording lands as `translated` (e.g. `Wbudowany`/`Własny`, `Przeglądaj i edytuj prompty bazowe.`, `Stan Agenta`, `Konfiguracja gotowa`, `Oczekuje na uruchomienie`, `Poszczególne narzędzia`, `Problem z tokenizerem`, `Ucz z poprawek`, `Przed`/`Po`, `Nieaktualny wpis konfiguracji — nie wpływa na działanie`, `Klucz przechowywany w Pęku kluczy macOS.`); agent drafts are
+`needs_review`. Count sentences use catalog plural variations
+(one/few/many/other), and the two multi-count Diagnostics lines
+(`Capabilities: %lld native · %lld enhanced · %lld unavailable`, `%lld configured · %lld checked`) use per-argument substitutions so each number
+governs its own adjective („14 natywnych · 4 rozszerzone · 0 niedostępnych").
+Two Founder sentences carry a deliberate qualifier, both approved by the
+Founder on review (2026-10-10) and `translated`: the consent line keeps „na urządzeniu" after Apple (without it
+the sentence could read as dictation moving to Apple's servers), and the tool
+safety note says „Narzędzia destrukcyjne" (the hard deny applies to the tool's
+risk class). The Creator search-alias row now carries the permission
+vocabulary of the removed `settings.search.tab.dictationPermissions` row.
+
 A Founder sketch polishes the License panel's card. The single combined
 `Mode` row (no key, state readable) now shows the short `license.mode.basic`
 value (`Basic` / `Podstawowy`) instead of the removed `Basic mode` key. Once a
@@ -356,12 +397,12 @@ copy. The fields that look authored by the program:
 
 Rendered today, by screen (established while preparing the Swift side):
 
-| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, accepts, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsHotkeyConflict.message` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsRuntimeLlmLane.unavailableReason` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
-| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Agent chat | `agent.availability().detail` (shown as the assistant reply) · `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                         |
-| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsHotkeyConflict.message` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsRuntimeLlmLane.unavailableReason` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
+| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Agent chat | `agent.availability().detail` (shown as the assistant reply) · `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                |
+| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Vendor and model names in these fields are proper names and need no change.
 Two fields are shown with Swift casing applied to Rust text
@@ -444,6 +485,7 @@ shows the same in every language until it moves to a format style.
 | Protocol names                   | `Responses`, `Messages` in the provider editor are wire names                                                                                                                                                             | **Decided:** verbatim.                                                                                                                                                                                                                        |
 | Last transcription engine row    | `Apple` and `Whisper` are proper names and stay verbatim; `Streaming Whisper`, `Cloud`, `Whisper (fallback)` and `No transcription in this app session` are copy. An engine id the app does not know is shown as received | **Open.** Map every id, or show `Unknown` for the rest.                                                                                                                                                                                       |
 | Developer-only copy              | The Lab pane, its section title, the `Voice Lab…` tray row and the power-mode corner mark exist only on a developer build; `DesignGallery` is reachable only from its preview. Their copy is extracted like any other     | **Decided:** these 22 keys are marked `shouldTranslate: false` (13 used only by `LabPanel`, 3 shown only behind `DeveloperSurface`, 6 gallery samples), so no translator sees them. A key that a shipped screen starts to use loses the mark. |
+| STT transport line               | The cloud transcription lane shows what it accepts on the wire; the line is behind `DeveloperSurface`, but the core now sends the arguments only (`CsSttLane.accepts`, §4 B8) and the sentence is written in Swift        | **Decided:** the two sentences (`HTTP(S): %@`, `Live WebSocket connection (ws(s); %@)`) are translated like ordinary copy rather than marked `shouldTranslate: false`: the arguments stay verbatim, so only the frame needs a language.       |
 | Coverage before a language ships | `make verify-l10n-catalog` fails a language that is partly translated in either catalog; `--allow-partial` reports instead while a language is built up on a branch                                                       | **Done** with the Polish import: every language the bundle carries must be complete, and `CodeScribe` is refused in any string. New English copy now needs its Polish before `make check` passes.                                             |
 
 ### 5.4 Found on the way (not localization, not changed)
@@ -493,19 +535,19 @@ Only the settings tab bar changed: its segments now hug their own labels and the
 bar scrolls horizontally instead of widening the pane. These are the slots where
 a translation 15–30 % longer than English clips or truncates first.
 
-| Surface                          | Slot                                                                                                                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                                                                                            |
-| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap                                                                         |
-| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                                                                                         |
-| Tool permissions                 | `Allow · Ask · Deny` pickers at their own width (255 pt in Polish), one per row; a fixed frame narrower than the labels spills over the card and widens the window                                |
-| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                                                                                                |
-| Providers, MCP servers, key rows | One-line status chips and rows; a key row is label + `Set` + `Change`, the editor opens behind the chip; account names, factory endpoints and wire keys sit under `Advanced`; editor sheet 480 pt |
-| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                                                                                     |
-| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line                                                                                                  |
-| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                                                                                      |
-| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt                                                                      |
-| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles                                                                                  |
+| Surface                          | Slot                                                                                                                                                                                                                                                            |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings tab bar                 | Segments hug their own labels; the bar scrolls horizontally once six of them exceed the pane at 880 pt                                                                                                                                                          |
+| Settings sidebar                 | 196–300 pt; health footer is one sentence-case line (`Ready to work`), absent while undetermined; a problem line may wrap                                                                                                                                       |
+| Settings detail column           | Never narrower than 664 pt: an 880 pt window with the sidebar open, 664 pt with it hidden                                                                                                                                                                       |
+| Tool permissions                 | `Allow · Ask · Deny` pickers at their own width (255 pt in Polish), one per row; a fixed frame narrower than the labels spills over the card and widens the window                                                                                              |
+| Agent status                     | Label column 160 pt, capability columns 120 / 96 pt, one-line rows                                                                                                                                                                                              |
+| Providers, MCP servers, key rows | One-line status chips and rows; a key row is label + `Set` + `Change`, the editor opens behind the chip; account names, factory endpoints and wire keys sit under `Advanced`; editor sheet 480 pt                                                               |
+| Shortcuts, Creator, Audio        | Pickers pinned to 230–330 pt; a 92 pt readout                                                                                                                                                                                                                   |
+| Tray                             | Panel is 300 pt; status pills are one line and fixed-size; `Status: %@` and banners are one line; every row inside an expanded disclosure is one line and truncates with a trailing ellipsis, and a history row keeps a 34 pt `HH:mm` column before its snippet |
+| Onboarding                       | Welcome cards `minHeight` 135; readiness label column 150 pt                                                                                                                                                                                                    |
+| Overlay                          | Footer notice is one line (the tightest slot in the app); coverage chip one line; popovers 250–300 pt; minimum window 320 pt                                                                                                                                    |
+| Agent chat                       | Thread title is one line beside the status pill; inspect labels in a 64 pt column; collapsed rail section titles                                                                                                                                                |
 
 ---
 

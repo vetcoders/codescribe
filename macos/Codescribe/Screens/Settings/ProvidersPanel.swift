@@ -42,8 +42,12 @@ struct ProvidersPanel: View {
         Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
-        Button("Refresh status") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
+        // The status slot beside the chip carries the progress line, so the
+        // chip greys out instead of spinning twice.
+        SettingsRefreshButton(
+          enabled: !(model.providerAccessPending || model.providerMutationPending),
+          axLabel: "Refresh provider access status"
+        ) { model.refreshProviderAccess() }
         ProviderAccessStatusSlot(
           accessPending: model.providerAccessPending,
           mutationPending: model.providerMutationPending,
@@ -70,6 +74,7 @@ struct ProvidersPanel: View {
         SpeechToTextSection(model: model)
           .padding(.top, CSSpace.section)
           .disabled(model.providerMutationPending)
+          .id(SettingsAnchor.providersCloudTranscription)
 
         ServiceKeysSection(model: model)
           .padding(.top, CSSpace.section)
@@ -143,6 +148,38 @@ struct ProviderAccessStatusSlot: View {
   static let height: CGFloat = 20
 }
 
+/// Providers section header. The sections on this page put one-line helper
+/// copy straight under the heading, so the heading reads one step stronger
+/// than the shared `SettingsSectionLabel` — a local fix, not a global header
+/// restyle (Founder brief, round 7, 2026-10-10).
+struct ProvidersSectionHeader<Action: View>: View {
+  let text: String
+  @ViewBuilder var action: () -> Action
+
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+    self.text = text
+    self.action = action
+  }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      Text(text)
+        .font(CSFont.ui(13, .semibold))
+        .foregroundStyle(Color.primary)
+        .accessibilityAddTraits(.isHeader)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      action()
+        .controlSize(.small)
+    }
+  }
+}
+
+extension ProvidersSectionHeader where Action == EmptyView {
+  init(_ text: String) {
+    self.init(text, action: { EmptyView() })
+  }
+}
+
 /// What the custom-provider sheet is editing. `Identifiable` so `.sheet(item:)`
 /// re-seeds the form per target instead of reusing stale drafts.
 enum CustomProviderFormTarget: Identifiable {
@@ -201,7 +238,7 @@ struct ProviderCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 7) {
       HStack(spacing: 10) {
         Text(provider.displayName)
           .font(CSFont.ui(14.5, .bold))
@@ -228,7 +265,7 @@ struct ProviderCard: View {
       // Custom hosts are key-optional: an absent key there is neutral, not an error.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
-        isSet: provider.apiKeySet, optional: !provider.keyRequired)
+        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
@@ -265,7 +302,7 @@ struct ProviderCard: View {
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("provider-advanced")
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: 12)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       isCustom
@@ -303,9 +340,10 @@ struct CustomProvidersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack {
-        SettingsSectionLabel(String(localized: "Custom providers"))
-        Spacer()
+      // The heading, the wire pills on the cards and the add sheet already say
+      // what belongs here; the old explainer sentence is gone (Founder brief,
+      // round 7, 2026-10-10).
+      ProvidersSectionHeader(String(localized: "Custom providers")) {
         Button(action: onAdd) {
           Label("Add provider", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
@@ -314,12 +352,6 @@ struct CustomProvidersSection: View {
         .foregroundStyle(Color.primary)
         .accessibilityIdentifier("providers-add-custom")
       }
-
-      Text("Add a server that speaks OpenAI Responses or Anthropic Messages.")
-      .font(CSFont.ui(11.5))
-      .lineSpacing(2)
-      .foregroundStyle(Color.secondary)
-      .padding(.top, 8)
 
       if model.customProviders.isEmpty {
         Text("No custom providers yet.")
@@ -356,8 +388,14 @@ struct CustomProviderForm: View {
 
   private enum Field { case name, endpoint, key }
 
-  /// Sample values, not copy: they must read the same in every language.
-  private static let namePlaceholder = "e.g. Libraxis"
+  /// The example host is a proper name, but the abbreviation in front of it is
+  /// copy, so the placeholder is one localized string (PL-041).
+  private static var namePlaceholder: String {
+    String(
+      localized: "e.g. Libraxis",
+      comment: "Name field placeholder; Libraxis is a company name used as the example")
+  }
+  /// A URL, not copy: it reads the same in every language.
   private static let endpointPlaceholder = "https://api.example.com/v1/responses"
   private static let log = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
@@ -525,17 +563,23 @@ struct SpeechToTextSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(
+      ProvidersSectionHeader(
         String(localized: "Cloud transcription", comment: "Providers section: cloud STT lanes"))
-      Text("Your recordings leave your machine.")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.amber)
-        .padding(.top, 8)
-      Text("Cloud mode is switched on under Dictation. The connection is set up here.")
+      Text("Connections for cloud transcription. The mode is chosen under Dictation.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
         .foregroundStyle(Color.secondary)
-        .padding(.top, 4)
+        .padding(.top, 6)
+      // Conditional on purpose: a configured endpoint and key do not mean audio
+      // is being sent — the real egress paths are Cloud mode and an explicit
+      // re-transcription (same truth as Dictation › Cloud & privacy).
+      Text(
+        "Recordings leave this computer only in Cloud mode, or when you start a cloud re-transcription yourself."
+      )
+      .font(CSFont.ui(11.5, .medium))
+      .foregroundStyle(CSColor.amber)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, 2)
       VStack(spacing: 8) {
         ForEach(model.sttLanes, id: \.id) { lane in
           SttLaneCard(model: model, lane: lane)
@@ -566,6 +610,28 @@ struct SttLaneCard: View {
     }
   }
 
+  /// What the lane accepts on the wire. The bridge sends the arguments only —
+  /// API paths, encodings and protocol ids — and the sentence around them is
+  /// written here, so a translation can reach it (PL-038).
+  static func accepts(for lane: CsSttLane) -> String {
+    switch lane.id {
+    case "file":
+      return String(
+        localized: "HTTP(S): \(lane.accepts)",
+        comment:
+          "Cloud transcription transport; plain HTTP is allowed on loopback only; the placeholder lists API paths and encodings"
+      )
+    case "live":
+      return String(
+        localized: "Live WebSocket connection (ws(s); \(lane.accepts))",
+        comment:
+          "Cloud transcription transport; plain ws is allowed on loopback only; the placeholder lists protocol ids"
+      )
+    default:
+      return lane.accepts
+    }
+  }
+
   /// One sentence under the field when a save was rejected. The bridge names
   /// the transport the lane requires; anything else is shown as it came.
   static func saveMessage(for error: Error) -> String {
@@ -584,7 +650,7 @@ struct SttLaneCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 7) {
       Text(Self.title(for: lane))
         .font(CSFont.ui(14.5, .bold))
         .foregroundStyle(Color.primary)
@@ -603,7 +669,7 @@ struct SttLaneCard: View {
       )
       KeyRow(
         model: model, account: lane.keyAccount, label: String(localized: "API key"),
-        isSet: lane.apiKeySet)
+        isSet: lane.apiKeySet, embedded: true)
       if lane.id == "live" {
         SettingsUrlRow(
           title: String(localized: "Gateway session URL"),
@@ -623,7 +689,7 @@ struct SttLaneCard: View {
       DisclosureGroup("Advanced") {
         VStack(alignment: .leading, spacing: 8) {
           if DeveloperSurface.isEnabled() {
-            Text(lane.accepts)
+            Text(Self.accepts(for: lane))
               .font(CSFont.mono(10.5, .medium))
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -639,7 +705,7 @@ struct SttLaneCard: View {
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("stt-lane-advanced")
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: 12)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(Self.title(for: lane)) lane")
   }
@@ -654,7 +720,7 @@ struct ServiceKeysSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Service keys"))
+      ProvidersSectionHeader(String(localized: "Service keys"))
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
           KeyRow(

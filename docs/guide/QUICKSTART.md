@@ -56,7 +56,7 @@ Recommended: configure Codescribe in the **Settings** window.
 - **Audio & Input**
   - Set `Whisper language` (`Auto-detect / multilingual` is the default; pick Polish or English only to force a language)
   - Toggle **AI Formatting** for Dictation (optional)
-- **Modes & Shortcuts**
+- **Hotkeys**
   - Dictation: hold a modifier (default: `Fn/Globe`)
   - Formatting: double‑tap `Left Option`
   - Assistive (Agent): double‑tap `Right Option`

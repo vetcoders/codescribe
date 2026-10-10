@@ -8,10 +8,13 @@ enum StreamScrollFollowAction: Equatable {
 
 /// Operator-facing chat column density. Persisted via `ChatLayoutPolicy.defaultsKey`.
 ///
-/// Plan P0-1: Comfortable / Wide / Full with remembered choice. Width still
+/// Plan P0-1: Standard / Wide / Full width with remembered choice. Width still
 /// derives from the viewport (not a static pt constant); the mode only changes
 /// how aggressively the column fills available space and when the prose cap
 /// kicks in so code fences / tables can claim room on wide monitors.
+///
+/// The raw values are the persisted preference and stay as they are; only the
+/// operator-facing labels were renamed (Founder brief, round 18, 2026-10-10).
 enum ChatWidthMode: String, CaseIterable, Identifiable {
   case comfortable
   case wide
@@ -21,9 +24,10 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .comfortable: return String(localized: "Comfortable", comment: "Chat width")
-    case .wide: return String(localized: "Wide", comment: "Chat width")
-    case .full: return String(localized: "Full", comment: "Chat width: the whole window")
+    case .comfortable: return String(localized: "Standard", comment: "Conversation width")
+    case .wide: return String(localized: "Wide", comment: "Conversation width")
+    case .full:
+      return String(localized: "Full width", comment: "Conversation width: the whole column")
     }
   }
 
@@ -59,8 +63,12 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 enum ChatLayoutPolicy {
   /// `UserDefaults` / `@AppStorage` key for the operator width preference.
   static let defaultsKey = "codescribe.chatWidthMode"
-  /// Horizontal padding applied by `MessageList` around the LazyVStack.
+  /// Padding applied by `MessageList` around the LazyVStack, on every edge.
   static let listPadding: CGFloat = 20
+  /// Vertical gap between the LazyVStack's children.
+  static let turnSpacing: CGFloat = 16
+  /// Invisible last child the follow-tail scroll targets.
+  static let liveEdgeAnchorHeight: CGFloat = 1
   /// Minimum readable bubble width on a narrow window.
   static let minimumReadable: CGFloat = 280
   /// Default mode when the preference is missing or unknown.
@@ -104,6 +112,18 @@ enum ChatLayoutPolicy {
   /// class of bug that floats glyphs like `)"` outside the Agent window.
   static func documentWidth(for containerWidth: CGFloat) -> CGFloat {
     max(minimumReadable, containerWidth > 0 ? containerWidth : minimumReadable)
+  }
+
+  /// Height the no-turns block may claim so the scroll document lands exactly
+  /// on the viewport height and an empty thread cannot scroll.
+  ///
+  /// Besides the empty-state block the document also carries the list padding
+  /// on both edges, the live-edge anchor and the one stack gap above it.
+  /// Reserving `viewportHeight - 2 * listPadding` therefore overshot the
+  /// viewport by that gap plus the anchor, which is what painted a scrollbar
+  /// on a thread with no messages (Founder brief, round 18, 2026-10-10).
+  static func emptyStateHeight(viewportHeight: CGFloat) -> CGFloat {
+    max(0, viewportHeight - listPadding * 2 - turnSpacing - liveEdgeAnchorHeight)
   }
 }
 
@@ -236,15 +256,24 @@ struct MessageList: View {
       let containerWidth = viewport.size.width
       ScrollViewReader { proxy in
         ScrollView {
-          LazyVStack(spacing: 16) {
+          LazyVStack(spacing: ChatLayoutPolicy.turnSpacing) {
             if hiddenTurnCount > 0 {
               ShowEarlierButton(hiddenCount: hiddenTurnCount) {
                 visibleTurnBudget += Self.turnWindow
               }
             }
             if messages.isEmpty {
+              // Centered in the visible viewport, not pinned under the chrome:
+              // the composer below is the only other point of gravity. The
+              // height accounts for everything else inside the document, so
+              // the empty thread fills the viewport without scrolling it.
               AgentEmptyThread()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(
+                  maxWidth: .infinity,
+                  minHeight: ChatLayoutPolicy.emptyStateHeight(
+                    viewportHeight: viewport.size.height),
+                  alignment: .center
+                )
             }
             ForEach(visibleMessages) { message in
               turn(message, containerWidth: containerWidth, mode: widthMode)
@@ -252,7 +281,7 @@ struct MessageList: View {
                 .id(message.id)
             }
             Color.clear
-              .frame(height: 1)
+              .frame(height: ChatLayoutPolicy.liveEdgeAnchorHeight)
               .id(bottomAnchor)
           }
           // Pin the document to the viewport width so a single
@@ -282,6 +311,10 @@ struct MessageList: View {
         }
         .coordinateSpace(name: scrollSpace)
         .scrollContentBackground(.hidden)
+        // The document height is exact (see `emptyStateHeight`), so this only
+        // absorbs sub-point layout rounding: a content height that fits never
+        // rubber-bands. It is not the fix for the empty-thread scrollbar.
+        .scrollBounceBehavior(.basedOnSize)
         // NO list-wide `.textSelection(.enabled)` here — the shared
         // SelectionOverlay spanning the whole LazyVStack is the exact
         // mechanism the 2026-08-04 livelock spun on (every view-graph
@@ -405,24 +438,33 @@ struct MessageList: View {
 }
 
 private let agentEmptyThreadTitle = String(
-  localized: "New thread", comment: "Headline of a conversation with no turns yet")
+  localized: "What are we doing today?",
+  comment: "Headline of a conversation with no turns yet")
 private let agentEmptyThreadDetail = String(
-  localized: "Write in the composer, or dictate. The reply stays in this thread.")
+  localized: "Write or dictate a message to start the conversation.")
 
-/// Quiet first screen for a thread that has no turns yet.
+/// Quiet first screen for a thread that has no turns yet: one calm voice
+/// glyph, one question, one line about typing or dictating. The chrome
+/// already names the thread, so the headline does not repeat the title
+/// (Founder brief 2026-10-10). No starter prompts — Codescribe is not an
+/// assistant for everything.
 private struct AgentEmptyThread: View {
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(spacing: 10) {
+      Image(systemName: "waveform")
+        .font(.system(size: 24, weight: .medium))
+        .foregroundStyle(CSColor.textTertiary)
       Text(agentEmptyThreadTitle)
-        .font(CSFont.ui(15, .semibold))
+        .font(CSFont.ui(16, .semibold))
         .foregroundStyle(Color.primary)
+        .padding(.top, 2)
       Text(agentEmptyThreadDetail)
-        .font(CSFont.ui(13, .regular))
+        .font(CSFont.ui(12.5, .regular))
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: 420, alignment: .leading)
-    .padding(.top, 28)
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: 420)
     .accessibilityElement(children: .combine)
   }
 }

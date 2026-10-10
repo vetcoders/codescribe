@@ -73,19 +73,4 @@ final class FocusPolicyTests: XCTestCase {
     )
   }
 
-  // MARK: - W10-B arm gesture copy
-
-  func testArmGestureLabelsDeriveFromHoldArmModifier() {
-    // SettingsViewModel.holdArmModifier normalizes to shift|cmd; ShortcutsPanel
-    // builds labels from that value. Mid-hold arm attaches selection — it is
-    // not "Voice chat = Hold Fn+Shift".
-    let shiftLabel = ArmGestureCopy.label(for: "shift")
-    let cmdLabel = ArmGestureCopy.label(for: "cmd")
-    XCTAssertEqual(shiftLabel, "Shift during Fn hold")
-    XCTAssertEqual(cmdLabel, "Command during Fn hold")
-    XCTAssertNotEqual(shiftLabel, cmdLabel)
-    XCTAssertFalse(shiftLabel.contains("Hold Fn+Shift"))
-    XCTAssertFalse(cmdLabel.contains("Hold Fn+Command"))
-  }
-
 }

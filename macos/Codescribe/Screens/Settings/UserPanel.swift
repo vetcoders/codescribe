@@ -1,10 +1,17 @@
+import AppKit
 import SwiftUI
 
-// Local-first identity surface. Codescribe has no account model, so this panel
-// reports the running build and local data truth instead of inventing a profile.
+// About panel. Codescribe has no account model, so this panel reports the
+// running build, where local data lives, the transcript markers and the two
+// resets — the facts about the app and its data, not a profile. Everyday
+// information stays visible; technical values and the resets open on demand.
 struct UserPanel: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var repairSummary: String?
+  @State private var repairNotice: ConfigRepairNotice?
+  @State private var showingVersionDetails = false
+  @State private var showingConfigNotice = false
+  @State private var showingTemplate = false
+  @State private var showingResets = false
   @AppStorage(ActivationPing.optInDefaultsKey) private var activationPingOptIn = false
 
   private static let docsURL = URL(
@@ -13,189 +20,454 @@ struct UserPanel: View {
   private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
   private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
+  private var locale: Locale {
+    InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations).locale
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Local by design."),
+        String(localized: "About the app and your data", comment: "About panel header"),
         blurb: String(
-          localized:
-            "No account is required. Your configuration and transcript history stay on this Mac."
-        )
+          localized: "Codescribe version, local data and privacy.",
+          comment: "About panel blurb")
       )
-      .onAppear { repairSummary = configRepairSummary() }
+      .onAppear { repairNotice = configRepairSummary().map(ConfigRepairNotice.init(raw:)) }
 
-      SettingsSectionLabel(String(localized: "Running build"))
-        .padding(.top, CSSpace.section)
-      VStack(spacing: 0) {
-        infoRow("Version", "\(model.buildInfo.version) (\(model.buildInfo.build))")
-        divider
-        infoRow("Commit", model.buildInfo.commit)
-        divider
-        infoRow("Built", model.buildInfo.builtAt)
+      versionSection
+      localDataSection
+      // The confirmation cannot be sent while the build ships without an
+      // analytics domain, so the switch stays out of sight until it can. The
+      // stored choice is kept and the switch returns with the service.
+      if ActivationPingConfiguration.production.isEnabled {
+        activationPingSection
+      }
+      transcriptMarkersSection
+      informationSection
+      resetSection
+    }
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
+  }
+
+  // MARK: - Version and configuration notice
+
+  private var versionSection: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      VStack(alignment: .leading, spacing: 0) {
+        HStack(alignment: .center, spacing: CSSpace.md) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: "Codescribe \(model.buildInfo.version)")
+              .font(.body.weight(.semibold))
+              .foregroundStyle(.primary)
+              .textSelection(.enabled)
+              .accessibilityIdentifier("about-version")
+            Text(
+              "Build \(model.buildInfo.build)",
+              comment: "About panel: the build number under the version")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          TrailingDisclosureButton(
+            title: String(
+              localized: "Version details",
+              comment: "About panel: opens the commit and the build date"),
+            isExpanded: $showingVersionDetails
+          )
+          .accessibilityIdentifier("about-version-details-toggle")
+        }
+        if showingVersionDetails {
+          divider.padding(.vertical, CSSpace.md)
+          VStack(alignment: .leading, spacing: CSSpace.sm) {
+            detailRow(String(localized: "Commit"), model.buildInfo.commit, mono: true)
+            detailRow(String(localized: "Built"), readableBuildDate, mono: false)
+          }
+          .accessibilityIdentifier("about-version-details")
+        }
       }
       .settingsGroupedInset()
 
-      if let repairSummary {
-        Text(repairSummary)
-          .font(CSFont.ui(12.5))
-          .foregroundStyle(Color.secondary)
-          .textSelection(.enabled)
+      if let repairNotice {
+        // Weight follows the real problem: an entry that changes nothing gets
+        // one quiet line, a real configuration error keeps the warning card
+        // (Founder brief, round 16, 2026-10-10).
+        if repairNotice.isBenignStaleEntry {
+          benignConfigNotice(repairNotice)
+        } else {
+          configNoticeCard(repairNotice)
+        }
+      }
+    }
+    .padding(.top, CSSpace.section)
+  }
+
+  private var readableBuildDate: String {
+    BuildDatePresentation.readable(model.buildInfo.builtAt, locale: locale)
+      ?? model.buildInfo.builtAt
+  }
+
+  /// One line for an entry Codescribe does not read: it is out of date and
+  /// nothing behaves differently because of it. The named keys, what each one
+  /// does in this build and how to clear the notice stay in the expansion,
+  /// unchanged, so nothing is lost by the quieter collapsed form.
+  private func benignConfigNotice(_ notice: ConfigRepairNotice) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        showingConfigNotice.toggle()
+      } label: {
+        HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
+          CSIconView(icon: .info, size: 12, weight: .medium, color: Color.secondary)
+          Text(notice.compactTitle)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          CSIconView(
+            icon: showingConfigNotice ? .chevronDown : .chevronRight, size: 10,
+            weight: .semibold, color: Color.secondary)
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .csFocusRing()
+      .accessibilityElement(children: .combine)
+      .accessibilityValue(showingConfigNotice ? Text("Expanded") : Text("Collapsed"))
+      .accessibilityIdentifier("about-config-notice")
+
+      if showingConfigNotice {
+        configNoticeDetails(notice)
+          .settingsGroupedInset()
           .padding(.top, CSSpace.control)
+          .accessibilityIdentifier("about-config-notice-details")
       }
+    }
+  }
 
-      SettingsSectionLabel(String(localized: "Local data"))
+  private func configNoticeCard(_ notice: ConfigRepairNotice) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        showingConfigNotice.toggle()
+      } label: {
+        HStack(alignment: .center, spacing: 10) {
+          CSIconView(
+            icon: notice.isWarning ? .warning : .info, size: 14, weight: .medium,
+            color: notice.isWarning ? CSColor.amber : Color.secondary)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(notice.title)
+              .font(.body.weight(.semibold))
+              .foregroundStyle(.primary)
+            Text(notice.subtitle)
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          CSIconView(
+            icon: showingConfigNotice ? .chevronDown : .chevronRight, size: 11,
+            weight: .semibold, color: Color.secondary)
+        }
+        .contentShape(Rectangle())
+      }
+      .csFocusRing()
+      .accessibilityElement(children: .combine)
+      .accessibilityValue(showingConfigNotice ? Text("Expanded") : Text("Collapsed"))
+      .accessibilityIdentifier("about-config-notice")
+
+      if showingConfigNotice {
+        divider.padding(.vertical, CSSpace.md)
+        configNoticeDetails(notice)
+          .accessibilityIdentifier("about-config-notice-details")
+      }
+    }
+    .settingsGroupedInset()
+  }
+
+  private func configNoticeDetails(_ notice: ConfigRepairNotice) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      ForEach(notice.reviewItems(envFile: envFileDisplay)) { item in
+        VStack(alignment: .leading, spacing: 4) {
+          Text(verbatim: item.key)
+            .font(CSFont.mono(12, .semibold))
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+          Text(item.impact)
+            .font(.callout)
+            .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(item.action)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      if let outcome = notice.outcomeLine {
+        Text(outcome)
+          .font(.callout)
+          .foregroundStyle(.primary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      // The launch record verbatim, for support; it repeats the key names.
+      Text(verbatim: notice.raw)
+        .font(CSFont.mono(10.5, .regular))
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel(Text("Launch record", comment: "About panel: the raw repair line"))
+        .accessibilityValue(notice.raw)
+    }
+  }
+
+  /// The optional `.env` file the receipt reads, beside the app data.
+  private var envFileDisplay: String {
+    guard !model.configDir.isEmpty else { return ".env" }
+    return displayPath(URL(fileURLWithPath: model.configDir).appendingPathComponent(".env").path)
+  }
+
+  // MARK: - Local data
+
+  private var localDataSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ProvidersSectionHeader(String(localized: "Local data"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
-        pathRow("Config, logs & runtime data", model.configDir)
+        pathRow(
+          String(localized: "App data", comment: "About panel: the ~/.codescribe folder"),
+          model.configDir)
         divider
-        pathRow("Transcripts", model.transcriptsPath)
+        pathRow(String(localized: "Transcripts"), model.transcriptsPath)
       }
-      .settingsGroupedInset()
+      .settingsGroupedInset(padding: 0)
+      .padding(.top, CSSpace.control)
+    }
+  }
 
-      SettingsSectionLabel(String(localized: "Anonymous activation"))
-        .padding(.top, CSSpace.section)
+  // MARK: - First dictation confirmation
+
+  private var activationPingSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ProvidersSectionHeader(
+        String(localized: "First dictation confirmation", comment: "About panel section")
+      )
+      .padding(.top, CSSpace.section)
       SettingsControlRow(
-        title: String(localized: "Share anonymous activation ping"),
+        title: String(
+          localized: "Send a confirmation after the first successful dictation",
+          comment: "About panel: opt-in switch title"),
         subtitle: String(
-          localized: "Send one content-free event after your first successful dictation")
+          localized:
+            "One anonymous event with the app version and the macOS version. Never audio or text.",
+          comment: "About panel: opt-in switch subtitle")
       ) {
         Toggle("", isOn: $activationPingOptIn)
           .toggleStyle(.switch)
           .labelsHidden()
           .tint(CSColor.chromeAccent)
-          .accessibilityLabel("Share anonymous activation ping")
+          .accessibilityLabel("Send a confirmation after the first successful dictation")
           .accessibilityValue(activationPingOptIn ? "On" : "Off")
       }
       .padding(.top, CSSpace.control)
+    }
+  }
 
-      Text(
-        "Off by default. The event contains only the app version and macOS version — never audio or transcript text."
+  // MARK: - Transcript markers
+
+  private var transcriptMarkersSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ProvidersSectionHeader(
+        String(localized: "Transcript markers", comment: "About panel section")
       )
-      .font(CSFont.mono(10.5, .regular))
-      .foregroundStyle(Color.secondary)
-      .padding(.top, 7)
-
-      SettingsSectionLabel(String(localized: "Agent transcript tagging"))
-        .padding(.top, CSSpace.section)
+      .padding(.top, CSSpace.section)
       SettingsControlRow(
-        title: String(localized: "Tag transcripts for AI agents"),
-        subtitle: String(localized: "Wrap delivered dictation in an explicit source tag")
+        title: String(localized: "Add markers to text", comment: "About panel: switch"),
+        subtitle: String(
+          localized: "Mark text delivered to other apps",
+          comment: "About panel: switch subtitle; the template decides the marker")
       ) {
         Toggle("", isOn: taggingBinding)
           .toggleStyle(.switch)
           .labelsHidden()
           .tint(CSColor.chromeAccent)
-          .accessibilityLabel("Tag transcripts for AI agents")
+          .accessibilityLabel("Add markers to text")
           .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
       }
       .padding(.top, CSSpace.control)
 
-      Text("Template")
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(Color.secondary)
-        .padding(.top, 12)
+      DisclosureGroup(isExpanded: $showingTemplate) {
+        templateEditor
+      } label: {
+        Text(
+          "Edit template and preview",
+          comment: "About panel: disclosure with the marker template editor"
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      }
+      .padding(.top, CSSpace.control)
+      .accessibilityIdentifier("about-template-disclosure")
+    }
+  }
+
+  private var templateEditor: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      // The disclosure above already names this editor, so the field carries
+      // no second label of its own (Founder brief, round 16, 2026-10-10).
       TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
         .font(CSFont.mono(11.5, .regular))
         .foregroundStyle(Color.primary)
         .textFieldStyle(.plain)
         .lineLimit(3...8)
         .settingsGroupedInset()
+        .padding(.top, CSSpace.control)
         .accessibilityLabel("Transcript tag template editor")
         .accessibilityValue(model.settings.transcriptTagTemplate)
 
       if let warning = model.transcriptTagTemplateWarning {
         Text(warning)
-          .font(CSFont.mono(10.5, .medium))
+          .font(.callout)
           .foregroundStyle(CSColor.danger)
-          .padding(.top, 7)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, CSSpace.sm)
           .accessibilityLabel("Transcript tag template warning")
           .accessibilityValue(warning)
       }
 
+      // Each chip appends its field to the template; the fields themselves
+      // are the contract and stay the same in every language.
       HStack(spacing: 6) {
         ForEach(transcriptTagTemplatePlaceholders, id: \.self) { placeholder in
-          Text(placeholder)
-            .font(CSFont.mono(10, .semibold))
-            .foregroundStyle(Color.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-              Capsule(style: .continuous)
-                .fill(Color.primary.opacity(0.08))
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-            )
+          Button {
+            model.insertTranscriptTagPlaceholder(placeholder)
+          } label: {
+            Text(placeholder)
+              .font(CSFont.mono(10, .semibold))
+              .foregroundStyle(Color.secondary)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 4)
+              .background(
+                Capsule(style: .continuous)
+                  .fill(Color.primary.opacity(0.08))
+              )
+              .overlay(
+                Capsule(style: .continuous)
+                  .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+              )
+          }
+          .buttonStyle(.plain)
+          .csFocusRing()
+          .accessibilityLabel(
+            String(
+              localized: "Insert \(placeholder) into the template",
+              comment: "About panel: template field chip"))
         }
         Spacer(minLength: 0)
-        Button("Restore default") {
+        Button(String(localized: "Restore default template", comment: "About panel: button")) {
           model.restoreDefaultTranscriptTagTemplate()
         }
         .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
+        .font(.callout)
         .foregroundStyle(CSColor.chromeAccent)
         .accessibilityLabel("Restore default transcript tag template")
       }
-      .padding(.top, 9)
+      .padding(.top, CSSpace.sm)
 
-      Text("Live preview")
-        .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(Color.secondary)
-        .padding(.top, 12)
+      Text("Template preview", comment: "About panel: label over the rendered template")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .padding(.top, CSSpace.md)
       Text(model.transcriptTagPreview)
         .font(CSFont.mono(11.5, .regular))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
         .settingsGroupedInset()
+        .padding(.top, CSSpace.xs)
         .accessibilityLabel("Transcript tag template preview")
         .accessibilityValue(model.transcriptTagPreview)
-
-      SettingsSectionLabel(String(localized: "Legal & docs"))
-        .padding(.top, CSSpace.section)
-      VStack(alignment: .leading, spacing: 10) {
-        Link(destination: Self.privacyURL) {
-          HStack(spacing: 6) {
-            Text("Privacy Policy")
-            Text(verbatim: "↗")
-          }
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
-        }
-        .accessibilityLabel("Open Privacy Policy")
-
-        Link(destination: Self.termsURL) {
-          HStack(spacing: 6) {
-            Text("Terms of Use & EULA")
-            Text(verbatim: "↗")
-          }
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
-        }
-        .accessibilityLabel("Open Terms of Use and EULA")
-
-        Link(destination: Self.docsURL) {
-          HStack(spacing: 6) {
-            Text("Open Codescribe documentation")
-            Text(verbatim: "↗")
-          }
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
-        }
-        .accessibilityLabel("Open Codescribe documentation")
-      }
-      .padding(.top, CSSpace.control)
-
-      ResetAgentSection(model: model)
-        .padding(.top, CSSpace.section)
-
-      ResetAppDataSection(model: model)
-        .padding(.top, 30)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
   }
+
+  // MARK: - Information and documentation
+
+  /// The header leads and the three links read as one quiet list under it:
+  /// link text below the header's size, the open-elsewhere icon at the right
+  /// edge of every row, equal spacing and a full-row click area — not three
+  /// cards competing with the heading (Founder brief, round 16, 2026-10-10).
+  private var informationSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ProvidersSectionHeader(
+        String(localized: "Information and documentation", comment: "About panel section"))
+        .padding(.top, CSSpace.section)
+      VStack(alignment: .leading, spacing: CSSpace.xxs) {
+        externalLink(
+          String(localized: "Privacy Policy"), Self.privacyURL,
+          accessibility: "Open Privacy Policy")
+        externalLink(
+          String(localized: "Terms of Use", comment: "About panel: legal link"),
+          Self.termsURL, accessibility: "Open Terms of Use")
+        externalLink(
+          String(localized: "Documentation", comment: "About panel: docs link"),
+          Self.docsURL, accessibility: "Open Codescribe documentation")
+      }
+      .padding(.top, CSSpace.sm)
+    }
+  }
+
+  private func externalLink(_ title: String, _ url: URL, accessibility: String) -> some View {
+    Link(destination: url) {
+      HStack(alignment: .center, spacing: CSSpace.sm) {
+        Text(title)
+          .font(.callout)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Image(systemName: "arrow.up.forward.square")
+          .font(.system(size: 11, weight: .medium))
+      }
+      .foregroundStyle(CSColor.chromeAccent)
+      .padding(.vertical, CSSpace.xs)
+      .contentShape(Rectangle())
+    }
+    .csFocusRing()
+    .accessibilityLabel(accessibility)
+  }
+
+  // MARK: - Reset data
+
+  /// Both resets sit behind one closed row: most people never use them, and
+  /// the confirmations keep every safeguard once the row is open. The header
+  /// carries the same weight as every other section on the page — the red
+  /// belongs to the destructive buttons inside, not to the heading (Founder
+  /// brief, round 16, 2026-10-10).
+  private var resetSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      divider
+        .padding(.top, CSSpace.section)
+
+      ProvidersSectionHeader(
+        String(localized: "Reset data", comment: "About panel: section holding both resets")
+      ) {
+        TrailingDisclosureButton(
+          title: showingResets
+            ? String(localized: "Collapse")
+            : String(localized: "Expand", comment: "Opens a closed section"),
+          isExpanded: $showingResets
+        )
+        .accessibilityIdentifier("about-reset-toggle")
+      }
+      .padding(.top, CSSpace.section)
+
+      if showingResets {
+        VStack(alignment: .leading, spacing: 0) {
+          ResetAgentSection(model: model)
+          divider.padding(.vertical, CSSpace.card)
+          ResetAppDataSection(model: model)
+        }
+        .settingsGroupedInset()
+        .padding(.top, CSSpace.control)
+        .accessibilityIdentifier("about-resets")
+      }
+    }
+  }
+
+  // MARK: - Bindings and rows
 
   private var taggingBinding: Binding<Bool> {
     Binding(
@@ -211,40 +483,62 @@ struct UserPanel: View {
     )
   }
 
-  private func infoRow(_ label: LocalizedStringKey, _ value: String) -> some View {
-    HStack(spacing: 14) {
+  private func detailRow(_ label: String, _ value: String, mono: Bool) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.card) {
       Text(label)
-        .font(CSFont.ui(12.5, .medium))
-        .foregroundStyle(Color.secondary)
-        .frame(width: 90, alignment: .leading)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .frame(width: 110, alignment: .leading)
       Text(value)
-        .font(CSFont.mono(11.5, .medium))
-        .foregroundStyle(Color.primary)
+        .font(mono ? CSFont.mono(11.5, .medium) : .subheadline)
+        .foregroundStyle(.primary)
         .textSelection(.enabled)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, CSSpace.card)
-    .padding(.vertical, CSSpace.md)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(label)
+    .accessibilityValue(value)
   }
 
-  private func pathRow(_ label: LocalizedStringKey, _ path: String) -> some View {
-    let display = path.isEmpty ? String(localized: "not loaded yet") : path
-    return VStack(alignment: .leading, spacing: 5) {
-      Text(label)
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
-      Text(display)
-        .font(CSFont.mono(10.5, .regular))
-        .foregroundStyle(Color.secondary)
-        .textSelection(.enabled)
-        .lineLimit(2)
-        .truncationMode(.middle)
-        .accessibilityLabel(label)
-        .accessibilityValue(display)
+  /// Home-relative path for reading; the copy button copies the full path.
+  private func displayPath(_ path: String) -> String {
+    (path as NSString).abbreviatingWithTildeInPath
+  }
+
+  private func pathRow(_ label: String, _ path: String) -> some View {
+    let loaded = !path.isEmpty
+    let display = loaded ? displayPath(path) : String(localized: "not loaded yet")
+    return HStack(alignment: .center, spacing: 10) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(label)
+          .font(.body)
+          .foregroundStyle(Color.primary)
+        Text(display)
+          .font(CSFont.mono(11, .regular))
+          .foregroundStyle(Color.secondary)
+          .textSelection(.enabled)
+          .lineLimit(2)
+          .truncationMode(.middle)
+          .accessibilityLabel(label)
+          .accessibilityValue(display)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if loaded {
+        Button {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(path, forType: .string)
+        } label: {
+          Image(systemName: "doc.on.doc")
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .csFocusRing()
+        .help(String(localized: "Copy path", comment: "About panel: copy button tooltip"))
+        .accessibilityLabel(
+          String(localized: "Copy the \(label) path", comment: "About panel: copy button"))
+      }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, CSSpace.card)
     .padding(.vertical, CSSpace.md)
   }
@@ -255,66 +549,97 @@ struct UserPanel: View {
 
 }
 
-// MARK: - Danger zone
+// MARK: - Trailing disclosure
+
+/// "Version details ›" and "Expand ›": a text button at the end of a row that
+/// opens content below it. The chevron turns down while the content is open.
+private struct TrailingDisclosureButton: View {
+  let title: String
+  @Binding var isExpanded: Bool
+
+  var body: some View {
+    Button {
+      isExpanded.toggle()
+    } label: {
+      HStack(spacing: 4) {
+        Text(title)
+        CSIconView(
+          icon: isExpanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold)
+      }
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      .contentShape(Rectangle())
+    }
+    .csFocusRing()
+    .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+  }
+}
+
+// MARK: - Resets
+
+/// The red stays on the two destructive buttons; the blocks themselves read
+/// like the rest of the panel.
+private struct DestructiveResetButton: View {
+  let title: String
+  let action: () -> Void
+
+  var body: some View {
+    Button(role: .destructive, action: action) {
+      Text(title)
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(CSColor.danger)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+            .fill(CSColor.danger.opacity(0.12))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+            .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
+        )
+    }
+    .csFocusRing()
+  }
+}
 
 /// A deliberately narrow reset for Agent state. It is separate from the full
 /// app-data reset so it cannot clear dictation, recordings, prompts or license.
+/// The short block names the scope; the confirmation sheet shows the live
+/// counts and every surface that stays.
 private struct ResetAgentSection: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var repairSummary: String?
   @State private var confirming = false
   @State private var confirmationText = ""
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Reset Agent"))
-        .foregroundStyle(CSColor.danger)
+      Text("Reset Agent data", comment: "About panel: the Agent reset")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(.primary)
 
       Text(
-        "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. Agent provider and MCP connector secrets are deleted permanently. Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
+        "Moves Agent conversations, MCP configuration and tool state to Trash. Agent provider keys and MCP connector secrets are deleted permanently. Everything else stays.",
+        comment:
+          "About panel: short scope of the Agent reset; the confirmation shows the full scope"
       )
-      .font(CSFont.mono(11, .medium))
-      .foregroundStyle(Color.secondary)
+      .font(.callout)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, 6)
+      .padding(.top, CSSpace.xxs)
 
-      Button(role: .destructive) {
+      DestructiveResetButton(title: String(localized: "Reset Agent…")) {
         model.refreshAgentResetPreview()
         confirmationText = ""
         confirming = true
-      } label: {
-        Text("Reset Agent…")
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.danger)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.danger.opacity(0.14))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
-          )
       }
-      .csFocusRing()
-      .padding(.top, 13)
+      .padding(.top, CSSpace.md)
       .accessibilityLabel("Reset Agent. Destructive action.")
       .accessibilityHint(
         "Shows Agent-only impact and requires typing \(resetAgentConfirmationWord) before continuing."
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.vertical, 16)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(CSColor.danger.opacity(0.055))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
-    )
     .alert("Reset Agent?", isPresented: $confirming) {
       TextField("Type \(resetAgentConfirmationWord) to continue", text: $confirmationText)
       Button("Cancel", role: .cancel) { confirmationText = "" }
@@ -326,11 +651,11 @@ private struct ResetAgentSection: View {
   }
 }
 
-/// The full-data reset lives only at the foot of User settings, away from MCP
-/// editing. Data is recoverable from Trash; Keychain deletion remains opt-in.
+/// The full-data reset lives only at the foot of About, away from MCP editing.
+/// Data is recoverable from Trash; Keychain deletion and prompt reset stay
+/// opt-in, and the confirmation sheet shows the live scope before anything moves.
 private struct ResetAppDataSection: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var repairSummary: String?
   @State private var includeKeys = false
   @State private var includePrompts = false
   @State private var confirming = false
@@ -338,73 +663,61 @@ private struct ResetAppDataSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Danger zone"))
-        .foregroundStyle(CSColor.danger)
+      Text("Reset app data", comment: "About panel: the full app-data reset")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(.primary)
 
       Text(
-        "Moves recordings, transcript history, conversations, logs, preferences, and local configuration to Trash so they can be recovered. Your assistive.txt and formatting.txt base prompts are preserved by default."
+        "Moves recordings, transcripts, conversations, logs, preferences and local configuration to Trash. Your base prompts stay unless you choose otherwise below.",
+        comment:
+          "About panel: short scope of the app-data reset; the confirmation shows the full scope"
       )
-      .font(CSFont.mono(11, .medium))
-      .foregroundStyle(Color.secondary)
+      .font(.callout)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, 6)
+      .padding(.top, CSSpace.xxs)
 
-      Toggle(isOn: $includeKeys) {
-        Text("Also remove API keys from Keychain")
-          .font(CSFont.ui(12.5, .medium))
+      // The two opt-ins read as one group above the button; both keep their
+      // exact wording, including what Trash cannot bring back.
+      VStack(alignment: .leading, spacing: CSSpace.sm) {
+        Toggle(isOn: $includeKeys) {
+          Text(
+            "Also remove API keys from Keychain (not recoverable from Trash)",
+            comment: "About panel: reset checkbox"
+          )
+          .font(.callout)
           .foregroundStyle(Color.primary)
-      }
-      .toggleStyle(.checkbox)
-      .padding(.top, 13)
+        }
+        .toggleStyle(.checkbox)
 
-      Toggle(isOn: $includePrompts) {
-        Text("Also reset my base prompts (assistive.txt and formatting.txt)")
-          .font(CSFont.ui(12.5, .medium))
+        Toggle(isOn: $includePrompts) {
+          Text(
+            "Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)",
+            comment: "About panel: reset checkbox; the four file names stay verbatim"
+          )
+          .font(.callout)
           .foregroundStyle(Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        .toggleStyle(.checkbox)
+        .accessibilityHint(
+          "Off by default. When enabled, all four prompt files move to Trash with the rest of the app data."
+        )
       }
-      .toggleStyle(.checkbox)
-      .padding(.top, 9)
-      .accessibilityHint(
-        "Off by default. When enabled, both prompt files move to Trash with the rest of the app data."
-      )
+      .padding(.top, CSSpace.md)
 
-      Button(role: .destructive) {
+      DestructiveResetButton(title: String(localized: "Move app data to Trash…")) {
         model.refreshResetPreview()
         confirmationText = ""
         confirming = true
-      } label: {
-        Text("Move app data to Trash…")
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.danger)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.danger.opacity(0.14))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
-          )
       }
-      .csFocusRing()
-      .padding(.top, 13)
+      .padding(.top, CSSpace.md)
       .accessibilityLabel("Reset app data. Destructive action.")
       .accessibilityHint(
         "Shows the live impact, names whether base prompts are preserved, and requires typing \(resetConfirmationWord) before data moves to Trash."
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.vertical, 16)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(CSColor.danger.opacity(0.055))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
-    )
     .alert("Move app data to Trash?", isPresented: $confirming) {
       TextField("Type \(resetConfirmationWord) to continue", text: $confirmationText)
       Button("Cancel", role: .cancel) {
@@ -421,7 +734,7 @@ private struct ResetAppDataSection: View {
 }
 
 #if DEBUG
-  #Preview("User panel") {
+  #Preview("About panel") {
     ScrollView { UserPanel(model: .preview(.user)) }
       .frame(width: 720, height: 720)
   }
