@@ -252,6 +252,11 @@ key-down, and also when the HID system reports a key-down during the press even
 though the tap never received the letter (secure keyboard entry, another event
 tap swallowing key events). The CoreGraphics layer passes that HID timestamp
 in through `HotkeyDetector::observe_hid_key_down` on every modifier change.
+Both ends of the press are timed by the CGEvent timestamp (the hardware clock),
+not by when the tap callback ran, so a late callback cannot shrink a chord into
+a tap. Verified so far: the detector logic (unit tests) and the gates; still to
+be verified at runtime: that the HID key-down query is populated under secure
+keyboard entry, and that ordinary double-taps stay comfortable.
 **Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
