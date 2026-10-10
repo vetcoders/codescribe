@@ -246,8 +246,9 @@ the override and never touches the provider. The settings keys
 sit under **Active configuration details**, collapsed by default. **Agent →
 Prompts** edits their prompts.
 
-**Automatic send to the Agent** holds one switch: in Agent mode the untouched
-transcript is sent 5 seconds after the take ends unless you start editing it.
+**Auto-send to the Agent** is one labelled switch (no separate section heading
+repeating it): in Agent mode the untouched transcript is sent 5 seconds after
+the take ends unless you start editing it.
 
 ### Agent → Prompts
 
@@ -304,7 +305,8 @@ Settings and Setup read provider credentials in the background. The initial
 read shows **Checking provider access…** rather than claiming an account or
 key is missing. An access error remains visible with **Try again** in Setup;
 a previous successful snapshot is labeled as the last checked state. Settings
-also offers **Refresh status**; while the read runs, the spinner and
+also offers **Refresh** (one shared refresh chip is used across every Settings
+section); while the read runs, the spinner and
 **Checking provider access…** sit in a fixed slot beside the button, and once
 it lands the slot keeps **Checked at HH:MM:SS** so even an instant refresh
 leaves a visible receipt. Returning focus refreshes only the owning Settings

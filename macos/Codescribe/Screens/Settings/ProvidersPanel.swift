@@ -42,8 +42,12 @@ struct ProvidersPanel: View {
         Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
-        Button("Refresh status") { model.refreshProviderAccess() }
-          .disabled(model.providerAccessPending || model.providerMutationPending)
+        // The status slot beside the chip carries the progress line, so the
+        // chip greys out instead of spinning twice.
+        SettingsRefreshButton(
+          enabled: !(model.providerAccessPending || model.providerMutationPending),
+          axLabel: "Refresh provider access status"
+        ) { model.refreshProviderAccess() }
         ProviderAccessStatusSlot(
           accessPending: model.providerAccessPending,
           mutationPending: model.providerMutationPending,

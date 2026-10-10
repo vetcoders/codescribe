@@ -42,27 +42,10 @@ struct AgentStatusSection: View {
       SettingsSectionLabel(String(localized: "Agent readiness"))
       readinessPill
       Spacer(minLength: 0)
-      Button {
+      SettingsRefreshButton(axLabel: "Refresh agent readiness") {
         model.refreshAgentStatus()
         model.refreshCreatorAgentBridge()
-      } label: {
-        HStack(spacing: 5) {
-          CSIconView(icon: .refresh, size: 11, weight: .semibold)
-          Text("Refresh").font(CSFont.mono(11, .semibold))
-        }
-        .foregroundStyle(Color.primary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(Color.primary.opacity(0.08))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-        )
       }
-      .csFocusRing()
     }
   }
 

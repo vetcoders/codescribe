@@ -408,13 +408,9 @@ struct VoiceLabPanel: View {
           } message: {
             Text(learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)))
           }
-          Button("Refresh") {
-            model.refreshVoiceLab()
-          }
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
-          .csFocusRing()
-          .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
+          SettingsRefreshButton(
+            axLabel: "Refresh \(SettingsSection.voiceLab.title) data"
+          ) { model.refreshVoiceLab() }
         }
       }
 

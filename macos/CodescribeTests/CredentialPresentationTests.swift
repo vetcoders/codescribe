@@ -141,6 +141,26 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertFalse(
       rejected.discoveryDescription.contains("Incorrect"), "the raw body stays under Error details")
 
+    // The same refusal next to a signed-in account must not read as a failed
+    // sign-in: the sentence says the account still covers requests.
+    var accountProvider = provider
+    accountProvider.accountSignedIn = true
+    let accountRuntime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: "xAI",
+      wire: provider.wire, endpoint: provider.endpoint, model: "grok-4",
+      keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: true,
+      available: true, unavailableReason: nil)
+    let rejectedWithAccount = LLMLaneModel(
+      lane: .formatting, runtime: accountRuntime, provider: accountProvider, configuredModel: "",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "key_rejected",
+        message: "{\"error\":\"Incorrect API key provided\"}", models: []))
+    XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Connected account")
+    XCTAssertEqual(
+      rejectedWithAccount.discoveryDescription,
+      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers."
+    )
+
     // Any other failure is a plain fetch error: the key is never blamed on a guess.
     let outage = LLMLaneModel(
       lane: .formatting, runtime: runtime, provider: provider, configuredModel: "",
