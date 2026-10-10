@@ -18,4 +18,7 @@ mod live_lexicon;
 #[test]
 fn registered_rules_keep_bundled_inventory_available() {
     assert!(live_lexicon::bundled_count() > 0);
+    let protected = lexicon_gate::ProtectedTerms::builtin();
+    assert!(!protected.is_empty());
+    assert!(protected.terms().any(|term| term == "whisper"));
 }
