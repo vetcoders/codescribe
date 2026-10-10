@@ -216,6 +216,10 @@ struct KeyRow: View {
   let label: String
   let isSet: Bool
   var optional: Bool = false
+  /// Inside a provider or lane card the row drops its own tinted card — the
+  /// presence dot and state text carry the colour — so the host card stays one
+  /// card, not a card in a card (Founder brief, round 7, 2026-10-10).
+  var embedded: Bool = false
   let probeResult: CsApiKeyProbeResult?
   let probePending: Bool
   var mutationPending = false
@@ -311,16 +315,17 @@ struct KeyRow: View {
           .textSelection(.enabled)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional) when not.
-    .padding(.horizontal, 15)
-    .padding(.vertical, 13)
+    // Presence-tinted card: green when set, red (required) / grey (optional)
+    // when not. Embedded rows keep the tint on the dot and state text only.
+    .padding(.horizontal, embedded ? 0 : 15)
+    .padding(.vertical, embedded ? 2 : 13)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(accent.opacity(0.06))
+        .fill(accent.opacity(embedded ? 0 : 0.06))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(accent.opacity(0.18), lineWidth: 1)
+        .strokeBorder(accent.opacity(embedded ? 0 : 0.18), lineWidth: 1)
     )
   }
 
@@ -356,10 +361,11 @@ struct KeyRow: View {
 extension KeyRow {
   /// Row wired to the view-model's save / clear / test for one account.
   init(
-    model: SettingsViewModel, account: String, label: String, isSet: Bool, optional: Bool = false
+    model: SettingsViewModel, account: String, label: String, isSet: Bool,
+    optional: Bool = false, embedded: Bool = false
   ) {
     self.init(
-      account: account, label: label, isSet: isSet, optional: optional,
+      account: account, label: label, isSet: isSet, optional: optional, embedded: embedded,
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
       mutationPending: model.providerMutationPending,

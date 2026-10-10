@@ -144,6 +144,38 @@ struct ProviderAccessStatusSlot: View {
   static let height: CGFloat = 20
 }
 
+/// Providers section header. The sections on this page put one-line helper
+/// copy straight under the heading, so the heading reads one step stronger
+/// than the shared `SettingsSectionLabel` — a local fix, not a global header
+/// restyle (Founder brief, round 7, 2026-10-10).
+struct ProvidersSectionHeader<Action: View>: View {
+  let text: String
+  @ViewBuilder var action: () -> Action
+
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+    self.text = text
+    self.action = action
+  }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      Text(text)
+        .font(CSFont.ui(13, .semibold))
+        .foregroundStyle(Color.primary)
+        .accessibilityAddTraits(.isHeader)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      action()
+        .controlSize(.small)
+    }
+  }
+}
+
+extension ProvidersSectionHeader where Action == EmptyView {
+  init(_ text: String) {
+    self.init(text, action: { EmptyView() })
+  }
+}
+
 /// What the custom-provider sheet is editing. `Identifiable` so `.sheet(item:)`
 /// re-seeds the form per target instead of reusing stale drafts.
 enum CustomProviderFormTarget: Identifiable {
@@ -202,7 +234,7 @@ struct ProviderCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 7) {
       HStack(spacing: 10) {
         Text(provider.displayName)
           .font(CSFont.ui(14.5, .bold))
@@ -229,7 +261,7 @@ struct ProviderCard: View {
       // Custom hosts are key-optional: an absent key there is neutral, not an error.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
-        isSet: provider.apiKeySet, optional: !provider.keyRequired)
+        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
@@ -266,7 +298,7 @@ struct ProviderCard: View {
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("provider-advanced")
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: 12)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       isCustom
@@ -304,9 +336,10 @@ struct CustomProvidersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack {
-        SettingsSectionLabel(String(localized: "Custom providers"))
-        Spacer()
+      // The heading, the wire pills on the cards and the add sheet already say
+      // what belongs here; the old explainer sentence is gone (Founder brief,
+      // round 7, 2026-10-10).
+      ProvidersSectionHeader(String(localized: "Custom providers")) {
         Button(action: onAdd) {
           Label("Add provider", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
@@ -315,12 +348,6 @@ struct CustomProvidersSection: View {
         .foregroundStyle(Color.primary)
         .accessibilityIdentifier("providers-add-custom")
       }
-
-      Text("Add a server that speaks OpenAI Responses or Anthropic Messages.")
-      .font(CSFont.ui(11.5))
-      .lineSpacing(2)
-      .foregroundStyle(Color.secondary)
-      .padding(.top, 8)
 
       if model.customProviders.isEmpty {
         Text("No custom providers yet.")
@@ -532,17 +559,23 @@ struct SpeechToTextSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(
+      ProvidersSectionHeader(
         String(localized: "Cloud transcription", comment: "Providers section: cloud STT lanes"))
-      Text("Your recordings leave your machine.")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.amber)
-        .padding(.top, 8)
-      Text("Cloud mode is switched on under Dictation. The connection is set up here.")
+      Text("Connections for cloud transcription. The mode is chosen under Dictation.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
         .foregroundStyle(Color.secondary)
-        .padding(.top, 4)
+        .padding(.top, 6)
+      // Conditional on purpose: a configured endpoint and key do not mean audio
+      // is being sent — the real egress paths are Cloud mode and an explicit
+      // re-transcription (same truth as Dictation › Cloud & privacy).
+      Text(
+        "Recordings leave this computer only in Cloud mode, or when you start a cloud re-transcription yourself."
+      )
+      .font(CSFont.ui(11.5, .medium))
+      .foregroundStyle(CSColor.amber)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, 2)
       VStack(spacing: 8) {
         ForEach(model.sttLanes, id: \.id) { lane in
           SttLaneCard(model: model, lane: lane)
@@ -613,7 +646,7 @@ struct SttLaneCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 7) {
       Text(Self.title(for: lane))
         .font(CSFont.ui(14.5, .bold))
         .foregroundStyle(Color.primary)
@@ -632,7 +665,7 @@ struct SttLaneCard: View {
       )
       KeyRow(
         model: model, account: lane.keyAccount, label: String(localized: "API key"),
-        isSet: lane.apiKeySet)
+        isSet: lane.apiKeySet, embedded: true)
       if lane.id == "live" {
         SettingsUrlRow(
           title: String(localized: "Gateway session URL"),
@@ -668,7 +701,7 @@ struct SttLaneCard: View {
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("stt-lane-advanced")
     }
-    .settingsGroupedInset()
+    .settingsGroupedInset(padding: 12)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(Self.title(for: lane)) lane")
   }
@@ -683,7 +716,7 @@ struct ServiceKeysSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Service keys"))
+      ProvidersSectionHeader(String(localized: "Service keys"))
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
           KeyRow(
