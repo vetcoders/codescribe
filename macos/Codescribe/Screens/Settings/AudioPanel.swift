@@ -531,10 +531,10 @@ func audioInputCardState(_ snapshot: CsAudioInputSnapshot) -> AudioInputCardStat
   let current: String
   if let runtimeDevice = snapshot.runtimeDevice, !runtimeDevice.isEmpty {
     current = String(
-      localized: "Currently: \(runtimeDevice)",
+      localized: "Currently using: \(runtimeDevice)",
       comment: "The placeholder is the input device the recorder actually uses")
   } else {
-    current = String(localized: "Currently: no microphone")
+    current = String(localized: "Currently using: no microphone")
   }
   guard display.tone != .healthy else {
     return AudioInputCardState(current: current, notice: nil, noticeTone: nil)
@@ -712,9 +712,26 @@ struct AudioPanel: View {
         blurb: String(localized: "Choose a microphone and adjust recording.")
       )
 
-      SettingsSectionLabel(String(localized: "Microphone"))
-        .padding(.top, CSSpace.section)
-        .id(SettingsAnchor.audioInput)
+      // Refresh lives on the header, like the Permissions header on Creator:
+      // the card below keeps only the choice and the live input (Founder brief,
+      // round 6, 2026-10-10).
+      SettingsSectionHeaderRow(String(localized: "Microphone")) {
+        Button {
+          model.refreshAudioInput()
+        } label: {
+          HStack(spacing: 4) {
+            CSIconView(icon: .refresh, size: 10, weight: .semibold)
+            Text("Refresh")
+          }
+        }
+        .csFocusRing()
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(CSColor.chromeAccent)
+        .accessibilityLabel("Refresh audio input devices")
+        .accessibilityHint("Re-reads the microphone list; readiness is checked below")
+      }
+      .padding(.top, CSSpace.section)
+      .id(SettingsAnchor.audioInput)
       inputDeviceSection
         .padding(.top, CSSpace.control)
 
@@ -742,16 +759,16 @@ struct AudioPanel: View {
     .padding(.vertical, CSSpace.section)
   }
 
-  /// One card: the choice, the input that is actually recording, and a notice
-  /// only when the two disagree or no microphone is reachable at all.
+  /// One compact card: the choice, the input that is actually recording, and a
+  /// notice only when the two disagree or no microphone is reachable at all.
   private var inputDeviceSection: some View {
     let card = audioInputCardState(model.audioInput)
-    return VStack(alignment: .leading, spacing: 10) {
+    return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 12) {
         Text("Input device")
           .font(.body.weight(.semibold))
           .foregroundStyle(.primary)
-        Spacer(minLength: 0)
+        Spacer(minLength: 12)
         Picker("Input device", selection: inputDeviceBinding) {
           Text(
             String(
@@ -770,31 +787,18 @@ struct AudioPanel: View {
           }
         }
         .labelsHidden()
-        .frame(width: 260)
+        // Content-sized up to a cap: a long device name truncates in the
+        // button and stays whole in the menu; the narrow window never clips.
+        .frame(maxWidth: 300)
         .accessibilityLabel("Audio input device")
         .accessibilityValue(inputDeviceAccessibilityValue)
       }
 
-      HStack(spacing: 12) {
-        Text(card.current)
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 0)
-        Button {
-          model.refreshAudioInput()
-        } label: {
-          HStack(spacing: 4) {
-            CSIconView(icon: .refresh, size: 10, weight: .semibold)
-            Text("Refresh")
-          }
-        }
-        .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
-        .accessibilityLabel("Refresh audio input devices")
-        .accessibilityHint("Re-reads the microphone list; readiness is checked below")
-      }
+      Text(card.current)
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
 
       if let notice = card.notice {
         Text(notice)
