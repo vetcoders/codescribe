@@ -79,10 +79,12 @@ struct SettingsView: View {
   }
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
-  /// Mission Control, App Exposé and the Window menu.
+  /// Mission Control, App Exposé and the Window menu, and minimises only while
+  /// the Dock icon is shown (`DockPresence`).
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
     window?.titleVisibility = .hidden
+    if let window { DockPresence.adopt(window) }
   }
 
   private var brandToolbar: some ToolbarContent {
