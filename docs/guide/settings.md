@@ -727,41 +727,56 @@ Common overrides:
 **Settings → Dictionary** shows what was corrected, what the app actually
 learned, and where the active rules come from.
 
-- **Counters** — three separate values: corrections (every take whose text
-  changed, not only the recent ones shown below), unchanged takes (kept for
-  their confidence telemetry only) and active rules (every variant → canonical
-  pair the engine applies). A vocabulary correction is not a learned rule;
-  nothing here implies otherwise.
-- **Recent corrections** — one card per correction. **Differences between
-  versions** compares the stages that actually changed: _Formatting changed
-  (raw STT → delivered)_ when Smart/Max rewrote the raw text, and _Your
-  correction (delivered → corrected)_ for the manual edit, so a formatter's
-  rewrite is never charged to the engine's hearing. Each span is labelled
-  **Added**, **Removed** or **Replaced**; replaced fragments can span several
-  words. Minor casing and punctuation changes stay collapsed. **Full
-  comparison · X → Y characters** opens the raw STT, the text after
-  formatting and the text after your correction. The footer reads _Version N ·
-  date_ in the interface language. **Diagnostic details** holds the count of
-  records without confidence telemetry; it describes the records, not the
-  engine.
+- **Counters** — three separate values on one line: corrections (every take
+  whose text changed, not only the recent ones shown below), unchanged takes
+  (kept for their confidence telemetry only) and active rules (every
+  variant → canonical pair the engine applies). A vocabulary correction is not
+  a learned rule; nothing here implies otherwise. They are stated once for the
+  page — no section heading repeats them.
+- **Recent corrections** — the heading carries the pager (_‹ 2 of 12 ›_), so
+  the card below starts with the take itself: date and time in bold, then one
+  quiet line with the version, how the take ended when it was not a saved
+  revision, and the recording pairing (_Version 1 · Recording unavailable_).
+  **Edit** sits on the right of that header.
+- **Changes in the transcript** — the stages that actually changed, compared
+  one by one: _Formatting changed (raw STT → delivered)_ when Smart/Max
+  rewrote the raw text, and _Your correction (delivered → corrected)_ for the
+  manual edit, so a formatter's rewrite is never charged to the engine's
+  hearing. A replacement short enough to read in place stays on one line; a
+  change inside a sentence gets a **Before** and an **After** block, the old
+  words struck through and the new ones emphasized, with the engine's
+  surrounding words kept in both. Pure additions and removals say **Added**
+  or **Removed** once, because there is no pair to compare. **Minor changes
+  (+N)** and **Full comparison · X → Y characters** are closed until asked;
+  the first holds the casing and punctuation adjustments, the second the raw
+  STT, the text after formatting and the text after your correction.
 - **Play original / Retranscribe** — the archived take is paired by its exact
-  raw transcript; the pairing runs in the background when a card opens, and
-  Retranscribe stays disabled until it is known. When several archived
-  recordings share that transcript the
-  pairing is ambiguous and both actions refuse, saying so; the panel also
-  explains the other reasons Retranscribe is unavailable (no archived
-  recording, no helper engine in Apple-only mode, a pass still running).
-- **Learn from corrections…** — reviews every saved correction and the
+  raw transcript; the pairing runs in the background when a card opens. Play
+  is live only for a recording Codescribe can name — a missing, ambiguous or
+  still-unresolved pairing greys it out instead of letting it refuse after the
+  click — and Retranscribe stays disabled until the pairing is known. When
+  several archived recordings share that transcript the pairing is ambiguous
+  and both actions refuse, saying so; the panel also explains the other
+  reasons Retranscribe is unavailable (no archived recording, no helper engine
+  in Apple-only mode, a pass still running).
+- **Learn from corrections** — reviews every saved correction and the
   suggested rules, then adds the new vocabulary rules it can derive. The
   confirmation states that scope first; the result line reports the real
   growth of the rules list (_Added 2 rules from corrections · 9 active
   rules_, or _No new rules_ when everything eligible was already learned).
   Corrections, their revision history and the extraction safeguards are
   unchanged by learning.
-- **My rules** — the active rules with their provenance (_from a correction_
-  or _added by hand_); up to five rules read as a list, more are paged.
-  Rules cannot be edited or removed from the app yet; see
-  [CONFIG.md](../CONFIG.md) for the lexicon files.
+- **Dictionary rules** — the active rules as `variant → canonical`. Their
+  origin (_From a correction_, _Added by hand_, _From an import_) is stated
+  once above the list when every rule shares it, and per row when the origins
+  differ; a screen reader hears it either way. Up to five rules read as a
+  list, more are paged. Rules cannot be edited or removed from the app yet;
+  see [CONFIG.md](../CONFIG.md) for the lexicon files.
+- **Diagnostic details** — at the very bottom, closed by default: the count of
+  records without confidence telemetry. It describes the records, not the
+  engine, and nothing in it is actionable. Real failures — an unavailable
+  quality store, a failed save, a recording that cannot be played — stay
+  visible where they happen.
 
 ## About
 

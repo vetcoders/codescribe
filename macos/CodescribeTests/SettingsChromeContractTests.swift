@@ -1117,28 +1117,26 @@ final class SettingsChromeContractTests: XCTestCase {
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
     XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
-    XCTAssertTrue(
-      panel.contains(
-        "\"Browse corrected transcripts and the rules that help recognize your vocabulary.\""))
+    XCTAssertTrue(panel.contains("\"Browse corrections and dictionary rules.\""))
     XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
     XCTAssertFalse(panel.contains("dictionarySubtitle("), "no repeated provenance subtitle")
     XCTAssertTrue(panel.contains("dictionaryCounters("))
-    XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections…\""))
+    XCTAssertTrue(panel.contains("String(localized: \"Learn from corrections\""))
     XCTAssertTrue(
       panel.contains(
         "Text(learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)))"))
     XCTAssertFalse(panel.contains("Button(\"Teach\") {\n            model.teachDictionaryFromStore()"))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
-    XCTAssertTrue(panel.contains("\"Differences between versions\""))
+    XCTAssertTrue(panel.contains("\"Changes in the transcript\""))
     XCTAssertFalse(panel.contains("Text(\"Changed\""))
     XCTAssertTrue(panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
-    XCTAssertTrue(panel.contains("Text(diffSpanKind(span).label)"))
+    XCTAssertTrue(panel.contains("diffEyebrow(diffSpanKind(span).label)"))
     XCTAssertTrue(panel.contains("fullComparisonLabel("))
     XCTAssertTrue(panel.contains("\"Corrected text\""))
     XCTAssertFalse(panel.contains("\"Corrected original\""))
     XCTAssertTrue(panel.contains("correctionFooter("))
     XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
-    XCTAssertTrue(panel.contains("String(localized: \"My rules · \\(model.customLexiconEntries.count)\")"))
+    XCTAssertTrue(panel.contains("ProvidersSectionHeader(String(localized: \"Dictionary rules\"))"))
     XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
     XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
     XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
@@ -1161,11 +1159,15 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Dictionary and corrections": "Słownik i poprawki",
-      "Browse corrected transcripts and the rules that help recognize your vocabulary.":
-        "Przeglądaj poprawione transkrypcje i reguły, które pomagają rozpoznawać Twoje słownictwo.",
-      "Differences between versions": "Różnice między wersjami",
+      "Browse corrections and dictionary rules.": "Przeglądaj poprawki i reguły słownika.",
+      "Changes in the transcript": "Zmiany w transkrypcji",
       "Corrected text": "Poprawiony tekst",
-      "Learn from corrections…": "Ucz słownik z poprawek…",
+      "Learn from corrections": "Ucz z poprawek",
+      "Recent corrections": "Ostatnie poprawki",
+      "Dictionary rules": "Reguły słownika",
+      "Before": "Przed",
+      "After": "Po",
+      "Recording unavailable": "Nagranie niedostępne",
       "Diagnostic details": "Szczegóły diagnostyczne",
       "from a correction": "Na podstawie poprawki",
       "added by hand": "Dodano ręcznie",
@@ -1173,7 +1175,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
-    XCTAssertEqual(polish["My rules · %lld"], "Moje reguły · %lld")
+    XCTAssertNil(polish["My rules · %lld"], "retired with the Dictionary rules header")
     XCTAssertEqual(polish["Version %llu"], "Wersja %llu")
     XCTAssertEqual(
       polish["Full comparison · %lld → %lld characters"], "Pełne porównanie · %1$lld → %2$lld znaków")

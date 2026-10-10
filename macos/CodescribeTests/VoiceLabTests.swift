@@ -226,7 +226,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertEqual(major[0].edited, "Vibecrafted")
     XCTAssertEqual(minor.count, 2)
     XCTAssertEqual(minor.map(\.tier), [.casing, .punctuation])
-    XCTAssertEqual(minorAdjustmentsSummary(minor), "+2 minor (punctuation, casing)")
+    XCTAssertEqual(minorAdjustmentsSummary(minor), "Minor changes (+2)")
   }
 
   /// (e) The headline counts real corrections, vocabulary corrections,
@@ -519,7 +519,7 @@ final class VoiceLabTests: XCTestCase {
   func testLearnMessagesNameTheScopeAndTheRealGrowth() {
     XCTAssertEqual(
       learnScopeMessage(corrections: 12),
-      "Codescribe reviews all 12 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
+      "Codescribe reviews all 12 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
     )
     XCTAssertEqual(
       learnResultMessage(added: 2, fromSuggestions: 0, activeRules: 9),
@@ -529,7 +529,7 @@ final class VoiceLabTests: XCTestCase {
       "Added 1 rule from corrections and suggestions · 1 active rule")
     XCTAssertEqual(
       learnResultMessage(added: 0, fromSuggestions: 3, activeRules: 9),
-      "No new rules: everything eligible is already in My rules · 9 active rules")
+      "No new rules: everything eligible is already in Dictionary rules · 9 active rules")
   }
 
   func testRetranscribeReasonExplainsEveryDisabledState() {
@@ -607,7 +607,7 @@ final class VoiceLabTests: XCTestCase {
     }
     let msg = try XCTUnwrap(model.voiceLabTeachMessage)
     // The mock reports the same rule before and after: nothing new was learned.
-    XCTAssertEqual(msg, "No new rules: everything eligible is already in My rules · 1 active rule")
+    XCTAssertEqual(msg, "No new rules: everything eligible is already in Dictionary rules · 1 active rule")
   }
 
   /// With more corrections than the page loads, Learn and the counters must
@@ -637,7 +637,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertEqual(model.totalQualityCorrections, 60, "the corpus count is not")
     XCTAssertEqual(
       learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)),
-      "Codescribe reviews all 60 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to My rules. Existing rules, corrections and their history stay as they are."
+      "Codescribe reviews all 60 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
     )
   }
 
