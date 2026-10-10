@@ -107,8 +107,10 @@ struct SettingsRefreshButton: View {
   var title: LocalizedStringKey = "Refresh"
   var busy = false
   var enabled = true
-  let axLabel: String
-  var axHint: String?
+  /// `LocalizedStringKey`, not `String`: these reach VoiceOver and must keep
+  /// their catalog entries.
+  let axLabel: LocalizedStringKey
+  var axHint: LocalizedStringKey?
   let action: () -> Void
 
   var body: some View {
@@ -124,8 +126,8 @@ struct SettingsRefreshButton: View {
       .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
       .frame(height: 14)
     }
-    .accessibilityLabel(axLabel)
-    .accessibilityHint(axHint ?? "")
+    .accessibilityLabel(Text(axLabel))
+    .accessibilityHint(axHint.map { Text($0) } ?? Text(verbatim: ""))
   }
 }
 
