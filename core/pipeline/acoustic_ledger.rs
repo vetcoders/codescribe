@@ -83,6 +83,11 @@ pub use slot_ops::{
 #[path = "acoustic_ledger/word_verdict.rs"]
 pub mod word_verdict;
 use word_verdict::WordDeletionReceipt;
+#[path = "acoustic_ledger/recovery_diagnostics.rs"]
+mod recovery_diagnostics;
+pub use recovery_diagnostics::{
+    CoverageDiagnostics, RecoveryAlternativeDiagnostic, RecoveryDiagnostic, RecoveryPinDiagnostic,
+};
 
 /// A physical acoustic occurrence: a PCM range in one capture epoch.
 ///
@@ -1990,6 +1995,15 @@ impl AcousticLedger {
         {
             return false;
         }
+        let capture = OccurrenceIdentity::new(&receipt.session_id, receipt.capture_epoch, 0, 0);
+        if super::trail::is_enabled(&capture) {
+            super::trail::record(
+                &capture,
+                super::trail::TrailEvent::CoverageDiagnostics {
+                    diagnostics: self.coverage_diagnostics(&receipt),
+                },
+            );
+        }
         self.latest_seal_coverage = Some(receipt);
         true
     }
@@ -2072,7 +2086,15 @@ impl AcousticLedger {
         if !self.evidence.contains_key(occurrence) || self.seals.contains_key(occurrence) {
             return false;
         }
-        self.pending_text_recovery.insert(occurrence.clone());
+        let newly_pending = self.pending_text_recovery.insert(occurrence.clone());
+        if newly_pending && super::trail::is_enabled(occurrence) {
+            super::trail::record(
+                occurrence,
+                super::trail::TrailEvent::RecoveryRequired {
+                    recovery: self.recovery_diagnostic(occurrence),
+                },
+            );
+        }
         true
     }
 
