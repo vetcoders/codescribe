@@ -895,8 +895,9 @@ final class SettingsChromeContractTests: XCTestCase {
 
   /// The Audio pane reads as "microphone and recording": a headline without a
   /// trailing period, no storage-format or Core Audio vocabulary in the basic
-  /// descriptions, a retention sentence that follows the selected choice, and
-  /// the measured profile collapsed under a details disclosure.
+  /// descriptions, one status line instead of four numbered steps, a retention
+  /// sentence only where a choice expires something, and the measured profile
+  /// collapsed under a details disclosure.
   /// The Polish values for the new keys are imported through the sheet tool;
   /// this test pins the source structure, which does not depend on that import.
   func testAudioPaneReadsAsMicrophoneAndRecording() throws {
@@ -905,30 +906,54 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("Microphone and recording."), "the headline takes no period")
     XCTAssertFalse(panel.contains("Hear the real input"))
     XCTAssertTrue(
-      panel.contains(
-        "\"Choose a microphone, check that recording is ready and adjust the sound settings.\""))
-    XCTAssertTrue(panel.contains("Button(\"Refresh microphones\")"))
-    XCTAssertTrue(panel.contains("Button(\"Use the system microphone\")"))
-    XCTAssertFalse(panel.contains("Button(\"Use system default\")"))
+      panel.contains("String(localized: \"Choose a microphone and adjust recording.\")"))
     XCTAssertFalse(
-      panel.contains("Restores the system default microphone."),
-      "the button no longer repeats itself in a sentence")
+      panel.contains("check that recording is ready and adjust the sound settings"),
+      "the blurb no longer lists what the sections below already say")
+
+    // The microphone card: one picker, the live input, one refresh action. The
+    // system microphone is the first option of the picker, not a second button
+    // that says the same thing.
+    XCTAssertTrue(panel.contains("Text(\"Refresh\")"))
+    XCTAssertFalse(panel.contains("Button(\"Refresh microphones\")"))
+    XCTAssertFalse(panel.contains("Button(\"Use the system microphone\")"))
+    XCTAssertTrue(panel.contains("defaultValue: \"System default\""))
+    XCTAssertTrue(
+      panel.contains(
+        "func audioInputCardState(_ snapshot: CsAudioInputSnapshot) -> AudioInputCardState"))
 
     // Point 4: the basic descriptions name the microphone, not the storage
     // format or the macOS audio framework.
     XCTAssertFalse(panel.contains("settings.json"))
     XCTAssertFalse(panel.contains("Core Audio"))
 
-    XCTAssertTrue(panel.contains("Text(audioRetentionDetail(model.audioRetention))"))
+    XCTAssertTrue(panel.contains("if let detail = audioRetentionDetail(model.audioRetention)"))
     XCTAssertFalse(
       panel.contains("Off discards the audio of new takes once processing finishes"),
       "the retention sentence is no longer unconditional")
-    XCTAssertTrue(panel.contains("func audioRetentionDetail(_ choice: String) -> String"))
+    XCTAssertTrue(panel.contains("func audioRetentionDetail(_ choice: String) -> String?"))
 
-    XCTAssertTrue(panel.contains("String(localized: \"Recording start signal\")"))
+    XCTAssertTrue(panel.contains("String(localized: \"Recording start sound\")"))
+    XCTAssertFalse(panel.contains("String(localized: \"Sound feedback\")"))
     XCTAssertFalse(panel.contains("String(localized: \"Start sound\")"))
+    XCTAssertFalse(
+      panel.contains("Play the recorder's live start confirmation"),
+      "the subtitle only repeated the toggle label")
     XCTAssertTrue(panel.contains("Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)"))
     XCTAssertTrue(panel.contains("Toggle(\"\", isOn: soundFeedbackBinding)"))
+
+    // One status line plus two value rows. The blocker, its explanation and
+    // its remedy are projected, never improvised by the view.
+    XCTAssertTrue(
+      panel.contains(
+        "func audioReadinessSummary("))
+    XCTAssertTrue(panel.contains("func audioSealLaneFact(_ admission: CsAdmissionReadiness?)"))
+    XCTAssertFalse(
+      panel.contains("Text(verbatim: \"\\(step.id.rawValue + 1)\")"),
+      "the readiness rows are no longer numbered steps")
+    XCTAssertFalse(
+      panel.contains("Toggle(\"Committing transcript fragments\""),
+      "the committing switch lives on the Lab desk")
 
     // Point 6: one name for the committing row, the profile id behind a
     // disclosure, and the stored measurement read straight from the verdict.
@@ -938,6 +963,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("\"Seal check waits for microphone access\""))
     XCTAssertTrue(panel.contains("@State private var showingCalibrationDetails = false"))
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingCalibrationDetails)"))
+    XCTAssertTrue(panel.contains("GridRow {"), "calibration details are label/value pairs")
     XCTAssertTrue(
       panel.contains("SettingsSectionLabel(String(localized: \"Calibration details\"))"))
     XCTAssertTrue(
@@ -946,6 +972,12 @@ final class SettingsChromeContractTests: XCTestCase {
       ))
     XCTAssertTrue(panel.contains("func recordingStartHint(_ dictationShortcut: String?) -> String"))
     XCTAssertFalse(panel.contains("Use \\(dictationShortcut) or choose Start recording."))
+
+    // The one switch that can disarm the recorder's own precondition is a
+    // power-user control, and the Lab desk is where it now lives.
+    let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
+    XCTAssertTrue(lab.contains("Toggle(\"Committing transcript fragments\", isOn: sealLaneBinding)"))
+    XCTAssertTrue(lab.contains("Text(\"Required before a recording can start.\")"))
   }
 
   /// Settings → About: the app, its data and the resets, in English and in

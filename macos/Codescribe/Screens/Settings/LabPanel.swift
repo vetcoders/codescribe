@@ -21,6 +21,8 @@ struct LabPanel: View {
         .toggleStyle(.switch)
         .font(.body)
 
+      sealLaneRow
+
       Picker(
         "Whisper buffering",
         selection: Binding(
@@ -63,6 +65,54 @@ struct LabPanel: View {
     }
     .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
+    .task { await model.refreshAdmission() }
+  }
+
+  /// The committing lane. Settings › Audio states the effective value and
+  /// nothing else: turning the recorder's own precondition off is a power-user
+  /// act, so the one switch that can do it lives on this desk. An env override
+  /// still wins, and the switch then says so instead of lying about authority.
+  @ViewBuilder
+  private var sealLaneRow: some View {
+    let sealLane = sealLaneControlState(model.admission)
+    Toggle("Committing transcript fragments", isOn: sealLaneBinding)
+      .toggleStyle(.switch)
+      .font(.body)
+      .tint(CSColor.chromeAccent)
+      .disabled(!sealLane.isEnabled)
+      .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+      .accessibilityIdentifier("lab-committing-transcript-fragments")
+    Text("Required before a recording can start.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    if !sealLane.isEnabled {
+      Text(sealLane.detail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  private var sealLaneBinding: Binding<Bool> {
+    Binding(
+      get: { sealLaneControlState(model.admission).isOn },
+      set: { armed in
+        model.setSealLaneArmed(armed)
+        Task { await model.refreshAdmission() }
+      }
+    )
+  }
+
+  private func sealLaneAccessibilityValue(_ state: SealLaneControlState) -> String {
+    let value =
+      state.isOn
+      ? String(localized: "On", comment: "Toggle state")
+      : String(localized: "Off", comment: "Toggle state")
+    return state.isEnabled
+      ? value
+      : String(
+        localized: "\(value), overridden",
+        comment: "VoiceOver value: a toggle state frozen by an override")
   }
 
   /// Raw recognition timings. They used to be a Dictation tab; they are
