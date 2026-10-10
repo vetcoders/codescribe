@@ -1704,6 +1704,54 @@ mod tests {
     }
 
     #[test]
+    fn word_policy_v5_replays_five_pins_and_refuses_v4_before_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("word-policy-v5", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        let words = [
+            (2_000, 4_000),
+            (4_000, 6_000),
+            (8_000, 9_000),
+            (9_000, 10_500),
+            (10_500, 12_000),
+        ]
+        .into_iter()
+        .map(|(start, end)| WordPin::new(start, end, "Iwo").with_decode_window(0, 16_000))
+        .collect::<Vec<_>>();
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&observation, &words)
+                .grants_mutation()
+        );
+        drop(sink);
+        let mut rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let replayed = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(replayed.rendered_text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(replayed.slots_of(&owner).unwrap().len(), 5);
+        let start = rows
+            .iter_mut()
+            .find_map(|row| match &mut row.event {
+                TrailEvent::SlotStart { operation } => Some(operation),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(start.word_policy.as_deref(), Some("word-adjudication/v5"));
+        start.word_policy = Some("word-adjudication/v4".into());
+        let mut projected = 0;
+        let error = replay_decisions(&rows, |_, _, _| projected += 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported word adjudication policy")
+        );
+        assert_eq!(projected, 0);
+    }
+
+    #[test]
     fn recovery_diagnostics_snapshots_cannot_grant_replay_authority() {
         let dir = tempfile::tempdir().unwrap();
         let owner = OccurrenceIdentity::new("passive-recovery-trail", 17, 0, 16_000);
