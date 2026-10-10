@@ -79,6 +79,9 @@ struct RuntimeEvidence {
 struct TestEvidence {
     config: McpServerConfig,
     outcome: std::result::Result<McpProbeSummary, String>,
+    /// Last successful handshake identity for this exact config, retained
+    /// across a failed re-test independently from current reachability.
+    advertised: Option<String>,
     /// [`McpEvidence::events`] value when this test was recorded.
     seq: u64,
 }
@@ -119,8 +122,7 @@ impl McpEvidence {
             .and_then(|evidence| evidence.advertised.as_deref())
             .or_else(|| {
                 self.test_for(name, config)
-                    .and_then(|evidence| evidence.outcome.as_ref().ok())
-                    .and_then(|summary| summary.server_name.as_deref())
+                    .and_then(|evidence| evidence.advertised.as_deref())
             })
             .filter(|identity| !identity.trim().is_empty())
     }
@@ -249,7 +251,12 @@ fn evidence_snapshot(store: &Mutex<McpEvidence>) -> McpEvidence {
 fn record_runtime(store: &Mutex<McpEvidence>, mut snapshot: BTreeMap<String, RuntimeEvidence>) {
     let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
     let seq = evidence.next_seq();
-    for entry in snapshot.values_mut() {
+    for (name, entry) in &mut snapshot {
+        if matches!(entry.outcome, ServerRuntime::Failed(_)) {
+            entry.advertised = evidence
+                .advertised_for(name, &entry.config)
+                .map(str::to_owned);
+        }
         entry.seq = seq;
     }
     evidence.runtime = snapshot;
@@ -283,12 +290,17 @@ fn test_configured_server_at(
         Err(error) => Err(anyhow_root_cause(error)),
     };
     let mut evidence = store.lock().unwrap_or_else(|poison| poison.into_inner());
+    let advertised = match &outcome {
+        Ok(summary) => summary.server_name.clone(),
+        Err(_) => evidence.advertised_for(name, &server).map(str::to_owned),
+    };
     let seq = evidence.next_seq();
     evidence.tests.insert(
         name.to_string(),
         TestEvidence {
             config: server,
             outcome: recorded,
+            advertised,
             seq,
         },
     );
@@ -1433,8 +1445,12 @@ fn register_mcp_tools_from_config(
     config: McpConfigFile,
     store: &Mutex<McpEvidence>,
 ) -> Result<usize> {
-    let (discovered, runtime) = discover_mcp_tools_blocking(config)?;
-    record_runtime(store, runtime);
+    let (discovered, mut runtime) = discover_mcp_tools_blocking(config)?;
+    for entry in runtime.values_mut() {
+        if let ServerRuntime::Tools(count) = &mut entry.outcome {
+            *count = 0;
+        }
+    }
     let mut registered = 0usize;
 
     for discovered_tool in discovered {
@@ -1494,8 +1510,16 @@ fn register_mcp_tools_from_config(
         }
 
         registered += 1;
+        if let Some(RuntimeEvidence {
+            outcome: ServerRuntime::Tools(count),
+            ..
+        }) = runtime.get_mut(&discovered_tool.server_name)
+        {
+            *count += 1;
+        }
     }
 
+    record_runtime(store, runtime);
     Ok(registered)
 }
 

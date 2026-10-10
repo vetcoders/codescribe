@@ -408,13 +408,17 @@ struct ToggledServer {
 
 impl ToggledServer {
     fn new() -> Self {
+        Self::named("loctree-mcp")
+    }
+
+    fn named(name: &str) -> Self {
         let temp = tempfile::tempdir().expect("temp dir");
         let script = temp.path().join("toggled_mcp.py");
         fs::write(&script, TOGGLED_SERVER).expect("write fixture");
         let path = temp.path().join("mcp.json");
         write_config(
             &path,
-            json!({ "loctree-mcp": {"command": "python3", "args": [script], "timeout_seconds": 5} }),
+            json!({ name: {"command": "python3", "args": [script], "timeout_seconds": 5} }),
         );
         let down = temp.path().join("down");
         Self {
@@ -454,6 +458,53 @@ impl ToggledServer {
             detail: row.detail.clone(),
         }
     }
+}
+
+#[test]
+fn failed_retest_retains_handshake_identity_without_registration() {
+    let server = ToggledServer::named("code-map");
+    let store = Mutex::new(McpEvidence::default());
+    test_configured_server_at(&store, &server.path, "code-map", TEST_TIMEOUT)
+        .expect("initial handshake");
+    assert_eq!(server.loctree(&store).state, McpStatusState::Reachable);
+
+    server.set_up(false);
+    assert!(test_configured_server_at(&store, &server.path, "code-map", TEST_TIMEOUT).is_err());
+    let failed = server.loctree(&store);
+    assert_eq!(failed.state, McpStatusState::Unreachable);
+    assert_eq!(failed.subject, "code-map");
+    assert_eq!(
+        row(
+            &readiness(&server.path, &store, true),
+            McpStatusFacet::AicxMcp
+        )
+        .state,
+        McpStatusState::NotConfigured
+    );
+    assert_core_gate_alone_decides(&server.path, &store);
+
+    let config = fs::read_to_string(&server.path).expect("config");
+    fs::write(
+        &server.path,
+        config.replace("timeout_seconds\":5", "timeout_seconds\":4"),
+    )
+    .expect("edit config");
+    assert_eq!(server.loctree(&store).state, McpStatusState::Unverified);
+}
+
+#[test]
+fn diagnostics_count_only_successfully_registered_tools() {
+    let server = ToggledServer::new();
+    let script = server._temp.path().join("toggled_mcp.py");
+    fs::write(&script, TOGGLED_SERVER.replace(
+        "{\"name\": \"t2\", \"inputSchema\": {\"type\": \"object\"}}",
+        "{\"name\": \"t2\", \"inputSchema\": {\"type\": \"object\"}}, {\"name\": \"t1\", \"inputSchema\": {\"type\": \"object\"}}, {\"name\": \"bad/name\", \"inputSchema\": {\"type\": \"object\"}}"
+    )).expect("tool fixture");
+    let store = Mutex::new(McpEvidence::default());
+    assert_eq!(server.register(&store), 2);
+    let status = server.loctree(&store);
+    assert_eq!(status.state, McpStatusState::Live);
+    assert_eq!(status.count, Some(2));
 }
 
 /// Registration failed, then the user's Settings Test passed on the same
