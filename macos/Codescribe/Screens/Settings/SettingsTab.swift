@@ -109,9 +109,12 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentStatus:
       String(localized: "Configuration state of the Agent, its available tools and integrations.")
     case .agentTools:
+      // One sentence: the three levels name themselves on the segmented
+      // controls below, and the resolution order has its own note next to the
+      // defaults it governs (Founder brief, round 12, 2026-10-10).
       String(
-        localized:
-          "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse."
+        localized: "Choose when the Agent may use tools.",
+        comment: "Settings tab blurb: Agent › Tools"
       )
     case .agentMcp:
       String(localized: "Add MCP servers and manage the tools the Agent may use.")
