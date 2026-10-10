@@ -243,8 +243,14 @@ struct MessageList: View {
               }
             }
             if messages.isEmpty {
+              // Centered in the visible viewport, not pinned under the chrome:
+              // the composer below is the only other point of gravity.
               AgentEmptyThread()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(
+                  maxWidth: .infinity,
+                  minHeight: max(0, viewport.size.height - 2 * ChatLayoutPolicy.listPadding),
+                  alignment: .center
+                )
             }
             ForEach(visibleMessages) { message in
               turn(message, containerWidth: containerWidth, mode: widthMode)
@@ -405,24 +411,33 @@ struct MessageList: View {
 }
 
 private let agentEmptyThreadTitle = String(
-  localized: "New thread", comment: "Headline of a conversation with no turns yet")
+  localized: "What are we doing today?",
+  comment: "Headline of a conversation with no turns yet")
 private let agentEmptyThreadDetail = String(
-  localized: "Write in the composer, or dictate. The reply stays in this thread.")
+  localized: "Write or dictate a message to start the conversation.")
 
-/// Quiet first screen for a thread that has no turns yet.
+/// Quiet first screen for a thread that has no turns yet: one calm voice
+/// glyph, one question, one line about typing or dictating. The chrome
+/// already names the thread, so the headline does not repeat the title
+/// (Founder brief 2026-10-10). No starter prompts — Codescribe is not an
+/// assistant for everything.
 private struct AgentEmptyThread: View {
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(spacing: 10) {
+      Image(systemName: "waveform")
+        .font(.system(size: 24, weight: .medium))
+        .foregroundStyle(CSColor.textTertiary)
       Text(agentEmptyThreadTitle)
-        .font(CSFont.ui(15, .semibold))
+        .font(CSFont.ui(16, .semibold))
         .foregroundStyle(Color.primary)
+        .padding(.top, 2)
       Text(agentEmptyThreadDetail)
-        .font(CSFont.ui(13, .regular))
+        .font(CSFont.ui(12.5, .regular))
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: 420, alignment: .leading)
-    .padding(.top, 28)
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: 420)
     .accessibilityElement(children: .combine)
   }
 }
