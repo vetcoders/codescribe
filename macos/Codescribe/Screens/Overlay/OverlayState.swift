@@ -749,7 +749,8 @@ final class OverlayState {
   /// composer, a live capture and reply playback are active interactions.
   private var autoCollapseInteractionHeld: Bool {
     isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
-      || activeCaptureOwnsPresentation || selectedReplyPlaybackActive || autoCollapseExternalHold()
+      || activeCaptureOwnsPresentation || channelAudioCaptureActive || selectedReplyPlaybackActive
+      || autoCollapseExternalHold()
   }
 
   private func autoCollapseDeadlineReached() {
@@ -1634,6 +1635,7 @@ final class OverlayState {
         }
     }
     let wasOpen = hasOpenChannel
+    let wasChannelCapturing = channelAudioCaptureActive
     let wasCapturingAudio = audioCaptureActive
     channelRoster = snapshot
     channelHudStates = projected
@@ -1665,6 +1667,12 @@ final class OverlayState {
       cancelAutoHide()
     } else if wasOpen && terminal {
       restartAutoHideCountdown()
+    }
+    // A channel take does not set the dictation lifecycle flags. Hold its
+    // expansion until the controller closes the last channel, then start a
+    // full idle interval. Unchanged roster polls must not extend that interval.
+    if wasChannelCapturing != channelAudioCaptureActive {
+      noteAutoCollapseActivity()
     }
     onChannelPresentationChanged?()
   }
