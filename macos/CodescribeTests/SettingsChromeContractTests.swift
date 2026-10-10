@@ -102,9 +102,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tabbed.count, 2)
     for section in tabbed {
       let english = SettingsTab.tabs(in: section).map(\.title)
-      // Agent keeps six tabs; Dictation has five since the raw recognition
-      // timings moved to Lab.
-      XCTAssertEqual(english.count, section == .engine ? 5 : 6, "\(section.rawValue)")
+      // Agent keeps six tabs; Dictation has four since the raw recognition
+      // timings moved to Lab and the duplicated Permissions tab was cut
+      // (round 14 — the Creator checklist is the one permission surface).
+      XCTAssertEqual(english.count, section == .engine ? 4 : 6, "\(section.rawValue)")
       // Brand names ("MCP", "Whisper") are not catalog keys and read the same.
       let translated = english.map { polish[$0] ?? $0 }
       XCTAssertNotEqual(translated, english, "\(section.rawValue): no Polish labels resolved")
@@ -155,23 +156,27 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
     XCTAssertEqual(tools.components(separatedBy: ".pickerStyle(.segmented)").count, 3)
-    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 3)
+    // Round 12: the defaults rows keep `.fixedSize()`; the card picker sits on
+    // its own full-width row (`.frame(maxWidth: .infinity)` only widens), so
+    // it never competes with the tool name for space.
+    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 2)
+    XCTAssertTrue(tools.contains(".pickerStyle(.segmented)\n      .frame(maxWidth: .infinity)"))
     XCTAssertFalse(tools.contains(".frame(width: 180)"))
     XCTAssertFalse(tools.contains(".frame(maxWidth: 180)"))
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
     let levels = ["Allow", "Ask", "Deny"]
     let polishLevels = try levels.map { try XCTUnwrap(polish[$0]) }
     XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj", "Blokuj"])
-    // The tools column at the minimum window: the detail column minus the pane
-    // padding, the 190 pt server column, the gap between them and the row's
-    // own padding. A row keeps at least 96 pt for the tool name.
+    // The card column at the minimum window: one column since round 12 (the
+    // 190 pt source sidebar became a popup), minus the pane padding and the
+    // card's own 14 pt sides. The picker owns its row, so it only has to fit.
     let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
-    XCTAssertTrue(browser.contains(".frame(width: 190)"))
-    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 190 - CSSpace.md - 2 * 14
+    XCTAssertFalse(browser.contains(".frame(width: 190)"), "the source sidebar is gone")
+    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 2 * 14
     for titles in [levels, polishLevels] {
       let picker = width(titles)
       XCTAssertGreaterThan(picker, 0)
-      XCTAssertLessThanOrEqual(picker + 8 + 96, column, "\(titles)")
+      XCTAssertLessThanOrEqual(picker, column, "\(titles)")
     }
 
     // The formatting level picker sizes to its labels; no frame to outgrow.
@@ -542,10 +547,12 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("ScrollView {\n      MarkdownText"), "no nested scrolling")
     // Round 9 order: quiet source tag in the header, the prompt content, and
     // File details as the panel's last line.
-    let source = try XCTUnwrap(panel.range(of: "sourceTag"))
-    let body = try XCTUnwrap(panel.range(of: "promptBody"))
+    let header = try XCTUnwrap(panel.range(of: "private var header: some View"))
+    let tagDecl = try XCTUnwrap(panel.range(of: "private var sourceTag: some View"))
+    let tagUse = try XCTUnwrap(panel[header.upperBound...].range(of: "sourceTag"))
+    XCTAssertLessThan(tagUse.lowerBound, tagDecl.lowerBound, "the tag sits in the header")
+    let body = try XCTUnwrap(panel.range(of: "promptBody\n"))
     let details = try XCTUnwrap(panel.range(of: "fileDetails\n"))
-    XCTAssertLessThan(source.lowerBound, body.lowerBound, "the tag sits in the header")
     XCTAssertLessThan(body.lowerBound, details.lowerBound, "File details close the panel")
 
     let polish = try polishCatalog()
@@ -618,7 +625,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("A rule for one tool outranks its server's rule"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
     XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
-    XCTAssertTrue(section.contains("ToolPermissionLabels.risk(item.risk)"))
+    XCTAssertTrue(
+      section.contains("let category = ToolPermissionLabels.risk(risk)"),
+      "the category rides the card's one facts line (sourceSummary)")
+    XCTAssertTrue(section.contains("Text(verbatim: item.sourceSummary)"))
     XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
     XCTAssertTrue(
@@ -788,7 +798,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Connection details", "Connection details.", "Capability matrix", "Per-server probe",
       "Detected installations and runtime", "Available tools and integrations",
-      "Show details", "Show servers",
+      "Show servers",
       "The Agent has not run yet — server status is checked on its first turn.",
       "Native: %lld · Enhanced: %lld · Unavailable: %lld",
       "Configured: %lld · Tested: %lld · Issues: %lld",
