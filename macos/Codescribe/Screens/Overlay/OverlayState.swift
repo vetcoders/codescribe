@@ -2262,10 +2262,11 @@ final class OverlayState {
 
   @discardableResult
   func sendToAgent() -> Task<Void, Never>? {
+    // One guard for every entry point: while an accepted operation waits for
+    // its answer the selected bytes are not settled, so nothing is sent.
+    guard !documentOperationPending else { return nil }
     if archivedTranscript != nil { return sendArchivedTranscriptToAgent() }
-    guard terminal, canSendToAgent, !isRevisionDraftDirty,
-      !revisionCommitPending, !formatterCommitPending
-    else { return nil }
+    guard terminal, canSendToAgent, !isRevisionDraftDirty else { return nil }
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "send")
     return deliverAgentTranscript()
@@ -3348,7 +3349,9 @@ final class OverlayState {
       && projection.reducerAction == "derived_projection"
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
-      && projection.reducerRevision == pendingRevisionSource
+      // Accepting a format mints its own receipt, so the derived projection
+      // stands on a revision after the one the request named.
+      && pendingRevisionSource.map { projection.reducerRevision > $0 } == true
       && formatterReceipt != nil
     // A successful acoustic terminal has its own callback. Agent auto-send
     // below uses lifecycle completion and nonempty text, not this seal signal.
@@ -4395,7 +4398,7 @@ extension OverlayState {
         localized: "Finish the current take before opening a saved transcript.",
         comment: "History is disabled while a take is being recorded or finished")
     }
-    if revisionCommitPending || formatterCommitPending || archiveActionPending {
+    if documentOperationPending {
       return String(
         localized: "Wait for the current change to finish before opening a saved transcript.",
         comment: "History is disabled while a revision, format or retranscription runs")
@@ -4608,7 +4611,7 @@ extension OverlayState {
   /// Commit the archive edit as a new revision of that archive. The draft
   /// stays on the canvas, dirty and recoverable, until Rust accepts it.
   fileprivate func commitArchivedDraft() {
-    guard let source = archivedTranscript, !archiveActionPending else { return }
+    guard let source = archivedTranscript, !documentOperationPending else { return }
     let proposed = archiveDraft
     guard !proposed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       archiveActionError = String(localized: "A transcript revision cannot be empty")
@@ -4672,7 +4675,7 @@ extension OverlayState {
   }
 
   fileprivate func formatArchivedTranscript(level: FormattingPolicyOption?) {
-    guard let source = archivedTranscript, !archiveActionPending, !isRevisionDraftDirty else {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
       return
     }
     guard let engine else {
@@ -4747,7 +4750,7 @@ extension OverlayState {
   /// as a revision of that archive. Never the last session, never the
   /// projected take: no audio means a stated refusal.
   fileprivate func retranscribeArchivedTranscript(pass: OverlayRetranscribePass) {
-    guard let source = archivedTranscript, !archiveActionPending, !isRevisionDraftDirty else {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
       return
     }
     guard let engine else {
@@ -4794,7 +4797,9 @@ extension OverlayState {
       // The new words belong to archive A whatever the canvas shows now, so
       // they are committed to A's chain against the revision they replace.
       var committed: Result<CsArchivedDocument, Error>?
-      if case .success(let text) = transcribed, !text.isEmpty, text != source.text {
+      // Equal words are still one accepted attempt: a new version, never
+      // skipped by comparing text.
+      if case .success(let text) = transcribed, !text.isEmpty {
         do {
           committed = .success(
             try await engine.commitArchivedRevision(
@@ -4858,7 +4863,7 @@ extension OverlayState {
   /// selects accepted version `step` of its revision chain with one
   /// navigation receipt. The bytes come from the chain, never from Swift.
   private func navigateArchivedVersion(_ step: UInt64) {
-    guard let source = archivedTranscript, !archiveActionPending, !isRevisionDraftDirty else {
+    guard let source = archivedTranscript, !documentOperationPending, !isRevisionDraftDirty else {
       return
     }
     guard let engine else {
@@ -4908,7 +4913,7 @@ extension OverlayState {
   /// touches the projected take's delivery latch.
   fileprivate func sendArchivedTranscriptToAgent() -> Task<Void, Never>? {
     guard let source = archivedTranscript, canSendToAgent, !isRevisionDraftDirty,
-      !archiveActionPending, let engine,
+      !documentOperationPending, let engine,
       !source.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else { return nil }
     archiveActionPending = true

@@ -97,6 +97,9 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
     case "raw", "acoustic-ledger": return .raw
     case "light-plus": return .lightPlus
     case "original": return .original
+    // The take's own transcript, admitted from its live history; the detail
+    // keeps whether it was Light+.
+    case "transcript": return detail == "light-plus" ? .lightPlus : .raw
     case "retranscribe": return .retranscribed
     case "user-edit": return .edited
     case "formatter":
