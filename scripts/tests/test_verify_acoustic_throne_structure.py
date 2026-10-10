@@ -2234,8 +2234,8 @@ class NeutralAstTests(unittest.TestCase):
              "clipboard::paste_and_restore(&paste_text)"),
             ("await_after_target_observation", "let target = clipboard::StopPasteTarget::capture();",
              "let target = clipboard::StopPasteTarget::capture(); self.get_config().await;"),
-            ("request_claimed_without_effect", "let receipt = clipboard::paste_to_stop_target(&paste_text, &target)",
-             "let receipt = fake_paste_receipt()"),
+            ("request_claimed_without_effect", "match clipboard::paste_to_stop_target(&paste_text, &target)",
+             "match fake_paste_receipt()"),
         ]
         for name, old, new in cases:
             with self.subTest(mutation=name):

@@ -90,17 +90,17 @@ pub(super) fn observe_paste_target(latched_target: Option<&str>) -> super::Paste
     }
 }
 
-/// Tell the user why an armed paste was held and how to finish it (⌘V).
+/// Tell the user why an armed paste was held and how to finish it with Deferred Paste.
 #[cfg(not(test))]
 pub(super) fn announce_paste_hold(notice: &str) {
-    info!(notice, "paste held on clipboard");
-    crate::os::notifications::notify("Codescribe held the paste", notice);
+    info!(notice, "paste held in deferred buffer");
+    crate::os::notifications::notify("Codescribe deferred the paste", notice);
 }
 
 /// Unit tests post no user notification; the log line is the witness.
 #[cfg(test)]
 pub(super) fn announce_paste_hold(notice: &str) {
-    info!(notice, "paste held on clipboard");
+    info!(notice, "paste held in deferred buffer");
 }
 
 /// Route transcription delta to the active overlay.

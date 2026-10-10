@@ -10442,22 +10442,22 @@
         }
       }
     },
-    "Pastes into a verified editable text field. Unreadable fields and terminal commands stay copied." : {
+    "Pastes into a verified editable text field. Unreadable fields and terminal commands go to Deferred Paste; your clipboard stays unchanged." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Gdy pola nie da się odczytać lub tekst jest poleceniem terminala, pozostaje w schowku."
+            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Nieczytelne pola i polecenia terminala kierują transkrypcję do bufora wklejania na żądanie; schowek pozostaje bez zmian."
           }
         }
       }
     },
-    "Pastes into a verified editable text field. Without one, the transcript is copied for you to paste." : {
+    "Pastes into a verified editable text field. Without one, Deferred Paste holds the transcript without changing your clipboard." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Jeśli takiego pola nie ma, kopiuje transkrypcję do samodzielnego wklejenia."
+            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Jeśli takiego pola nie ma, transkrypcja czeka w buforze wklejania na żądanie, bez zmiany schowka."
           }
         }
       }

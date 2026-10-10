@@ -53,9 +53,9 @@ pub enum DeliveryRoute {
     /// History / notes / RAW only — no user-visible delivery.
     ArchiveOnly,
     /// An armed automatic paste the paste-mode gate or the executable-content
-    /// guard stopped. The transcript is left on the pasteboard on purpose and
-    /// a notification names why; the user's own ⌘V is the confirmation. No
-    /// synthetic Cmd+V is ever posted for this route.
+    /// guard stopped. Execution arms the existing Deferred Paste slot without
+    /// changing the system clipboard. The configured deferred shortcut inserts
+    /// it later; no synthetic Cmd+V is posted by the hold.
     ClipboardHold,
 }
 
@@ -364,17 +364,11 @@ pub fn paste_hold_notice(decision: DeliveryDecision) -> Option<&'static str> {
     }
     Some(match decision.reason {
         "hold_executable" => {
-            "Held: this looks like a shell command. It is on your clipboard — press ⌘V to paste it."
+            "Held: this looks like a shell command. It is waiting in Deferred Paste."
         }
-        "hold_secure_field" => {
-            "Held: a password field has focus. It is on your clipboard — press ⌘V where you want it."
-        }
-        "hold_no_text_field" => {
-            "Held: no text field had focus. It is on your clipboard — press ⌘V to paste it."
-        }
-        _ => {
-            "Held: Codescribe could not confirm a text field. It is on your clipboard — press ⌘V to paste it."
-        }
+        "hold_secure_field" => "Held: a password field has focus. It is waiting in Deferred Paste.",
+        "hold_no_text_field" => "Held: no text field had focus. It is waiting in Deferred Paste.",
+        _ => "Held: Codescribe could not confirm a text field. It is waiting in Deferred Paste.",
     })
 }
 
@@ -954,7 +948,7 @@ mod tests {
                 reason,
             })
             .expect("a hold always explains itself");
-            assert!(notice.contains("⌘V"), "{reason}: {notice}");
+            assert!(notice.contains("Deferred Paste"), "{reason}: {notice}");
         }
         assert!(
             paste_hold_notice(DeliveryDecision {

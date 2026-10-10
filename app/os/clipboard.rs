@@ -114,7 +114,7 @@ pub fn arm_deferred_insert(text: String) -> bool {
 ///
 /// An expired slot is taken and dropped rather than left behind, so a stale
 /// transcript cannot be resurrected by a later press.
-fn take_deferred_insert_at(now: Instant) -> Result<String, DeferredInsertDelivery> {
+fn take_deferred_insert_at(now: Instant) -> Result<DeferredInsertSlot, DeferredInsertDelivery> {
     let mut slot = DEFERRED_INSERT_SLOT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -124,7 +124,7 @@ fn take_deferred_insert_at(now: Instant) -> Result<String, DeferredInsertDeliver
     if now.saturating_duration_since(armed.armed_at) >= DEFERRED_INSERT_TTL {
         return Err(DeferredInsertDelivery::Expired);
     }
-    Ok(armed.text)
+    Ok(armed)
 }
 
 /// [`deliver_deferred_insert`] with the clock and paste step injected.
@@ -135,11 +135,20 @@ fn deliver_deferred_insert_at<F>(now: Instant, paste: F) -> Result<DeferredInser
 where
     F: FnOnce(&str) -> Result<()>,
 {
-    let text = match take_deferred_insert_at(now) {
-        Ok(text) => text,
+    let armed = match take_deferred_insert_at(now) {
+        Ok(armed) => armed,
         Err(outcome) => return Ok(outcome),
     };
-    paste(&text)?;
+    if let Err(error) = paste(&armed.text) {
+        let mut slot = DEFERRED_INSERT_SLOT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A newer take armed while delivery ran keeps ownership of the slot.
+        if slot.is_none() {
+            *slot = Some(armed);
+        }
+        return Err(error);
+    }
     Ok(DeferredInsertDelivery::Delivered)
 }
 
@@ -154,8 +163,8 @@ pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
     }
     deliver_deferred_insert_at(Instant::now(), |text| {
         let receipt = paste_to_stop_target(text, &target)?;
-        if receipt.delivery == StopPasteDelivery::CopiedTargetChanged {
-            anyhow::bail!("The text field changed. The transcript is on your clipboard.");
+        if receipt.delivery == StopPasteDelivery::DeferredTargetChanged {
+            anyhow::bail!("The text field changed. The transcript remains in Deferred Paste.");
         }
         Ok(())
     })
@@ -304,7 +313,7 @@ struct StopTargetCheck {
 }
 
 /// Posting requires positive identity at both observations. Unknown identity
-/// retains text on the clipboard instead of sending keys into an arbitrary UI.
+/// defers delivery instead of sending keys into an arbitrary UI.
 fn compare_stop_targets<E>(
     stopped_pid: Option<i32>,
     stopped_element: Option<&E>,
@@ -457,7 +466,7 @@ mod stop_target_identity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopPasteDelivery {
     Pasted,
-    CopiedTargetChanged,
+    DeferredTargetChanged,
 }
 
 /// Delivery and target observability from the same check immediately before paste.
@@ -468,20 +477,30 @@ pub(crate) struct StopPasteReceipt {
     pub target_readable_at_paste: bool,
 }
 
-/// Clipboard replacement precedes the final identity check. Only an observed
-/// destination change suppresses the keyboard event and delayed restore.
+/// Check input identity before borrowing the clipboard, then again immediately
+/// before the keyboard event. Rejection keeps the text in Deferred Paste.
 fn write_stop_paste(
     text: &str,
     write: impl FnOnce(&str) -> Result<u64>,
-    check_target: impl FnOnce() -> StopTargetCheck,
+    mut check_target: impl FnMut() -> StopTargetCheck,
     post_paste: impl FnOnce() -> Result<()>,
     target_changed: impl FnOnce(StopPasteReceipt),
-) -> Result<(StopPasteReceipt, u64)> {
+) -> Result<(StopPasteReceipt, Option<u64>)> {
+    let before = check_target();
+    if before.changed {
+        let receipt = StopPasteReceipt {
+            delivery: StopPasteDelivery::DeferredTargetChanged,
+            target_readable_at_stop: before.readable_at_stop,
+            target_readable_at_paste: before.readable_at_paste,
+        };
+        target_changed(receipt);
+        return Ok((receipt, None));
+    }
     let epoch = write(text)?;
     let target = check_target();
     let receipt = StopPasteReceipt {
         delivery: if target.changed {
-            StopPasteDelivery::CopiedTargetChanged
+            StopPasteDelivery::DeferredTargetChanged
         } else {
             StopPasteDelivery::Pasted
         },
@@ -490,41 +509,56 @@ fn write_stop_paste(
     };
     if target.changed {
         target_changed(receipt);
-        return Ok((receipt, epoch));
+        return Ok((receipt, Some(epoch)));
     }
     post_paste()?;
-    Ok((receipt, epoch))
+    Ok((receipt, Some(epoch)))
 }
 
 /// Request paste only while the same positively identified editable input has
-/// focus. Missing capability or identity leaves the complete text copied.
+/// focus. Missing capability or identity leaves the clipboard untouched.
 pub(crate) fn paste_to_stop_target(
     text: &str,
     target: &StopPasteTarget,
 ) -> Result<StopPasteReceipt> {
-    let snapshot = ClipboardSnapshot::capture().ok();
-    let (receipt, epoch) = write_stop_paste(
+    let snapshot = ClipboardSnapshot::capture()?;
+    let mut written_epoch = None;
+    let result = write_stop_paste(
         text,
-        set_clipboard_with_epoch,
+        |text| {
+            let epoch = set_clipboard_with_epoch(text)?;
+            written_epoch = Some(epoch);
+            Ok(epoch)
+        },
         || target.check_current(),
         simulate_cmd_v,
         |receipt| {
             warn!(
                 event = "stop_paste_target_changed",
-                action = "copied",
+                action = "deferred",
                 text_bytes = text.len(),
                 target_readable_at_stop = receipt.target_readable_at_stop,
                 target_readable_at_paste = receipt.target_readable_at_paste,
                 "stop_paste_target_changed"
             );
         },
-    )?;
-    if receipt.delivery == StopPasteDelivery::Pasted {
-        // Do not emit a delayed Right Arrow into a destination that may have
-        // changed since Cmd+V. The target owns its post-paste selection behavior.
-        if let Some(snapshot) = snapshot {
-            schedule_clipboard_restore(snapshot, epoch, get_restore_delay());
+    );
+    let (receipt, epoch) = match result {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if let Some(epoch) = written_epoch {
+                schedule_clipboard_restore(snapshot, epoch, Duration::ZERO);
+            }
+            return Err(error);
         }
+    };
+    if let Some(epoch) = epoch {
+        let delay = if receipt.delivery == StopPasteDelivery::Pasted {
+            get_restore_delay()
+        } else {
+            Duration::ZERO
+        };
+        schedule_clipboard_restore(snapshot, epoch, delay);
     }
     Ok(receipt)
 }
@@ -966,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_target_switch_during_wait_copies_every_word_without_posting_keys() {
+    fn stop_target_switch_during_wait_preserves_clipboard_without_posting_keys() {
         use std::cell::{Cell, RefCell};
 
         let stopped_at = Instant::now();
@@ -1008,10 +1042,10 @@ mod tests {
                 |receipt| receipts.borrow_mut().push(receipt),
             )
             .expect("copy complete stop text");
-            assert_eq!(outcome.delivery, StopPasteDelivery::CopiedTargetChanged);
+            assert_eq!(outcome.delivery, StopPasteDelivery::DeferredTargetChanged);
             assert_eq!(outcome.target_readable_at_stop, stop_element.is_some());
             assert_eq!(outcome.target_readable_at_paste, current_element.is_some());
-            assert_eq!(*clipboard.borrow(), text);
+            assert_eq!(*clipboard.borrow(), "old clipboard");
             assert_eq!(key_posts.get(), 0);
             assert_eq!(*receipts.borrow(), [outcome]);
         }
@@ -1051,7 +1085,7 @@ mod tests {
                 |_| {},
             )
             .expect("copy with unreadable identity");
-            assert_eq!(receipt.delivery, StopPasteDelivery::CopiedTargetChanged);
+            assert_eq!(receipt.delivery, StopPasteDelivery::DeferredTargetChanged);
             assert_eq!(receipt.target_readable_at_stop, stop_element.is_some());
             assert_eq!(receipt.target_readable_at_paste, paste_element.is_some());
             assert_eq!(key_posts.get(), 0);
@@ -1089,8 +1123,11 @@ mod tests {
             |_| actions.borrow_mut().push("receipt"),
         )
         .expect("changed target copy");
-        assert_eq!(outcome.delivery, StopPasteDelivery::CopiedTargetChanged);
-        assert_eq!(*actions.borrow(), ["clipboard", "target", "receipt"]);
+        assert_eq!(outcome.delivery, StopPasteDelivery::DeferredTargetChanged);
+        assert_eq!(
+            *actions.borrow(),
+            ["target", "clipboard", "target", "receipt"]
+        );
     }
 
     #[test]
@@ -1112,7 +1149,7 @@ mod tests {
         assert_eq!(outcome.delivery, StopPasteDelivery::Pasted);
         assert!(outcome.target_readable_at_stop);
         assert!(outcome.target_readable_at_paste);
-        assert_eq!(epoch, 19);
+        assert_eq!(epoch, Some(19));
         assert_eq!(key_posts.get(), 1);
     }
 
@@ -1332,6 +1369,68 @@ mod tests {
         assert_eq!(
             deliver_deferred_insert_at(base, |_| Ok(())).expect("empty second press"),
             DeferredInsertDelivery::NothingToInsert
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn deferred_insert_failed_press_keeps_payload_for_retry() {
+        let base = Instant::now();
+        arm_deferred_insert_at("complete transcript".into(), base);
+        assert!(
+            deliver_deferred_insert_at(base, |_| { anyhow::bail!("recipient disappeared") })
+                .is_err()
+        );
+        let mut delivered = String::new();
+        assert_eq!(
+            deliver_deferred_insert_at(base, |text| {
+                delivered = text.to_owned();
+                Ok(())
+            })
+            .unwrap(),
+            DeferredInsertDelivery::Delivered
+        );
+        assert_eq!(delivered, "complete transcript");
+    }
+
+    #[test]
+    #[serial]
+    fn deferred_insert_failed_press_does_not_replace_newer_take() {
+        let base = Instant::now();
+        arm_deferred_insert_at("old transcript".into(), base);
+        assert!(
+            deliver_deferred_insert_at(base, |_| {
+                arm_deferred_insert_at("new transcript".into(), base);
+                anyhow::bail!("recipient disappeared")
+            })
+            .is_err()
+        );
+        let mut delivered = String::new();
+        deliver_deferred_insert_at(base, |text| {
+            delivered = text.to_owned();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(delivered, "new transcript");
+    }
+
+    #[test]
+    #[serial]
+    fn deferred_insert_failed_press_does_not_extend_expiry() {
+        let base = Instant::now();
+        arm_deferred_insert_at("transcript".into(), base);
+        assert!(
+            deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL / 2, |_| {
+                anyhow::bail!("recipient disappeared")
+            })
+            .is_err()
+        );
+        assert_eq!(
+            deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL, |_| {
+                panic!("expired payload must never paste")
+            })
+            .unwrap(),
+            DeferredInsertDelivery::Expired
         );
     }
 
