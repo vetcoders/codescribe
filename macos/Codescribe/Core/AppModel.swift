@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -29,6 +30,11 @@ final class AppModel: ObservableObject {
   let chat: AgentChatStore
   let overlay: OverlayController
   let tray: TrayViewModel
+  /// The one invalidation scope for already-open configuration projections
+  /// (Settings window, tray Quick Settings). Carries edges, never values.
+  let configurationInvalidation: ConfigurationInvalidation
+  private var recordingEdgeSink: AnyCancellable?
+  private var overlayPolicySink: AnyCancellable?
   /// Independent text scale for the agent chat surface (⌘+/-/0 while the chat
   /// window is key). The overlay's scale lives on `OverlayController`.
   let chatTextScale = TextScaleController(key: "AgentChat.textScale.v1")
@@ -51,12 +57,30 @@ final class AppModel: ObservableObject {
     )
     self.chat = chat
     self.overlay = OverlayController(engine: ControllerDictationEngine(), composer: chat)
-    self.tray = TrayViewModel(engine: RealTrayEngine())
+    let configurationInvalidation = ConfigurationInvalidation()
+    self.configurationInvalidation = configurationInvalidation
+    self.tray = TrayViewModel(
+      engine: RealTrayEngine(), configurationInvalidation: configurationInvalidation)
     // The composer is a gesture-only adapter over RecordingController. Right
     // Option, composer mic, Dictation, and Formatting share one recorder/STT.
     chat.dictation = RealComposerDictation(store: chat)
     // The tray toggle only persists the preference; the panel's owner applies it.
     tray.onOverlayPreferenceChanged = { [overlay] in overlay.overlayPreferenceChanged() }
+    // The recorder lifecycle hooks already project start/stop onto the tray;
+    // the same edge tells open Settings that resident Whisper may have moved.
+    recordingEdgeSink = tray.$isRecording
+      .removeDuplicates()
+      .dropFirst()
+      .sink { [configurationInvalidation] _ in
+        configurationInvalidation.recordingLifecycleChanged()
+      }
+    // The idle overlay projects the same canonical policy; it re-reads it
+    // through its own engine when Settings or Quick Settings writes.
+    overlayPolicySink = configurationInvalidation.edges(excluding: self)
+      .sink { [overlay] edge in
+        guard edge == .settingsWritten else { return }
+        overlay.state.canonicalConfigurationDidChange()
+      }
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
