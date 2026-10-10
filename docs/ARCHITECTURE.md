@@ -328,12 +328,7 @@ miniaturising it, so App Exposé never shows an empty tile; the tray's
 - **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
   followed by the turn count, the thread's model and the live turn status.
   The toggle lives in the detail chrome so it stays reachable while the
-  native sidebar is collapsed. The sidebar's drag ceiling follows the widest
-  thread row: the rail publishes its measured width straight from layout, and
-  `AgentRailWidthCoordinator` (in `AgentColumns`) writes the native item's
-  `maximumThickness` synchronously in the same call — the cap never travels
-  through SwiftUI state of another view, where a coalesced update could leave
-  it stale.
+  native sidebar is collapsed.
 - **Right:** exactly two controls. The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the

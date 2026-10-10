@@ -6,6 +6,7 @@ import SwiftUI
 /// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
+  @State private var sidebarContentWidth = AgentSidebarMetrics.minimumWidth
   private let maxPermissions: SettingsViewModel?
   /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
@@ -19,8 +20,9 @@ struct AgentChatView: View {
   var body: some View {
     AgentColumns(
       sidebarExpanded: sidebarExpanded,
-      sidebar: { (reportWidth: (CGFloat) -> Void) -> ThreadRail in
-        ThreadRail(store: store, onContentWidthChanged: reportWidth)
+      sidebarMaximumWidth: AgentSidebarMetrics.boundedMaximum(sidebarContentWidth),
+      sidebar: ThreadRail(store: store) { width in
+        if width > 0 { sidebarContentWidth = width }
       },
       detail: ThreadDetail(
         store: store,
@@ -130,22 +132,19 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 /// One native owner for the divider's hard bounds and collapse state.
 private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
   let sidebarExpanded: Bool
-  /// Built against the sink the rail reports its measured content width to.
-  /// The rail is built here, not handed in ready-made, because the sink is the
-  /// coordinator that owns the cap and it only exists inside this representable.
-  let sidebar: ((CGFloat) -> Void) -> Sidebar
+  let sidebarMaximumWidth: CGFloat
+  let sidebar: Sidebar
   let detail: Detail
-
-  func makeCoordinator() -> AgentRailWidthCoordinator { AgentRailWidthCoordinator() }
 
   func makeNSViewController(context: Context) -> NSSplitViewController {
     let controller = NSSplitViewController()
     controller.splitView.isVertical = true
     controller.splitView.dividerStyle = .thin
     let rail = NSSplitViewItem(
-      sidebarWithViewController: NSHostingController(rootView: railView(context: context)))
+      sidebarWithViewController: NSHostingController(
+        rootView: AnyView(sidebar.environment(\.self, context.environment))))
     rail.minimumThickness = AgentSidebarMetrics.minimumWidth
-    rail.maximumThickness = AgentSidebarMetrics.minimumWidth
+    rail.maximumThickness = sidebarMaximumWidth
     rail.canCollapse = false
     controller.addSplitViewItem(rail)
     let conversation = NSSplitViewItem(
@@ -153,75 +152,22 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
         rootView: AnyView(detail.environment(\.self, context.environment))))
     conversation.minimumThickness = 320
     controller.addSplitViewItem(conversation)
-    // After the items exist: the coordinator writes the cap onto item 0.
-    context.coordinator.attach(to: controller)
     return controller
   }
 
   func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
     let rail = controller.splitViewItems[0]
-    (rail.viewController as? NSHostingController<AnyView>)?.rootView = railView(context: context)
+    (rail.viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(sidebar.environment(\.self, context.environment))
     (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
       AnyView(detail.environment(\.self, context.environment))
-    context.coordinator.attach(to: controller)
+    if rail.maximumThickness != sidebarMaximumWidth {
+      rail.maximumThickness = sidebarMaximumWidth
+      if !rail.isCollapsed, rail.viewController.view.frame.width > sidebarMaximumWidth {
+        controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
+      }
+    }
     rail.isCollapsed = !sidebarExpanded
-  }
-
-  private func railView(context: Context) -> AnyView {
-    let coordinator = context.coordinator
-    let sink: (CGFloat) -> Void = { width in
-      MainActor.assumeIsolated { coordinator.measured(width) }
-    }
-    return AnyView(sidebar(sink).environment(\.self, context.environment))
-  }
-}
-
-/// Sole owner of the rail's width cap.
-///
-/// The measurement is a layout preference published inside the rail's own
-/// `NSHostingController`. Relaying it through `@State` on `AgentChatView` made
-/// the cap depend on a second update of the OUTER view graph — a state write
-/// requested from inside the inner graph's layout pass, which is also inside
-/// the split view's layout pass. Only that outer update called
-/// `updateNSViewController`, so the cap existed one scheduled pass behind the
-/// measurement, and under gate-host load that pass could be coalesced away or
-/// land after the next measurement: a shrinking title left the cap on the
-/// previous title's width with nothing left to invalidate it.
-///
-/// Here the measurement reaches `NSSplitViewItem.maximumThickness` in the same
-/// call that produced it, so the cap never waits for another SwiftUI update or
-/// AppKit layout pass. `attach` reconciles a measurement that arrived before
-/// the split controller existed.
-@MainActor
-private final class AgentRailWidthCoordinator {
-  private var contentWidth = AgentSidebarMetrics.minimumWidth
-  private weak var controller: NSSplitViewController?
-
-  func attach(to controller: NSSplitViewController) {
-    self.controller = controller
-    apply()
-  }
-
-  /// Zero is a rail with no rows — a transient empty search result. It must
-  /// not pull the cap down to the floor, so it is ignored, not clamped.
-  func measured(_ width: CGFloat) {
-    guard width > 0, width != contentWidth else { return }
-    contentWidth = width
-    apply()
-  }
-
-  private func apply() {
-    guard let controller = self.controller, let rail = controller.splitViewItems.first
-    else { return }
-    let maximum = AgentSidebarMetrics.boundedMaximum(contentWidth)
-    if rail.maximumThickness != maximum {
-      rail.maximumThickness = maximum
-    }
-    // A cap that drops below the user's divider pulls the divider in; a cap
-    // that grows never widens it.
-    if !rail.isCollapsed, rail.viewController.view.frame.width > maximum + 0.5 {
-      controller.splitView.setPosition(maximum, ofDividerAt: 0)
-    }
   }
 }
 
