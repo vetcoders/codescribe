@@ -820,16 +820,18 @@ impl HotkeyDetector {
             self.option_down = false;
             let released_right = key.is_right_option();
             let pressed_side = self.option_side.take();
-            let held_for = self
-                .option_down_ts
-                .take()
+            let option_down_ts = self.option_down_ts.take();
+            let held_for = option_down_ts
                 .map(|ts| elapsed_between(now, ts))
                 .unwrap_or_default();
-            // A key-down the HID system saw after Option went down means the
+            // A key-down the HID system saw while Option was down means the
             // user typed with Option, even if the letter never reached the tap.
-            let typed_meanwhile = self
-                .last_hid_key_down
-                .is_some_and(|at| elapsed_between(now, at) < held_for);
+            // Both ends of the hold are event times, so a late callback cannot
+            // move the letter outside the hold.
+            let typed_meanwhile = match (option_down_ts, self.last_hid_key_down) {
+                (Some(down), Some(at)) => at >= down && at <= now,
+                _ => false,
+            };
 
             if !key.is_option() {
                 self.last_left_tap_ts = None;
@@ -1911,6 +1913,60 @@ mod tests {
 
         // A key-down from before the press does not poison a genuine double-tap.
         detector.observe_hid_key_down(base + Duration::from_millis(400));
+        assert_eq!(
+            detector.feed(press(base + Duration::from_millis(600)), config),
+            None
+        );
+        assert_eq!(
+            detector.feed(release(base + Duration::from_millis(650)), config),
+            None
+        );
+        assert_eq!(
+            detector.feed(press(base + Duration::from_millis(700)), config),
+            None
+        );
+        assert_eq!(
+            detector.feed(release(base + Duration::from_millis(750)), config),
+            Some(HotkeyEvent::ToggleAssistive)
+        );
+    }
+
+    #[test]
+    /// The hold is bounded by event times, so a letter the HID system stamped
+    /// inside the hold counts as typing even when it is only reported at the
+    /// release, and a letter stamped before the press does not.
+    fn detector_option_hold_bounds_use_event_times() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let press = |t| HotkeyDetectorInput::FlagsChanged {
+            now: t,
+            key: HotkeyPhysicalKey::RightOption,
+            modifiers: mods(false, true, false, false, false),
+        };
+        let release = |t| HotkeyDetectorInput::FlagsChanged {
+            now: t,
+            key: HotkeyPhysicalKey::RightOption,
+            modifiers: mods(false, false, false, false, false),
+        };
+
+        // Letter stamped at +30 ms, reported only when the release arrives.
+        assert_eq!(detector.feed(press(base), config), None);
+        detector.observe_hid_key_down(base + Duration::from_millis(30));
+        assert_eq!(
+            detector.feed(release(base + Duration::from_millis(60)), config),
+            None
+        );
+        assert_eq!(
+            detector.feed(press(base + Duration::from_millis(120)), config),
+            None
+        );
+        detector.observe_hid_key_down(base + Duration::from_millis(150));
+        assert_eq!(
+            detector.feed(release(base + Duration::from_millis(180)), config),
+            None
+        );
+
+        // Letter stamped just before the press: a genuine pair still toggles.
+        detector.observe_hid_key_down(base + Duration::from_millis(599));
         assert_eq!(
             detector.feed(press(base + Duration::from_millis(600)), config),
             None
