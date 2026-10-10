@@ -75,6 +75,11 @@ data  CsDocumentProvider.wire
 data  CsDocumentProvider.endpoint
 data  CsDocumentProvider.model
 data  CsDocumentProvider.apiKey
+data  CsDocumentVersion.provenance
+data  CsDocumentVersion.detail
+data  CsDocumentVersion.renderedText
+data  CsDocumentVersion.emittedAt
+data  CsDocumentVersion.receiptId
 data  CsEnergyCalibrationReport.deviceName
 data  CsEnergyCalibrationReport.version
 data  CsEnergyCalibrationReport.path
