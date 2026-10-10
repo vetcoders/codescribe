@@ -81,7 +81,7 @@ private final class PositionedOverlayCursorEvent: NSEvent {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
-  func testEveryCornerReachesEveryOtherFormAroundTheSameUpperRightPin() throws {
+  func testExpandedCornersStillReachCompactFormsAroundTheSameUpperRightPin() throws {
     let state = OverlayState.previewFormatted()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -100,9 +100,12 @@ final class OverlayResizeHitTests: XCTestCase {
     ]
     let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
     let pin = NSPoint(x: visible.maxX - 40, y: visible.maxY - 40)
-    // Corners change both axes, horizontal edges select mini/MIDI, vertical
-    // edges select strip/transcript. Together all native edges remain usable.
-    for (source, sourceSize) in sizes {
+    // Enter expanded through the same completed transition as the live widget.
+    state.setPresentationMode(.mini)
+    panel.setPresentationMode(.mini)
+    panel.settleFrameTransition()
+    // Expanded retains its existing corner resize and form selection.
+    for (source, sourceSize) in sizes where source == .expanded {
       for (target, targetSize) in sizes where source != target {
         for edge in [OverlayResizeHit.Edge.topLeft, .topRight, .bottomLeft, .bottomRight] {
           state.setPresentationMode(source)
@@ -159,52 +162,47 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
-  func testStraightEdgesAlsoSelectStripAndTranscriptForms() throws {
-    let state = OverlayState.previewFormatted()
-    let panel = try XCTUnwrap(
-      DictationOverlayWindow.make(
-        state: state, textScale: TextScaleController(key: "Resize.straightEdges"))
-        as? FloatingOverlayPanel)
-    panel.orderFrontRegardless()
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
+  func testMiniDragsAtFormerResizeBandAndMidiResizesOnlyHorizontally() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let drag = OverlayWindowDragRegionView(frame: .zero)
+    panel.contentView = OverlayContentContainer(hosting: drag)
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.mini)
+    XCTAssertFalse(panel.styleMask.contains(.resizable))
+    let start = panel.frame
+    let point = NSPoint(x: 80, y: 4)
+    XCTAssertTrue(panel.isWindowDragHit(at: point))
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 30, height: 20), eventNumberBase: 9_600)
+    XCTAssertEqual(panel.frame.minX, start.minX + 30, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.size, start.size)
+    XCTAssertTrue(OverlayResizeHit.cursorRects(in: panel.contentView!.bounds, mode: .mini).isEmpty)
+
+    panel.setPresentationMode(.midi)
+    let initial = panel.frame
+    XCTAssertTrue(panel.isWindowDragHit(at: NSPoint(x: 100, y: 4)))
+    XCTAssertNil(
+      OverlayResizeHit.edge(
+        at: NSPoint(x: 100, y: 4),
+        in: panel.contentView!.bounds, mode: .midi))
+    XCTAssertFalse(panel.beginUserResize(edge: .top, at: .zero))
+    XCTAssertFalse(panel.beginUserResize(edge: .topLeft, at: .zero))
+    for edge in [OverlayResizeHit.Edge.left, .right] {
+      XCTAssertTrue(panel.beginUserResize(edge: edge, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: edge == .left ? -60 : 60, y: 200)))
+      panel.endUserResize()
+      XCTAssertEqual(panel.frame.height, initial.height)
+      XCTAssertEqual(panel.frame.maxX, initial.maxX, accuracy: 0.5)
     }
-    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
-    let pin = NSPoint(x: visible.maxX - 40, y: visible.maxY - 40)
-    for edge in [OverlayResizeHit.Edge.left, .right, .top, .bottom] {
-      let horizontal = edge == .left || edge == .right
-      let initial =
-        horizontal ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
-      state.setPresentationMode(horizontal ? .mini : .midi)
-      panel.settleFrameTransition()
-      panel.setFrame(
-        NSRect(
-          x: pin.x - initial.width, y: pin.y - initial.height,
-          width: initial.width, height: initial.height), display: true)
-      let start = NSPoint(
-        x: horizontal ? (edge == .left ? 2 : initial.width - 2) : initial.width / 2,
-        y: horizontal ? initial.height / 2 : (edge == .bottom ? 2 : initial.height - 2))
-      let delta = NSSize(
-        width: horizontal ? (edge == .left ? -210 : 210) : 0,
-        height: horizontal ? 0 : (edge == .bottom ? -254 : 254))
-      sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_600)
-      panel.settleFrameTransition()
-      XCTAssertEqual(state.presentationMode, horizontal ? .midi : .expanded)
-      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
-      let enlarged = panel.frame.size
-      let reverseStart = NSPoint(
-        x: horizontal ? (edge == .left ? 2 : enlarged.width - 2) : enlarged.width / 2,
-        y: horizontal ? enlarged.height / 2 : (edge == .bottom ? 2 : enlarged.height - 2))
-      sendSyntheticDrag(
-        through: panel, from: reverseStart,
-        delta: NSSize(width: -delta.width, height: -delta.height),
-        eventNumberBase: 9_700)
-      panel.settleFrameTransition()
-      XCTAssertEqual(state.presentationMode, horizontal ? .mini : .midi)
-      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.width, initial.width + 120, accuracy: 0.5)
+    XCTAssertEqual(
+      OverlayResizeHit.cursorRects(in: panel.contentView!.bounds, mode: .midi).count, 2)
+    for point in [NSPoint(x: 2, y: 2), NSPoint(x: 2, y: 44)] {
+      XCTAssertEqual(
+        OverlayResizeHit.edge(at: point, in: panel.contentView!.bounds, mode: .midi), .left)
     }
   }
 

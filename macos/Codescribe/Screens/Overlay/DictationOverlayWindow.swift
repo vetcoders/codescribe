@@ -31,7 +31,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
-  private var presentationMode: OverlayPresentationMode = .expanded
+  fileprivate var presentationMode: OverlayPresentationMode = .expanded
   private var transitionTop: CGFloat?
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
@@ -142,11 +142,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     frameTransitionTarget = nil
     transitionTop = nil
     transitionRight = nil
-    // Every form can be resized into either of the others. The regular
-    // readability floor applies after a gesture, not while crossing forms.
+    // Mini is a drag surface; MIDI exposes only horizontal resize handles.
     minSize = DictationOverlayWindow.collapsedSize
     contentMinSize = minSize
-    styleMask.insert(.resizable)
+    if presentationMode != .mini { styleMask.insert(.resizable) }
+    if let contentView { invalidateCursorRects(for: contentView) }
     if presentationMode == .expanded {
       expandedSize = nil
       miniFrame = nil
@@ -221,7 +221,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // The strip owns motion as well as dragging; interior tracking stays native.
     if event.type == .mouseMoved || event.type == .cursorUpdate,
       styleMask.contains(.resizable), let contentView,
-      OverlayResizeHit.edge(at: event.locationInWindow, in: contentView.bounds) != nil
+      OverlayResizeHit.edge(
+        at: event.locationInWindow, in: contentView.bounds, mode: presentationMode) != nil
     {
       refreshCursor(at: event.locationInWindow)
       return
@@ -238,7 +239,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dragMoved = false
       if styleMask.contains(.resizable), let contentView,
         contentView.bounds.contains(event.locationInWindow),
-        let edge = OverlayResizeHit.edge(at: event.locationInWindow, in: contentView.bounds)
+        let edge = OverlayResizeHit.edge(
+          at: event.locationInWindow, in: contentView.bounds, mode: presentationMode)
       {
         beginUserResize(edge: edge, at: screenPoint(for: event))
         return
@@ -282,7 +284,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// commit each layout before AppKit presents the next window frame.
   @discardableResult
   func beginUserResize(edge: OverlayResizeHit.Edge, at point: NSPoint) -> Bool {
-    guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing else {
+    guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing,
+      presentationMode != .mini,
+      presentationMode != .midi || edge == .left || edge == .right
+    else {
       return false
     }
     resizeStart = (point, frame, edge)
@@ -310,7 +315,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func endUserResize() {
     guard let resizeStart else { return }
     let changed = frame.size != resizeStart.frame.size
-    if changed, pendingResizePresentation == nil {
+    if changed, pendingResizePresentation == nil, presentationMode == .expanded {
       let mode = DictationOverlayWindow.presentationMode(forResizedSize: frame.size)
       // OverlayState remains the presentation authority. Its ordinary
       // callback queues the selected mode until this gesture ends.
@@ -348,7 +353,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     guard let contentView else { return false }
     let resizeEdge =
       styleMask.contains(.resizable)
-      && OverlayResizeHit.edge(at: point, in: contentView.bounds) != nil
+      && OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
     guard resizeEdge || isWindowDragHit(at: point) else { return false }
     let desired = resizeEdge ? cursor(at: point) : NSCursor.arrow
     guard desired != .iBeam, NSCursor.current != desired else { return false }
@@ -360,7 +365,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func cursor(at point: NSPoint) -> NSCursor {
     guard let contentView else { return .arrow }
     if styleMask.contains(.resizable),
-      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds)
+      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode)
     {
       return OverlayResizeHit.cursor(for: edge)
     }
@@ -443,7 +448,9 @@ final class OverlayContentContainer: NSView {
   /// including the bottom capsule and its margin, so SwiftUI cannot steal it.
   override func hitTest(_ point: NSPoint) -> NSView? {
     if window?.styleMask.contains(.resizable) == true,
-      OverlayResizeHit.edge(at: point, in: bounds) != nil
+      OverlayResizeHit.edge(
+        at: point, in: bounds,
+        mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded) != nil
     {
       return self
     }
@@ -484,7 +491,9 @@ final class OverlayContentContainer: NSView {
     // rectangle and makes AppKit alternate cursor owners on entry. Interior
     // views own their cursors; this container owns only the resize band.
     guard window?.styleMask.contains(.resizable) == true else { return }
-    for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
+    for (rect, cursor) in OverlayResizeHit.cursorRects(
+      in: bounds, mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded)
+    {
       addCursorRect(rect, cursor: cursor)
     }
   }
@@ -803,10 +812,15 @@ enum OverlayResizeHit: Sendable {
     case topLeft, topRight, bottomLeft, bottomRight
   }
 
-  static func edge(at point: NSPoint, in bounds: NSRect, band: CGFloat = band) -> Edge? {
+  static func edge(
+    at point: NSPoint, in bounds: NSRect, band: CGFloat = band,
+    mode: OverlayPresentationMode = .expanded
+  ) -> Edge? {
+    guard mode != .mini else { return nil }
     guard bounds.width > band * 2, bounds.height > band * 2 else { return nil }
     let left = point.x <= bounds.minX + band
     let right = point.x >= bounds.maxX - band
+    if mode == .midi { return left ? .left : right ? .right : nil }
     let bottom = point.y <= bounds.minY + band
     let top = point.y >= bounds.maxY - band
     switch (left, right, bottom, top) {
@@ -854,7 +868,22 @@ enum OverlayResizeHit: Sendable {
   }
 
   @MainActor
-  static func cursorRects(in bounds: NSRect, band: CGFloat = band) -> [(NSRect, NSCursor)] {
+  static func cursorRects(
+    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode = .expanded
+  ) -> [(NSRect, NSCursor)] {
+    if mode == .mini { return [] }
+    if mode == .midi {
+      return [
+        (
+          NSRect(x: bounds.minX, y: bounds.minY, width: band, height: bounds.height),
+          cursor(for: .left)
+        ),
+        (
+          NSRect(x: bounds.maxX - band, y: bounds.minY, width: band, height: bounds.height),
+          cursor(for: .right)
+        ),
+      ]
+    }
     let b = band
     let w = bounds.width
     let h = bounds.height
