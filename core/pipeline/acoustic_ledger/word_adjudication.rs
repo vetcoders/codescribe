@@ -1526,6 +1526,55 @@ impl AcousticLedger {
             .any(|c| &c.owner == owner && c.conflict)
     }
 
+    /// Raw lexical witnesses for exact current targets, keyed by original
+    /// decode geometry. One request replay is never a second PCM witness.
+    /// A merge needs the same complete frame covering EVERY named word.
+    pub(crate) fn dictionary_witnesses(
+        &self,
+        owner: &OccurrenceIdentity,
+        targets: &[SlotTarget],
+    ) -> Vec<((u64, u64), String)> {
+        if targets.is_empty() || self.is_sealed(owner) {
+            return Vec::new();
+        }
+        let mut common: Option<BTreeMap<(u64, u64), String>> = None;
+        for target in targets {
+            let Some(component) = self.word_adjudication.components.iter().find(|c| {
+                &c.owner == owner && c.targets.as_slice() == std::slice::from_ref(target)
+            }) else {
+                return Vec::new();
+            };
+            if component.conflict || component.trial.is_some() {
+                return Vec::new();
+            }
+            let mut frames = BTreeMap::new();
+            for witness in component.support().into_iter().filter(|h| {
+                h.family() == ObservationProducer::Whisper
+                    && h.complete
+                    && h.acoustic_boundaries_complete
+                    && h.q >= BAND_RIGHTS_FLOOR
+                    && h.observation.occurrence.same_capture(owner)
+                    && h.pins.len() == 1
+            }) {
+                if let (Some(decode), Some(raw)) = (witness.decode, witness.original_text)
+                    && raw.split_whitespace().count() == 1
+                {
+                    if frames.get(&decode).is_some_and(|prior| prior != &raw) {
+                        return Vec::new();
+                    }
+                    frames.insert(decode, raw);
+                }
+            }
+            common = Some(match common {
+                None => frames,
+                Some(prior) => prior.into_iter().filter_map(|(decode, label)| {
+                    frames.get(&decode).map(|raw| (decode, format!("{label} {raw}")))
+                }).collect(),
+            });
+        }
+        common.unwrap_or_default().into_iter().collect()
+    }
+
     pub(super) fn word_finality(&self, owner: &OccurrenceIdentity) -> Vec<WordFinality> {
         self.word_adjudication
             .components
