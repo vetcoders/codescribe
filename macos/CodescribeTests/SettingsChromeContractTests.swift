@@ -699,13 +699,17 @@ final class SettingsChromeContractTests: XCTestCase {
         "\"Configuration state of the Agent, its available tools and integrations.\""))
 
     let section = try XCTUnwrap(sources["AgentStatusSection.swift"])
+    // Round 11: summary card first, then Integrations, Tools and servers,
+    // Detected installations, and one collapsed Technical details holding the
+    // full readiness table.
+    XCTAssertTrue(section.contains("AgentStatusSummary("))
+    XCTAssertTrue(section.contains("AgentIntegrationLine.lines(rows: model.agentReadiness.rows)"))
+    XCTAssertTrue(section.contains("CapabilitySummary(rows: model.capabilityMatrix)"))
+    XCTAssertTrue(section.contains("McpServerSummary(lines: serverLines)"))
     XCTAssertTrue(
-      section.contains(
-        "SettingsSectionLabel(String(localized: \"Detected installations and runtime\"))"))
-    XCTAssertTrue(
-      section.contains(
-        "SettingsSectionLabel(String(localized: \"Available tools and integrations\"))"))
-    XCTAssertTrue(section.contains("CapabilitySummary(rows: model.capabilityMatrix).line"))
+      section.contains("@State private var showingTechnicalDetails = false"),
+      "technical details are collapsed by default")
+    XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingTechnicalDetails)"))
     XCTAssertTrue(
       section.contains("DisclosureGroup(isExpanded: $showingCapabilityRows)"),
       "the capability matrix is collapsed by default")
@@ -754,16 +758,23 @@ final class SettingsChromeContractTests: XCTestCase {
       "%@ — can send requests": "%@ — może wysyłać żądania",
       "Configured — agent not started yet": "Skonfigurowano — agent nie został jeszcze uruchomiony",
       "Not configured (optional)": "Nieskonfigurowane (opcjonalne)",
-      "Detected installations and runtime": "Wykryte instalacje i runtime",
       "Technical details": "Szczegóły techniczne",
-      "Available tools and integrations": "Dostępne narzędzia i integracje",
+      "Agent status": "Stan Agenta",
+      "Integrations": "Integracje",
+      "Tools and servers": "Narzędzia i serwery",
+      "Agent tools": "Narzędzia Agenta",
+      "Detected installations": "Wykryte instalacje",
+      "Configuration ready": "Konfiguracja gotowa",
+      "Optional · not configured": "Opcjonalne · nieskonfigurowane",
+      "Awaits first run": "Oczekuje na uruchomienie",
+      "Detected": "Wykryto",
+      "Needs repair": "Wymaga naprawy",
       "Built-in Codescribe tool": "Wbudowane narzędzie Codescribe",
       "tool: %@ · source: %@": "narzędzie: %1$@ · źródło: %2$@",
       "capability.tier.native": "Natywne",
       "capability.tier.enhanced": "Rozszerzone",
       "Configuration source:": "Źródło konfiguracji:",
-      "Configured: %lld · Tested: %lld · Issues: %lld":
-        "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld",
+
       "status.tone.good": "Gotowe",
       "status.tone.warn": "Ostrzeżenie",
       "status.tone.neutral": "Nie sprawdzono",
@@ -774,6 +785,11 @@ final class SettingsChromeContractTests: XCTestCase {
     }
     for retired in [
       "Connection details", "Connection details.", "Capability matrix", "Per-server probe",
+      "Detected installations and runtime", "Available tools and integrations",
+      "Show details", "Show servers",
+      "The Agent has not run yet — server status is checked on its first turn.",
+      "Native: %lld · Enhanced: %lld · Unavailable: %lld",
+      "Configured: %lld · Tested: %lld · Issues: %lld",
       "%lld configured", "not tested", "testing…", "fail: %@",
       "Ready — %@ configured, access available, %@", "%@ — access available",
       "Ready — %@ configured, credentials available, %@", "%@ — credentials available",

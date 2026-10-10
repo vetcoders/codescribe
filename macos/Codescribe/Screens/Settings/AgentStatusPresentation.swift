@@ -103,6 +103,53 @@ extension CsMcpStatusRow {
   private var toolCount: String {
     String(localized: "\(Int(count ?? 0)) tools", comment: "Plural: count of tools")
   }
+
+  /// Compact one-line status for the Integrations list: exactly one message per
+  /// state, so the readiness table's longer sentence is not repeated on the
+  /// default screen (Founder brief, round 11, 2026-10-10).
+  var localizedIntegrationStatus: String {
+    switch state {
+    case .notConfigured:
+      return String(
+        localized: "Optional · not configured",
+        comment: "Integration status: the integration is optional and absent from mcp.json")
+    case .configured:
+      return String(
+        localized: "Awaits first run",
+        comment: "Integration status: configured, but the Agent has not run discovery yet")
+    case .live:
+      return String(
+        localized: "Ready · \(Int(count ?? 0)) tools",
+        comment: "Plural: integration status with the number of tools it serves")
+    case .disabled:
+      return String(
+        localized: "mcp.server.disabled", defaultValue: "Disabled", comment: "MCP server state")
+    default:
+      return localizedValue
+    }
+  }
+}
+
+extension McpServerLine {
+  /// Exactly one status per server row: the cached test verdict when there is
+  /// one, otherwise the probe's runtime state — never both, so a row cannot
+  /// read "Not checked" twice (Founder brief, round 11, 2026-10-10).
+  var localizedSingleStatus: String {
+    switch test {
+    case .pending, .ok, .failed: return testText
+    case .untested: return status?.localizedValue ?? testText
+    }
+  }
+
+  /// Tone of the one status the row shows; a failing probe outranks a stale
+  /// "not tested".
+  var singleStatusTone: CsMcpRowTone {
+    if status?.tone == .bad { return .bad }
+    switch test {
+    case .pending, .ok, .failed: return testTone
+    case .untested: return status?.tone ?? .neutral
+    }
+  }
 }
 
 extension CsMcpRowTone {
@@ -165,6 +212,14 @@ extension CsCapabilityRow {
     }
   }
 
+  /// Qualifier shown on a row of the expanded capability list. Native rows
+  /// return nil: their shared source is stated once above the list instead of
+  /// repeating "Built-in Codescribe tool" on every row (Founder brief,
+  /// round 11, 2026-10-10). VoiceOver still reads `localizedHeadline`.
+  var localizedQualifier: String? {
+    tier.lowercased() == "native" ? nil : localizedHeadline
+  }
+
   /// Mono detail line: tool id and source, or source alone.
   var localizedDetail: String? {
     if !nativeTool.isEmpty {
@@ -195,10 +250,210 @@ struct CapabilitySummary: Equatable {
     }
   }
 
+  /// Named on purpose: these are capability operations (18 in this build), not
+  /// the built-in tool definitions the readiness probe counts. The two numbers
+  /// measure different sets and must never be presented as one
+  /// (Founder brief, round 11, 2026-10-10).
   var line: String {
     String(
-      localized: "Native: \(native) · Enhanced: \(enhanced) · Unavailable: \(unavailable)",
-      comment: "Capability summary counts")
+      localized:
+        "Capabilities: \(native) native · \(enhanced) enhanced · \(unavailable) unavailable",
+      comment: "Capability summary counts per tier")
+  }
+}
+
+/// Counts behind the "MCP servers" summary line. "0 problems across 0 checked
+/// servers is not a passed test": the line reports how many servers were
+/// actually checked, and never implies readiness from an untested set
+/// (Founder brief, round 11, 2026-10-10).
+struct McpServerSummary: Equatable {
+  var configured = 0
+  var checked = 0
+  var failed = 0
+
+  init(lines: [McpServerLine]) {
+    configured = lines.count
+    for line in lines {
+      var testFailed = false
+      switch line.test {
+      case .ok: checked += 1
+      case .failed:
+        checked += 1
+        testFailed = true
+      case .pending, .untested: break
+      }
+      if testFailed || line.status?.tone == .bad { failed += 1 }
+    }
+  }
+
+  var line: String {
+    let base = String(
+      localized: "\(configured) configured · \(checked) checked",
+      comment: "Plural: MCP servers in mcp.json and how many of them were actually checked")
+    guard failed > 0 else { return base }
+    return base + " · "
+      + String(
+        localized: "\(failed) failed", comment: "Plural: MCP servers whose last check failed")
+  }
+
+  /// Red only when a check actually failed; an unchecked set is neutral, never
+  /// green and never an error.
+  var tone: CsMcpRowTone {
+    if failed > 0 { return .bad }
+    return checked == configured && configured > 0 ? .good : .neutral
+  }
+}
+
+/// One row of the Integrations list: the integration's name and exactly one
+/// human status. Each row reports the single `mcp.json` entry its diagnostic
+/// looks at (`serverName`), so an optional integration is never read as "any
+/// configured server with a similar name" (Founder brief, round 11,
+/// 2026-10-10).
+struct AgentIntegrationLine: Equatable {
+  let name: String
+  let status: String
+  let tone: CsMcpRowTone
+  let serverName: String
+
+  /// The optional operator-tooling rows of the readiness probe, in probe order.
+  static func lines(rows: [CsMcpStatusRow]) -> [AgentIntegrationLine] {
+    rows.filter { isIntegration($0.facet) }.map {
+      AgentIntegrationLine(
+        name: $0.localizedLabel, status: $0.localizedIntegrationStatus, tone: $0.tone,
+        serverName: $0.subject)
+    }
+  }
+
+  static func isIntegration(_ facet: CsMcpStatusFacet) -> Bool {
+    switch facet {
+    case .vibecraftedRuntime, .aicxMcp, .loctreeMcp, .prviewIntegration: return true
+    default: return false
+    }
+  }
+}
+
+/// The Diagnostics summary card: one verdict line, one quiet line of key facts,
+/// and the things that need attention. Derived from the live probe rows only —
+/// a blocking gate failure can never render as "ready", and a warning or an
+/// unchecked state never renders as an error (Founder brief, round 11,
+/// 2026-10-10).
+struct AgentStatusSummary: Equatable {
+  struct Note: Equatable {
+    let tone: CsMcpRowTone
+    let text: String
+  }
+
+  let tone: CsMcpRowTone
+  let headline: String
+  /// Key facts, already joined; empty when nothing has been probed.
+  let facts: String
+  /// Errors first, then warnings. Empty when there is nothing to act on.
+  let notes: [Note]
+
+  init(
+    readiness: CsAgenticReadiness, capabilities: [CsCapabilityRow], servers: [McpServerLine],
+    mcpStatus: CsMcpStatusReport, accessResolved: Bool, accessError: String?
+  ) {
+    let rows = readiness.rows
+    func row(_ facet: CsMcpStatusFacet) -> CsMcpStatusRow? {
+      rows.first { $0.facet == facet }
+    }
+
+    // ---- Verdict. The gate decides; nothing else may overrule it. ----
+    if let accessError {
+      tone = .bad
+      headline = String(
+        localized: "Provider access could not be checked: \(accessError)",
+        comment: "Diagnostics summary headline; placeholder is an error message")
+    } else if !accessResolved || rows.isEmpty {
+      tone = .neutral
+      headline = String(
+        localized: "Not checked yet",
+        comment: "Diagnostics summary headline before the first probe has run")
+    } else if readiness.ready {
+      tone = .good
+      headline = String(
+        localized: "Configuration ready", comment: "Diagnostics summary headline: the gate passes")
+    } else {
+      tone = .bad
+      headline =
+        row(.readiness)?.localizedValue
+        ?? String(
+          localized: "Not ready", comment: "Diagnostics summary headline: the gate fails")
+    }
+
+    // ---- Key facts. A missing probe drops its fragment instead of showing 0. ----
+    var facts: [String] = []
+    if let provider = row(.provider)?.subject, !provider.isEmpty {
+      facts.append(
+        String(
+          localized: "Model: \(provider)",
+          comment: "Diagnostics key fact; placeholder is a provider display name"))
+    }
+    if let tools = row(.nativeTools)?.count {
+      facts.append(
+        String(
+          localized: "\(Int(tools)) built-in tools",
+          comment: "Plural: how many tools are compiled into Codescribe"))
+    }
+    if let roots = row(.workspaceRoots)?.count {
+      facts.append(
+        String(
+          localized: "\(Int(roots)) Agent folders",
+          comment: "Plural: how many folders the Agent may use"))
+    }
+    self.facts = facts.joined(separator: " · ")
+
+    // ---- Attention. Aggregates only; the detail stays in its own section. ----
+    let integrations = rows.filter { AgentIntegrationLine.isIntegration($0.facet) }
+    let failedIntegrations = integrations.filter { $0.state == .failed }.count
+    let awaiting = integrations.filter { $0.state == .configured }.count
+    let serverSummary = McpServerSummary(lines: servers)
+    let unavailable = CapabilitySummary(rows: capabilities).unavailable
+    let configRow =
+      (mcpStatus.rows.first { $0.facet == .mcpConfig }) ?? row(.mcpConfig)
+
+    var errors: [Note] = []
+    var warnings: [Note] = []
+    if failedIntegrations > 0 {
+      errors.append(
+        Note(
+          tone: .bad,
+          text: String(
+            localized: "\(failedIntegrations) integrations reported an error",
+            comment: "Plural: optional integrations whose discovery failed")))
+    }
+    if serverSummary.failed > 0 {
+      errors.append(
+        Note(
+          tone: .bad,
+          text: String(
+            localized: "\(serverSummary.failed) MCP servers failed their last check",
+            comment: "Plural: MCP servers whose last check failed")))
+    }
+    if let configRow, configRow.state == .error {
+      errors.append(Note(tone: .bad, text: configRow.localizedValue))
+    }
+    if awaiting > 0 {
+      warnings.append(
+        Note(
+          tone: .warn,
+          text: String(
+            localized: "\(awaiting) integrations await their first run",
+            comment: "Plural: optional integrations configured but not yet discovered")))
+    }
+    if unavailable > 0 {
+      warnings.append(
+        Note(
+          tone: .warn,
+          text: String(
+            localized: "\(unavailable) capabilities have no provider",
+            comment: "Plural: capability operations no native tool or MCP server can serve")))
+    }
+    if let configRow, configRow.state == .note {
+      warnings.append(Note(tone: configRow.tone, text: configRow.localizedValue))
+    }
+    notes = errors + warnings
   }
 }
 

@@ -389,12 +389,14 @@ the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
 Open **Settings → Agent → Diagnostics** (headline "Agent environment status")
-for the agent status screen: the readiness verdict with its prerequisite rows,
-the detected skill installations, one summary line each for capabilities and
-MCP servers, and a single Refresh action. Native-tool or workspace failures
-remain visible there even when credentials are valid. Long diagnostic values
-wrap within the pane, keeping labels and controls visible when the sidebar is
-open. See "Agent → Diagnostics" below for what each part shows.
+for the agent status screen: one summary card with the verdict, the key facts
+and whatever needs attention, then Integrations, Tools and servers, Detected
+installations, and a collapsed "Technical details" group. A single Refresh
+action re-probes the whole screen. Native-tool or workspace failures remain
+visible there even when credentials are valid, and no error needs an expanded
+section to be seen. Long diagnostic values wrap within the pane, keeping labels
+and controls visible when the sidebar is open. See "Agent → Diagnostics" below
+for what each part shows.
 Managed skill status is read when Settings opens, when Diagnostics is selected
 and after launch synchronization finishes. A direct link refreshes even if
 Diagnostics is already selected. These inspections do not install skills or
@@ -437,26 +439,54 @@ structured parts (counts, provider or server name, error cause); the app
 renders the interface-language text from those, so the Polish and English
 screens never depend on parsing the English probe text.
 
-- **Agent readiness** — the verdict pill plus one row per prerequisite:
-  Overall status, Model provider, Native tools, Folders available to the Agent,
-  then the optional operator tooling (VibeCrafted runtime, AICX MCP, Loctree MCP,
-  PRView integration). Every row ends with a status mark: a dot and a word
-  (Good, Warning, Error, Not checked) that is also the tooltip and the
-  VoiceOver label.
-- **Detected installations and runtime** — one block per detected client
-  (Claude Code, Codex) with its managed skill path, the installer's evidence
-  line, and the launch synchronization notice folded under "Technical details".
-- **Available tools and integrations** — one line of counts (Native · Enhanced
-  · Unavailable). "Show details" expands the capability matrix with localized
-  tier badges and a readable headline per operation; the core's raw reason is
-  the dot's tooltip. Permissions are managed in the Tools tab.
-- **MCP servers** — the configuration source path, one line of counts
-  (Configured · Tested · Issues), and a note when every server still waits for
-  the agent's first turn. "Show servers" expands one merged table: server name,
-  runtime status from the probe, and the cached test result. Servers are added,
-  tested and removed in the MCP tab. Without any configured server the section
-  shows the single configuration state row instead (no mcp.json, empty config,
-  or the concrete read error).
+The screen reads environment state first, then what needs attention, then
+detail on demand. Nothing is deleted on the way: every row the probe reports is
+still reachable, at worst one disclosure away.
+
+- **Agent status** — the header carries the shared Refresh chip. The card below
+  shows the verdict ("Configuration ready", or the concrete reason it is not),
+  one quiet line of key facts (model provider · built-in tools · Agent
+  folders), and one line per thing needing attention (integrations awaiting
+  their first run, failed integrations, failed MCP checks, capabilities with no
+  provider, an unreadable `mcp.json`). The verdict follows the core gate: a
+  blocking failure can never render as "ready", and a warning or an unchecked
+  state never renders as an error. Before the first probe the card says "Not
+  checked yet" rather than guessing.
+- **Integrations** — one row per optional integration (VibeCrafted runtime,
+  AICX MCP, Loctree MCP, PRView integration) with exactly one status: Ready · N
+  tools, "Awaits first run", "Optional · not configured", Disabled, or the
+  concrete failure. Each row's tooltip names the single `mcp.json` entry its
+  diagnostic reads, so an optional integration is never confused with another
+  configured server of a similar name.
+- **Tools and servers** — two independently collapsible summaries.
+  "Agent tools" counts capability _operations_ per tier (Capabilities: N native
+  · N enhanced · N unavailable) and expands the capability matrix with its tier
+  badges, the tool id and source per row, and the core's raw reason as the row
+  tooltip. The repeated "Built-in Codescribe tool" sentence is stated once
+  above the list instead of on every native row. Permissions are managed in the
+  Tools tab. "MCP servers" counts how many servers are configured and how many
+  were actually checked (and how many failed) — an unchecked set is reported as
+  unchecked, never as a passed test — and expands one row per server with
+  exactly one status: the cached test verdict when there is one, otherwise the
+  probe's runtime state. Servers are added, tested and removed in the MCP tab.
+  Without any configured server the summary carries the `mcp.json` state itself
+  (no mcp.json, empty config, or the concrete read error).
+- **Detected installations** — one compact row per detected client
+  (Claude Code, Codex): "Detected", or "Needs repair" when the receipt, folder
+  marker or rendered payload does not match. With nothing installed, one row
+  reads "Managed skill — Not detected".
+- **Technical details** — collapsed by default: the managed skill path per
+  client, the installer's own evidence line, the launch synchronization notice,
+  the `mcp.json` configuration source path, and the full readiness table
+  (Overall status, Model provider, Native tools, Folders available to the Agent,
+  then the optional operator tooling). Every row of that table ends with a
+  status mark: a dot and a word (Good, Warning, Error, Not checked) that is also
+  the tooltip and the VoiceOver label.
+
+The card's "built-in tools" count and the "Agent tools" capability counts
+measure different sets and are labelled accordingly: the first counts the tool
+definitions `register_native_tools` compiles in, the second counts the
+capability operations `CapabilityOp::all()` declares, each resolved to one tier.
 
 ### Agent → MCP
 
