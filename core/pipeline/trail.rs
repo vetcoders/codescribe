@@ -261,6 +261,8 @@ impl TrailSpeechEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotStart {
     #[serde(default)]
+    pub recovery_pending: bool,
+    #[serde(default)]
     pub word_policy: Option<String>,
     #[serde(default)]
     pub word_evidence: Option<WordEvidenceInput>,
@@ -281,6 +283,8 @@ pub struct TrailSlotStart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotEnd {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<super::acoustic_ledger::RecoveryDiagnostic>,
     #[serde(default)]
     pub word_choices: Vec<WordChoiceReceipt>,
     pub observation: ObservationIdentity,
@@ -331,6 +335,7 @@ impl SlotTrace {
             return Self(None);
         }
         let start = TrailSlotStart {
+            recovery_pending: ledger.text_recovery_pending(&observation.occurrence),
             word_policy: Some(WORD_POLICY.into()),
             word_evidence: ledger.word_evidence_input(observation).cloned(),
             word_choices_before: ledger.word_choices().len(),
@@ -416,6 +421,9 @@ impl SlotTrace {
                 &start.observation.occurrence,
                 TrailEvent::SlotEnd {
                     operation: Box::new(TrailSlotEnd {
+                        recovery: (start.recovery_pending
+                            || ledger.text_recovery_pending(&start.observation.occurrence))
+                            .then(|| ledger.recovery_diagnostic(&start.observation.occurrence)),
                         word_choices: ledger.word_choices()[start.word_choices_before..].to_vec(),
                         observation: start.observation.clone(),
                         first_ordinal: start.first_ordinal,
@@ -516,6 +524,12 @@ pub struct TrailDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrailEvent {
+    RecoveryRequired {
+        recovery: super::acoustic_ledger::RecoveryDiagnostic,
+    },
+    CoverageDiagnostics {
+        diagnostics: super::acoustic_ledger::CoverageDiagnostics,
+    },
     DecodeWork {
         observation: ObservationIdentity,
         decode: OccurrenceIdentity,
@@ -1317,10 +1331,19 @@ fn replay_validated(
     let mut pending: Option<PendingSlotReplay<'_>> = None;
     let mut effects_due = false;
     for row in records {
+        // Snapshots are passive diagnostics, not replay inputs or decision effects.
+        if matches!(
+            row.event,
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. }
+        ) {
+            continue;
+        }
         if effects_due && !matches!(row.event, TrailEvent::DecisionEffects { .. }) {
             return Err(io::Error::other("decision lacks slot effects"));
         }
         match &row.event {
+            // Observer snapshots cannot mutate replay or interrupt a slot batch.
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
             TrailEvent::DecodeWork {
                 observation,
                 decode,
