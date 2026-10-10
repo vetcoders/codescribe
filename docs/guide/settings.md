@@ -26,12 +26,12 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 ## Creator
 
 The first desk groups what a new install needs: the two language rows, the
-permission checklist with a **System Settings…** link in its header (the
-Privacy & Security pane, so a granted scope can be reviewed or revoked; a
-missing scope still carries its own request or deep link on the row), voice
-and formatting, one **Max consultation** card that also holds the pending
-approval requests, the coding-agent skill rows with **Refresh status** on the
-section header, and the quick-start cards.
+only permission checklist in Settings — with a **System Settings…** link in
+its header (the Privacy & Security pane, so a granted scope can be reviewed
+or revoked; a missing scope still carries its own request or deep link on the
+row) — voice and formatting, one **Max consultation** card that also holds
+the pending approval requests, the coding-agent skill rows with **Refresh
+status** on the section header, and the quick-start cards.
 
 ### Languages
 
@@ -122,7 +122,11 @@ The Dictation pane is one tab per concern:
 3. **Preview** — the transcript display pace; the presets, sliders and what they
    really drive are described under [Transcription](#transcription) above.
 4. **Privacy** — see [Cloud & privacy](#cloud--privacy) below.
-5. **Permissions** — the live macOS permission matrix.
+
+macOS permissions are not a Dictation tab. The live checklist — microphone,
+accessibility, input monitoring, screen recording, speech recognition, each
+with its own request or System Settings link — lives once, on
+[Creator](#creator); searching for a permission opens it there.
 
 The raw recognition timings are not a Dictation tab. **Pause recognition after
 silence** (`TOGGLE_SILENCE_SEC`), **Whisper context length**
@@ -145,13 +149,15 @@ on demand:
   mode, and when you start a cloud re-transcription of a recording yourself.
   **Text**: during AI requests to the providers you configured.
 - **Privacy details** — collapsed by default, nothing removed. Expanding it
-  shows four short subsections: the content-free cloud session diagnostics,
-  Keychain storage for the keys you configure (and the Libraxis gateway
-  keeping the live lane vendor-key-free), what a missing consent resolves to
-  (Apple on-device plus your dictionary, with no local model loaded in its
-  place), and the fact that choosing `Local power` does not download
-  anything. The **Configure cloud services** action below jumps to
-  **Providers → Cloud transcription**.
+  shows four headed subsections, one sentence each: **Diagnostics** (cloud
+  diagnostics record identifiers, session statistics and error codes — never
+  audio, never transcript text), **API keys** (your keys live in the macOS
+  Keychain; live transcription through Libraxis uses a short-lived session
+  token), **Consent** (without your consent Codescribe does not use the cloud
+  and keeps dictating with Apple on-device, with no local model loaded in its
+  place) and **Local modes** (choosing a local mode downloads nothing; the
+  model is installed separately on the Whisper tab). The **Configure cloud
+  services** action below jumps to **Providers → Cloud transcription**.
 
 Selecting **Cloud** on the Engine tab is itself the audio-egress grant: it
 writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.

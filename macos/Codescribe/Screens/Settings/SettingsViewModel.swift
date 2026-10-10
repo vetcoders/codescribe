@@ -421,10 +421,15 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var searchKeywords: [String] {
     switch self {
     case .creator:
+      // Creator owns the permission checklist, so the permission vocabulary
+      // lands here — there is no second permission surface under Dictation
+      // (Founder brief, round 14, 2026-10-10).
       settingsSearchTerms(
+        fixed: ["tcc"],
         localized: String(
           localized: "settings.search.section.creator",
-          defaultValue: "setup, onboarding, permissions, quick start, language",
+          defaultValue:
+            "setup, onboarding, permissions, accessibility, input monitoring, quick start, language",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
