@@ -26,6 +26,29 @@
 > or partial measurement does not (§3.z).
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
+### Bounded lexical trials and Stop authority (2026-10-10)
+
+`CaptureWindowPlan` owns both the regular 9-second / 3-second grid and an
+additional live lexical witness. A conflict needs two distinct complete
+Whisper frames, retained source PCM, and an unsealed owner behind the admission
+horizon. One trial per nine seconds of capture may use at most nine seconds of
+PCM, with up to three seconds of context on either side of its source lineage.
+It uses the existing provider queue and submission/completion identity. It does
+not advance the grid or count a retained decode as fresh corroboration. Failed,
+unavailable, or budget-refused work leaves an explicit unresolved disposition.
+No new lexical trial is launched after Stop; existing accepted work drains under
+the same deadline. Context quality ranks acoustic context, not lexical certainty.
+
+Stop's automatic Light+ pass may append terminal punctuation only. Earlier
+casing, commas and whitespace keep their existing bytes, including when the last
+owner spans a long take or its live shaping cache is incomplete. Explicit human
+formatting remains a separate action. The main overlay field projects the
+committed document throughout capture and terminal review; unresolved recognizer
+words remain visibly labelled “Also heard · not committed” in a separate,
+scrollable review area. This projection change neither admits those words nor
+certifies delivery coverage or restored recognition quality. Untimed Apple
+partial revisions never inherit PCM identity from word indexes or token counts.
+
 ### File observations and Apple backend identity (2026-10-02)
 
 `transcribe` with `whole_file` returns a recognizer observation, not a ledger seal

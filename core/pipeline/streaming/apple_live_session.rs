@@ -17,7 +17,8 @@
 //! required Layer 1 observer on capture-clock 9-second windows every 3 seconds.
 //! Stop drains that same plan, including at most one next-grid partial window.
 //! Original returns are shared with qualified owners through `AcousticLedger`;
-//! neither word conflicts nor Stop can schedule another decode or mutate a seal.
+//! Conflicts may use one planner-budgeted bounded witness before their horizon
+//! closes. Stop cannot open work outside its last nine seconds or mutate a seal.
 //! Apple-only deliberately omits this lane; explicit off/invalid overrides in
 //! Local Power produce a typed degraded state.
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
@@ -1855,14 +1856,6 @@ struct AppleSealState {
     open_partial: String,
     open_partial_segments: Vec<TranscriptSegment>,
     open_partial_pin: u64,
-    /// Capture sample at which each open-partial word index first appeared:
-    /// an upper bound on where that word's speech ends. The last word is
-    /// re-stamped on every revision, because the recognizer is still
-    /// extending it. Cleared when the phrase closes.
-    open_partial_arrivals: Vec<u64>,
-    /// Lower bound on the open phrase's first PCM sample: the end of the
-    /// last timed word of the phrase closed before it.
-    open_phrase_floor: u64,
     /// Next open phrase; closing it advances this independently of PCM clocks.
     phrase_id: u64,
     /// A forced close can still receive its recognizer final during finish.
@@ -1901,6 +1894,7 @@ struct AppleSealState {
     /// The only authority that offers new inference ranges on capture PCM.
     window_plan: CaptureWindowPlan,
     capture_stopping: bool,
+    word_trial_requests: BTreeMap<u64, WordTrial>,
     terminal_archive_pending: bool,
     refinement_pending: VecDeque<TailPatchRequest>,
     /// Original returns retained until closed physical owners can consume them.
@@ -2129,13 +2123,11 @@ impl AppleSealState {
         let mut words = Vec::new();
         // The pin is diagnostic only, including when Apple supplied segments.
         // Repeated lexical words in one phrase must retain their multiplicity.
-        // A leading run the committed document already holds leaves the
-        // mirror: one PCM occurrence, one visible representation.
-        let represented = self.represented_open_partial_words();
+        // Untimed words remain explicitly uncertain. Neither arrival order
+        // nor their index in a revised partial proves PCM coverage.
         words.extend(
             self.open_partial
                 .split_whitespace()
-                .skip(represented)
                 .map(|text| UnadmittedAppleWord {
                     text: text.to_string(),
                     sample_start: self.open_partial_pin,
@@ -2215,120 +2207,6 @@ impl AppleSealState {
             words,
             closed_phrases: self.closed_phrases.clone(),
         });
-    }
-
-    /// Leading open-partial words whose speech committed text already holds.
-    ///
-    /// A recognizer partial has no usable word timing, but every word has a
-    /// capture-clock arrival that bounds where its speech ends. A word that
-    /// arrived inside speech the ledger already represents, past the open
-    /// phrase's floor, restates committed text. Measured speech without
-    /// committed text stops that frontier: qualified owners still waiting for
-    /// text, speech still open at the observed head, and any uncovered span
-    /// wider than the observer's own resolution. Never more words than the
-    /// committed text holds there, so words a committed label lacks stay
-    /// visible. Without an observer that certifies speech and silence for
-    /// this take, nothing is retired.
-    fn represented_open_partial_words(&self) -> usize {
-        if self.open_partial_arrivals.is_empty() {
-            return 0;
-        }
-        let speech = coverage_speech_evidence(self);
-        if !speech.identity().matches(&self.session_id, self.capture_epoch) {
-            return 0;
-        }
-        let Some(observed) = speech.availability().observed_samples() else {
-            return 0;
-        };
-        let floor = self.open_phrase_floor;
-        let ledger = self
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let in_capture = |occurrence: &&OccurrenceIdentity| {
-            occurrence.session == self.session_id && occurrence.capture_epoch == self.capture_epoch
-        };
-        let holds_text = |occurrence: &OccurrenceIdentity| {
-            ledger
-                .text_of(occurrence)
-                .is_some_and(|text| !text.trim().is_empty())
-        };
-        let mut committed = ledger
-            .occurrences()
-            .filter(in_capture)
-            .filter(|occurrence| holds_text(*occurrence))
-            .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
-            .collect::<Vec<_>>();
-        committed.sort_unstable();
-        let mut represented: Vec<(u64, u64)> = Vec::with_capacity(committed.len());
-        for (start, end) in committed {
-            if let Some(last) = represented.last_mut()
-                && start <= last.1
-            {
-                last.1 = last.1.max(end);
-                continue;
-            }
-            represented.push((start, end));
-        }
-        let mut through = observed;
-        for owner in ledger.qualified_occurrences().filter(in_capture) {
-            if owner.sample_end > floor && !holds_text(owner) {
-                through = through.min(owner.sample_start.max(floor));
-            }
-        }
-        // Padding and gap merging can leave a sliver of measured speech beside
-        // a committed owner; anything wider is speech no committed text holds.
-        let resolution = ((super::silero_fusion::ACOUSTIC_SPEECH_MERGE_GAP_SECS
-            + 2.0 * super::silero_fusion::ACOUSTIC_SPEECH_PAD_SECS)
-            * self.sample_rate.max(1) as f32)
-            .round() as u64;
-        for range in speech.ranges() {
-            if range.sample_end <= floor || range.sample_start >= through {
-                continue;
-            }
-            let mut cursor = range.sample_start.max(floor);
-            let mut after_committed = false;
-            let mut gaps = Vec::new();
-            for &(start, end) in &represented {
-                if end <= cursor || start >= range.sample_end {
-                    continue;
-                }
-                if start > cursor {
-                    gaps.push((cursor, start, true));
-                }
-                cursor = cursor.max(end);
-                after_committed = true;
-                if cursor >= range.sample_end {
-                    break;
-                }
-            }
-            if cursor < range.sample_end {
-                gaps.push((cursor, range.sample_end, after_committed));
-            }
-            if let Some(&(start, _, _)) = gaps.iter().find(|(start, end, beside_committed)| {
-                !beside_committed || end - start > resolution || *end >= observed
-            }) {
-                through = through.min(start);
-            }
-        }
-        let held_words = ledger
-            .occurrences()
-            .filter(in_capture)
-            .filter(|occurrence| occurrence.sample_end > floor && occurrence.sample_start < through)
-            .flat_map(|occurrence| ledger.slots_of(occurrence).unwrap_or(&[]))
-            .filter(|slot| {
-                let midpoint =
-                    slot.sample_start + slot.sample_end.saturating_sub(slot.sample_start) / 2;
-                floor <= midpoint && midpoint < through
-            })
-            .map(|slot| slot.text.split_whitespace().count())
-            .sum::<usize>();
-        drop(ledger);
-        self.open_partial_arrivals
-            .iter()
-            .take_while(|arrived| **arrived <= through)
-            .count()
-            .min(held_words)
     }
 
     /// Current partial or accepted capture label; a refused raw callback alone
@@ -2461,8 +2339,6 @@ impl AppleSealState {
             open_partial: String::new(),
             open_partial_segments: Vec::new(),
             open_partial_pin: 0,
-            open_partial_arrivals: Vec::new(),
-            open_phrase_floor: 0,
             phrase_id: 1,
             finishing_phrase_id: None,
             last_closed_phrase_id: None,
@@ -2491,6 +2367,7 @@ impl AppleSealState {
                 sample_rate,
             ),
             capture_stopping: false,
+            word_trial_requests: BTreeMap::new(),
             terminal_archive_pending: false,
             refinement_pending: VecDeque::new(),
             retained_word_decodes: VecDeque::new(),
@@ -3089,7 +2966,8 @@ impl AppleSealState {
             grid_ordinal = range.sample_start / (u64::from(self.sample_rate).max(1) * 3),
             phase = if self.capture_stopping { "stop" } else { "live" },
             disposition,
-            pass_limit = 3,
+            grid_pass_limit = 3,
+            bounded_trials_per_nine_seconds = 1,
             "capture_window_plan"
         );
     }
@@ -3615,6 +3493,12 @@ impl AppleSealState {
                 continue;
             }
             let Some(sender) = self.tail_patch.as_ref() else {
+                if let Some(trial) = self
+                    .word_trial_requests
+                    .remove(&request.provider_request.identity.request_id)
+                {
+                    self.close_word_trial(&trial, "trial_lane_unavailable");
+                }
                 self.window_plan_receipt(&range, "lane_unavailable");
                 self.window_plan.account(&range);
                 for (id, occurrence) in &request.member_occurrences {
@@ -3656,6 +3540,12 @@ impl AppleSealState {
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(request)) => {
+                    if let Some(trial) = self
+                        .word_trial_requests
+                        .remove(&request.provider_request.identity.request_id)
+                    {
+                        self.close_word_trial(&trial, "trial_lane_unavailable");
+                    }
                     self.window_plan.account(&range);
                     self.window_plan_receipt(&range, "lane_unavailable");
                     self.tail_patch = None;
@@ -4102,7 +3992,13 @@ impl AppleSealState {
                 );
             }
         }
+        let trial = self
+            .word_trial_requests
+            .remove(&job.request_identity.request_id);
         if let Some(payload) = payload.filter(|_| valid) {
+            if let Some(trial) = &trial {
+                self.complete_word_trial(ev_tx, trial, Some(&payload));
+            }
             self.window_plan_receipt(&job.request_identity.range, "returned");
             self.retain_word_decode(&payload);
             self.admit_completed_window(ev_tx, &payload, true);
@@ -4110,6 +4006,9 @@ impl AppleSealState {
             // A matched provider failure is not measured uncovered speech.
             // Debt already recorded by qualification or reconciliation stays.
             // This return must not invent recovery debt over an admitted floor.
+            if let Some(trial) = &trial {
+                self.close_word_trial(trial, "inference_failed");
+            }
             self.window_plan_receipt(&job.request_identity.range, "failed");
             self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
             self.settle_failed_window_members(ev_tx, &job.member_occurrences);
@@ -4895,6 +4794,100 @@ impl AppleSealState {
         }
     }
 
+    /// Before expiring a live dispute, ask the sole range planner for one new
+    /// bounded witness. The ledger chooses the component; transport and return
+    /// retain the exact trial and capture identity. Context quality is not a vote.
+    fn schedule_bounded_word_trial(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if self.capture_stopping
+            || self.tail_patch.is_none()
+            || self.refinement_lane_lost
+            || !self.refinement_pending.is_empty()
+            || !self.word_trial_requests.is_empty()
+        {
+            return;
+        }
+        let head = self.audio.session_sample_end();
+        let padding = u64::from(self.sample_rate) * 3;
+        let retained_start = if self.terminal_pcm.is_some() {
+            0
+        } else {
+            self.audio.retained_start_sample()
+        };
+        // Unrelated later jobs must not suppress a dispute's last opportunity.
+        // A covering earlier job retains first refusal as the ordinary witness.
+        let trial_horizon = self
+            .refinement_submitted
+            .values()
+            .map(|job| job.request_identity.range.sample_start)
+            .min()
+            .unwrap_or(u64::MAX)
+            .min(self.admission_horizon);
+        let trial = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_word_trial_before_horizon(
+                false,
+                None,
+                Some((padding, retained_start..head)),
+                trial_horizon,
+            );
+        let Some(trial) = trial else {
+            return;
+        };
+        let start = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_start)
+            .min()
+            .unwrap_or(trial.owner.sample_start)
+            .saturating_sub(padding)
+            .max(retained_start);
+        let end = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_end)
+            .max()
+            .unwrap_or(trial.owner.sample_end)
+            .saturating_add(padding)
+            .min(head);
+        let Some(range) = self
+            .window_plan
+            .offer_trial(start, end, head, self.capture_stopping)
+        else {
+            self.close_word_trial(&trial, "trial_budget_or_scope_refused");
+            return;
+        };
+        let Some(window) = self.window_by_samples(start, end) else {
+            self.window_plan.account(&range);
+            self.close_word_trial(&trial, "trial_pcm_unavailable");
+            return;
+        };
+        let request_id = (1_u64 << 63) | trial.id;
+        let member_occurrences = self
+            .unsealed_word_owners()
+            .into_iter()
+            .filter(|(_, owner)| range_overlaps_occurrence(&range, owner))
+            .collect();
+        self.word_trial_requests.insert(request_id, trial);
+        self.refinement_pending.push_back(TailPatchRequest {
+            submission_sequence: 0,
+            utterance_id: request_id,
+            committed_text: String::new(),
+            neighbour_context: self.sealed_prefix.clone(),
+            audio: window.samples,
+            admit_sample_start: start,
+            admit_sample_end: end,
+            member_occurrences,
+            provider_request: TailProviderRequest {
+                identity: TailRequestIdentity { request_id, range },
+                sample_rate: self.sample_rate,
+                language: None,
+            },
+        });
+        self.retry_refinements(ev_tx);
+    }
+
     /// Monotonic evidence about future window starts. A completed newer job
     /// cannot seal ahead of an older submitted or queued job that may own words.
     fn close_admission_horizon(
@@ -4904,6 +4897,7 @@ impl AppleSealState {
     ) {
         let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
+        self.schedule_bounded_word_trial(ev_tx);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
         for (id, owner) in owners {
@@ -5078,6 +5072,9 @@ impl AppleSealState {
         }
         for job in self.refinement_submitted.values() {
             self.window_plan_receipt(&job.request_identity.range, "expired_after_acceptance");
+        }
+        for (_, trial) in std::mem::take(&mut self.word_trial_requests) {
+            self.close_word_trial(&trial, "stop_deadline");
         }
         self.refinement_pending.clear();
         self.refinement_submitted.clear();
@@ -7229,7 +7226,6 @@ fn close_apple_phrase(
 ) -> (bool, Vec<EngineEvent>) {
     // Every caller has already cleared the open partial; its word clock ends
     // with it, so the next phrase cannot inherit stale arrivals.
-    state.open_partial_arrivals.clear();
     let timed = apple_segments_on_pcm_clock(state, &segments);
     let (seal_tx, mut seal_rx) = mpsc::unbounded_channel();
     let committed = seal_utterance_final(state, &seal_tx, raw, segments, audio_secs);
@@ -7243,9 +7239,6 @@ fn close_apple_phrase(
     // words before that point belong to this phrase and can never be counted
     // as speech the next partial restates. Untimed segments sit at zero and
     // leave the floor where it was.
-    if let Some(end) = timed.iter().map(|word| word.range.sample_end).max() {
-        state.open_phrase_floor = state.open_phrase_floor.max(end);
-    }
     let untimed = events.iter().any(|event| {
         matches!(event,
         EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing")
@@ -8386,16 +8379,6 @@ fn emit_stream_events(
                         })
                     }
                 };
-                // The recognizer cannot have heard past the PCM already written
-                // to it: a word's first appearance bounds where its speech ends.
-                // The last word is still being extended, so it takes this stamp.
-                let arrived = state.audio.session_sample_end();
-                let count = text.split_whitespace().count();
-                state.open_partial_arrivals.truncate(count);
-                state.open_partial_arrivals.resize(count, arrived);
-                if let Some(last) = state.open_partial_arrivals.last_mut() {
-                    *last = arrived;
-                }
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
@@ -8509,7 +8492,6 @@ fn emit_stream_events(
                     state.phrase_id = state.phrase_id.saturating_add(1);
                     state.open_partial.clear();
                     state.open_partial_segments.clear();
-                    state.open_partial_arrivals.clear();
                 }
             }
         }
@@ -19228,7 +19210,7 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
-    fn word_dispute_uses_existing_capture_windows_without_extra_inference() {
+    fn word_dispute_uses_grid_witnesses_then_at_most_one_bounded_trial() {
         for word_start in [6_000, 6_200] {
             let (mut state, events, _receiver, mut requests) = fixture(8);
             let pcm = vec![0.25; 15_000];
@@ -19300,27 +19282,34 @@ mod live_refinement_admission_tests {
             for request in &windows[1..] {
                 state.complete_whisper_window(&events, witness(request), 15.2);
             }
+            let needs_trial = state.acoustic_ledger.lock().unwrap().has_word_conflicts();
+            assert_eq!(
+                state.tail_patch_awaiting_completion(),
+                u64::from(needs_trial)
+            );
+            if needs_trial {
+                let trial = requests
+                    .try_recv()
+                    .expect("grid left an unresolved lexical dispute");
+                let range = &trial.provider_request.identity.range;
+                assert!(trial.provider_request.identity.request_id >= (1_u64 << 63));
+                assert!(range.sample_start < word_start && range.sample_end > word_start + 400);
+                assert!(range.sample_end - range.sample_start <= 9_000);
+                assert_eq!(
+                    trial.audio,
+                    pcm[range.sample_start as usize..range.sample_end as usize]
+                );
+                state.complete_whisper_window(&events, witness(&trial), 15.3);
+            }
             assert_eq!(state.tail_patch_awaiting_completion(), 0);
             state.pump_capture_windows(&events);
             assert!(
                 requests.try_recv().is_err(),
-                "adjudication must not dispatch another inference"
+                "resolved dispute must not dispatch another inference"
             );
             let ledger = state.acoustic_ledger.lock().unwrap();
-            // The third issued window starts at 6000. Keep the source-edge case:
-            // its narrower new pin cannot supply context for the earlier pin.
-            let expected = if word_start == 6_000 { "1286" } else { "56" };
-            assert_eq!(ledger.text_of(&owner), Some(expected));
-            if word_start == 6_000 {
-                assert!(
-                    ledger
-                        .seal_of(&owner)
-                        .expect("the admission horizon settles both variants")
-                        .word_finality
-                        .iter()
-                        .any(|word| word.unresolved)
-                );
-            }
+            assert_eq!(ledger.text_of(&owner), Some("56"));
+            assert!(!ledger.has_word_conflicts());
             assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
             assert!(
                 ledger
@@ -30246,3 +30235,234 @@ pub fn forensic_word_conservation_trace(
 #[cfg(test)]
 #[path = "capture_decode_budget_contract_tests.rs"]
 mod capture_decode_budget_contract_tests;
+
+#[cfg(test)]
+mod bounded_lexical_trial_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::WordPin;
+    use crate::pipeline::acoustic_ledger::word_adjudication_tests::measured_ledger;
+    use crate::stt::tail_provider::{TailEvidenceSource, TailProviderEvidence, TailSegmentGrain};
+
+    fn disputed() -> (
+        AppleSealState,
+        mpsc::UnboundedSender<EngineEvent>,
+        mpsc::Receiver<TailPatchRequest>,
+        OccurrenceIdentity,
+    ) {
+        let session = "bounded-pnpm";
+        let owner = OccurrenceIdentity::new(session, 1, 432_000, 456_000);
+        let mut pcm = vec![0.0; 624_000];
+        pcm[437_760..446_400].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(
+            owner.clone(),
+            [
+                LedgerObservationProducer::Apple,
+                LedgerObservationProducer::Whisper,
+            ],
+        );
+        let apple =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Apple, 5, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&apple, &[WordPin::new(437_760, 446_400, "PTM")])
+                .grants_mutation()
+        );
+        for (id, start, end, pin_start) in [
+            (9, 384_000, 528_000, 437_760),
+            (10, 432_000, 576_000, 432_000),
+        ] {
+            let obs = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                id,
+                0,
+                owner.clone(),
+            );
+            let pins = [WordPin::new(pin_start, 446_400, "PNPM").with_decode_window(start, end)];
+            ledger.admit_word_slots(&obs, &pins);
+        }
+        assert_eq!(ledger.text_of(&owner), Some("PTM"));
+        assert!(ledger.has_word_conflicts());
+        let (events, _) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(8);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            16_000,
+            session.into(),
+            1,
+            sender,
+            Arc::new(Mutex::new(ledger)),
+            None,
+        );
+        state.audio.push(&pcm);
+        // These grid jobs already returned: only their authentic ledger evidence
+        // above is used. No decoder/model is run by this transport fixture.
+        while let Some(range) = state.window_plan.next_due(624_000, false) {
+            assert!(state.window_plan.account(&range));
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: owner.clone(),
+                raw_text: "PTM".into(),
+                layer1_baseline: "PTM".into(),
+                start_ts: 27.0,
+                end_ts: 28.5,
+                segments: vec![],
+            },
+        );
+        (state, events, receiver, owner)
+    }
+
+    #[test]
+    fn missing_first_pins_and_edge_second_witness_get_one_fresh_live_trial_before_expiry() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.close_admission_horizon(&events, u64::MAX);
+        let request = requests
+            .try_recv()
+            .expect("fresh bounded PCM trial, not immediate expiry");
+        assert_eq!(state.word_trial_requests.len(), 1);
+        assert!(request.provider_request.identity.request_id >= (1_u64 << 63));
+        assert!(request.admit_sample_start < 437_760 && request.admit_sample_end > 446_400);
+        assert!(request.audio.len() <= 9 * 16_000);
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        let payload = TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "PNPM".into(),
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
+                avg_logprob: None,
+                segment_grain: TailSegmentGrain::Word,
+            },
+            segments: vec![TimedTailSegment {
+                text: "PNPM".into(),
+                confidence: None,
+                grain: TailSegmentGrain::Word,
+                range: TailSampleRange {
+                    session: owner.session.clone(),
+                    capture_epoch: owner.capture_epoch,
+                    sample_start: 437_760,
+                    sample_end: 446_400,
+                },
+            }],
+        };
+        state.complete_whisper_window(
+            &events,
+            TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: Some(request.provider_request.identity.clone()),
+                member_occurrences: request.member_occurrences.clone(),
+                payload: Some(payload),
+            },
+            39.0,
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("PNPM"));
+        assert!(!ledger.has_word_conflicts());
+        assert!(
+            ledger
+                .word_choices()
+                .iter()
+                .any(|choice| choice.accepted && choice.reason == "trial_confirmed")
+        );
+        assert!(state.word_trial_requests.is_empty());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn unrelated_future_window_does_not_expire_a_live_conflict_without_trial() {
+        let (mut state, events, mut requests, _) = disputed();
+        let identity = TailRequestIdentity {
+            request_id: 11,
+            range: TailSampleRange {
+                session: "bounded-pnpm".into(),
+                capture_epoch: 1,
+                sample_start: 480_000,
+                sample_end: 624_000,
+            },
+        };
+        let job = TailPatchInFlight {
+            submission_sequence: 99,
+            utterance_id: 11,
+            request_identity: identity.clone(),
+            admit_sample_start: 480_000,
+            admit_sample_end: 624_000,
+            member_occurrences: vec![],
+        };
+        state.last_submission_sequence = 99;
+        state
+            .refinement_submitted
+            .insert(inflight_key(99, &identity), job);
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(
+            requests.try_recv().is_ok(),
+            "later unrelated work is not a reason to lose the live trial"
+        );
+        assert_eq!(state.word_trial_requests.len(), 1);
+        assert_eq!(state.refinement_submitted.len(), 2);
+    }
+
+    #[test]
+    fn failed_bounded_trial_keeps_the_label_and_does_not_retry_the_same_pcm() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.close_admission_horizon(&events, u64::MAX);
+        let request = requests.try_recv().unwrap();
+        state.complete_whisper_window(
+            &events,
+            TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: Some(request.provider_request.identity.clone()),
+                payload: None,
+                member_occurrences: request.member_occurrences,
+            },
+            39.0,
+        );
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(state.word_trial_requests.is_empty());
+        assert!(requests.try_recv().is_err());
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("PTM"));
+        assert!(
+            ledger.next_word_trial(true).is_none(),
+            "one failed attempt is accounted"
+        );
+        ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple);
+        let seal = ledger
+            .seal(&owner)
+            .expect("all original producers returned");
+        assert!(
+            seal.word_finality.iter().any(|word| {
+                word.unresolved
+                    && word
+                        .trial
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.reason == "inference_failed")
+            }),
+            "failed inference must remain explicitly unresolved in finality"
+        );
+    }
+
+    #[test]
+    fn stop_does_not_schedule_a_new_trial_for_an_early_dispute() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.capture_stopping = true;
+        while let Some(range) = state.window_plan.next_due(624_000, true) {
+            assert!(state.window_plan.account(&range));
+        }
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("PTM")
+        );
+        assert!(state.word_trial_requests.is_empty());
+    }
+}
