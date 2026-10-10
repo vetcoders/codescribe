@@ -1236,6 +1236,23 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var whisperModelError: String?
   @Published private(set) var whisperModelSwitchPending = false
 
+  /// Shared invalidation edges from `AppModel` (nil in tests and previews).
+  private let configurationInvalidation: ConfigurationInvalidation?
+  private var configurationInvalidationSink: AnyCancellable?
+  /// Residency wait loop; see `beginWhisperResidencyObservation`.
+  private var whisperResidencyObservation: Task<Void, Never>?
+  private var whisperResidencyObserved = false
+  /// Fence for the wait loop: a newer edge, selection or close supersedes it.
+  private var whisperResidencyGeneration: UInt64 = 0
+  /// A recorder edge made a resident-weights change expected (a take loads
+  /// the engine lazily; its tail may cold-load after the stop edge).
+  private var whisperLoadExpected = false
+  /// Catalog re-read delay while a load is pending: starts at `initial`,
+  /// doubles per read, never exceeds `ceiling`. No lifetime budget.
+  var whisperResidencyPollInterval: (initial: Duration, ceiling: Duration) = (
+    .seconds(2), .seconds(10)
+  )
+
   // MARK: - Hotkeys (mode bindings)
 
   /// Persisted per-mode bindings as last read from disk.
@@ -1279,6 +1296,7 @@ final class SettingsViewModel: ObservableObject {
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
     whisperDownloadStore: WhisperDownloadStore = .shared,
+    configurationInvalidation: ConfigurationInvalidation? = nil,
     languagePreferences: UserDefaults = .standard,
     preferredLanguages: [String] = Locale.preferredLanguages,
     processInterfaceLanguage: InterfaceLanguage = .preferred(
@@ -1306,6 +1324,7 @@ final class SettingsViewModel: ObservableObject {
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
     self.whisperDownloadStore = whisperDownloadStore
+    self.configurationInvalidation = configurationInvalidation
     self.languagePreference = InterfaceLanguagePreference(
       defaults: languagePreferences, preferredLanguages: preferredLanguages,
       processLanguage: processInterfaceLanguage)
@@ -1362,6 +1381,28 @@ final class SettingsViewModel: ObservableObject {
       self?.objectWillChange.send()
     }
     lastServingVerdict = servingStatusProvider()
+    configurationInvalidationSink = configurationInvalidation?.edges(excluding: self)
+      .sink { [weak self] edge in
+        self?.handleConfigurationInvalidation(edge)
+      }
+  }
+
+  /// Already-open Settings follows writes made elsewhere (tray Quick Settings,
+  /// another surface) and recorder edges, by re-reading canonical truth only.
+  /// Editor drafts are not touched: hotkey drafts reload only through
+  /// `loadHotkeys()`, and view-local text drafts follow only fields whose
+  /// persisted value actually changed.
+  private func handleConfigurationInvalidation(_ edge: ConfigurationInvalidation.Edge) {
+    switch edge {
+    case .settingsWritten:
+      guard let engine else { return }
+      applyLoadedSettings(engine.loadSettings())
+      refreshWhisperModelCatalog()
+    case .recordingLifecycle:
+      whisperLoadExpected = true
+      refreshWhisperModelCatalog()
+    }
+    observeWhisperResidencyIfNeeded()
   }
 
   /// Passive inspection of the bundled installer; never attaches an agent.
@@ -1529,11 +1570,84 @@ final class SettingsViewModel: ObservableObject {
               localized: "Saved · an override decides the active model (see note below)",
               comment: "Whisper model picker: selection persisted but an env override shadows it"
             )
+        self.configurationInvalidation?.settingsWritten(by: self)
       } catch {
         self.whisperModelError = String(describing: error)
       }
       self.refreshWhisperModelCatalog()
       self.refreshWhisperModelStatus()
+      self.observeWhisperResidencyIfNeeded()
+    }
+  }
+
+  // MARK: - Resident Whisper observation (visible Settings only)
+
+  /// Residency moves without a Swift event: the bridge exposes no load
+  /// completion, a take loads the engine lazily, a tail decode may cold-load
+  /// after the stop edge, and a deferred switch lands at the recording-idle
+  /// boundary. While such a change is pending and Settings is visible, the
+  /// catalog alone (never the whole settings snapshot) is re-read on a
+  /// widening interval until resident weights match the selection, the
+  /// window closes, or a newer edge supersedes the wait. There is no lifetime
+  /// budget: a slow first load still reaches the open picker.
+  func beginWhisperResidencyObservation() {
+    whisperResidencyObserved = true
+    observeWhisperResidencyIfNeeded()
+  }
+
+  func endWhisperResidencyObservation() {
+    whisperResidencyObserved = false
+    whisperLoadExpected = false
+    whisperResidencyGeneration &+= 1
+    whisperResidencyObservation?.cancel()
+    whisperResidencyObservation = nil
+  }
+
+  /// Resident weights already match what the next recording loads, or there
+  /// is nothing a passive read could settle.
+  var whisperResidencySettled: Bool {
+    guard let catalog = whisperModelCatalog, let resolved = catalog.resolvedPath else {
+      return true
+    }
+    guard let loaded = catalog.loaded else { return false }
+    return loaded == resolved || loaded == "embedded"
+  }
+
+  /// A resident-weights change is on its way without another user action:
+  /// resident weights differ from the selection (a deferred switch drops them
+  /// at idle), or a recorder edge made a load expected. Idle and unloaded
+  /// with no such edge is stable truth ("loads on the next recording").
+  var whisperResidencyPending: Bool {
+    guard !whisperResidencySettled, whisperModelCatalog?.resolvedPath != nil else {
+      return false
+    }
+    return whisperModelCatalog?.loaded != nil || whisperLoadExpected
+  }
+
+  private func observeWhisperResidencyIfNeeded() {
+    guard whisperResidencyObserved, engine != nil else { return }
+    whisperResidencyGeneration &+= 1
+    whisperResidencyObservation?.cancel()
+    whisperResidencyObservation = nil
+    if whisperResidencySettled { whisperLoadExpected = false }
+    guard whisperResidencyPending else { return }
+    let generation = whisperResidencyGeneration
+    let cadence = whisperResidencyPollInterval
+    whisperResidencyObservation = Task { @MainActor [weak self] in
+      var delay = cadence.initial
+      while true {
+        try? await Task.sleep(for: delay)
+        guard !Task.isCancelled, let self, self.whisperResidencyGeneration == generation else {
+          return
+        }
+        self.refreshWhisperModelCatalog()
+        if self.whisperResidencySettled { self.whisperLoadExpected = false }
+        guard self.whisperResidencyPending else {
+          self.whisperResidencyObservation = nil
+          return
+        }
+        delay = min(delay * 2, cadence.ceiling)
+      }
     }
   }
 
@@ -3024,6 +3138,7 @@ final class SettingsViewModel: ObservableObject {
     guard let engine else { return }
     try engine.updateConfig(key: key, value: value)
     applyLoadedSettings(engine.loadSettings())
+    configurationInvalidation?.settingsWritten(by: self)
   }
 
   private func persistMany(_ entries: [CsConfigEntry]) {
@@ -3031,6 +3146,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.updateConfigMany(entries: entries)
       applyLoadedSettings(engine.loadSettings())
+      configurationInvalidation?.settingsWritten(by: self)
     } catch {
       lastError = String(describing: error)
     }
