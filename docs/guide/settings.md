@@ -774,8 +774,15 @@ visible; technical values and the resets open on demand.
   language.
 - **Configuration notice** — shown only when the launch repair receipt (see
   [CONFIG.md](../CONFIG.md)) has something to say, directly under the version.
-  For `.env` keys it reads _The configuration needs a review — See which setting
-  is out of date_. Opening it names each key with what it does in this build
+  Its weight follows the real problem. When every named `.env` key is one
+  Codescribe simply does not read, nothing in the app behaves differently, so
+  the collapsed form is a single quiet line — _Stale configuration entry — does
+  not affect operation_ (plural: _Stale configuration entries — do not affect
+  operation_). Everything else keeps the warning card: a `FORMATTING_LEVEL`
+  override, whose value is in effect, and a receipt that is a refusal or cannot
+  be read both read _The configuration needs a review_ / _The configuration
+  could not be fully checked_.
+  Opening the notice names each key with what it does in this build
   and whether anything needs doing: an unknown or retired key in the optional
   `.env` file is not read and has no effect, so no action is required (delete
   or correct the line and restart to clear the notice); a `FORMATTING_LEVEL`
@@ -798,10 +805,12 @@ visible; technical values and the resets open on demand.
   rendered **Template preview**. Saved templates and the marking mechanics do
   not change. The markers change delivered dictation, so they are expected to
   move to the Dictation settings; until then they live here.
-- **Information and documentation** — Privacy Policy, Terms of Use,
-  Documentation.
-- **Reset data** — one closed row at the foot of the page; **Expand** shows
-  the two resets described below.
+- **Information and documentation** — a section heading with three link rows
+  under it: Privacy Policy, Terms of Use, Documentation. Each row is clickable
+  across its full width and carries the open-elsewhere icon at its right edge.
+- **Reset data** — one closed section at the foot of the page, after a thin
+  separator; its heading has the same weight as every other section heading on
+  the page, and **Expand** shows the two resets described below.
 
 ## Reset / Fresh Start
 
@@ -834,6 +843,17 @@ _Created by Vetcoders (c)2026_
 ## License access
 
 Open **Settings → License** to activate, restore or remove a CSK1 license.
+The page opens with one compact card: the state — labelled **Status**, or
+**Mode** while no key is stored — with a dot that is lit while Agent mode is
+allowed, then **Mode** once a license state beyond "no key" is known, and
+**License** (_Agent · one-time purchase_) for the one-time offer. While a
+verified key runs on offline grace the state carries the remaining period
+(_Active · N days left_). No raw SKU is shown anywhere and there is no
+updates-window row. Under **License key** the field and **Activate** share one
+row; **Get license key** (opens the self-service page) and **Remove key** sit
+on the row below, and the footnote states that the key is stored in the macOS
+Keychain.
+
 License storage runs in the background, and **Checking license…** or an access
 error remains visible while Settings stays interactive. **Retry license access**
 starts another read when the current operation has returned. Activation and
