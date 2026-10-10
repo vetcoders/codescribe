@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 /// policies rather than reinterpret their recorded lexical decisions.
 /// v4: an uncorroborated disagreement is settled by PCM authority, not by
 /// which decode arrived first (`band_authority`).
-pub const WORD_POLICY: &str = "word-adjudication/v4";
+/// v5: context authority alone may revise one word, never repartition a
+/// component. Changing its word partition requires lexical corroboration.
+pub const WORD_POLICY: &str = "word-adjudication/v5";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -931,9 +933,14 @@ impl AcousticLedger {
         // witness whose PCM context places this exact scope higher keeps the
         // label. The dispute stays open: no agreement was reached, so the
         // conflict, its trial and the word finality still say so.
+        // A deeper decode margin does not prove new word boundaries. Restrict
+        // this uncorroborated path to one source and one output; a split or a
+        // regrouping must use source agreement or a confirmed bounded trial.
         let band_authority = trial.is_none()
             && !lexical_resolved
             && raw_disagrees
+            && sources.len() == 1
+            && outputs.len() == 1
             && fresh
             && complete
             && candidate.acoustic_boundaries_complete
@@ -1006,6 +1013,8 @@ impl AcousticLedger {
             (true, "source_agreement")
         } else if band_authority {
             (true, "band_authority")
+        } else if sources.len() != 1 || outputs.len() != 1 {
+            (false, "partition_requires_lexical_evidence")
         } else {
             (false, "lexical_disagreement")
         };
