@@ -2,6 +2,7 @@
 //! Dictionary rules authorize a merge; timed child pins authorize a split.
 
 use super::*;
+use super::word_adjudication::negation_contexts;
 
 /// Align labels inside one PCM group; lexical matching never creates a pin.
 /// An unpaired held token preserves the entire group at its existing accuracy.
@@ -1127,7 +1128,8 @@ impl AcousticLedger {
             let all_coarse = sources.iter().all(coarse_source);
             // A coarse hypothesis has no independent word claims. Its
             // refinement still needs the measured partition/source accounting
-            // below; lexical voting applies once physical words exist.
+            // below; a polarity dispute still needs lexical adjudication
+            // before the measured words can replace the held phrase.
             let source_complete =
                 all_coarse || self.asr_source_scope_complete(observation, &sources);
             let authority = sources.iter().all(|source| {
@@ -1284,7 +1286,12 @@ impl AcousticLedger {
                     || content_refinement
                     || partial_refinement
                     || window_partition);
-            let local_choice = if !all_coarse && source_complete && geometry && !ambiguous {
+            // Word timestamps may refine a phrase's geometry, but cannot
+            // silently reverse its polarity. Route that disagreement through
+            // the existing lexical authority even while the source is coarse.
+            let lexical_refinement = !all_coarse
+                || negation_contexts(&held) != negation_contexts(&candidate);
+            let local_choice = if lexical_refinement && source_complete && geometry && !ambiguous {
                 self.adjudicate_word_sources(observation, &sources, &outputs)
             } else {
                 None
