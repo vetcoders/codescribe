@@ -110,19 +110,23 @@ Sentence pause belongs to Light+ text shaping, not to hands-free dictation.
 
 ### Cloud & privacy
 
-**Settings → Dictation → Privacy** has three sections:
+**Settings → Dictation → Privacy** shows two short sections, with the rest
+on demand:
 
-- **Cloud status** — the selected mode and the stored consent record as two
-  separate rows. A granted record is not evidence that audio is leaving now:
-  audio is sent only while Cloud mode is selected, or during a cloud
-  re-transcription you start yourself.
-- **What can leave this Mac** — audio during cloud recognition in Cloud mode and
-  during an explicit cloud re-transcription of a recording; text during AI
-  requests to the providers you configured.
-- **Privacy details** — the content-free cloud session diagnostics, Keychain
-  storage for the keys you configure, what a missing consent resolves to (Apple
-  on-device plus your dictionary, with no local model loaded in its place), and
-  the fact that choosing `Local power` does not download anything.
+- **Cloud status** — the selected recognition mode and the stored cloud
+  consent as two separate rows. A granted record is not evidence that audio
+  is leaving now.
+- **What can leave this computer?** — two scannable rows. **Audio**: in Cloud
+  mode, and when you start a cloud re-transcription of a recording yourself.
+  **Text**: during AI requests to the providers you configured.
+- **Privacy details** — collapsed by default, nothing removed. Expanding it
+  shows four short subsections: the content-free cloud session diagnostics,
+  Keychain storage for the keys you configure (and the Libraxis gateway
+  keeping the live lane vendor-key-free), what a missing consent resolves to
+  (Apple on-device plus your dictionary, with no local model loaded in its
+  place), and the fact that choosing `Local power` does not download
+  anything. The **Configure cloud services** action below jumps to
+  **Providers → Cloud transcription**.
 
 Selecting **Cloud** on the Engine tab is itself the audio-egress grant: it
 writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
