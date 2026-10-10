@@ -4133,7 +4133,8 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
-     * thrown error.
+     * thrown error. Either outcome becomes connection evidence for that exact
+     * config entry; it never registers tools in the running agent.
      */
     func testServer(name: String)  -> CsMcpTestResult
 
@@ -4339,7 +4340,8 @@ open func setToolPermission(identity: String, level: String)throws   {try rustCa
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
-     * thrown error.
+     * thrown error. Either outcome becomes connection evidence for that exact
+     * config entry; it never registers tools in the running agent.
      */
 open func testServer(name: String) -> CsMcpTestResult  {
     return try!  FfiConverterTypeCsMcpTestResult_lift(try! rustCall() {
@@ -17000,6 +17002,11 @@ public enum CsMcpStatusState: Equatable, Hashable {
     case failed
     case disabled
     case configured
+    case reachable
+    case unreachable
+    case liveLastTestFailed
+    case failedLastTestPassed
+    case unverified
     case error
     case empty
     case missing
@@ -17047,13 +17054,23 @@ public struct FfiConverterTypeCsMcpStatusState: FfiConverterRustBuffer {
 
         case 12: return .configured
 
-        case 13: return .error
+        case 13: return .reachable
 
-        case 14: return .empty
+        case 14: return .unreachable
 
-        case 15: return .missing
+        case 15: return .liveLastTestFailed
 
-        case 16: return .note
+        case 16: return .failedLastTestPassed
+
+        case 17: return .unverified
+
+        case 18: return .error
+
+        case 19: return .empty
+
+        case 20: return .missing
+
+        case 21: return .note
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -17111,20 +17128,40 @@ public struct FfiConverterTypeCsMcpStatusState: FfiConverterRustBuffer {
             writeInt(&buf, Int32(12))
 
 
-        case .error:
+        case .reachable:
             writeInt(&buf, Int32(13))
 
 
-        case .empty:
+        case .unreachable:
             writeInt(&buf, Int32(14))
 
 
-        case .missing:
+        case .liveLastTestFailed:
             writeInt(&buf, Int32(15))
 
 
-        case .note:
+        case .failedLastTestPassed:
             writeInt(&buf, Int32(16))
+
+
+        case .unverified:
+            writeInt(&buf, Int32(17))
+
+
+        case .error:
+            writeInt(&buf, Int32(18))
+
+
+        case .empty:
+            writeInt(&buf, Int32(19))
+
+
+        case .missing:
+            writeInt(&buf, Int32(20))
+
+
+        case .note:
+            writeInt(&buf, Int32(21))
 
         }
     }
@@ -20477,7 +20514,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_tool_permission() != 12294) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 19902) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 25786) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_update_server() != 22654) {
