@@ -258,13 +258,16 @@ pub struct CsArchivedDocument {
     pub provenance: String,
     /// Durable receipt of the head revision; empty for the original.
     pub receipt_id: String,
-    /// The version Undo restores (what the last format or retranscription
-    /// replaced); `None` when there is nothing to undo.
-    pub undo_revision: Option<u64>,
+    /// Every accepted version, oldest first: the original, then each format,
+    /// retranscription and edit. Undo and Redo move `cursor` between them.
+    pub versions: Vec<crate::hotkeys::CsDocumentVersion>,
+    /// The selected version; `rendered_text` is its text.
+    pub cursor: u64,
 }
 
 impl CsArchivedDocument {
     pub(crate) fn from_document(path: String, document: &history::ArchivedDocument) -> Self {
+        let timeline = document.timeline();
         Self {
             path,
             original_text: document.original_text.clone(),
@@ -278,7 +281,20 @@ impl CsArchivedDocument {
                 .head()
                 .map(|head| head.receipt_id.clone())
                 .unwrap_or_default(),
-            undo_revision: document.undo_revision(),
+            versions: timeline
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(step, version)| crate::hotkeys::CsDocumentVersion {
+                    step: step as u64,
+                    provenance: version.provenance.clone(),
+                    detail: version.detail.clone(),
+                    rendered_text: version.rendered_text.clone(),
+                    emitted_at: version.emitted_at.clone(),
+                    receipt_id: version.receipt_id.clone(),
+                })
+                .collect(),
+            cursor: timeline.cursor as u64,
         }
     }
 
@@ -474,22 +490,38 @@ impl CodescribeThreads {
         CsArchivedDocument::read(path)
     }
 
-    /// Restore an earlier version of the archived transcript at `path` as a
-    /// new revision (Undo). The restored bytes are selected here, in Rust.
-    pub fn restore_history_revision(
+    /// Undo, Redo or a version pick on the archived transcript at `path`:
+    /// select accepted version `step` against `source_revision`. Rust maps
+    /// the step to its chain record and appends one navigation receipt; the
+    /// bytes come from the chain, never from Swift.
+    pub fn navigate_history_revision(
         &self,
         path: String,
         source_revision: u64,
-        restore_revision: u64,
+        step: u64,
     ) -> Result<CsArchivedDocument, CsError> {
-        history::restore_archived_revision(
-            std::path::Path::new(&path),
-            source_revision,
-            restore_revision,
-        )
-        .map_err(|error| CsError::Recording {
-            msg: format!("{error:#}"),
-        })?;
+        let transcript = std::path::Path::new(&path);
+        let document =
+            history::read_archived_document(transcript).map_err(|error| CsError::Recording {
+                msg: format!("{error:#}"),
+            })?;
+        let target = usize::try_from(step)
+            .ok()
+            .and_then(|step| {
+                document
+                    .timeline()
+                    .steps
+                    .get(step)
+                    .map(|step| step.revision)
+            })
+            .ok_or_else(|| CsError::Recording {
+                msg: "Selected transcript version is not in this transcript's history".to_string(),
+            })?;
+        history::navigate_archived_revision(transcript, source_revision, target).map_err(
+            |error| CsError::Recording {
+                msg: format!("{error:#}"),
+            },
+        )?;
         CsArchivedDocument::read(path)
     }
 }
