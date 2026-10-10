@@ -132,13 +132,13 @@ impl LiveStreamSession {
             .take()
             .context("Apple STT bridge stdout unavailable")?;
 
-        let contextual_strings: Option<Vec<String>> = None;
+        let vocabulary = crate::stt::recognizer_vocabulary::RecognizerVocabulary::load_read_only();
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
             locale: &locale,
             audio_path: None,
-            contextual_strings: contextual_strings.as_deref(),
+            contextual_strings: vocabulary.apple_contextual_strings(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
             deadline_policy: None,
         };
