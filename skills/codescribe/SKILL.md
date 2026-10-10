@@ -61,7 +61,12 @@ slot, edit bindings or kill its reader. For a handoff from an ended session of
 **the same name**, use `--takeover`; read [Attach](references/attach.md) for the
 handover and inherited-message rules.
 
-Start or reuse one output-notifying monitor over:
+For Kimi Code, use a finite `Bash(run_in_background=true)` task running
+`cs-bus --watch --until-event --max-wait 55 --provider kimi-code --session SESSION`.
+Follow the Kimi procedure in [Monitor](references/monitor.md); an infinite watch
+does not complete and therefore cannot trigger its completion notification.
+
+For providers with notifications on process output, start or reuse one monitor over:
 
 ```bash
 cs-bus --watch --bell --provider PROVIDER --session SESSION

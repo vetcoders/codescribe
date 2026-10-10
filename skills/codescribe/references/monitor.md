@@ -124,6 +124,40 @@ Retain both the follower handle and the monitor handle with the same provider
 session and lease. Notifications must use the existing named follower's
 envelopes, preserving delivery identity and draft/seal diagnostics.
 
+## Kimi Code: completion-notifying background task
+
+Kimi's `Bash` supports `run_in_background=true` and notifies the agent when the
+command **finishes**. Streaming output in its tool card does not itself deliver
+another model turn. Do not run an infinite `cs-bus --watch` in foreground or rely
+on its background process ever completing.
+
+Use one finite background task with this command (replace SESSION with the
+current Kimi session ID, retaining any explicit bridge-home override):
+
+```bash
+cs-bus --watch --until-event --max-wait 55 --provider kimi-code --session SESSION
+```
+
+Pass it to Kimi's `Bash` with `run_in_background=true` and a short `description`.
+Then return control; its completion notification resumes the agent. The helper
+checks the canonical owned mailbox, including messages queued before it started,
+and exits with one small `mailbox_ready` notice or `watch_timeout`. It does not
+read messages into the conversation, ACK them, consume the cursor, or start a
+second follower. Drafts and already acknowledged deliveries do not wake it.
+
+On `mailbox_ready`, run `--read-pending`, read complete messages and immediately
+ACK only `read_delivery_ids`, reply, drain, and rearm one finite background task.
+On `watch_timeout`, rearm without ACK or a user-facing reply. On refusal/nonzero
+exit, inspect the error; do not rearm a failing task in a loop. Do not leave an
+old infinite watch running alongside it: stop that tool task from its owning
+Kimi session before switching. This bounded wait does not supervise/restart a
+dead follower; use `--status` and the same-session recovery procedure if the
+follower is lost. Never ACK another agent's mailbox to make its backlog disappear.
+
+This is the integration contract, not a claim of verified live Kimi wakeup.
+Acceptance requires a fresh named utterance received and answered by that same
+Kimi conversation after it yielded, without a typed nudge.
+
 ## Watch stream
 
 `--watch` is the stream a monitor consumes. It replaces a hand-built

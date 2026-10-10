@@ -2789,8 +2789,8 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in fields if key in payload}
 
 
-def read_pending_command(args: argparse.Namespace) -> int:
-    """Read complete conversational projections. Only the conversation may ACK."""
+def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Validate the owned mailbox and return unread non-draft envelopes."""
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
     if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
@@ -2818,6 +2818,13 @@ def read_pending_command(args: argparse.Namespace) -> int:
             raise ValueError("foreign pending delivery owner; nothing read")
         if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
             rows.append(row)
+    return state, rows
+
+
+def read_pending_command(args: argparse.Namespace) -> int:
+    """Read complete conversational projections. Only the conversation may ACK."""
+    state, rows = unread_pending(args)
+    lease_id = state["lease_id"]
     if not 1 <= args.read_limit <= 256 or not 1 <= args.read_bytes <= 16 * 1024 * 1024:
         raise ValueError("invalid --read-limit or --read-bytes")
     result = {"kind": "pending_read", "lease_id": lease_id, "provider": args.provider,
@@ -5619,6 +5626,37 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
     return line
 
 
+def wait_for_pending_command(args: argparse.Namespace) -> int:
+    """A finite notification task for providers that wake on process completion."""
+    lease_id = lease_identifier(args.provider, args.session)
+    deadline = time.monotonic() + args.max_wait
+    source = args.bridge_home / "leases" / f"{lease_id}.json"
+    trigger = BusEventTrigger(source, args.interval)
+    try:
+        while True:
+            _state, rows = unread_pending(args)
+            if rows:
+                emit({"kind": "mailbox_ready", "lease_id": lease_id,
+                      "provider": args.provider, "provider_session_id": args.session,
+                      "pending_count": len(rows),
+                      "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
+                return 0
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                emit({"kind": "watch_timeout", "lease_id": lease_id,
+                      "provider": args.provider, "provider_session_id": args.session,
+                      "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
+                return 0
+            trigger.wait(timeout=min(1.0, remaining))
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, ValueError) as error:
+        sys.stderr.write(f"cs-bus: bounded watch refused: {error}\n")
+        return 3
+    finally:
+        trigger.close()
+
+
 def watch_command(args: argparse.Namespace) -> int:
     """Compact, line-buffered monitor of one session's follower output.
 
@@ -5866,6 +5904,10 @@ def main() -> int:
         help="live notifications for this mailbox; bell with full message by default "
         "(--once reads existing events and exits)",
     )
+    parser.add_argument("--until-event", action="store_true",
+                        help="with --watch: exit when the owned mailbox has unread non-draft messages; never ACK")
+    parser.add_argument("--max-wait", type=float, default=None,
+                        help="with --watch --until-event: bounded wait in seconds, default 55 (0 < seconds <= 60)")
     watch_format = parser.add_mutually_exclusive_group()
     watch_format.add_argument("--human", action="store_true", help="diagnostic --watch as readable one-line envelopes")
     watch_format.add_argument("--bell", action="store_true", help="explicit default --watch format: bell and complete message")
@@ -6044,6 +6086,23 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.until_event or args.max_wait is not None:
+        if (not args.watch or not args.until_event or not args.provider
+                or any((args.once, args.from_start, args.from_file, args.human, args.full,
+                        args.read_pending, args.read_delivery, args.retry_wakeup, args.detach,
+                        args.send_text, args.send is not None, args.ack, args.attach,
+                        args.status, args.say is not None, args.follow, args.lease,
+                        args.archive_agent is not None, args.mute_agent, args.unmute_agent,
+                        args.play_reply, args.stop_reply, args.channel is not None,
+                        args.all, args.become, args.active_names, args.takeover,
+                        args.to is not None, args.reply_to, args.playback_ticket,
+                        args.name, args.voice, args.speed is not None, args.tts_vendor,
+                        args.drafts, args.coalesce, args.on_seal))):
+            parser.error("--until-event requires only --watch --provider/--session and optional --max-wait")
+        args.max_wait = 55.0 if args.max_wait is None else args.max_wait
+        if not 0 < args.max_wait <= 60:
+            parser.error("--max-wait must be greater than zero and at most 60 seconds")
+        return wait_for_pending_command(args)
     if args.read_pending:
         if not args.provider:
             parser.error("--read-pending requires --provider/--session")
