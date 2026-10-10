@@ -163,11 +163,16 @@ final class SettingsTruthTests: XCTestCase {
     settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
     var calls = 0
+    var recoveries = 0
+    let overlay = OverlayState()
+    overlay.setMaxPreparationError("startup failed")
+    overlay.setTranscriptStorageError("storage needs attention")
     var model: SettingsViewModel!
     let engine = MockSettingsEngine(
       settings: settings,
       beginNewMaxConsultationObserver: {
         calls += 1
+        XCTAssertEqual(recoveries, 0, "opening Settings or starting a request is not recovery")
         XCTAssertTrue(model.newMaxConsultationPending)
         XCTAssertNil(model.maxConsultationNotice)
         await model.beginNewMaxConsultation()
@@ -176,11 +181,18 @@ final class SettingsTruthTests: XCTestCase {
       }
     )
     model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.onNewMaxConsultation = {
+      recoveries += 1
+      overlay.setMaxPreparationError(nil)
+    }
     model.refresh()
 
     await model.beginNewMaxConsultation()
 
     XCTAssertEqual(calls, 1)
+    XCTAssertEqual(recoveries, 1)
+    XCTAssertNil(overlay.maxPreparationError)
+    XCTAssertNotNil(overlay.transcriptStorageError, "Max recovery cannot clear a storage failure")
     XCTAssertFalse(model.newMaxConsultationPending)
     XCTAssertEqual(
       model.maxConsultationNotice,
@@ -193,6 +205,7 @@ final class SettingsTruthTests: XCTestCase {
     var settings = CsSettings.sample
     settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
+    var recoveries = 0
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
         settings: settings,
@@ -203,10 +216,12 @@ final class SettingsTruthTests: XCTestCase {
           )
         }
       ), permissionProbe: MockPermissionProbe())
+    model.onNewMaxConsultation = { recoveries += 1 }
     model.refresh()
     await model.beginNewMaxConsultation()
 
     XCTAssertFalse(model.newMaxConsultationPending)
+    XCTAssertEqual(recoveries, 0, "backend refusal must retain the startup warning")
     XCTAssertEqual(
       model.maxConsultationNotice,
       "Could not start a new consultation: A turn is still active."
@@ -729,6 +744,30 @@ final class SettingsTruthTests: XCTestCase {
     model.select(SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness))
     XCTAssertEqual(model.section, .audio)
     XCTAssertNil(model.currentTab)
+  }
+
+  func testMaxRepairDeepLinkTargetsTheConsultationWithoutStartingOne() throws {
+    let links = SettingsDeepLink()
+    var settings = CsSettings.sample
+    settings.aiFormattingEnabled = true
+    settings.formattingLevel = "max"
+    var resets = 0
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settings: settings,
+        beginNewMaxConsultationObserver: {
+          resets += 1
+          return "new-consultation"
+        }), permissionProbe: MockPermissionProbe())
+    model.refresh()
+    links.present(.creator, anchor: .maxConsultation)
+    let target = try XCTUnwrap(links.consume())
+    XCTAssertEqual(target.anchor, .maxConsultation)
+    model.select(target)
+    XCTAssertEqual(model.section, .creator)
+    XCTAssertTrue(model.maxConsultationEnabled, "the anchored control must be available")
+    XCTAssertEqual(resets, 0, "navigation must not start or reset a conversation")
+    XCTAssertNil(links.consume(), "the repair route must remain one-shot")
   }
 
   /// The Rust core decides "am I a test?" partly from this process's environment

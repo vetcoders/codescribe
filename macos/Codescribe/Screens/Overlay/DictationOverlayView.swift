@@ -279,6 +279,7 @@ struct OverlayDrawerFramePreferenceKey: PreferenceKey {
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.openWindow) private var openWindow
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var closeDotHovered = false
   @Namespace private var bottomChromeNamespace
@@ -947,7 +948,8 @@ struct DictationOverlayView: View {
     }
     if state.archivedTranscript != nil {
       if let error = state.archiveActionError ?? state.recoveryFailure { return error }
-    } else if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
+    } else if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure
+    {
       return error
     }
     if state.formatterCommitPending { return String(localized: "Formatting revision…") }
@@ -970,32 +972,59 @@ struct DictationOverlayView: View {
   @ViewBuilder
   private var footerMessageRow: some View {
     if let message = footerMessage {
-      OverlayHoverControl(
-        id: "overlay-footer-message", title: message, palette: palette, presented: $footerDetail
-      ) {
-        Text(message)
-          .csMono(10, .medium)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .foregroundStyle(palette.primaryText.color)
-          .accessibilityIdentifier("overlay-footer-notice")
-      } detail: { _ in
-        ScrollView {
-          VStack(alignment: .leading, spacing: 8) {
-            if state.presentationStatus != nil && state.archivedTranscript == nil {
-              transcriptStatus
-            } else if state.archivedTranscript == nil
-              && (state.errorDiagnosticDetail != nil || state.mode == .error)
-            {
-              errorBody
-            } else if state.mode == .noSpeech {
-              noSpeechBody
-            } else {
-              Text(message).fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        OverlayHoverControl(
+          id: "overlay-footer-message", title: message, palette: palette, presented: $footerDetail
+        ) {
+          Text(message)
+            .csMono(10, .medium)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .foregroundStyle(palette.primaryText.color)
+            .accessibilityIdentifier("overlay-footer-notice")
+        } detail: { _ in
+          ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+              if state.transcriptStorageError == nil && state.maxPreparationError != nil {
+                Text(message).fixedSize(horizontal: false, vertical: true)
+                Text(
+                  "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved."
+                )
+                .fixedSize(horizontal: false, vertical: true)
+                Button("Consultation settings…") {
+                  openMaxSettings(.creator, anchor: .maxConsultation)
+                }
+                .accessibilityIdentifier("overlay-open-max-consultation-settings")
+                Button("Agent connection settings…") {
+                  openMaxSettings(.agent)
+                }
+                .accessibilityIdentifier("overlay-open-max-agent-settings")
+              } else if state.presentationStatus != nil && state.archivedTranscript == nil {
+                transcriptStatus
+              } else if state.archivedTranscript == nil
+                && (state.errorDiagnosticDetail != nil || state.mode == .error)
+              {
+                errorBody
+              } else if state.mode == .noSpeech {
+                noSpeechBody
+              } else {
+                Text(message).fixedSize(horizontal: false, vertical: true)
+              }
             }
           }
+          .frame(maxHeight: 320)
         }
-        .frame(maxHeight: 320)
+        if state.transcriptStorageError == nil && state.maxPreparationError != nil {
+          Button("Max settings…") {
+            openMaxSettings(.creator, anchor: .maxConsultation)
+          }
+          .buttonStyle(.plain)
+          .font(CSFont.ui(11, .medium))
+          .foregroundStyle(palette.primaryText.color)
+          .underline()
+          .fixedSize()
+          .accessibilityIdentifier("overlay-max-settings")
+        }
       }
     } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
@@ -1008,6 +1037,12 @@ struct DictationOverlayView: View {
     } else {
       Color.clear.accessibilityHidden(true)
     }
+  }
+
+  private func openMaxSettings(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+    footerDetail = nil
+    SettingsDeepLink.shared.present(section, anchor: anchor)
+    openWindow.presentSettings()
   }
 
   @ViewBuilder
@@ -1071,9 +1106,9 @@ struct DictationOverlayView: View {
       // The empty branch is absence of a hint, not copy, so it stays verbatim.
       .accessibilityHint(
         state.archivedTranscript != nil
-            ? Text(
-              "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept."
-            )
+          ? Text(
+            "Saved transcript from history. Click to edit; changes are saved as new versions and the original is kept."
+          )
           : state.isTranscriptEditable
             ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
             : Text(verbatim: "")
