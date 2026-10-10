@@ -1,31 +1,28 @@
 import Foundation
 
-/// One selectable version of the current take, derived only from the entries
-/// Rust read from the Bus journal. Identity is the journal revision; the text is
-/// shown, never assigned to the canvas. Selecting it asks the reducer for a new
-/// revision, and only the reducer's projection repaints.
+/// One accepted version of the transcript on the canvas, exactly as Rust's
+/// linear history lists it. Identity is the step; equal texts stay separate
+/// versions because each is an attempt the user made. The text is shown,
+/// never assigned to the canvas: choosing a version asks Rust to move its
+/// cursor, and only the projection that answers repaints.
 struct OverlayTranscriptVersion: Equatable, Identifiable {
   enum Source: Equatable {
     case raw
     case lightPlus
-    case consultation
+    case original
     case formatted(FormattingPolicyOption?)
     case retranscribed
     case edited
-    indirect case restored(Source)
     case other
   }
 
-  let revision: UInt64
+  let step: UInt64
   let source: Source
   let text: String
   let emittedAt: String
   let isCurrent: Bool
-  /// Why this version cannot be chosen from the current document; nil allows it.
-  let refusal: String?
 
-  var id: UInt64 { revision }
-  var isSelectable: Bool { !isCurrent && refusal == nil }
+  var id: UInt64 { step }
   var title: String { Self.title(for: source) }
 
   static func title(for source: Source) -> String {
@@ -38,10 +35,10 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
       String(
         localized: "overlay.versions.source.lightPlus", defaultValue: "Light+",
         comment: "Transcript version cleaned up live by Light+ during transcription")
-    case .consultation:
+    case .original:
       String(
-        localized: "overlay.versions.source.consultation", defaultValue: "Max consultation",
-        comment: "Transcript version produced by a Max consultation")
+        localized: "overlay.versions.source.original", defaultValue: "Saved transcript",
+        comment: "The transcript as it was saved to history, before any later change")
     case .formatted(let level?):
       String(
         localized: "overlay.versions.source.formattedLevel",
@@ -59,11 +56,6 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
       String(
         localized: "overlay.versions.source.edited", defaultValue: "Edited",
         comment: "Transcript version the user edited by hand")
-    case .restored(let original):
-      String(
-        localized: "overlay.versions.source.restored",
-        defaultValue: "Restored: \(title(for: original))",
-        comment: "Transcript version brought back from an earlier one; the placeholder names it")
     case .other:
       String(
         localized: "overlay.versions.source.other", defaultValue: "Earlier version",
@@ -71,24 +63,49 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
     }
   }
 
-  /// Journal provenance → source. Formatter rows carry their level as
-  /// `formatter-<level>`; reducer actions without a receipt fall to `.other`.
-  static func source(forProvenance provenance: String) -> Source {
-    switch provenance {
-    case "acoustic-ledger": return .raw
-    case "light-plus": return .lightPlus
-    case "consultation": return .consultation
-    case "retranscribe": return .retranscribed
-    case "user-edit": return .edited
-    case "formatter": return .formatted(nil)
-    default:
-      guard provenance.hasPrefix("formatter-") else { return .other }
-      return .formatted(
-        FormattingPolicyOption(storedValue: String(provenance.dropFirst("formatter-".count))))
+  /// The operation that produced a version, as Undo and Redo name it.
+  static func actionName(for source: Source) -> String {
+    switch source {
+    case .formatted(let level?):
+      String(
+        localized: "overlay.versions.action.formatLevel",
+        defaultValue: "format (\(level.visibleName))",
+        comment: "Undo/Redo tooltip object: an AI format; the placeholder is the level")
+    case .formatted(nil):
+      String(
+        localized: "overlay.versions.action.format", defaultValue: "format",
+        comment: "Undo/Redo tooltip object: an AI format")
+    case .retranscribed:
+      String(
+        localized: "overlay.versions.action.retranscribe", defaultValue: "retranscription",
+        comment: "Undo/Redo tooltip object: a new transcription of the same audio")
+    case .edited:
+      String(
+        localized: "overlay.versions.action.edit", defaultValue: "edit",
+        comment: "Undo/Redo tooltip object: a hand edit of the transcript")
+    case .raw, .lightPlus, .original, .other:
+      String(
+        localized: "overlay.versions.action.transcript", defaultValue: "transcript",
+        comment: "Undo/Redo tooltip object: the first transcript of the take")
     }
   }
 
-  /// Local wall-clock time of the journal row, when it parses.
+  /// Rust provenance → source. A formatted version carries its level as
+  /// `detail`; an unknown provenance is named, never guessed.
+  static func source(provenance: String, detail: String?) -> Source {
+    switch provenance {
+    case "raw", "acoustic-ledger": return .raw
+    case "light-plus": return .lightPlus
+    case "original": return .original
+    case "retranscribe": return .retranscribed
+    case "user-edit": return .edited
+    case "formatter":
+      return .formatted(FormattingPolicyOption(storedValue: detail))
+    default: return .other
+    }
+  }
+
+  /// Local wall-clock time of the version, when it parses.
   var timeLabel: String? {
     let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     guard
@@ -99,131 +116,73 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
   }
 }
 
-/// What the versions control shows for the take the overlay currently projects.
-/// Pure: built from the read-only Bus history and the latest reducer projection.
+/// The versions control, Undo and Redo for the transcript on the canvas. Pure:
+/// built from Rust's linear history (steps + cursor) and the overlay's
+/// pending/dirty facts. Picker, Undo and Redo share one cursor.
 struct OverlayTranscriptVersionsPresentation: Equatable {
-  /// Distinct texts in journal order, oldest first.
+  /// Every accepted version, oldest first.
   let options: [OverlayTranscriptVersion]
-  /// Why no version can be chosen right now (archive, pending, unsaved edit).
+  /// The selected version.
+  let cursor: UInt64
+  /// Why no version can be chosen right now (pending work, unsaved edit).
   let blockedReason: String?
-  /// The projection names a document the loaded history does not contain yet.
-  let currentMissing: Bool
-  /// An archive owns the canvas; versions of the projected take are not shown.
-  let archived: Bool
 
-  static var empty: Self {
-    Self(options: [], blockedReason: nil, currentMissing: false, archived: false)
-  }
+  static var empty: Self { Self(options: [], cursor: 0, blockedReason: nil) }
 
   var current: OverlayTranscriptVersion? { options.first(where: \.isCurrent) }
-  /// Only a choice is worth a control; an archive still explains its limit.
-  var isVisible: Bool { archived || options.count >= 2 }
-  var selectableRevisions: Set<UInt64> {
-    blockedReason == nil ? Set(options.filter(\.isSelectable).map(\.revision)) : []
+  /// A choice exists only with two versions.
+  var isVisible: Bool { options.count >= 2 }
+  var canUndo: Bool { blockedReason == nil && isVisible && cursor > 0 }
+  var canRedo: Bool { blockedReason == nil && cursor + 1 < UInt64(options.count) }
+  var undoStep: UInt64? { canUndo ? cursor - 1 : nil }
+  var redoStep: UInt64? { canRedo ? cursor + 1 : nil }
+  var selectableSteps: Set<UInt64> {
+    blockedReason == nil ? Set(options.filter { !$0.isCurrent }.map(\.step)) : []
   }
 
-  /// - Parameters:
-  ///   - currentRevision: reducer revision of the projected document.
-  ///   - committedText: the reducer's committed document (`renderedText`).
-  ///   - shownText: the text the canvas paints and Copy/Insert deliver.
-  ///   - showsDerivedPresentation: a formatter result is presented over the
-  ///     committed document without being a revision of it.
   static func make(
-    history: [CsDocumentHistoryEntry],
-    currentRevision: UInt64,
-    committedText: String,
-    shownText: String,
-    showsDerivedPresentation: Bool,
-    blockedReason: String?
+    versions: [CsDocumentVersion], cursor: UInt64, blockedReason: String?
   ) -> Self {
-    // A presented formatter result lives in the derived revision namespace
-    // (high bit); the reducer revision still names the document behind it.
-    let derivedNamespace: UInt64 = 1 << 63
-    let currentEntryRevision: UInt64?
-    if showsDerivedPresentation {
-      currentEntryRevision =
-        history.last { entry in
-          entry.revision & derivedNamespace != 0 && entry.renderedText == shownText
-        }?.revision
-    } else {
-      currentEntryRevision = history.first { $0.revision == currentRevision }?.revision
+    let options = versions.map { version in
+      OverlayTranscriptVersion(
+        step: version.step,
+        source: OverlayTranscriptVersion.source(
+          provenance: version.provenance, detail: version.detail),
+        text: version.renderedText, emittedAt: version.emittedAt,
+        isCurrent: version.step == cursor)
     }
-
-    // A take's live revisions arrive as long runs of one kind; the last entry
-    // of each run is the text that kind actually produced. Explicit revisions
-    // (format, retranscription, edit) are each their own version.
-    var collapsed: [CsDocumentHistoryEntry] = []
-    for entry in history {
-      let source = OverlayTranscriptVersion.source(forProvenance: entry.provenance)
-      if let previous = collapsed.last, !isExplicit(source),
-        OverlayTranscriptVersion.source(forProvenance: previous.provenance) == source,
-        previous.revision != currentEntryRevision
-      {
-        collapsed[collapsed.count - 1] = entry
-      } else {
-        collapsed.append(entry)
-      }
-    }
-
-    // One option per distinct text: choosing either copy produces the same
-    // document. The current copy wins; otherwise the earliest names its origin.
-    var options: [OverlayTranscriptVersion] = []
-    for entry in collapsed {
-      var source = OverlayTranscriptVersion.source(forProvenance: entry.provenance)
-      let isCurrent = entry.revision == currentEntryRevision
-      if let index = options.firstIndex(where: { $0.text == entry.renderedText }) {
-        guard isCurrent else { continue }
-        if source == .edited { source = .restored(options[index].source) }
-        options.remove(at: index)
-      }
-      // The reducer refuses a revision equal to its committed document.
-      let refusal: String? =
-        isCurrent || entry.renderedText != committedText
-        ? nil
-        : (showsDerivedPresentation ? rawBehindFormattedRefusal : sameAsCurrentRefusal)
-      options.append(
-        OverlayTranscriptVersion(
-          revision: entry.revision, source: source, text: entry.renderedText,
-          emittedAt: entry.emittedAt, isCurrent: isCurrent, refusal: refusal))
-    }
-    return Self(
-      options: options, blockedReason: blockedReason,
-      currentMissing: currentEntryRevision == nil && !history.isEmpty, archived: false)
+    return Self(options: options, cursor: cursor, blockedReason: blockedReason)
   }
 
-  static func archivedTranscript() -> Self {
-    Self(
-      options: [],
-      blockedReason: String(
-        localized: "overlay.versions.blocked.archived",
-        defaultValue:
-          "Versions are listed for the current take only. A transcript opened from history can undo its last format or retranscription.",
-        comment: "Versions control while a transcript reopened from history owns the canvas"),
-      currentMissing: false, archived: true)
-  }
-
-  private static func isExplicit(_ source: OverlayTranscriptVersion.Source) -> Bool {
-    switch source {
-    case .formatted, .retranscribed, .edited, .restored: true
-    case .raw, .lightPlus, .consultation, .other: false
+  /// Undo names the operation it takes back: the one that made the current
+  /// version. At the first version, or while blocked, it says why not.
+  var undoTitle: String {
+    if let blockedReason, isVisible, cursor > 0 { return blockedReason }
+    guard let current, cursor > 0 else {
+      return String(
+        localized: "overlay.versions.undo.none", defaultValue: "Nothing to undo",
+        comment: "Disabled Undo: the transcript shows its first version")
     }
+    return String(
+      localized: "overlay.versions.undo.action",
+      defaultValue: "Undo \(OverlayTranscriptVersion.actionName(for: current.source))",
+      comment: "Undo tooltip; the placeholder names the operation taken back")
   }
 
-  /// While a formatter result is only presented, the committed document is the
-  /// raw text behind it, and no reducer path drops the presentation.
-  static var rawBehindFormattedRefusal: String {
-    String(
-      localized: "overlay.versions.refusal.rawBehindFormatted",
-      defaultValue:
-        "This is the text behind the formatted view. Switching back to it is not supported yet.",
-      comment: "Disabled version: the formatted view is shown over this exact text")
-  }
-
-  static var sameAsCurrentRefusal: String {
-    String(
-      localized: "overlay.versions.refusal.sameAsCurrent",
-      defaultValue: "Same text as the current version.",
-      comment: "Disabled version: choosing it would not change the transcript")
+  /// Redo names the operation it brings back: the one after the current
+  /// version. At the newest version, or while blocked, it says why not.
+  var redoTitle: String {
+    let next = Int(cursor) + 1
+    if let blockedReason, next < options.count { return blockedReason }
+    guard next < options.count else {
+      return String(
+        localized: "overlay.versions.redo.none", defaultValue: "Nothing to redo",
+        comment: "Disabled Redo: the transcript shows its newest version")
+    }
+    return String(
+      localized: "overlay.versions.redo.action",
+      defaultValue: "Redo \(OverlayTranscriptVersion.actionName(for: options[next].source))",
+      comment: "Redo tooltip; the placeholder names the operation brought back")
   }
 
   static var pendingReason: String {

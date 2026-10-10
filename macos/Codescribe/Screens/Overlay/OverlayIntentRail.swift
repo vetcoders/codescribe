@@ -106,6 +106,8 @@ struct OverlayActionsSurface: ViewModifier {
 enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
   static let versions = "square.stack"
+  static let undo = "arrow.uturn.backward"
+  static let redo = "arrow.uturn.forward"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
   static let closeActions = "xmark"
@@ -142,11 +144,11 @@ struct OverlayIntentRail: View {
     .superseded
   }
   var onHistoryDismiss: () -> Void = {}
-  /// Versions of the take on the canvas; shown only when there is a choice
-  /// or a limit to explain.
+  /// Versions of the transcript on the canvas, with Undo and Redo over the
+  /// same cursor; shown only when there is more than one version.
   var versions: OverlayTranscriptVersionsPresentation = .empty
   var onVersionsOpened: () -> Void = {}
-  var onRestoreVersion: (UInt64) -> Void = { _ in }
+  var onSelectVersion: (UInt64) -> Void = { _ in }
   let onIntent: (OverlayIntent) -> Void
   var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
   var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
@@ -183,13 +185,15 @@ struct OverlayIntentRail: View {
         } detail: { close in
           OverlayTranscriptVersionsMenu(
             versions: versions,
-            onRestore: { revision in
+            onSelect: { step in
               onInteraction()
-              onRestoreVersion(revision)
+              onSelectVersion(step)
             },
             close: close)
         }
         .accessibilityValue(versions.current?.title ?? "")
+        undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
+        undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
@@ -295,7 +299,9 @@ struct OverlayIntentRail: View {
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
-    if state.revisionCommitPending || state.formatterCommitPending || state.archiveActionPending {
+    if state.revisionCommitPending || state.formatterCommitPending || state.archiveActionPending
+      || state.pendingNavigation != nil
+    {
       return []
     }
     if state.archivedTranscript != nil {
@@ -305,7 +311,6 @@ struct OverlayIntentRail: View {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
     }
     return recoveryIntents(for: state)
-      + (state.canUndoRetranscribe ? [.undoRetranscribe] : [])
       + projectedIntents(
         phase: state.mode,
         canPaste: state.canPaste,
@@ -320,15 +325,13 @@ struct OverlayIntentRail: View {
   /// An archive reopened from history has no reducer projection, so its rail
   /// is the formatted table with the archive's own facts: Insert still passes
   /// the Rust paste route's target checks, Retranscribe states its own
-  /// unavailability, Send to Agent is the same explicit click, and Undo
-  /// restores the version the archive's last format or retranscription
-  /// replaced in its own revision chain.
+  /// unavailability, and Send to Agent is the same explicit click. Undo and
+  /// Redo sit beside the versions control and move the archive's own cursor.
   static func archivedIntents(for state: OverlayState) -> [OverlayIntent] {
     if state.isRevisionDraftDirty {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
     }
     return recoveryIntents(for: state)
-      + (state.archivedUndoIntent.map { [$0] } ?? [])
       + [.insertPaste, .copy, .retranscribe]
       + (state.engine == nil ? [] : [.format])
       + (state.canSendToAgent ? [.sendToAgent] : [])
@@ -402,6 +405,24 @@ struct OverlayIntentRail: View {
 
   static let versionsControlID = "overlay-versions-menu"
 
+  /// Undo and Redo stay in place at their limits, disabled, so the tooltip
+  /// can say what they would take back or bring back, or why they cannot.
+  private func undoRedoControl(_ intent: OverlayIntent, enabled: Bool, title: String)
+    -> some View
+  {
+    OverlayHoverControl(
+      id: "overlay-intent-\(intent.rawValue)", title: title, palette: palette,
+      presented: $presented, action: { dispatch(intent) }
+    ) {
+      Image(systemName: intent.systemImage).frame(width: 24, height: 24)
+        .opacity(enabled ? 1 : 0.35)
+    } detail: { _ in
+      Text(title)
+    }
+    .disabled(!enabled)
+    .accessibilityHint(intent.accessibilityHint)
+  }
+
   /// Names the shown version, so the control says which one is active.
   static func versionsTitle(_ versions: OverlayTranscriptVersionsPresentation) -> String {
     guard let current = versions.current else {
@@ -445,8 +466,12 @@ extension OverlayIntent {
     case .copy: String(localized: "Copy transcript")
     case .insertPaste: String(localized: "Insert transcript")
     case .retranscribe: String(localized: "Transcribe this take again")
-    case .undoRetranscribe: String(localized: "Undo retranscribe")
-    case .undoFormat: String(localized: "Undo format")
+    case .undo:
+      String(
+        localized: "overlay.intent.undo", defaultValue: "Undo", comment: "Overlay Undo control")
+    case .redo:
+      String(
+        localized: "overlay.intent.redo", defaultValue: "Redo", comment: "Overlay Redo control")
     case .format: String(localized: "Format transcript")
     case .sendToAgent: String(localized: "Send transcript to Agent")
     case .recoverSuperseded: String(localized: "Copy previous take to clipboard")
@@ -466,10 +491,16 @@ extension OverlayIntent {
     case .insertPaste:
       String(localized: "Sends the projected transcript to the selected destination")
     case .retranscribe: String(localized: "Requests another transcription of this recording")
-    case .undoRetranscribe:
-      String(localized: "Restores the transcript this retranscribe replaced, as a new revision")
-    case .undoFormat:
-      String(localized: "Restores the transcript this format replaced, as a new revision")
+    case .undo:
+      String(
+        localized: "overlay.intent.undo.hint",
+        defaultValue: "Shows the previous version again without running anything",
+        comment: "Overlay Undo accessibility hint")
+    case .redo:
+      String(
+        localized: "overlay.intent.redo.hint",
+        defaultValue: "Shows the next version again without running anything",
+        comment: "Overlay Redo accessibility hint")
     case .format: String(localized: "Requests formatting between takes")
     case .sendToAgent: String(localized: "Sends the accepted transcript to Agent")
     case .recoverSuperseded:
@@ -491,8 +522,8 @@ extension OverlayIntent {
     case .copy: "doc.on.doc"
     case .insertPaste: "arrow.down.doc"
     case .retranscribe: "arrow.clockwise"
-    case .undoRetranscribe: "arrow.uturn.backward"
-    case .undoFormat: "arrow.uturn.backward"
+    case .undo: OverlayControlSymbols.undo
+    case .redo: OverlayControlSymbols.redo
     case .format: "textformat"
     case .sendToAgent: "paperplane"
     case .recoverSuperseded: "arrow.up.doc"

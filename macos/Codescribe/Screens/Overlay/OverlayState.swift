@@ -44,9 +44,13 @@ protocol DictationEngine: AnyObject {
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult
-  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry]
-  func restoreDocumentRevision(
-    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  /// The take's accepted versions and the selected one, read from the Rust
+  /// reducer that owns them. Swift keeps no copy it could restore from.
+  func documentVersions(sessionId: String) async throws -> CsDocumentVersions
+  /// Undo, Redo or a version pick: Rust moves the take's cursor to `step`
+  /// under the session/revision CAS. Nothing is transcribed or formatted.
+  func navigateDocumentVersion(
+    sessionId: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsUserRevisionResult
   func isRecording() async -> Bool
   func initModel() async throws
@@ -93,9 +97,10 @@ protocol DictationEngine: AnyObject {
     archivePath: String, sourceRevision: UInt64, renderedText: String,
     kind: CsArchiveRevisionKind, detail: String?
   ) async throws -> CsArchivedDocument
-  /// Restore an earlier version of one archive as a new revision (Undo).
-  func restoreArchivedRevision(
-    archivePath: String, sourceRevision: UInt64, restoreRevision: UInt64
+  /// Undo, Redo or a version pick on one archive: Rust appends a navigation
+  /// receipt selecting accepted version `step` of its revision chain.
+  func navigateArchivedVersion(
+    archivePath: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsArchivedDocument
   func channelRosterSnapshot() async -> [CsChannelRosterState]
   func toggleAgentChannel(digit: UInt8) async throws
@@ -107,11 +112,13 @@ extension DictationEngine {
     throw CocoaError(.fileWriteUnknown)
   }
   func cloudRetranscribeConfigured() -> Bool { false }
-  func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] { [] }
-  func restoreDocumentRevision(
-    sessionId _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
+  func documentVersions(sessionId _: String) async throws -> CsDocumentVersions {
+    CsDocumentVersions(sourceRevision: 0, cursor: 0, versions: [])
+  }
+  func navigateDocumentVersion(
+    sessionId _: String, sourceRevision _: UInt64, step _: UInt64
   ) async throws -> CsUserRevisionResult {
-    throw NSError(domain: "Transcript history unavailable", code: 1)
+    throw NSError(domain: "Transcript versions unavailable", code: 1)
   }
   func commitRetranscribeRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -151,8 +158,8 @@ extension DictationEngine {
   func sendArchivedTranscript(text _: String) async throws -> Bool {
     throw NSError(domain: "Archived transcript delivery unavailable", code: 1)
   }
-  func restoreArchivedRevision(
-    archivePath _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
+  func navigateArchivedVersion(
+    archivePath _: String, sourceRevision _: UInt64, step _: UInt64
   ) async throws -> CsArchivedDocument {
     throw NSError(domain: "Archived transcript revisions unavailable", code: 1)
   }
@@ -342,13 +349,11 @@ enum OverlayIntent: String, Equatable, Hashable, CaseIterable {
   case copy
   case insertPaste = "insert-paste"
   case retranscribe
-  /// Restore the exact rendered text the last Retranscribe replaced, committed
-  /// as a new user revision on the same session. Rail-projected only while the
-  /// replaced text is still recoverable (same session, no newer capture).
-  case undoRetranscribe = "undo-retranscribe"
-  /// Restore the version an archive's last format replaced, as a new revision
-  /// of that archive. Projected only for a transcript reopened from history.
-  case undoFormat = "undo-format"
+  /// Select the version before the current one in Rust's linear history:
+  /// format, retranscription and committed edit alike. Saved bytes only.
+  case undo
+  /// Select the version after the current one, while one exists.
+  case redo
   case format
   case sendToAgent = "send-to-agent"
   /// Hand one retained superseded take back to the user, or drop it on an
@@ -461,8 +466,20 @@ final class OverlayState {
   private(set) var formatterError: String?
   private(set) var maxPreparationError: String?
   private(set) var transcriptStorageError: String?
-  /// Read-only projection of this take's Bus journal revisions.
-  private(set) var documentHistory: [CsDocumentHistoryEntry] = []
+  /// Rust's linear history of this take as last read, with its session.
+  /// Read-only: navigation sends a step, never these bytes.
+  private(set) var documentVersions: CsDocumentVersions?
+  private var documentVersionsSessionId: String?
+  /// Fence for versions reads: only the newest request may land.
+  @ObservationIgnored private var documentVersionsReadGeneration: UInt64 = 0
+  /// One Undo/Redo/version pick in flight; a second is refused until the
+  /// projection that answers it arrives.
+  private(set) var pendingNavigation: OverlayPendingNavigation?
+  /// The live Retranscribe pass running for the projected take, if any. A
+  /// new take drops it; a finishing pass clears only its own ticket.
+  private var retranscribeTicket: UInt64?
+  @ObservationIgnored private var retranscribeTickets: UInt64 = 0
+  var retranscribePending: Bool { retranscribeTicket != nil }
   /// A transcript reopened from history. While set it owns the canvas and
   /// every canvas action; the projected take behind it keeps its own state.
   private(set) var archivedTranscript: OverlayArchivedTranscript?
@@ -480,7 +497,6 @@ final class OverlayState {
   /// request, a dismissed list, a close or a new take holds a stale ticket.
   @ObservationIgnored private var historyOpenAdmission: UInt64 = 0
   private var chromeBehindArchive: OverlayProjectedChrome?
-  private var historyReadSessionId: String?
   private(set) var userRevisionProvenance: String?
   private(set) var canPaste = false
   private(set) var canInsert = false
@@ -1937,10 +1953,10 @@ final class OverlayState {
     case .retranscribe:
       // Keyboard / AX path without a menu pick: the local paradigm.
       relayRetranscribeIntent(pass: .fullHq)
-    case .undoRetranscribe:
-      undoRetranscribeIntent()
-    case .undoFormat:
-      undoArchivedRevision()
+    case .undo:
+      undoDocumentVersion()
+    case .redo:
+      redoDocumentVersion()
     case .format:
       relayFormatIntent()
     case .sendToAgent:
@@ -2108,6 +2124,9 @@ final class OverlayState {
       retranscribeArchivedTranscript(pass: pass)
       return
     }
+    // One accepted operation at a time: a second pass, or a pass started
+    // under a pending Undo/format, would only race the same CAS.
+    guard !documentOperationPending else { return }
     guard let engine else {
       presentActionFailure(
         String(localized: "Retranscription needs the recording engine"),
@@ -2141,7 +2160,13 @@ final class OverlayState {
     engineChip = running
     engineChipLatched = true
     showFooterNotice(running, persists: true)
+    retranscribeTickets &+= 1
+    let ticket = retranscribeTickets
+    retranscribeTicket = ticket
     Task { @MainActor [weak self] in
+      defer {
+        if self?.retranscribeTicket == ticket { self?.retranscribeTicket = nil }
+      }
       guard let self, generation == self.captureGeneration else { return }
       do {
         let result = try await engine.transcribeTake(
@@ -2161,11 +2186,10 @@ final class OverlayState {
         }
         if !text.isEmpty {
           if self.latestTranscriptProjection?.sessionId == projection.sessionId {
-            // The commit replaces the rendered text irreversibly on the
-            // reducer's current tip. Retain the exact text it replaces, so the
-            // rail can offer a real Back — a worse retranscription must never
-            // be a one-way door.
-            let replaced = projection.renderedText
+            // Rust records the pass as a new step of the take's linear
+            // history, so Undo returns to the version it replaced. The CAS
+            // is the revision this pass started from: an Undo or another
+            // change in between refuses the result instead of stacking it.
             _ = try await engine.commitRetranscribeRevision(
               sessionId: projection.sessionId,
               sourceRevision: projection.reducerRevision,
@@ -2174,12 +2198,6 @@ final class OverlayState {
             guard generation == self.captureGeneration,
               self.latestTranscriptProjection?.sessionId == projection.sessionId
             else { return }
-            if replaced != text,
-              !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-              self.retranscribeRollback = OverlayRetranscribeRollback(
-                sessionId: projection.sessionId, renderedText: replaced)
-            }
           } else {
             self.engineChip = previousChip
             self.presentActionFailure(
@@ -2194,10 +2212,7 @@ final class OverlayState {
         self.engineChip = passEngine
         self.errorMessage = nil
         self.errorDiagnosticDetail = nil
-        self.showFooterNotice(
-          self.retranscribeRollback == nil
-            ? String(localized: "retranscribed")
-            : String(localized: "retranscribed — Back keeps the old text"))
+        self.showFooterNotice(String(localized: "retranscribed"))
         self.restartAutoHideCountdown()
       } catch {
         guard generation == self.captureGeneration,
@@ -2220,71 +2235,12 @@ final class OverlayState {
     }
   }
 
-  /// The text a Retranscribe replaced, recoverable while its take is current.
-  /// A `nil` session is the draft path (no live projection at commit time).
-  struct OverlayRetranscribeRollback: Equatable {
-    let sessionId: String?
-    let renderedText: String
-  }
-
-  private(set) var retranscribeRollback: OverlayRetranscribeRollback?
-
-  /// Back is honest only while the replaced text still belongs to the current
-  /// document: same session for the committed path, any time for the draft path.
-  var canUndoRetranscribe: Bool {
-    if archivedTranscript != nil { return archivedUndoIntent == .undoRetranscribe }
-    guard let rollback = retranscribeRollback else { return false }
-    guard let sessionId = rollback.sessionId else { return true }
-    return latestTranscriptProjection?.sessionId == sessionId
-  }
-
-  /// Restore the pre-retranscribe text as a NEW user revision on the same
-  /// session — no history rewrite, no forged seal; the reducer keeps both
-  /// texts in its revision chain. The rollback slot is consumed only when the
-  /// restore actually landed.
-  func undoRetranscribeIntent() {
-    if archivedTranscript != nil {
-      undoArchivedRevision()
-      return
-    }
-    guard let rollback = retranscribeRollback else { return }
-    guard let sessionId = rollback.sessionId else {
-      revisionDraft = rollback.renderedText
-      retranscribeRollback = nil
-      showFooterNotice(String(localized: "retranscribe undone"))
-      return
-    }
-    guard let engine else {
-      presentActionFailure(
-        String(localized: "Undo needs the recording engine"),
-        notice: String(localized: "undo unavailable"))
-      return
-    }
-    guard let projection = latestTranscriptProjection, projection.sessionId == sessionId else {
-      retranscribeRollback = nil
-      presentActionFailure(
-        String(localized: "The retranscribed take is no longer current"),
-        notice: String(localized: "nothing to undo"))
-      return
-    }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        _ = try await engine.commitUserRevision(
-          sessionId: sessionId,
-          sourceRevision: projection.reducerRevision,
-          renderedText: rollback.renderedText
-        )
-        self.retranscribeRollback = nil
-        self.showFooterNotice(String(localized: "retranscribe undone"))
-      } catch {
-        self.presentActionFailure(
-          String(
-            localized: "Couldn't undo retranscribe: \(String(describing: error))",
-            comment: "The placeholder is the engine's own failure text"),
-          notice: String(localized: "undo failed — kept"))
-      }
-    }
+  /// Undo/Redo or a version pick waiting for the projection that answers it.
+  /// A formatted target answers with its presentation, after the receipt.
+  struct OverlayPendingNavigation: Equatable {
+    let sessionId: String
+    let sourceRevision: UInt64
+    let expectsPresentation: Bool
   }
 
   private func presentActionFailure(_ message: String, notice: String) {
@@ -2593,7 +2549,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     guard isTranscriptEditable, isRevisionDraftDirty, !revisionCommitPending,
-      !formatterCommitPending
+      !formatterCommitPending, pendingNavigation == nil, !retranscribePending
     else {
       return
     }
@@ -3372,6 +3328,21 @@ final class OverlayState {
       && (projection.documentRevisionReceipt == nil
         || projection.documentRevisionReceipt?.sourceRevision == pendingRevisionSource)
       && revisionReceipt != nil
+    // Navigation mints a receipt revision; a formatted target then presents
+    // its accepted result over it. Only the last of the two ends the wait.
+    let completesPendingNavigation: Bool
+    if let pending = pendingNavigation, projection.terminal,
+      projection.sessionId == pending.sessionId,
+      projection.reducerRevision > pending.sourceRevision
+    {
+      completesPendingNavigation =
+        pending.expectsPresentation
+        ? projection.reducerAction == "derived_projection"
+        : projection.reducerAction == "apply_manual_edit"
+          && projection.documentRevisionReceipt?.provenance == .navigation
+    } else {
+      completesPendingNavigation = false
+    }
     let completesPendingFormatter =
       formatterCommitPending
       && projection.reducerAction == "derived_projection"
@@ -3386,8 +3357,10 @@ final class OverlayState {
     // Initialize before the first event can obtain a receiver receipt or retain
     // refused bytes. The first observed projection may already end this session.
     if isNewSession {
-      documentHistory = []
-      historyReadSessionId = nil
+      documentVersions = nil
+      documentVersionsSessionId = nil
+      documentVersionsReadGeneration &+= 1
+      pendingNavigation = nil
       if let priorProjection {
         // An unannounced different session cannot inherit the outgoing
         // capture's completion. Its own lifecycle must prove it ended.
@@ -3473,7 +3446,10 @@ final class OverlayState {
         revisionDraft = formattedText
       }
       pendingRevisionDraft = nil
-      loadDocumentHistory()
+    } else if completesPendingNavigation {
+      pendingNavigation = nil
+      revisionCommitError = nil
+      if !draftWasDirty { revisionDraft = formattedText }
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
@@ -3482,16 +3458,18 @@ final class OverlayState {
       formatterError = nil
       if !draftWasDirty { revisionDraft = formattedText }
       showFooterNotice(String(localized: "formatted"))
-      loadDocumentHistory()
     } else if !draftWasDirty || isNewSession {
       revisionDraft = formattedText
     }
 
     if projection.terminal {
-      if isLifecycleTerminal && historyReadSessionId != projection.sessionId {
-        historyReadSessionId = projection.sessionId
-        refreshDocumentHistory(
-          sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
+      // Every terminal document projection may carry a new step or a moved
+      // cursor (a format answers with a derived projection at the same
+      // revision), so the read follows each one; only the newest lands.
+      if projection.reducerAction == "apply_manual_edit"
+        || projection.reducerAction == "derived_projection" || isLifecycleTerminal
+      {
+        loadDocumentVersions()
       }
       if deliveredTextSessionId != projection.sessionId {
         deliveredText = projection.renderedText
@@ -3604,8 +3582,7 @@ final class OverlayState {
       return
     }
     guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
-      !isRevisionDraftDirty,
-      !revisionCommitPending, !formatterCommitPending
+      !isRevisionDraftDirty, !documentOperationPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {
       formatterError = String(localized: "Transcript formatter authority is unavailable")
@@ -3670,104 +3647,130 @@ final class OverlayState {
     }
   }
 
-  /// Versions of the projected take for the overlay's versions control. Built
-  /// from the read-only Bus history and the latest reducer projection only.
+  /// Versions, Undo and Redo for the transcript on the canvas: an archive's
+  /// own revision chain while it owns the canvas, otherwise the projected
+  /// take's linear history as Rust last returned it for this exact revision.
   var transcriptVersions: OverlayTranscriptVersionsPresentation {
-    if archivedTranscript != nil { return .archivedTranscript() }
-    guard terminal, let projection = latestTranscriptProjection else { return .empty }
     let blockedReason: String? =
-      revisionCommitPending || formatterCommitPending || archiveActionPending
+      documentOperationPending
       ? OverlayTranscriptVersionsPresentation.pendingReason
       : isRevisionDraftDirty ? OverlayTranscriptVersionsPresentation.dirtyReason : nil
-    return .make(
-      history: documentHistory,
-      currentRevision: projection.reducerRevision,
-      committedText: projection.renderedText,
-      shownText: formattedText,
-      showsDerivedPresentation: projection.reducerAction == "derived_projection",
-      blockedReason: blockedReason)
+    if let archivedTranscript {
+      return .make(
+        versions: archivedTranscript.versions, cursor: archivedTranscript.cursor,
+        blockedReason: blockedReason)
+    }
+    guard terminal, let projection = latestTranscriptProjection,
+      let versions = documentVersions, documentVersionsSessionId == projection.sessionId,
+      versions.sourceRevision == projection.reducerRevision
+    else { return .empty }
+    return .make(versions: versions.versions, cursor: versions.cursor, blockedReason: blockedReason)
   }
 
-  /// Opening the versions control re-reads the journal only when the shown
-  /// document is not in it yet (an edit or undo landed after the last read).
-  func refreshTranscriptVersionsIfStale() {
-    guard archivedTranscript == nil, transcriptVersions.currentMissing else { return }
-    loadDocumentHistory()
+  /// Any accepted-operation request still waiting for its answer. A second
+  /// one would race the CAS, so every entry point refuses it.
+  var documentOperationPending: Bool {
+    revisionCommitPending || formatterCommitPending || archiveActionPending
+      || pendingNavigation != nil || retranscribePending
   }
 
-  func restoreDocumentRevision(_ selectedRevision: UInt64) {
-    guard archivedTranscript == nil, terminal, !isRevisionDraftDirty, !revisionCommitPending,
-      !formatterCommitPending, let projection = latestTranscriptProjection,
-      transcriptVersions.selectableRevisions.contains(selectedRevision),
-      selectedRevision != projection.reducerRevision, let engine
+  /// Opening the versions control re-reads Rust's history for the canvas.
+  func refreshTranscriptVersions() {
+    guard archivedTranscript == nil else { return }
+    loadDocumentVersions()
+  }
+
+  func undoDocumentVersion() {
+    guard let step = transcriptVersions.undoStep else {
+      showFooterNotice(transcriptVersions.undoTitle)
+      return
+    }
+    selectDocumentVersion(step)
+  }
+
+  func redoDocumentVersion() {
+    guard let step = transcriptVersions.redoStep else {
+      showFooterNotice(transcriptVersions.redoTitle)
+      return
+    }
+    selectDocumentVersion(step)
+  }
+
+  /// Undo, Redo and the versions picker all land here: ask Rust to move the
+  /// cursor to `step`. Only the projection that answers repaints the canvas.
+  func selectDocumentVersion(_ step: UInt64) {
+    let versions = transcriptVersions
+    guard versions.selectableSteps.contains(step),
+      let target = versions.options.first(where: { $0.step == step })
     else { return }
-    revisionCommitPending = true
+    if archivedTranscript != nil {
+      navigateArchivedVersion(step)
+      return
+    }
+    guard terminal, let projection = latestTranscriptProjection,
+      let source = documentVersions?.sourceRevision, let engine
+    else { return }
+    var expectsPresentation = false
+    if case .formatted = target.source {
+      expectsPresentation = true
+    }
+    let pending = OverlayPendingNavigation(
+      sessionId: projection.sessionId, sourceRevision: source,
+      expectsPresentation: expectsPresentation)
+    pendingNavigation = pending
     revisionCommitError = nil
-    pendingRevisionSessionId = projection.sessionId
-    pendingRevisionSource = projection.reducerRevision
-    pendingRevisionDraft = revisionDraft
-    revisionRequestGeneration &+= 1
-    let requestGeneration = revisionRequestGeneration
     cancelAutoHide()
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
-        let receipt = try await engine.restoreDocumentRevision(
-          sessionId: projection.sessionId,
-          sourceRevision: projection.reducerRevision,
-          restoreRevision: selectedRevision)
-        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
-          pendingRevisionSessionId == projection.sessionId,
-          pendingRevisionSource == projection.reducerRevision,
-          latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
-        guard receipt.sessionId == projection.sessionId,
-          receipt.sourceRevision == projection.reducerRevision,
-          receipt.revision > receipt.sourceRevision,
-          receipt.provenanceReceipt.hasPrefix("user-edit-")
+        let receipt = try await engine.navigateDocumentVersion(
+          sessionId: pending.sessionId, sourceRevision: pending.sourceRevision, step: step)
+        guard self.pendingNavigation == pending else { return }
+        guard receipt.sessionId == pending.sessionId,
+          receipt.sourceRevision == pending.sourceRevision,
+          receipt.revision > receipt.sourceRevision
         else {
-          revisionCommitPending = false
-          pendingRevisionSessionId = nil
-          pendingRevisionSource = nil
-          pendingRevisionDraft = nil
-          revisionCommitError = String(localized: "Transcript restore receipt was inconsistent")
+          self.pendingNavigation = nil
+          self.revisionCommitError = String(
+            localized: "overlay.versions.error.receipt",
+            defaultValue: "The transcript version change was not confirmed.",
+            comment: "Undo/Redo/version pick answered with a receipt for another document")
+          self.loadDocumentVersions()
           return
         }
-        // Only the matching reducer callback repaints the canvas.
+        // Only the matching reducer projection repaints and ends the wait.
       } catch {
-        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
-          pendingRevisionSessionId == projection.sessionId,
-          pendingRevisionSource == projection.reducerRevision,
-          latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
-        revisionCommitPending = false
-        pendingRevisionSessionId = nil
-        pendingRevisionSource = nil
-        pendingRevisionDraft = nil
-        revisionCommitError = String(
-          localized: "Couldn't restore transcript version: \(String(describing: error))",
-          comment: "The placeholder is the engine's own failure text")
+        guard self.pendingNavigation == pending else { return }
+        self.pendingNavigation = nil
+        self.revisionCommitError = String(
+          localized: "overlay.versions.error.navigate",
+          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
+        self.loadDocumentVersions()
       }
+      self.restartAutoHideCountdown()
     }
   }
 
-  func loadDocumentHistory() {
-    guard terminal, let projection = latestTranscriptProjection else { return }
-    refreshDocumentHistory(
-      sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
-  }
-
-  private func refreshDocumentHistory(sessionId: String, sourceRevision: UInt64) {
-    guard let engine else { return }
+  /// Read the projected take's linear history from Rust. A reply for another
+  /// session, or overtaken by a newer read, never lands.
+  func loadDocumentVersions() {
+    guard terminal, let projection = latestTranscriptProjection, let engine else { return }
+    let sessionId = projection.sessionId
+    documentVersionsReadGeneration &+= 1
+    let generation = documentVersionsReadGeneration
     Task { @MainActor [weak self] in
       do {
-        let entries = try await engine.documentHistory(sessionId: sessionId)
-        guard let self, self.latestTranscriptProjection?.sessionId == sessionId,
-          self.latestTranscriptProjection?.reducerRevision == sourceRevision
+        let versions = try await engine.documentVersions(sessionId: sessionId)
+        guard let self, self.documentVersionsReadGeneration == generation,
+          self.latestTranscriptProjection?.sessionId == sessionId
         else { return }
-        self.documentHistory = entries
+        self.documentVersions = versions
+        self.documentVersionsSessionId = sessionId
       } catch {
-        guard let self, self.latestTranscriptProjection?.sessionId == sessionId else { return }
+        guard let self, self.documentVersionsReadGeneration == generation,
+          self.latestTranscriptProjection?.sessionId == sessionId
+        else { return }
         self.revisionCommitError = String(
           localized: "Couldn't read transcript history: \(String(describing: error))",
           comment: "The placeholder is the engine's own failure text")
@@ -3971,8 +3974,10 @@ final class OverlayState {
     }
     latestTranscriptProjection = nil
     revisionDraft = ""
-    documentHistory = []
-    historyReadSessionId = nil
+    documentVersions = nil
+    documentVersionsSessionId = nil
+    documentVersionsReadGeneration &+= 1
+    pendingNavigation = nil
     // Retained chrome is evidence about the previous take, not this one.
     transcriptMode = "dictation"
     mode = .listening
@@ -4025,10 +4030,7 @@ final class OverlayState {
   private func resetTranscript() {
     deliveredText = ""
     pendingNoSpeechMessage = nil
-    // A rollback belongs to the take whose Retranscribe created it. Unlike
-    // `supersededTakes` it repaints the canvas, so it must never survive into
-    // a new capture and restore words over a different take.
-    retranscribeRollback = nil
+    retranscribeTicket = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     coverageRefusalNotice = nil
     // A persisting chip belongs to the take that raised it. Nothing else
@@ -4237,16 +4239,14 @@ final class ControllerDictationEngine: DictationEngine {
       level: level?.rawValue
     )
   }
-  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry] {
-    try await hotkeys.documentHistory(sessionId: sessionId)
+  func documentVersions(sessionId: String) async throws -> CsDocumentVersions {
+    try await hotkeys.documentVersions(sessionId: sessionId)
   }
-  func restoreDocumentRevision(
-    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  func navigateDocumentVersion(
+    sessionId: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsUserRevisionResult {
-    try await hotkeys.restoreDocumentRevision(
-      sessionId: sessionId,
-      sourceRevision: sourceRevision,
-      restoreRevision: restoreRevision)
+    try await hotkeys.navigateDocumentVersion(
+      sessionId: sessionId, sourceRevision: sourceRevision, step: step)
   }
   func isRecording() async -> Bool {
     await hotkeys.isRecording()
@@ -4335,12 +4335,12 @@ final class ControllerDictationEngine: DictationEngine {
         kind: kind, detail: detail)
     }.value
   }
-  func restoreArchivedRevision(
-    archivePath: String, sourceRevision: UInt64, restoreRevision: UInt64
+  func navigateArchivedVersion(
+    archivePath: String, sourceRevision: UInt64, step: UInt64
   ) async throws -> CsArchivedDocument {
     try await Task.detached {
-      try CodescribeThreads().restoreHistoryRevision(
-        path: archivePath, sourceRevision: sourceRevision, restoreRevision: restoreRevision)
+      try CodescribeThreads().navigateHistoryRevision(
+        path: archivePath, sourceRevision: sourceRevision, step: step)
     }.value
   }
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription {
@@ -4432,18 +4432,6 @@ extension OverlayState {
     return String(
       localized: "The audio for this saved transcript is no longer available.",
       comment: "Transcribe again is impossible: the archived take has no audio file")
-  }
-
-  /// The Undo the archive's own revision chain offers: what its latest format
-  /// or retranscription replaced. Edits and restores offer none.
-  var archivedUndoIntent: OverlayIntent? {
-    guard let archivedTranscript, archivedTranscript.undoRevision != nil, !archiveActionPending
-    else { return nil }
-    switch archivedTranscript.provenance {
-    case "formatter": return .undoFormat
-    case "retranscribe": return .undoRetranscribe
-    default: return nil
-    }
   }
 
   /// Issue the ticket one history open request must present to land.
@@ -4851,10 +4839,7 @@ extension OverlayState {
         self.showFooterNotice(String(localized: "retranscribed"))
       case (_, .success(let document)?):
         self.acceptArchivedDocument(document)
-        self.showFooterNotice(
-          self.canUndoRetranscribe
-            ? String(localized: "retranscribed — Back keeps the old text")
-            : String(localized: "retranscribed"))
+        self.showFooterNotice(String(localized: "retranscribed"))
       case (.success(let text), .failure(let error)?):
         // Not accepted: the new words stay on the canvas as an unsaved draft
         // the user can commit again (still a retranscription) or discard.
@@ -4869,13 +4854,11 @@ extension OverlayState {
     }
   }
 
-  /// Undo the archive's latest format or retranscription: Rust restores the
-  /// version it replaced as a new revision of the same archive.
-  func undoArchivedRevision() {
-    guard let source = archivedTranscript, let restore = source.undoRevision,
-      !archiveActionPending, !isRevisionDraftDirty
-    else {
-      showFooterNotice(String(localized: "nothing to undo"))
+  /// Undo, Redo or a version pick on the archive that owns the canvas: Rust
+  /// selects accepted version `step` of its revision chain with one
+  /// navigation receipt. The bytes come from the chain, never from Swift.
+  private func navigateArchivedVersion(_ step: UInt64) {
+    guard let source = archivedTranscript, !archiveActionPending, !isRevisionDraftDirty else {
       return
     }
     guard let engine else {
@@ -4884,7 +4867,6 @@ extension OverlayState {
         notice: String(localized: "undo unavailable"))
       return
     }
-    let undoesFormat = source.provenance == "formatter"
     archiveActionPending = true
     archiveActionError = nil
     archiveGeneration &+= 1
@@ -4894,8 +4876,8 @@ extension OverlayState {
       let outcome: Result<CsArchivedDocument, Error>
       do {
         outcome = .success(
-          try await engine.restoreArchivedRevision(
-            archivePath: source.path, sourceRevision: source.revision, restoreRevision: restore))
+          try await engine.navigateArchivedVersion(
+            archivePath: source.path, sourceRevision: source.revision, step: step))
       } catch {
         outcome = .failure(error)
       }
@@ -4910,14 +4892,11 @@ extension OverlayState {
       switch outcome {
       case .success(let document):
         self.acceptArchivedDocument(document)
-        self.showFooterNotice(
-          undoesFormat
-            ? String(localized: "format undone")
-            : String(localized: "retranscribe undone"))
       case .failure(let error):
         self.archiveActionError = String(
-          localized: "Couldn't undo: \(String(describing: error))",
-          comment: "The placeholder is the engine's own failure text")
+          localized: "overlay.versions.error.navigate",
+          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
         self.showFooterNotice(String(localized: "undo failed — kept"))
       }
     }
