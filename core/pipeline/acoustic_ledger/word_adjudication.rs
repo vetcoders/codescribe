@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 /// component. Changing its word partition requires lexical corroboration.
 /// v6: assembled witnesses keep their original producer pass and pin scope;
 /// alternatives from one frame cannot become a complete group witness.
-pub const WORD_POLICY: &str = "word-adjudication/v6";
+/// v7: uncorroborated relabelling must keep the exact physical word partition,
+/// including its boundaries when admission handles a group as separate words.
+pub const WORD_POLICY: &str = "word-adjudication/v7";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -961,13 +963,18 @@ impl AcousticLedger {
         // label. The dispute stays open: no agreement was reached, so the
         // conflict, its trial and the word finality still say so.
         // A deeper decode margin does not prove new word boundaries. Restrict
-        // this uncorroborated path to one source and one output; a split or a
-        // regrouping must use source agreement or a confirmed bounded trial.
+        // this uncorroborated path to one source and one output with unchanged
+        // bounds. Equal word counts alone are insufficient: admission can
+        // address a regrouping as separate 1:1 pairs with shifted boundaries.
+        // Such a change needs source agreement or a confirmed bounded trial.
+        let preserves_word_partition = sources.len() == 1
+            && outputs.len() == 1
+            && sources[0].sample_start == outputs[0].sample_start
+            && sources[0].sample_end == outputs[0].sample_end;
         let band_authority = trial.is_none()
             && !lexical_resolved
             && raw_disagrees
-            && sources.len() == 1
-            && outputs.len() == 1
+            && preserves_word_partition
             && fresh
             && complete
             && candidate.acoustic_boundaries_complete
@@ -1040,7 +1047,7 @@ impl AcousticLedger {
             (true, "source_agreement")
         } else if band_authority {
             (true, "band_authority")
-        } else if sources.len() != 1 || outputs.len() != 1 {
+        } else if !preserves_word_partition {
             (false, "partition_requires_lexical_evidence")
         } else {
             (false, "lexical_disagreement")
