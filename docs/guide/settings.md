@@ -152,17 +152,18 @@ Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**:
 how to start Codescribe's modes and how to control recording.
 
 The tab holds two different save contracts, and the note under the Save
-buttons says so: the three mode gestures are a draft and need **Save mode
+buttons says so: the three mode gestures are a draft and need **Save
 shortcuts**; every other control on the page writes as soon as you change it.
 
 **Mode gestures.** One gesture per work mode — **Dictation** (turns speech into
 text), **Formatting** (dictation with AI formatting) and **Agent** (passes the
 recognized text to the Agent). None of the three promises a paste: where the
-transcript goes is **Automatic paste** below, and `PASTE_MODE=off` means nowhere.
-The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver reads the
-spelled-out form, so the left and right Option gestures stay distinguishable.
+transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
+nowhere. The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver
+reads the spelled-out form, so the left and right Option gestures stay
+distinguishable.
 
-**Save mode shortcuts** / **Restore default mode shortcuts** sit directly under
+**Save shortcuts** / **Restore defaults** sit directly under
 the three rows. The screen reports a blocking conflict that refuses the save,
 otherwise unsaved changes; underneath, and independently of either line, what
 the last save actually persisted. The confirmation is a re-read from disk, not
@@ -178,10 +179,11 @@ interface language, not the macOS region.
 
 **Conflicts** and notes are separate. A conflict blocks the save and sits in a
 coloured card above the Save button; a note does not block and sits under it as
-a quiet grey field with a globe symbol and secondary text. The macOS Fn configuration message is a note: it
-says Codescribe may intercept the short press while dictation runs, and
-explicitly that it does not block saving. The technical identifier that came
-across the bridge is not shown; the save receipt and the bridge log keep it.
+a quiet grey field with a globe symbol and secondary text. The macOS Fn
+configuration message is a note — Fn is also configured in macOS and Codescribe
+may capture its short presses; it never blocks saving. The technical identifier
+that came across the bridge is not shown; the save receipt and the bridge log
+keep it.
 
 **Dictation control** sits directly under the gestures because it shapes the
 same recording gestures; both switches write on change. **Tap Fn to dictate**:
@@ -191,10 +193,9 @@ for its own dictation). **Middle mouse acts as Fn**: the middle button follows
 the same press, hold and tap rules as Fn; custom mappings in your mouse
 software can block the standard middle-click signal the app listens for.
 
-**During dictation** is a quiet neutral card: pressing the chosen key during
-an already-started dictation hold attaches the selected text to the take.
-**Arm with** chooses Shift (default) or Command, and the card's gesture label
-derives from that choice. Further pulses during the same hold attach the next
+**During dictation** is a quiet neutral card: while holding Fn, pressing the
+chosen key attaches the selected text to the take. **Arm with** chooses Shift
+(default) or Command. Further pulses during the same hold attach the next
 selections; the take, the overlay and the destination do not change.
 
 **Extra shortcuts** holds the two shortcuts beyond the modes. **Agent channel**
@@ -203,9 +204,10 @@ with tab switching) and **Paste transcript**: the chord that pastes a
 transcript waiting to be inserted — the app in front may handle the same
 chord as well.
 
-**Automatic paste** keeps **Safe**, **Comfort** and **Off**, with the picker on
-its own full-width row and only the selected mode explained underneath. The
-terminal, command and password-field safeguards are unchanged.
+**Paste after dictation** (one heading, formerly doubled with "Automatic
+paste") keeps **Safe**, **Comfort** and **Off**, with the picker on its own
+full-width row and only the selected mode explained underneath. The terminal,
+command and password-field safeguards are unchanged.
 
 **Recording indicator** names the three dot states in full — Recording, Agent,
 Processing — and sets the size of the indicator next to the cursor
@@ -545,13 +547,14 @@ minimised Codescribe window leaves the screen and shows up only as an empty
 tile in App Exposé and Mission Control, so the yellow button (and ⌘M) is
 disabled on both windows; close and reopen them instead.
 
-**Microphone** — one card: the **Input device** picker, the microphone actually
-recording, and **Refresh**. **System default** is the first option of the picker,
+**Microphone** — **Refresh** sits on the section header; below it one compact
+card: the **Input device** picker and the microphone actually recording.
+**System default** is the first option of the picker,
 so Codescribe records on whichever microphone macOS currently uses; a named device
 is remembered, and if it is unplugged recording continues on the system
-microphone. **Currently:** names the input the running recorder resolved — the
-live device, not the saved choice. **Refresh** re-reads the device list; it does
-not re-run the readiness checks below. The card stays at those three lines while
+microphone. **Currently using:** names the input the running recorder resolved —
+the live device, not the saved choice. **Refresh** re-reads the device list; it
+does not re-run the readiness checks below. The card stays at those lines while
 nothing is wrong. A saved device that the running recorder is not actually using,
 or a Mac with no input hardware at all, adds one sentence saying so — a restart
 applies a saved device, and an explicit `AUDIO_INPUT_DEVICE` launch override keeps

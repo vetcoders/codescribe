@@ -28,7 +28,7 @@ extension CsWorkMode {
   /// What the mode does with the user's voice, in one short clause.
   ///
   /// None of the three promises a paste: `PASTE_MODE` can be `off`, so the
-  /// Automatic paste section below is the only place that promise is made.
+  /// Paste after dictation section below is the only place that promise is made.
   var blurb: String {
     switch self {
     case .dictation:
@@ -205,8 +205,7 @@ extension CsHotkeyConflict {
     if !blocking {
       return String(
         localized: "settings.shortcuts.note.fnTapOwnedByMacos",
-        defaultValue:
-          "The Fn key is also configured in macOS. Codescribe may intercept its short press while dictation is running. This note does not block saving the shortcuts.",
+        defaultValue: "Fn is also configured in macOS. Codescribe may capture its short presses.",
         comment: "Shortcuts screen: informational note about macOS, never an error")
     }
     switch message {
