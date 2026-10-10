@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 /// A different label needs source agreement or a confirmed bounded trial.
 /// v10: trial targets include measured neighbours intersecting the disputed
 /// source lineage before dispatch. Returned context cannot expand that scope.
-pub const WORD_POLICY: &str = "word-adjudication/v10";
+/// v11: unresolved trial groups retain their scope for ordinary evidence;
+/// partial observations cannot discard their witnesses or renew trial budgets.
+pub const WORD_POLICY: &str = "word-adjudication/v11";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -861,6 +863,23 @@ impl AcousticLedger {
             return None;
         }
         let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+        if self
+            .retained_word_trial_targets(&observation.occurrence)
+            .iter()
+            .any(|group| {
+                group.iter().any(|target| targets.contains(target))
+                    && !group.iter().all(|target| targets.contains(target))
+            })
+        {
+            self.record_word_choice(
+                observation,
+                sources,
+                outputs,
+                "partial_adjudication_scope",
+                false,
+            );
+            return Some(false);
+        }
         let provisional_apple = self.provisional_apple_revision(observation, sources);
         let candidate = self.hypothesis(observation, sources, outputs);
         let complete = self.asr_source_scope_complete(observation, sources) && candidate.complete;
@@ -1194,6 +1213,26 @@ impl AcousticLedger {
         horizon: u64,
     ) -> Option<WordTrial> {
         self.select_word_trial(stopping, coverage, context, horizon, true)
+    }
+
+    /// An unresolved trial question keeps its physical scope after closure.
+    /// Later ordinary evidence must answer the same group before its witnesses
+    /// or spent budgets can be replaced by narrower components.
+    pub(super) fn retained_word_trial_targets(
+        &self,
+        owner: &OccurrenceIdentity,
+    ) -> Vec<Vec<SlotTarget>> {
+        self.word_adjudication
+            .components
+            .iter()
+            .filter(|component| {
+                component.owner == *owner
+                    && component.conflict
+                    && component.targets.len() > 1
+                    && (component.trial.is_some() || component.last_trial.is_some())
+            })
+            .map(|component| component.targets.clone())
+            .collect()
     }
 
     /// A historical pin can straddle the current boundary with a neighbour.

@@ -1057,32 +1057,43 @@ impl AcousticLedger {
             .map(|pin| self.ordinary_word_target(&prior, &pins, pin))
             .collect::<Vec<_>>();
         let crossed_partitions = self.crossed_source_partitions(&prior, &pins, &ordinary_targets);
-        // A bounded trial reserves its addressed group before dispatch. Its
-        // return must answer that whole question atomically, including a
-        // neighbour whose label stayed the same while its boundary moved.
-        let trial_sources = self
+        // A bounded trial reserves its addressed group before dispatch. Both
+        // its return and later evidence for an unresolved trial must answer
+        // that whole question, including unchanged neighbour labels. Reverting
+        // to per-word decisions would discard group witnesses and budgets.
+        let mut trial_targets = self.retained_word_trial_targets(&observation.occurrence);
+        if let Some(trial) = self
             .word_evidence_input(observation)
             .and_then(|input| input.trial.as_ref())
-            .map(|trial| {
-                prior
+            && !trial_targets.contains(&trial.targets)
+        {
+            trial_targets.push(trial.targets.clone());
+        }
+        let trial_groups = trial_targets
+            .iter()
+            .filter_map(|targets| {
+                let sources = prior
                     .iter()
                     .enumerate()
-                    .filter(|(_, source)| trial.targets.contains(&SlotTarget::from(*source)))
+                    .filter(|(_, source)| targets.contains(&SlotTarget::from(*source)))
                     .map(|(index, _)| index)
-                    .collect::<BTreeSet<_>>()
+                    .collect::<BTreeSet<_>>();
+                if sources.len() <= 1 || sources.len() != targets.len() {
+                    return None;
+                }
+                let words = pins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pin)| {
+                        sources
+                            .iter()
+                            .any(|source| self.pin_targets_source(&prior[*source], pin))
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<BTreeSet<_>>();
+                Some((sources, words))
             })
-            .filter(|sources| sources.len() > 1);
-        let trial_pins = trial_sources.as_ref().map(|sources| {
-            pins.iter()
-                .enumerate()
-                .filter(|(_, pin)| {
-                    sources
-                        .iter()
-                        .any(|source| self.pin_targets_source(&prior[*source], pin))
-                })
-                .map(|(index, _)| index)
-                .collect::<BTreeSet<_>>()
-        });
+            .collect::<Vec<_>>();
         for seed in 0..pins.len() {
             if visited.contains(&seed) {
                 continue;
@@ -1093,10 +1104,10 @@ impl AcousticLedger {
                 // Borrow the ledger only while discovering this component.
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
-                    if let (Some(sources), Some(words)) = (&trial_sources, &trial_pins)
-                        && words.contains(&pin)
-                    {
-                        return sources.contains(&source);
+                    if trial_groups.iter().any(|(sources, words)| {
+                        words.contains(&pin) && sources.contains(&source)
+                    }) {
+                        return true;
                     }
                     if let Some((sources, _)) = crossed_partitions
                         .iter()
@@ -1191,11 +1202,13 @@ impl AcousticLedger {
                     > 1
             });
             // Source lineage may cross today's neighbour boundary. Within an
-            // explicitly reserved trial, a bijection of current word centres
+            // explicitly reserved group, a bijection of current word centres
             // proves that no current word was collapsed by that timing jitter.
             // This only admits a geometric question; lexical confirmation is
             // still required below before any label or partition can change.
-            let preserves_trial_words = trial_sources.as_ref() == Some(&source_indices)
+            let preserves_trial_words = trial_groups
+                .iter()
+                .any(|(sources, _)| *sources == source_indices)
                 && sources.len() == outputs.len()
                 && sources.iter().all(|source| {
                     !self.coarse_word_source(source)
