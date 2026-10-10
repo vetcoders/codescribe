@@ -1,5 +1,11 @@
 # Voice reply
 
+Voice is optional output for the Founder. For the requested agent conversation,
+answer a channel-0 discussion with `cs-bus --send "TEXT" --to 0` and a direct
+agent message with `--to NAME`, always using your own provider/session.
+An ordinary `cs-say` reply does not enter peer mailboxes. Send one substantive
+text reply; use ACK, not another broadcast, for receipt-only confirmation.
+
 Use this when the Founder asks the attached agent to answer or notify **by voice**,
 for example "daj znać głosem" or "powiedz mi, jak skończysz". Voice is an output
 channel only. It opens no microphone, starts no follower, and does not change
