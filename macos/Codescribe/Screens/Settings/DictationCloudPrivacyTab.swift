@@ -112,7 +112,9 @@ struct DictationCloudPrivacyTab: View {
       }
       prose(CloudPrivacyCopy.detailsCaption)
       Button(CloudPrivacyCopy.configureCloudServices) {
-        SettingsDeepLink.shared.present(.providers, anchor: .providersCloudTranscription)
+        // `.keys` is the Providers section (its panel destination is
+        // `.providers`); the anchor scrolls to Cloud transcription.
+        SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
       }
       .buttonStyle(.link)
       .font(CSFont.ui(11.5, .medium))
