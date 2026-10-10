@@ -299,7 +299,6 @@ final class SettingsTruthTests: XCTestCase {
       SettingsTab.tabs(in: .engine),
       [
         .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-        .dictationPermissions,
       ],
       "every Dictation concern is a tab; the raw recognition timings live in Lab"
     )
@@ -356,7 +355,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "mcp"), .agentMcp)
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "permission"), .agentTools)
     XCTAssertEqual(
-      SettingsTab.searchLanding(in: .engine, query: "permission"), .dictationPermissions)
+      SettingsTab.searchLanding(in: .engine, query: "permission"), nil,
+      "the duplicated Permissions tab is gone; Creator owns the checklist")
+    XCTAssertTrue(SettingsSection.revealed(by: "permission").contains(.creator))
+    XCTAssertTrue(SettingsSection.revealed(by: "tcc").contains(.creator))
     XCTAssertNil(SettingsTab.searchLanding(in: .agent, query: "  "))
     XCTAssertNil(
       SettingsTab.searchLanding(in: .agent, query: "agent"),

@@ -21,7 +21,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
   case dictationWhisper
   case dictationPreview
   case dictationPrivacy
-  case dictationPermissions
 
   var id: String { rawValue }
 
@@ -29,8 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes, .agentPrompts, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
       .agent
-    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-      .dictationPermissions:
+    case .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy:
       .engine
     }
   }
@@ -57,8 +55,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .dictationPreview:
       String(localized: "Preview", comment: "Settings tab: live transcript preview timing")
     case .dictationPrivacy: String(localized: "Privacy", comment: "Settings tab: cloud and privacy")
-    case .dictationPermissions:
-      String(localized: "Permissions", comment: "Settings tab: macOS permission matrix")
     }
   }
 
@@ -81,7 +77,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(
         localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
     case .dictationPrivacy: CloudPrivacyCopy.title
-    case .dictationPermissions: String(localized: "Permission matrix.")
     }
   }
 
@@ -135,8 +130,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       )
     case .dictationPrivacy:
       String(localized: "See when Codescribe uses online services.")
-    case .dictationPermissions:
-      String(localized: "Live macOS permission status. Click a missing permission to grant it.")
     }
   }
 
@@ -222,15 +215,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: String(
           localized: "settings.search.tab.dictationPrivacy",
           defaultValue: "cloud, privacy, consent, egress",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
-    case .dictationPermissions:
-      settingsSearchTerms(
-        fixed: ["tcc"],
-        localized: String(
-          localized: "settings.search.tab.dictationPermissions",
-          defaultValue: "permission, accessibility, input monitoring",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

@@ -84,34 +84,38 @@ enum CloudPrivacyCopy {
   static let detailsHeading = String(
     localized: "Privacy details", comment: "Privacy section: diagnostics, keys, refusals")
 
-  /// What the collapsed disclosure holds, so nobody has to open it blind.
-  static let detailsCaption = String(
-    localized: "Diagnostics, API keys, safeguards, and how the local modes behave."
-  )
+  // One sentence per subsection: the four subsection headings below already
+  // say what is covered, so the prose only has to state the safeguard
+  // (Founder brief, round 14, 2026-10-10).
 
-  /// Bounded to the fields the cloud session actually records.
+  /// Bounded to the fields the cloud session actually records: identifiers and
+  /// counters only. "never audio, never transcript text" is the safeguard and
+  /// stays verbatim.
   static let diagnostics = String(
     localized:
-      "Cloud session diagnostics stay content-free: session and utterance identifiers, counts of audio frames and events, seconds of audio, and typed error codes. Never audio, never transcript text."
+      "Cloud diagnostics record identifiers, session statistics and error codes — never audio, never transcript text."
   )
 
-  /// The no-vendor-key promise is restricted to the gateway architecture; the
-  /// keys a user configures themselves are Keychain items.
+  /// Keys a user configures are Keychain items; the live lane runs on the
+  /// short-lived session bearer the Libraxis gateway mints, not on a key of
+  /// theirs.
   static let apiKeys = String(
     localized:
-      "API keys you configure are stored in the macOS Keychain. The live cloud lane needs no vendor key of yours: the Libraxis gateway mints a short-lived session bearer outside this Mac and keeps the provider behind it."
+      "Your keys are stored in the macOS Keychain; live transcription through Libraxis uses a short-lived session token."
   )
 
   /// What a missing consent record resolves to, and what it does not.
+  /// "on-device" is load-bearing: the Apple lane requests on-device
+  /// recognition, so the refusal does not trade one cloud for another.
   static let withoutConsent = String(
     localized:
-      "Without your consent Cloud never arms. Codescribe refuses the unauthorized cloud use and keeps dictating with Apple on-device plus your dictionary; no local model is loaded in its place."
+      "Without your consent Codescribe does not use the cloud and keeps dictating with Apple on-device; no local model is loaded in its place."
   )
 
   /// Choosing a mode is not an install.
   static let localPowerInstall = String(
     localized:
-      "Choosing Local power does not download anything. Installing the on-device model is a separate action on the Whisper tab."
+      "Choosing a local mode does not download anything — the model is installed separately on the Whisper tab."
   )
 
   /// Expanded details, split into short headed subsections instead of one

@@ -30,7 +30,8 @@ final class CloudPrivacyCopyTests: XCTestCase {
         rendered.contains(safeguard),
         "hiding the details behind a disclosure must not remove a safeguard")
     }
-    XCTAssertFalse(CloudPrivacyCopy.detailsCaption.isEmpty)
+    // Round 14: the details caption is gone — the expanded subsection
+    // headings carry that information now.
     XCTAssertFalse(CloudPrivacyCopy.configureCloudServices.isEmpty)
   }
 
@@ -58,13 +59,12 @@ final class CloudPrivacyCopyTests: XCTestCase {
       "a saved grant must be separated from live egress in words, not only in layout")
   }
 
-  /// A refusal resolves to Apple on-device plus the dictionary, and the copy
-  /// rules out a local model loaded as a silent substitute.
+  /// A refusal resolves to Apple on-device, and the copy rules out a local
+  /// model loaded as a silent substitute (round 14: one sentence).
   func testRefusalResolvesToAppleOnDeviceWithoutLoadingLocalWeights() {
     let line = CloudPrivacyCopy.withoutConsent
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("Cloud never arms"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("does not use the cloud"))
     XCTAssertTrue(line.localizedCaseInsensitiveContains("Apple on-device"))
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("dictionary"))
     XCTAssertTrue(
       line.localizedCaseInsensitiveContains("no local model is loaded"),
       "the copy must deny the hidden local substitution")
@@ -99,7 +99,7 @@ final class CloudPrivacyCopyTests: XCTestCase {
     let line = CloudPrivacyCopy.diagnostics
     XCTAssertTrue(line.localizedCaseInsensitiveContains("Never audio"))
     XCTAssertTrue(line.localizedCaseInsensitiveContains("never transcript text"))
-    for field in ["identifiers", "counts", "seconds of audio", "error"] {
+    for field in ["identifiers", "session statistics", "error"] {
       XCTAssertTrue(
         line.localizedCaseInsensitiveContains(field),
         "diagnostics copy must enumerate the recorded field: \(field)")
@@ -111,10 +111,13 @@ final class CloudPrivacyCopyTests: XCTestCase {
   func testKeyCopyNamesTheKeychainAndBoundsTheGatewayPromise() {
     let line = CloudPrivacyCopy.apiKeys
     XCTAssertTrue(line.localizedCaseInsensitiveContains("macOS Keychain"))
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("Libraxis gateway"))
+    // Round 14: the Founder's sentence says "through Libraxis"; the
+    // session-token clause carries the gateway promise.
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Libraxis"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("short-lived session token"))
     if let keyFree = line.range(of: "no vendor key", options: .caseInsensitive) {
       XCTAssertTrue(
-        line[keyFree.upperBound...].localizedCaseInsensitiveContains("Libraxis gateway"),
+        line[keyFree.upperBound...].localizedCaseInsensitiveContains("Libraxis"),
         "a no-vendor-key claim must be bounded to the gateway lane that earns it")
     }
   }
@@ -127,7 +130,6 @@ final class CloudPrivacyCopyTests: XCTestCase {
       CloudPrivacyCopy.consentIsNotLiveEgress,
       CloudPrivacyCopy.egressAudioDetail,
       CloudPrivacyCopy.egressTextDetail,
-      CloudPrivacyCopy.detailsCaption,
       CloudPrivacyCopy.configureCloudServices,
     ])
     for line in lines {
