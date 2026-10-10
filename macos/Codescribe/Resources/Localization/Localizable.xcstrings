@@ -408,17 +408,6 @@
         }
       }
     },
-    "%@, Fine-tuned" : {
-      "comment" : "VoiceOver label for a language choice with a specialized model",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@, dostrojony"
-          }
-        }
-      }
-    },
     "%@, overridden" : {
       "comment" : "VoiceOver value: a toggle state frozen by an override",
       "localizations" : {
@@ -3186,16 +3175,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wysyłaj automatycznie do Agenta"
-          }
-        }
-      }
-    },
-    "Automatic detection" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Automatyczne wykrywanie"
           }
         }
       }
@@ -6079,17 +6058,6 @@
         }
       }
     },
-    "Domain vocabulary and Dictionary entries improve speech recognition." : {
-      "comment" : "Dictionary is the name of the Voice Lab settings section",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Słownictwo branżowe i wpisy w Słowniku poprawiają rozpoznawanie mowy."
-          }
-        }
-      }
-    },
     "Done!" : {
       "comment" : "Tray status: the last session finished",
       "localizations" : {
@@ -6615,16 +6583,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz do transkrypcji plików"
-          }
-        }
-      }
-    },
-    "Fine-tuned" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostrojony"
           }
         }
       }
@@ -7478,17 +7436,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Funkcje AI"
-          }
-        }
-      }
-    },
-    "Interface" : {
-      "comment" : "Settings group: app language",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Interfejs"
           }
         }
       }
@@ -11161,16 +11108,6 @@
         }
       }
     },
-    "Recognition language" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Język rozpoznawania"
-          }
-        }
-      }
-    },
     "Recognition mode" : {
       "comment" : "Engine tab section: the mode picker",
       "localizations" : {
@@ -12682,7 +12619,7 @@
       }
     },
     "Selected" : {
-      "comment" : "Model details: the saved selection\nModel storage state: the runtime loads it\nVoiceOver value for a chosen language",
+      "comment" : "Model details: the saved selection\nModel storage state: the runtime loads it",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
