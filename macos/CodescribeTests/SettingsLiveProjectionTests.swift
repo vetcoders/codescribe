@@ -280,7 +280,7 @@ private final class SyntheticTrayEngine: TrayEngine {
     holdBadgeOption: HoldBadgeOption
   )? {
     toggleReads += 1
-    guard let level = FormattingPolicyOption(rawValue: file.settings.formattingLevel) else {
+    guard let level = FormattingPolicyOption(storedValue: file.settings.formattingLevel) else {
       return nil
     }
     return (true, true, file.settings.pasteMode, level, false, false, .twelve)
