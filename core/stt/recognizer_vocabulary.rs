@@ -1,5 +1,5 @@
 //! Recognition vocabulary, independent of document correction and PCM identity.
-//! The builder is available for validation; no recognizer enables it yet.
+//! Apple live requests take one bounded snapshot at stream open.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -34,7 +34,8 @@ impl RecognizerVocabulary {
         Self::with_dictionary(custom_lexicon_entries())
     }
 
-    /// Lab snapshot: no dictionary cleanup or configuration writes.
+    /// Read-only snapshot for live recognition and lab: no dictionary cleanup
+    /// or configuration writes.
     pub fn load_read_only() -> Self {
         Self::with_dictionary(custom_lexicon_entries_read_only())
     }

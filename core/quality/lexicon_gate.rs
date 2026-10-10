@@ -519,7 +519,7 @@ fn normalized_distance(a: &str, b: &str) -> f64 {
 }
 
 /// Levenshtein over Unicode chars, two rolling rows.
-fn edit_distance_chars(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance_chars(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     if a.is_empty() {
@@ -542,7 +542,7 @@ fn edit_distance_chars(a: &str, b: &str) -> usize {
 }
 
 /// True for a bare high-frequency word.
-fn is_common_word(folded: &str) -> bool {
+pub(crate) fn is_common_word(folded: &str) -> bool {
     COMMON_WORDS.contains(&folded)
 }
 

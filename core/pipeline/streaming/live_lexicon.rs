@@ -1,7 +1,7 @@
 //! Lexical labels for one PCM occurrence. This module changes text only; the
 //! acoustic ledger remains the authority for identity, admission, and seals.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -27,10 +27,18 @@ fn enabled_by_default() -> bool {
     true
 }
 
+#[derive(Default, Deserialize)]
+struct Knowledge {
+    #[serde(default)]
+    synonyms: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct SeedRow {
     canonical: String,
     normalization: Normalization,
+    #[serde(default)]
+    knowledge: Knowledge,
 }
 
 #[derive(Default, Deserialize)]
@@ -140,6 +148,215 @@ static BUNDLED: LazyLock<Bundled> =
             protected_canonicals,
         }
     });
+
+static RETRIEVAL: LazyLock<RetrievalIndex> = LazyLock::new(|| {
+    let mut terms = Vec::new();
+    for line in std::str::from_utf8(SEED)
+        .expect("embedded seed UTF-8")
+        .lines()
+    {
+        if let Ok(row) = serde_json::from_str::<SeedRow>(line)
+            && row.normalization.enabled
+        {
+            terms.extend(
+                std::iter::once(row.canonical.clone())
+                    .chain(row.knowledge.synonyms)
+                    .chain(row.normalization.input_variants)
+                    .filter_map(|label| RetrievalTerm::new(label, row.canonical.clone())),
+            );
+        }
+    }
+    for source in [PROGRAMMING, PROTECTED] {
+        for line in std::str::from_utf8(source)
+            .expect("embedded lexicon UTF-8")
+            .lines()
+        {
+            if let Ok(mut row) = serde_json::from_str::<TermRow>(line) {
+                row.mispronunciations
+                    .extend(row.extras.unwrap_or_default().mispronunciations);
+                terms.extend(
+                    std::iter::once(row.term.clone())
+                        .chain(row.mispronunciations)
+                        .filter_map(|label| RetrievalTerm::new(label, row.term.clone())),
+                );
+            }
+        }
+    }
+    RetrievalIndex::new(terms)
+});
+
+/// Retrieval never rewrites text. Its result is a proposed spelling which the
+/// caller must corroborate against independent, complete PCM word witnesses.
+struct RetrievalTerm {
+    canonical: String,
+    key: String,
+    phonetic: String,
+    length: usize,
+}
+
+impl RetrievalTerm {
+    fn new(label: String, canonical: String) -> Option<Self> {
+        let key = retrieval_key(&label);
+        let length = key.chars().count();
+        if !(4..=64).contains(&length) || canonical.split_whitespace().count() != 1 {
+            return None;
+        }
+        Some(Self {
+            canonical,
+            phonetic: phonetic_key(&key),
+            key,
+            length,
+        })
+    }
+}
+
+fn retrieval_key(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| ch.is_alphanumeric())
+        .collect()
+}
+
+/// Limited PL/EN spelling equivalences are a plausibility guard, not a vote
+/// which can break an edit-distance tie between two different medicines.
+fn phonetic_key(text: &str) -> String {
+    let folded: String = text
+        .chars()
+        .map(|ch| match ch {
+            'ą' => 'a',
+            'ć' => 'c',
+            'ę' => 'e',
+            'ł' => 'l',
+            'ń' => 'n',
+            'ó' => 'u',
+            'ś' => 's',
+            'ż' | 'ź' => 'z',
+            _ => ch,
+        })
+        .collect();
+    folded
+        .replace("ph", "f")
+        .replace("rz", "z")
+        .replace('x', "ks")
+}
+
+struct RetrievalIndex {
+    by_length: BTreeMap<usize, Vec<RetrievalTerm>>,
+    canonicals: BTreeMap<String, HashSet<String>>,
+}
+
+impl RetrievalIndex {
+    fn new(terms: impl IntoIterator<Item = RetrievalTerm>) -> Self {
+        let mut index = Self {
+            by_length: BTreeMap::new(),
+            canonicals: BTreeMap::new(),
+        };
+        for term in terms {
+            index
+                .canonicals
+                .entry(retrieval_key(&term.canonical))
+                .or_default()
+                .insert(term.canonical.clone());
+            index.by_length.entry(term.length).or_default().push(term);
+        }
+        index
+    }
+
+    fn nearby(&self, length: usize) -> impl Iterator<Item = &RetrievalTerm> {
+        self.by_length
+            .range(length.saturating_sub(2)..=length + 2)
+            .flat_map(|(_, terms)| terms.iter())
+    }
+}
+
+/// One read-only custom dictionary snapshot per admission pass. Embedded
+/// canonical forms, variants and knowledge.synonyms share the same retrieval.
+pub(super) struct FuzzyLexicon {
+    custom: RetrievalIndex,
+    protected: crate::quality::lexicon_gate::ProtectedTerms,
+}
+
+impl FuzzyLexicon {
+    pub(super) fn load(custom_path: &Path) -> Self {
+        let custom = RetrievalIndex::new(custom_rules(custom_path).into_iter().flat_map(|rule| {
+            [rule.variant, rule.canonical.clone()]
+                .into_iter()
+                .filter_map(move |label| RetrievalTerm::new(label, rule.canonical.clone()))
+        }));
+        let config_dir = custom_path.parent().unwrap_or_else(|| Path::new("."));
+        let protected = crate::quality::lexicon_gate::ProtectedTerms::load_from(
+            &crate::quality::lexicon_gate::ProtectedTerms::default_path(config_dir),
+        );
+        Self { custom, protected }
+    }
+
+    /// At most two edits, <=30% of a spelling, and a unique canonical winner.
+    /// Aliases of one canonical do not compete with each other. A tied runner
+    /// up is refused before any phonetic/context preference can conceal it.
+    pub(super) fn candidate(&self, text: &str) -> Option<String> {
+        use crate::quality::lexicon_gate::{LexiconVerdict, adjudicate_lexicon_candidates};
+        let key = retrieval_key(text);
+        let length = key.chars().count();
+        if !(4..=64).contains(&length)
+            || text.split_whitespace().count() > 3
+            || text.chars().any(|ch| ch.is_numeric())
+            || text.split_whitespace().any(|word| {
+                let word = word
+                    .trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_lowercase();
+                crate::quality::lexicon_gate::is_common_word(&word)
+                    || matches!(word.as_str(), "bez" | "not" | "never" | "without")
+            })
+        {
+            return None;
+        }
+        let terms = || self.custom.nearby(length).chain(RETRIEVAL.nearby(length));
+        // Correct registered terms and custom protected words cannot be
+        // retrieved as another canonical, even through one of its aliases.
+        let existing = self
+            .custom
+            .canonicals
+            .get(&key)
+            .into_iter()
+            .chain(RETRIEVAL.canonicals.get(&key))
+            .flat_map(|names| names.iter().cloned())
+            .collect::<HashSet<_>>();
+        if !existing.is_empty() {
+            return (existing.len() == 1).then(|| existing.into_iter().next().unwrap());
+        }
+        if self.protected.contains(text) {
+            return None;
+        }
+        let mut ranked = BTreeMap::<String, (usize, String)>::new();
+        for term in terms() {
+            let distance = crate::quality::lexicon_gate::edit_distance_chars(&key, &term.key);
+            if distance > 2 {
+                continue;
+            }
+            let score = ranked
+                .entry(term.canonical.clone())
+                .or_insert_with(|| (distance, term.phonetic.clone()));
+            if distance < score.0 {
+                *score = (distance, term.phonetic.clone());
+            }
+        }
+        let mut ranked = ranked.into_iter().collect::<Vec<_>>();
+        ranked.sort_by(|a, b| a.1.0.cmp(&b.1.0).then_with(|| a.0.cmp(&b.0)));
+        let (canonical, (distance, phonetic)) = ranked.first()?;
+        if ranked.get(1).is_some_and(|runner| runner.1.0 == *distance)
+            || distance * 10 > length * 3
+            || crate::quality::lexicon_gate::edit_distance_chars(&phonetic_key(&key), phonetic) > 2
+        {
+            return None;
+        }
+        let source = text.trim_matches(|ch: char| !ch.is_alphanumeric());
+        let pairs = [(source.to_string(), canonical.clone())];
+        if adjudicate_lexicon_candidates(&pairs, &self.protected) != [LexiconVerdict::Accept] {
+            return None;
+        }
+        Some(canonical.clone())
+    }
+}
 
 fn custom_rules(path: &Path) -> Vec<Rule> {
     let Ok(content) = fs::read_to_string(path) else {
@@ -415,6 +632,65 @@ pub(super) fn registered_merges(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuzzy_retrieval_recovers_existing_synonym_without_mutating_dictionary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        let lexicon = FuzzyLexicon::load(&path);
+        for (input, canonical) in [
+            ("Alfaxan", "Alfaksalon"),
+            ("Alfaxon", "Alfaksalon"),
+            ("Alfaxone", "Alfaksalon"),
+            ("[Alfaxone.]", "Alfaksalon"),
+            ("postgrze SQL", "PostgreSQL"),
+            ("Robena coxip", "Robenacoxib"),
+        ] {
+            assert_eq!(
+                lexicon.candidate(input).as_deref(),
+                Some(canonical),
+                "{input}"
+            );
+        }
+        assert!(!path.exists(), "retrieval must not learn or write settings");
+        assert_eq!(
+            rewrite("Alfaxone", &path).0,
+            "Alfaxone",
+            "retrieval is not a string rewrite"
+        );
+    }
+
+    #[test]
+    fn fuzzy_retrieval_refuses_ambiguity_negations_numbers_and_correct_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"term\":\"Xorban\",\"mispronunciations\":[\"xorbon\"]}\n",
+                "{\"term\":\"Xorbin\",\"mispronunciations\":[\"xorbul\"]}\n"
+            ),
+        )
+        .unwrap();
+        let before = fs::read(&path).unwrap();
+        let lexicon = FuzzyLexicon::load(&path);
+        for input in [
+            "Xorben",
+            "Roost",
+            "nie Alfaxone",
+            "bez Alfaxone",
+            "not Alfaxone",
+            "osiem",
+            "9",
+            "Alfaxone 2",
+        ] {
+            assert_eq!(lexicon.candidate(input), None, "{input}");
+        }
+        for canonical in ["Alfaksalon", "Rust", "Loctree", "Whisper"] {
+            assert_eq!(lexicon.candidate(canonical).as_deref(), Some(canonical));
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
 
     #[test]
     fn registered_merge_uses_embedded_defaults_and_keeps_punctuation() {

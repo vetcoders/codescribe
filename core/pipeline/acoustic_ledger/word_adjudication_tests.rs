@@ -136,6 +136,104 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
 }
 
 #[test]
+fn dictionary_witnesses_require_distinct_complete_current_word_windows() {
+    let owner = OccurrenceIdentity::new("dictionary-witness", 1, 0, 160_000);
+    let mut pcm = vec![0.0; 160_000];
+    pcm[48_000..64_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    ledger.schedule_frontier(
+        owner.clone(),
+        [ObservationProducer::Apple, ObservationProducer::Whisper],
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        0,
+        "Alfaxone",
+        None,
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "Alfaxone",
+        Some((0, 128_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "Alfaxone",
+        Some((0, 128_000)),
+    );
+    let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+    assert_eq!(
+        ledger
+            .dictionary_witnesses(&owner, std::slice::from_ref(&target))
+            .len(),
+        1,
+        "request replay is not independent"
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        3,
+        "Alfaxone",
+        Some((8_000, 136_000)),
+    );
+    let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+    let witnesses = ledger.dictionary_witnesses(&owner, std::slice::from_ref(&target));
+    assert_eq!(witnesses.len(), 2);
+    assert!(witnesses.iter().all(|(_, raw)| raw == "Alfaxone"));
+    let mut stale = target.clone();
+    stale.sample_start += 1;
+    assert!(ledger.dictionary_witnesses(&owner, &[stale]).is_empty());
+    assert!(ledger.dictionary_witnesses(&owner, &[]).is_empty());
+}
+
+#[test]
+fn dictionary_witnesses_refuse_missing_pins_and_unresolved_lexical_conflict() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Apple,
+        0,
+        "Alfaxone",
+        None,
+    );
+    let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+    assert!(
+        ledger
+            .dictionary_witnesses(&owner, std::slice::from_ref(&target))
+            .is_empty()
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "Naloxone",
+        Some((0, 128_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "Naloxone",
+        Some((8_000, 136_000)),
+    );
+    assert!(ledger.has_word_conflicts());
+    assert!(ledger.dictionary_witnesses(&owner, &[target]).is_empty());
+    assert_eq!(ledger.text_of(&owner), Some("Alfaxone"));
+}
+
+#[test]
 fn incomplete_decoder_fence_does_not_spend_a_later_complete_trial() {
     use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
 
