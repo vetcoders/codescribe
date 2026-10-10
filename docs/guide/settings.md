@@ -772,8 +772,10 @@ learned, and where the active rules come from.
 - **Dictionary rules** — the active rules as `variant → canonical`. Their
   origin (_From a correction_, _Added by hand_, _From an import_) is stated
   once above the list when every rule shares it, and per row when the origins
-  differ; a screen reader hears it either way. Up to five rules read as a
-  list, more are paged. Rules cannot be edited or removed from the app yet;
+  differ; a screen reader hears it either way. The nonselectable arrow owns
+  the accessibility summary while both variant and canonical text remain
+  selectable. Up to five rules read as a list, more are paged. Rules cannot
+  be edited or removed from the app yet;
   see [CONFIG.md](../CONFIG.md) for the lexicon files.
 - **Diagnostic details** — at the very bottom, closed by default: the count of
   records without confidence telemetry. It describes the records, not the

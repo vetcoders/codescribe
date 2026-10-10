@@ -1268,15 +1268,16 @@ struct VoiceLabPanel: View {
         .font(CSFont.mono(11.5, .medium))
         .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
+      // The nonselectable arrow owns the static accessibility summary.
       Text(verbatim: "→")
         .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
+        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.localizedOrigin)")
+        .accessibilityIdentifier("dictionary-lexicon-summary")
       Text(row.canonical)
         .font(CSFont.mono(11.5, .semibold))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
-        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.localizedOrigin)")
-        .accessibilityIdentifier("dictionary-lexicon-summary")
       Spacer(minLength: 0)
       if sharedRuleOrigin == nil {
         Text(row.localizedOrigin)
