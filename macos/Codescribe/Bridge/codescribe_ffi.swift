@@ -615,6 +615,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -20137,6 +20155,17 @@ public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
 })
 }
 /**
+ * Persist a pasted PNG through the same asset store used by agent conversations.
+ * Returns a local file path for the composer; no image bytes enter the bus.
+ */
+public func savePastedImage(data: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_save_pasted_image(
+        FfiConverterData.lower(data),$0
+    )
+})
+}
+/**
  * Persist a picker selection and switch the running process to it.
  *
  * Validation happens before persistence: an unknown or unusable reference is
@@ -20320,6 +20349,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_save_pasted_image() != 45294) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_local_whisper_model() != 36491) {

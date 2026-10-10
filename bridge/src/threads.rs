@@ -20,6 +20,17 @@ use serde_json::Value;
 
 use crate::CsError;
 
+/// Persist a pasted PNG through the same asset store used by agent conversations.
+/// Returns a local file path for the composer; no image bytes enter the bus.
+#[uniffi::export]
+pub fn save_pasted_image(data: Vec<u8>) -> Result<String, CsError> {
+    codescribe_core::agent::assets::AgentAssetStore::save_inline_image(&data, "image/png")
+        .map(|asset| asset.path.to_string_lossy().into_owned())
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })
+}
+
 /// Cumulative token accounting for a thread. Mirrors `TokenUsage`
 /// (`thread_store.rs:105`).
 #[derive(uniffi::Record)]

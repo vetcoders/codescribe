@@ -1,6 +1,23 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Could not save pasted image. Try pasting again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save pasted image. Try pasting again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się zapisać wklejonego obrazu. Spróbuj wkleić ponownie."
+          }
+        }
+      }
+    },
   "Some agents may have received this message. Check read receipts before sending again.": {
     "extractionState": "manual",
     "localizations": {
