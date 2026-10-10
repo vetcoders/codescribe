@@ -2027,16 +2027,6 @@
         }
       }
     },
-    "Add a server that speaks OpenAI Responses or Anthropic Messages.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dodaj serwer zgodny z OpenAI Responses lub Anthropic Messages."
-          }
-        }
-      }
-    },
     "Add custom provider.": {
       "localizations": {
         "pl": {
@@ -3149,22 +3139,12 @@
         }
       }
     },
-    "Auto-send to Agent": {
+    "Auto-send to the Agent": {
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
             "value": "Wysyłaj automatycznie do Agenta"
-          }
-        }
-      }
-    },
-    "Automatic paste": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatyczne wklejanie"
           }
         }
       }
@@ -3185,16 +3165,6 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Automatyczny odsłuch włączony"
-          }
-        }
-      }
-    },
-    "Automatic send to the Agent": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatyczne wysyłanie do Agenta"
           }
         }
       }
@@ -3971,6 +3941,16 @@
         }
       }
     },
+    "Choose the Agent and formatting models. Accounts and keys live under Providers.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz modele Agenta i formatowania. Konta i klucze ustawisz w Dostawcach."
+          }
+        }
+      }
+    },
     "Choose the Agent model": {
       "localizations": {
         "pl": {
@@ -4179,16 +4159,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chmura na żywo"
-          }
-        }
-      }
-    },
-    "Cloud mode is switched on under Dictation. The connection is set up here.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tryb chmurowy włączysz w Dyktowanie. Tutaj konfigurujesz połączenie."
           }
         }
       }
@@ -4543,16 +4513,6 @@
         }
       }
     },
-    "Command during the dictation hold": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Command podczas przytrzymania dyktowania"
-          }
-        }
-      }
-    },
     "Commit": {
       "localizations": {
         "pl": {
@@ -4863,6 +4823,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nie sprawdzono połączenia"
+          }
+        }
+      }
+    },
+    "Connections for cloud transcription. The mode is chosen under Dictation.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Połączenia do transkrypcji w chmurze. Tryb wybierzesz w Dyktowaniu."
           }
         }
       }
@@ -5542,6 +5512,16 @@
         }
       }
     },
+    "Ctrl or Fn plus a digit switches the Agent channel.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ctrl lub Fn + cyfra przełącza kanał Agenta."
+          }
+        }
+      }
+    },
     "Current": {
       "localizations": {
         "pl": {
@@ -5553,33 +5533,22 @@
       }
     },
     "Currently using: %@": {
-      "comment": "The placeholder is an input device name",
+      "comment": "The placeholder is an input device name\nThe placeholder is the input device the recorder actually uses",
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aktualnie używane urządzenie: %@"
+            "value": "Aktualnie używany: %@"
           }
         }
       }
     },
-    "Currently: %@": {
-      "comment": "The placeholder is the input device the recorder actually uses",
+    "Currently using: no microphone": {
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "translated",
-            "value": "Aktualnie: %@"
-          }
-        }
-      }
-    },
-    "Currently: no microphone": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aktualnie: brak mikrofonu"
+            "state": "needs_review",
+            "value": "Aktualnie używany: brak mikrofonu"
           }
         }
       }
@@ -7268,16 +7237,6 @@
         }
       }
     },
-    "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "W trybie Agenta wyślij niezmienioną transkrypcję po 5 sekundach, jeśli nie rozpoczniesz jej edycji."
-          }
-        }
-      }
-    },
     "In Cloud mode, and when you start a cloud re-transcription of a recording yourself.": {
       "localizations": {
         "pl": {
@@ -8612,6 +8571,17 @@
         }
       }
     },
+    "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.": {
+      "comment": "Model discovery failed while the provider account stays signed in",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Lista modeli niedostępna: zapisany klucz API został odrzucony. Połączone konto nadal obsługuje żądania. Sprawdź klucz w sekcji Dostawcy."
+          }
+        }
+      }
+    },
     "Model provider": {
       "comment": "Diagnostics row label",
       "localizations": {
@@ -9867,16 +9837,6 @@
         }
       }
     },
-    "One tap starts dictation and the next tap stops it. Holding records only while you hold.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Jedno naciśnięcie uruchamia dyktowanie, kolejne je zatrzymuje. Przytrzymanie nagrywa tylko tak długo, jak trzymasz klawisz."
-          }
-        }
-      }
-    },
     "Only %@ will change: its custom file is removed and the built-in prompt takes over. The previous version remains recoverable in the prompt backups folder.": {
       "localizations": {
         "pl": {
@@ -10286,12 +10246,12 @@
         }
       }
     },
-    "Pastes the transcript waiting to be inserted. The app in front may handle the same shortcut as well.": {
+    "Pastes the waiting transcript. The shortcut may also act in the app in front.": {
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
-            "value": "Wkleja transkrypcję oczekującą na wstawienie. Aplikacja na wierzchu może również obsłużyć ten sam skrót."
+            "state": "translated",
+            "value": "Wkleja oczekującą transkrypcję. Skrót może też działać w aktywnej aplikacji."
           }
         }
       }
@@ -10404,16 +10364,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wybierz model, sprawdź jego dostępność i zarządzaj zajmowanym miejscem."
-          }
-        }
-      }
-    },
-    "Pick a provider and a model separately for the Agent and for transcript formatting. API keys and accounts are set up under Providers.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wybierz dostawcę i model osobno dla Agenta oraz formatowania transkrypcji. Klucze API i konta skonfigurujesz w sekcji Dostawcy."
           }
         }
       }
@@ -11422,6 +11372,16 @@
         }
       }
     },
+    "Recordings leave this computer only in Cloud mode, or when you start a cloud re-transcription yourself.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Nagrania opuszczają ten komputer tylko w trybie chmurowym lub przy ręcznie uruchomionej re-transkrypcji w chmurze."
+          }
+        }
+      }
+    },
     "Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged.": {
       "localizations": {
         "pl": {
@@ -11483,12 +11443,42 @@
         }
       }
     },
+    "Refresh agent readiness": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Odśwież gotowość agenta"
+          }
+        }
+      }
+    },
     "Refresh audio input devices": {
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
             "value": "Odśwież listę urządzeń wejściowych audio"
+          }
+        }
+      }
+    },
+    "Refresh coding agent skill status": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Odśwież stan skilla agenta"
+          }
+        }
+      }
+    },
+    "Refresh provider access status": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Odśwież stan dostępu dostawców"
           }
         }
       }
@@ -12101,16 +12091,6 @@
         }
       }
     },
-    "Restore default mode shortcuts": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przywróć domyślne skróty trybów"
-          }
-        }
-      }
-    },
     "Restore default template": {
       "comment": "About panel: button",
       "localizations": {
@@ -12128,6 +12108,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Przywróć domyślny szablon znacznika transkrypcji"
+          }
+        }
+      }
+    },
+    "Restore defaults": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przywróć domyślne"
           }
         }
       }
@@ -12430,16 +12420,6 @@
         }
       }
     },
-    "Save mode shortcuts": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zapisz skróty trybów"
-          }
-        }
-      }
-    },
     "Save selection": {
       "comment": "Tray row: save the text selected in another app to the daily note",
       "localizations": {
@@ -12447,6 +12427,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Zapisz zaznaczony tekst"
+          }
+        }
+      }
+    },
+    "Save shortcuts": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zapisz skróty"
           }
         }
       }
@@ -12884,6 +12874,16 @@
         }
       }
     },
+    "Sends the transcript after 5 seconds unless you start editing it.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji."
+          }
+        }
+      }
+    },
     "Sentence pause": {
       "localizations": {
         "pl": {
@@ -13065,16 +13065,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Postęp konfiguracji"
-          }
-        }
-      }
-    },
-    "Shift during the dictation hold": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Shift podczas przytrzymania dyktowania"
           }
         }
       }
@@ -14331,16 +14321,6 @@
         }
       }
     },
-    "Switch an Agent channel with the chosen modifier plus a digit.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Przełączaj kanał Agenta wybranym modyfikatorem z cyfrą."
-          }
-        }
-      }
-    },
     "System Settings": {
       "comment": "Button: open the System Settings pane",
       "localizations": {
@@ -14414,6 +14394,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dyktowanie jednym naciśnięciem Fn"
+          }
+        }
+      }
+    },
+    "Tap to start or stop. Hold to record while held.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naciśnij, by rozpocząć lub zakończyć. Przytrzymaj, by nagrywać."
           }
         }
       }
@@ -14621,6 +14611,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Przebieg „%@” nie zwrócił tekstu"
+          }
+        }
+      }
+    },
+    "The Agent and voice assistant model": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model Agenta i asystenta głosowego"
           }
         }
       }
@@ -14904,36 +14904,6 @@
         }
       }
     },
-    "The middle button follows the same press, hold and tap rules as Fn. Custom mappings in your mouse software can block its standard signal.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Środkowy przycisk działa według tych samych zasad naciśnięcia, przytrzymania i stuknięcia co Fn. Własne przypisania w oprogramowaniu myszy mogą zablokować jego standardowy sygnał."
-          }
-        }
-      }
-    },
-    "The mode shortcuts need saving. Everything else applies as soon as you change it.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Skróty trybów wymagają zapisania. Pozostałe ustawienia zapisują się automatycznie."
-          }
-        }
-      }
-    },
-    "The model behind the Agent and the voice assistant": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Model obsługujący Agenta i asystenta głosowego"
-          }
-        }
-      }
-    },
     "The model failed validation. See Model details.": {
       "comment": "Whisper model refusal: generic",
       "localizations": {
@@ -15079,6 +15049,16 @@
         }
       }
     },
+    "The transcript cleanup model": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model poprawiania transkrypcji"
+          }
+        }
+      }
+    },
     "The visible take has no session identity": {
       "localizations": {
         "pl": {
@@ -15106,6 +15086,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ograniczona wydajność z powodu wysokiej temperatury"
+          }
+        }
+      }
+    },
+    "These three shortcuts need saving. Everything else saves automatically.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te trzy skróty wymagają zapisu. Pozostałe ustawienia zapisują się automatycznie."
           }
         }
       }
@@ -15437,16 +15427,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Transkrypcja…"
-          }
-        }
-      }
-    },
-    "Transcript cleanup and formatting": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Poprawianie i formatowanie transkrypcji"
           }
         }
       }
@@ -16436,12 +16416,12 @@
         }
       }
     },
-    "While a dictation hold is running, press the chosen key to attach the selected text.": {
+    "While holding Fn, press the chosen key to attach the selection.": {
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
-            "value": "Gdy trwa przytrzymanie dyktowania, naciśnij wybrany klawisz, aby dołączyć zaznaczony tekst."
+            "state": "translated",
+            "value": "Podczas przytrzymywania Fn użyj wybranego klawisza, aby dołączyć zaznaczenie."
           }
         }
       }
@@ -16594,6 +16574,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Obserwacje słów pozostają nierozstrzygnięte. Ten status nie mierzy brakujących słów ani nie potwierdza trwającej próby odzyskania."
+          }
+        }
+      }
+    },
+    "Works like Fn. Custom mouse-button mappings can block it.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Działa jak Fn. Własne przypisania przycisków myszy mogą blokować tę funkcję."
           }
         }
       }
@@ -16775,16 +16765,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Twoje własne wartości — edytuj je w Ustawieniach szczegółowych."
-          }
-        }
-      }
-    },
-    "Your recordings leave your machine.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Twoje nagrania są wysyłane poza urządzenie"
           }
         }
       }
@@ -19402,13 +19382,13 @@
         "en": {
           "stringUnit": {
             "state": "new",
-            "value": "The Fn key is also configured in macOS. Codescribe may intercept its short press while dictation is running. This note does not block saving the shortcuts."
+            "value": "Fn is also configured in macOS. Codescribe may capture its short presses."
           }
         },
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Klawisz Fn jest również skonfigurowany w macOS. Podczas dyktowania Codescribe może przechwycić jego krótkie naciśnięcie. Ta uwaga nie blokuje zapisu skrótów."
+            "value": "Fn jest też skonfigurowany w macOS. Codescribe może przechwytywać jego krótkie naciśnięcia."
           }
         }
       }
