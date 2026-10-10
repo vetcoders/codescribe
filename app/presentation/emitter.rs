@@ -555,13 +555,23 @@ enum DocumentRequest {
         source_revision: u64,
         target: usize,
     },
+    /// An applied formatter result for the version selected at
+    /// `source_revision`. Accepting it moves the cursor to a new step and
+    /// mints the receipt that move needs, so a second result naming the same
+    /// revision is stale.
+    Format {
+        session_id: String,
+        source_revision: u64,
+        policy: FormattingPolicy,
+        result: AiFormatResult,
+    },
 }
 
 impl DocumentRequest {
     fn session_id(&self) -> &str {
         match self {
             Self::Revise(intent) => &intent.session_id,
-            Self::Navigate { session_id, .. } => session_id,
+            Self::Navigate { session_id, .. } | Self::Format { session_id, .. } => session_id,
         }
     }
 
@@ -570,6 +580,9 @@ impl DocumentRequest {
             Self::Revise(intent) => intent.source_revision,
             Self::Navigate {
                 source_revision, ..
+            }
+            | Self::Format {
+                source_revision, ..
             } => *source_revision,
         }
     }
@@ -577,7 +590,9 @@ impl DocumentRequest {
     fn provenance(&self) -> DocumentRevisionProvenance {
         match self {
             Self::Revise(intent) => intent.provenance,
-            Self::Navigate { .. } => DocumentRevisionProvenance::Navigation,
+            // A format leaves the committed bytes alone; its receipt records
+            // the cursor moving onto the new formatted step.
+            Self::Navigate { .. } | Self::Format { .. } => DocumentRevisionProvenance::Navigation,
         }
     }
 }
@@ -1774,6 +1789,75 @@ impl TranscriptReducer {
             .as_ref()
             .map(|accepted| self.rebase_presentation(accepted));
         Ok((revision, presentation))
+    }
+
+    /// Accept one applied formatter result as a new step after the cursor.
+    /// The source is the version selected at `source_revision` (CAS); an
+    /// equal-bytes result is still an accepted attempt. A result the word
+    /// receipt refuses keeps its evidence row and adds nothing. Acceptance
+    /// mints one navigation receipt revision (committed bytes unchanged), so
+    /// every later request, including a second formatter result that named
+    /// the same revision, must name the new one.
+    fn accept_formatter_result(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        session_id: &str,
+        source_revision: u64,
+        policy: FormattingPolicy,
+        result: AiFormatResult,
+    ) -> Result<(TranscriptRevision, DerivedTranscriptProjection), UserRevisionRefusal> {
+        let source = self.terminal_revision_source(session_id, source_revision)?;
+        let committed = self.committed_rendered_text();
+        self.anchor_document_timeline(session_id);
+        if self.document_timeline.steps.is_empty() {
+            return Err(UserRevisionRefusal::NoCommittedDocument);
+        }
+        let mut projection = self.mint_derived_projection(
+            session_id.to_string(),
+            source_revision,
+            source.clone(),
+            policy,
+            result,
+            None,
+        );
+        let index = self.derived_projections.len() - 1;
+        if projection.status != "applied" {
+            return Err(UserRevisionRefusal::LedgerRefusal(
+                "formatter_result_not_applied",
+            ));
+        }
+        let cursor = self.document_timeline.cursor;
+        let revision = self.apply_document_text(
+            ledger,
+            &UserRevisionIntent {
+                session_id: session_id.to_string(),
+                source_revision,
+                rendered_text: committed.clone(),
+                provenance: DocumentRevisionProvenance::Navigation,
+            },
+            Some(cursor),
+        )?;
+        // Bind the presentation to the receipt just minted: the Bus paints a
+        // derived projection only over the revision it last published.
+        projection.source_raw_revision = self.revision;
+        if source != committed {
+            projection.source_raw_text = committed;
+            projection.source_state = "selected_version".into();
+        }
+        projection.receipt_id = format!(
+            "formatter-derived-{session_id}-{}-{}",
+            projection.source_raw_revision, projection.revision
+        );
+        projection.publication_digest = projection.digest();
+        self.derived_projections[index] = projection.clone();
+        let step = self.snapshot_step(
+            "formatter",
+            Some(policy.as_str().to_string()),
+            projection.receipt_id.clone(),
+            Some(projection.clone()),
+        );
+        self.push_document_step(step);
+        Ok((revision, projection))
     }
 
     /// The linear operation history and the selected step.
@@ -3936,6 +4020,21 @@ impl PresentationEmitter {
                 source_revision,
                 target,
             } => state.navigate_document(ledger, session_id, *source_revision, *target)?,
+            DocumentRequest::Format {
+                session_id,
+                source_revision,
+                policy,
+                result,
+            } => {
+                let (revision, projection) = state.accept_formatter_result(
+                    ledger,
+                    session_id,
+                    *source_revision,
+                    *policy,
+                    result.clone(),
+                )?;
+                (revision, Some(projection))
+            }
         };
         drop(state);
         if !self.authenticates_revision(&revision, ledger) {
@@ -3956,6 +4055,17 @@ impl PresentationEmitter {
         // A formatted step is presented again over the receipt just published.
         if let Some(presentation) = &presentation {
             self.publish_derived_paint(presentation);
+        }
+        if let (DocumentRequest::Format { .. }, Some(projection)) = (&request, &presentation) {
+            // The acknowledgement names the formatted version; Swift checks
+            // it against the revision it asked to format.
+            return Ok(UserRevisionCommit {
+                session_id: projection.session_id.clone(),
+                source_revision: request.source_revision(),
+                revision: projection.revision,
+                rendered_text: projection.rendered_text.clone(),
+                provenance_receipt: projection.receipt_id.clone(),
+            });
         }
         let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
             unreachable!("apply_user_revision must mint an ApplyUserRevision action")
@@ -4270,58 +4380,20 @@ impl PresentationEmitter {
             AiFormatStatus::Skipped => return Err(UserRevisionRefusal::FormatterUnavailable),
             AiFormatStatus::AiNoop => return Err(UserRevisionRefusal::FormatterNoop),
         }
-        let mut reducer = self
-            .session_state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let source = reducer.terminal_revision_source(&session_id, source_revision)?;
-        if source == result.text {
-            return Err(UserRevisionRefusal::Unchanged);
-        }
-        let committed = reducer.committed_rendered_text();
-        reducer.anchor_document_timeline(&session_id);
-        let mut projection = reducer.mint_derived_projection(
-            session_id,
-            source_revision,
-            source.clone(),
-            policy,
-            result,
-            None,
-        );
-        // A refused word receipt keeps its evidence row but is no version:
-        // nothing is painted and the cursor does not move.
-        if projection.status != "applied" {
-            return Err(UserRevisionRefusal::LedgerRefusal(
-                "formatter_result_not_applied",
-            ));
-        }
-        if source != committed {
-            // Formatted from the selected version; the paint still binds to
-            // the committed document the Bus last published.
-            projection.source_raw_text = committed;
-            projection.source_state = "selected_version".into();
-            projection.publication_digest = projection.digest();
-            *reducer
-                .derived_projections
-                .last_mut()
-                .expect("minted formatter projection") = projection.clone();
-        }
-        let step = reducer.snapshot_step(
-            "formatter",
-            Some(policy.as_str().to_string()),
-            projection.receipt_id.clone(),
-            Some(projection.clone()),
-        );
-        reducer.push_document_step(step);
-        drop(reducer);
-        self.publish_derived_paint(&projection);
-        Ok(UserRevisionCommit {
-            session_id: projection.session_id.clone(),
-            source_revision: projection.source_raw_revision,
-            revision: projection.revision,
-            rendered_text: projection.rendered_text.clone(),
-            provenance_receipt: projection.receipt_id.clone(),
-        })
+        let ledger = self
+            .acoustic_ledger
+            .as_ref()
+            .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+        let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+        self.commit_document_revision(
+            &mut ledger,
+            DocumentRequest::Format {
+                session_id,
+                source_revision,
+                policy,
+                result,
+            },
+        )
     }
 
     /// Choose one whole-take version. An incomplete Smart set yields a single
