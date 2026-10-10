@@ -2249,6 +2249,16 @@
         }
       }
     },
+    "Add to favorites": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dodaj do ulubionych"
+          }
+        }
+      }
+    },
     "Added": {
       "comment": "Diff span kind",
       "localizations": {
@@ -2673,16 +2683,6 @@
         }
       }
     },
-    "Agent pinned, disable Always on Top": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent przypięty — wyłącz „Zawsze na wierzchu”"
-          }
-        }
-      }
-    },
     "Agent playback preference could not be saved.": {
       "localizations": {
         "pl": {
@@ -2752,16 +2752,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agent niedostępny"
-          }
-        }
-      }
-    },
-    "Agent unpinned, enable Always on Top": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent nie jest przypięty. Włącz „Zawsze na wierzchu”."
           }
         }
       }
@@ -2915,6 +2905,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Zawsze zezwalaj"
+          }
+        }
+      }
+    },
+    "Always on top": {
+      "comment": "Pin toggle in the Agent header",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Zawsze na wierzchu"
+          }
+        }
+      }
+    },
+    "Always on top — on. Click to let other windows cover the Agent.": {
+      "comment": "Tooltip on the pin button while the Agent window floats",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Zawsze na wierzchu — włączone. Kliknij, aby inne okna mogły zasłonić Agenta."
           }
         }
       }
@@ -4014,16 +4026,6 @@
         }
       }
     },
-    "Chat column width: Comfortable, Wide, or Full": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Szerokość kolumny czatu: Wygodna, Szeroka lub Pełna"
-          }
-        }
-      }
-    },
     "Check %@": {
       "comment": "The placeholder is a file path",
       "localizations": {
@@ -4795,17 +4797,6 @@
         }
       }
     },
-    "Comfortable": {
-      "comment": "Chat width",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wygodna"
-          }
-        }
-      }
-    },
     "Command arguments": {
       "localizations": {
         "pl": {
@@ -5189,6 +5180,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Kontynuuj konsultację lub rozpocznij nową. Historia zostaje."
+          }
+        }
+      }
+    },
+    "Conversation width": {
+      "comment": "Submenu of the Agent header menu",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Szerokość rozmowy"
           }
         }
       }
@@ -6257,16 +6259,6 @@
         }
       }
     },
-    "Disable Always on Top": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wyłącz „Zawsze na wierzchu”"
-          }
-        }
-      }
-    },
     "Disable this server": {
       "localizations": {
         "pl": {
@@ -6610,16 +6602,6 @@
         }
       }
     },
-    "Enable Always on Top": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Włącz „Zawsze na wierzchu”"
-          }
-        }
-      }
-    },
     "Enable Codescribe in System Settings › Privacy & Security › Microphone.": {
       "localizations": {
         "pl": {
@@ -6886,16 +6868,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Błąd: %@"
-          }
-        }
-      }
-    },
-    "Favorite": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dodaj do ulubionych"
           }
         }
       }
@@ -7205,17 +7177,6 @@
         }
       }
     },
-    "Full": {
-      "comment": "Chat width: the whole window",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pełna"
-          }
-        }
-      }
-    },
     "Full Disk Access": {
       "comment": "Permission step heading",
       "localizations": {
@@ -7264,6 +7225,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Rozpoznawanie mowy z całego wybranego pliku audio lokalnie, za pomocą Whisper"
+          }
+        }
+      }
+    },
+    "Full width": {
+      "comment": "Conversation width: the whole column",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pełna szerokość"
           }
         }
       }
@@ -7868,6 +7840,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Zachowuj nagrania"
+          }
+        }
+      }
+    },
+    "Keep the Agent above other windows": {
+      "comment": "Tooltip on the pin button while the Agent window behaves like any other",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Trzymaj Agenta nad innymi oknami"
           }
         }
       }
@@ -10360,6 +10343,16 @@
         }
       }
     },
+    "Open settings": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia aplikacji"
+          }
+        }
+      }
+    },
     "Open the full text in a scrollable, selectable view": {
       "localizations": {
         "pl": {
@@ -10785,17 +10778,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wybierz język dyktowania."
-          }
-        }
-      }
-    },
-    "Pinned": {
-      "comment": "Always-on-top state",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "przypięte"
           }
         }
       }
@@ -12071,6 +12053,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Usuń folder"
+          }
+        }
+      }
+    },
+    "Remove from favorites": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usuń z ulubionych"
           }
         }
       }
@@ -14282,6 +14274,17 @@
         }
       }
     },
+    "Standard": {
+      "comment": "Conversation width",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standardowa"
+          }
+        }
+      }
+    },
     "Start dictation": {
       "localizations": {
         "pl": {
@@ -15672,12 +15675,13 @@
         }
       }
     },
-    "Thread actions": {
+    "Thread": {
+      "comment": "Menu section header above the current thread's actions",
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Działania wątku"
+            "value": "Wątek"
           }
         }
       }
@@ -16197,16 +16201,6 @@
         }
       }
     },
-    "Unfavorite": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Usuń z ulubionych"
-          }
-        }
-      }
-    },
     "Unfavorite thread": {
       "localizations": {
         "pl": {
@@ -16245,17 +16239,6 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Włącz odsłuch odpowiedzi agenta"
-          }
-        }
-      }
-    },
-    "Unpinned": {
-      "comment": "Always-on-top state",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent odpięty — włącz „Zawsze na wierzchu”"
           }
         }
       }
@@ -16952,7 +16935,7 @@
       }
     },
     "Wide": {
-      "comment": "Chat width",
+      "comment": "Conversation width",
       "localizations": {
         "pl": {
           "stringUnit": {
