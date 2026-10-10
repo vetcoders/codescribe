@@ -387,7 +387,19 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let owners = entries.compactMap(OverlayConversationOwner.init(row:))
         guard owners.count == 1 else { return }
         let key = "typed:" + identity
-        guard messages[key] == nil else { return }
+        if var existing = messages[key] {
+          guard row["origin_channel"] as? String == "0", existing.sourceChannel == "0",
+            existing.text == text else { return }
+          for owner in owners where !existing.recipients.contains(where: { $0.owner.id == owner.id }) {
+            historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
+            existing.recipients.append(OverlayConversationRecipient(
+              owner: owner, deliveryID: Self.identity([
+                "native_bus_demux", owner.leaseID, identity, "message", Self.routedAudience(audience),
+              ]), queued: false, accepted: false, acknowledged: false))
+          }
+          store(existing)
+          return
+        }
         let recipients = owners.map { owner in
           historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
           return OverlayConversationRecipient(
@@ -401,7 +413,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           id: key, kind: .user, text: text, order: nextOrder(),
           emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
           deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
-        message.sourceChannel = row["channel"] as? String
+        message.sourceChannel = (row["origin_channel"] as? String) ?? (row["channel"] as? String)
         store(message)
         return
       }

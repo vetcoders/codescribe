@@ -1170,6 +1170,16 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
+The channel-zero composer uses `cs-bus --send-text --channel 0`. Under the
+same binding lock, it validates every bound recipient before publication and
+writes one private copy per recipient. Copies share a message ID and timestamp;
+`origin_channel: "0"` records the broadcast while `channel` retains the exact
+recipient channel for the publisher. The follower presents channel zero and the
+overlay merges recipient receipts into one question. An empty roster or invalid
+recipient refuses the send and retains the draft. Publication across journals is
+not atomic: a write failure can leave earlier recipients delivered, so errors
+must not trigger automatic retry. No audio capture or agent identity is invented.
+
 ## Native provider queue receipt
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the

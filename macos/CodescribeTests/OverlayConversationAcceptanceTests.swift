@@ -49,6 +49,40 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testChannelZeroHasEditableComposerAndReturnSendsDraft() throws {
+    var draft = ""
+    var sent: [String] = []
+    let conversation = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: Binding(get: { draft }, set: { draft = $0 }), sending: false,
+      sendError: nil, onSend: { sent.append(draft) })
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 480, height: 500)
+    let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    window.orderFrontRegardless()
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let deadline = Date(timeIntervalSinceNow: 1)
+    while editor(in: host) == nil, Date() < deadline {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    window.makeFirstResponder(text)
+    text.insertText("Do wszystkich", replacementRange: text.selectedRange())
+    text.keyDown(with: try returnEvent())
+    XCTAssertEqual(sent, ["Do wszystkich"])
+  }
+
+  @MainActor
   func testBusMarkdownUsesChatCodeWellAndKeepsResizeMarginAcrossZoom() throws {
     let raw = """
       ## Wynik pracy
@@ -427,6 +461,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertEqual(try lenaConversation(bus).messages.last?.replyTo, delivery)
     bus = try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
     XCTAssertEqual(try lenaConversation(bus).messages.count, 6)
+  }
+
+  func testTypedBroadcastMergesRecipientCopiesIntoOneQuestion() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let identity = String(repeating: "e", count: 24)
+    for (lease, channel) in [(leaseA, "2"), (String(repeating: "b", count: 32), "7")] {
+      let recipient = owner(lease, channel: channel)
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+        "message_id": identity, "source_event_id": identity, "source": "typed",
+        "text": "Do wszystkich", "audience": "lena", "channel": channel,
+        "origin_channel": "0", "recipients": [recipient],
+      ]
+      bus.consume(row)
+      bus.consume(row)
+    }
+    let all = try XCTUnwrap(bus.conversations(busPath: "fixture").first { $0.channel == "0" })
+    XCTAssertEqual(all.messages.count, 1)
+    XCTAssertEqual(all.messages.first?.recipients.count, 2)
+    XCTAssertEqual(Set(all.messages[0].recipients.compactMap(\.deliveryID)).count, 2)
   }
 
   @MainActor
