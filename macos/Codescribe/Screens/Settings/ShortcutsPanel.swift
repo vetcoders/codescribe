@@ -158,7 +158,7 @@ struct ShortcutsPanel: View {
         Button {
           model.saveBindings()
         } label: {
-          Text("Save mode shortcuts")
+          Text("Save shortcuts")
             .font(CSFont.ui(12.5, .semibold))
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
@@ -177,7 +177,7 @@ struct ShortcutsPanel: View {
         Button {
           model.resetBindingsToDefaults()
         } label: {
-          Text("Restore default mode shortcuts")
+          Text("Restore defaults")
             .font(CSFont.ui(12.5, .semibold))
             .foregroundStyle(Color.secondary)
         }
@@ -186,7 +186,7 @@ struct ShortcutsPanel: View {
         Spacer(minLength: 0)
       }
 
-      Text("The mode shortcuts need saving. Everything else applies as soon as you change it.")
+      Text("These three shortcuts need saving. Everything else saves automatically.")
         .font(CSFont.ui(10.5, .medium))
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -254,25 +254,16 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: 8) {
       SettingsSectionLabel(String(localized: "During dictation"))
       VStack(alignment: .leading, spacing: 7) {
-        HStack(alignment: .top, spacing: 9) {
-          VStack(alignment: .leading, spacing: 1) {
-            Text("Attach selection")
-              .font(CSFont.ui(13.5, .semibold))
-              .foregroundStyle(Color.primary)
-            Text(
-              "While a dictation hold is running, press the chosen key to attach the selected text."
-            )
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Attach selection")
+            .font(CSFont.ui(13.5, .semibold))
+            .foregroundStyle(Color.primary)
+          Text("While holding Fn, press the chosen key to attach the selection.")
             .font(CSFont.ui(11.5, .medium))
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
-          }
-          Spacer(minLength: 8)
-          Text(armGestureLabel)
-            .font(CSFont.mono(10.5, .semibold))
-            .foregroundStyle(Color.primary)
-            .multilineTextAlignment(.trailing)
-            .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
 
         // Arm modifier is attach-only (default Shift; Cmd alternative).
         HStack(spacing: 8) {
@@ -301,11 +292,6 @@ struct ShortcutsPanel: View {
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
     }
-  }
-
-  /// Derived from the configured arm modifier — never hardcode Fn+Command.
-  private var armGestureLabel: String {
-    ArmGestureCopy.label(for: model.holdArmModifier)
   }
 
   private var armModifierBinding: Binding<String> {
@@ -376,8 +362,7 @@ struct ShortcutsPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Tap Fn to dictate",
-          detail:
-            "One tap starts dictation and the next tap stops it. Holding records only while you hold."
+          detail: "Tap to start or stop. Hold to record while held."
         ) {
           Toggle("Tap Fn to dictate", isOn: fnTapBinding)
             .labelsHidden()
@@ -386,8 +371,7 @@ struct ShortcutsPanel: View {
         divider
         inputSurfaceRow(
           title: "Middle mouse acts as Fn",
-          detail:
-            "The middle button follows the same press, hold and tap rules as Fn. Custom mappings in your mouse software can block its standard signal."
+          detail: "Works like Fn. Custom mouse-button mappings can block it."
         ) {
           Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
             .labelsHidden()
@@ -414,7 +398,7 @@ struct ShortcutsPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Agent channel",
-          detail: "Switch an Agent channel with the chosen modifier plus a digit."
+          detail: "Ctrl or Fn plus a digit switches the Agent channel."
         ) {
           Picker("Agent channel modifier", selection: channelModifierBinding) {
             Text(verbatim: "Ctrl").tag("ctrl")
@@ -443,12 +427,10 @@ struct ShortcutsPanel: View {
         Text("Paste transcript")
           .font(CSFont.ui(13.5, .semibold))
           .foregroundStyle(Color.primary)
-        Text(
-          "Pastes the transcript waiting to be inserted. The app in front may handle the same shortcut as well."
-        )
-        .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+        Text("Pastes the waiting transcript. The shortcut may also act in the app in front.")
+          .font(CSFont.ui(11.5, .medium))
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -506,17 +488,14 @@ struct ShortcutsPanel: View {
   // MARK: Automatic paste mode
 
   /// Safe / Comfort / Off — one persisted `PASTE_MODE` shared with the tray
-  /// Quick settings row. The picker owns a full-width row of its own, and only
-  /// the SELECTED mode explains itself: three permanent paragraphs made the
-  /// choice harder to read, and squeezing the segmented control next to the
-  /// title wrapped the label after two words in a narrow window.
+  /// Quick settings row. One heading only ("Automatic paste" duplicated it,
+  /// Founder brief round 5, 2026-10-10), and only the SELECTED mode explains
+  /// itself: three permanent paragraphs made the choice harder to read, and
+  /// squeezing the segmented control next to the title wrapped the label after
+  /// two words in a narrow window.
   private var pasteModeSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      SettingsSectionLabel(String(localized: "Automatic paste"))
-      Text("Paste after dictation")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
-        .frame(maxWidth: .infinity, alignment: .leading)
+      SettingsSectionLabel(String(localized: "Paste after dictation"))
 
       Picker("Paste mode", selection: pasteModeBinding) {
         ForEach(CsPasteMode.allModes, id: \.self) { mode in
@@ -704,15 +683,6 @@ struct ShortcutsPanel: View {
 
   private var divider: some View {
     Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
-  }
-}
-
-/// Single production owner for attach-arm gesture copy in Settings.
-enum ArmGestureCopy {
-  static func label(for modifier: String) -> String {
-    modifier == "cmd"
-      ? String(localized: "Command during the dictation hold")
-      : String(localized: "Shift during the dictation hold")
   }
 }
 
