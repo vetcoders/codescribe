@@ -1874,7 +1874,7 @@
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
+            "state": "translated",
             "value": "Reguła narzędzia ma pierwszeństwo przed regułą serwera, a obie przed tymi ustawieniami domyślnymi. Narzędzia destrukcyjne są zawsze blokowane, a odczyt ścieżki mogącej zawierać sekrety zawsze wymaga zgody."
           }
         }
@@ -17019,7 +17019,7 @@
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
+            "state": "translated",
             "value": "Bez Twojej zgody Codescribe nie korzysta z chmury i kontynuuje dyktowanie przez Apple na urządzeniu, bez uruchamiania lokalnego modelu."
           }
         }
