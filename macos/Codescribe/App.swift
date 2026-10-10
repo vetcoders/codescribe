@@ -969,7 +969,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let window = NSWindow(contentViewController: hosting)
     window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
-    window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+    window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
     window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
     // LSUIElement accessory: join the active Space so a passive
