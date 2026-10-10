@@ -243,6 +243,22 @@ final class ChatLayoutPolicyTests: XCTestCase {
     return hasher.finalize()
   }
 
+  // MARK: - Empty thread never scrolls (round 18)
+
+  /// The empty block plus everything else in the scroll document must add up
+  /// to exactly the viewport: list padding on both ends, one turn gap and the
+  /// 1 pt live-edge anchor. The old reservation forgot the gap and the anchor
+  /// and overshot by 17 pt — a scrollbar on a thread with no messages.
+  func testEmptyStateFillsViewportWithoutOvershoot() {
+    let viewport: CGFloat = 520
+    let empty = ChatLayoutPolicy.emptyStateHeight(viewportHeight: viewport)
+    let document =
+      empty + ChatLayoutPolicy.turnSpacing + ChatLayoutPolicy.liveEdgeAnchorHeight
+      + 2 * ChatLayoutPolicy.listPadding
+    XCTAssertEqual(document, viewport)
+    XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 10), 0, "never negative")
+  }
+
   // MARK: - R1 window-collapse clamps
 
   func testDocumentWidthNeverExceedsContainer() {

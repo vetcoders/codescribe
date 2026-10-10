@@ -279,7 +279,9 @@ private struct ThreadDetail: View {
     }
   }
 
-  // One compact chrome row: sidebar · title · live pill · pin / settings / thread.
+  // One compact chrome row: sidebar · title · live pill · pin · "•••".
+  // The thread title is the window's only title; every other action moved
+  // into the "•••" menu (Founder brief, round 18, 2026-10-10).
   private var chrome: some View {
     HStack(spacing: 8) {
       Button(action: toggleSidebar) {
@@ -301,7 +303,7 @@ private struct ThreadDetail: View {
           : String(localized: "Compact", comment: "Sidebar state"))
 
       Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(13, .semibold))
+        .font(CSFont.ui(14, .semibold))
         .foregroundStyle(ChatPalette.nameActive)
         .lineLimit(1)
         .truncationMode(.tail)
@@ -336,36 +338,7 @@ private struct ThreadDetail: View {
       // tertiary at rest, accent only for an active state (the pin). Even
       // 12 pt gaps — no control is louder than its neighbours.
       HStack(spacing: 12) {
-        widthModeMenu
-
-        Button {
-          isPinned.toggle()
-        } label: {
-          Image(systemName: isPinned ? "pin.fill" : "pin")
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
-        }
-        .csFocusRing()
-        .help(
-          isPinned
-            ? String(localized: "Disable Always on Top")
-            : String(localized: "Enable Always on Top")
-        )
-        .accessibilityLabel(
-          isPinned
-            ? String(localized: "Agent pinned, disable Always on Top")
-            : String(localized: "Agent unpinned, enable Always on Top")
-        )
-        .accessibilityValue(
-          isPinned
-            ? String(localized: "Pinned", comment: "Always-on-top state")
-            : String(localized: "Unpinned", comment: "Always-on-top state"))
-
-        Button(action: { openWindow.presentSettings() }) {
-          CSIconView(icon: .settings, size: 14, color: CSColor.textTertiary)
-        }
-        .csFocusRing()
-        .help("Settings")
+        pinToggle
 
         threadMenu
       }
@@ -381,10 +354,109 @@ private struct ThreadDetail: View {
     }
   }
 
-  /// Comfortable / Wide / Full — persists via `ChatLayoutPolicy.defaultsKey`.
-  /// A small selector with a disclosure chevron: it is a layout setting, not
-  /// a headline Agent feature, and the sparkle glyph read as an AI function
-  /// rather than a width choice (Founder brief 2026-10-10).
+  /// Always on top. The state has to be readable at a glance: on is the filled
+  /// glyph on an accent plate, like a selected toolbar item; off is the outline
+  /// glyph with no plate. The Founder ran the window pinned for days without
+  /// realising it, so a tint alone was not enough (Founder brief, round 18,
+  /// 2026-10-10). This writes only the persisted flag; the window level is
+  /// applied by `AgentWindowCapabilities`.
+  private var pinToggle: some View {
+    Button {
+      isPinned.toggle()
+    } label: {
+      Image(systemName: isPinned ? "pin.fill" : "pin")
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(isPinned ? CSColor.chromeAccent : Color.secondary)
+        .frame(width: 24, height: 20)
+        .background(
+          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            .fill(isPinned ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            .strokeBorder(
+              isPinned ? CSColor.chromeAccent.opacity(0.32) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+    .csFocusRing(cornerRadius: CSRadius.pill)
+    .help(
+      isPinned
+        ? String(
+          localized: "Always on top — on. Click to let other windows cover the Agent.",
+          comment: "Tooltip on the pin button while the Agent window floats")
+        : String(
+          localized: "Keep the Agent above other windows",
+          comment: "Tooltip on the pin button while the Agent window behaves like any other")
+    )
+    .accessibilityLabel(
+      String(localized: "Always on top", comment: "Pin toggle in the Agent header"))
+    .accessibilityValue(
+      isPinned
+        ? String(localized: "On", comment: "Toggle state")
+        : String(localized: "Off", comment: "Toggle state")
+    )
+    .accessibilityAddTraits(.isToggle)
+    .accessibilityAddTraits(isPinned ? .isSelected : [])
+  }
+
+  // The header's one menu: every action that used to sit in the chrome as its
+  // own control (width selector, Settings gear) lives here, grouped thread
+  // first, app second, destructive last (Founder brief, round 18, 2026-10-10).
+  // Export entries appear only for persisted threads (a not-yet-saved local
+  // thread has no backend id to export from). The export section names its
+  // fixed destination up front: there is no file chooser, the file always
+  // lands in the Transcripts folder.
+  private var threadMenu: some View {
+    Menu {
+      if let thread = store.currentThread {
+        Section {
+          Button("Rename") { beginRename(thread) }
+          Button(
+            thread.isFavorite
+              ? String(localized: "Remove from favorites")
+              : String(localized: "Add to favorites")
+          ) {
+            store.toggleFavorite(thread)
+          }
+        } header: {
+          Text("Thread", comment: "Menu section header above the current thread's actions")
+        }
+        if thread.backendId != nil {
+          Section {
+            Button("Export to Markdown") { export(thread, assistantOnly: false) }
+            Button("Export Agent replies only") { export(thread, assistantOnly: true) }
+          } header: {
+            Text(
+              "Exports save to the Transcripts folder",
+              comment: "Menu section header above the Markdown export actions")
+          }
+        }
+        Section {
+          widthModeMenu
+        }
+        Section {
+          Button("Open settings") { openWindow.presentSettings() }
+        }
+        Section {
+          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
+        }
+      }
+    } label: {
+      CSIconView(icon: .more, size: 14, color: CSColor.textTertiary)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    // Shared key with the overlay's intent rail, so it carries no new comment.
+    .help("More actions")
+    .accessibilityLabel(String(localized: "More actions"))
+  }
+
+  /// Standard / Wide / Full width — persists via `ChatLayoutPolicy.defaultsKey`.
+  /// A submenu of the header's "•••" menu: it is a layout setting, not a
+  /// headline Agent feature, so it no longer occupies its own slot in the
+  /// chrome (Founder brief, round 18, 2026-10-10).
   private var widthModeMenu: some View {
     Menu {
       ForEach(ChatWidthMode.allCases) { mode in
@@ -399,54 +471,11 @@ private struct ThreadDetail: View {
         }
       }
     } label: {
-      HStack(spacing: 3) {
-        Text(widthMode.label)
-          .font(CSFont.mono(10, .medium))
-        Image(systemName: "chevron.down")
-          .font(.system(size: 8, weight: .semibold))
-      }
-      .foregroundStyle(CSColor.textTertiary)
+      Text("Conversation width", comment: "Submenu of the Agent header menu")
     }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .help("Chat column width: Comfortable, Wide, or Full")
-  }
-
-  // Current-thread actions. Export entries appear only for persisted threads
-  // (a not-yet-saved local thread has no backend id to export from). The
-  // export section names its fixed destination up front: there is no file
-  // chooser, the file always lands in the Transcripts folder.
-  private var threadMenu: some View {
-    Menu {
-      if let thread = store.currentThread {
-        Button("Rename") { beginRename(thread) }
-        Button(
-          thread.isFavorite
-            ? String(localized: "Unfavorite") : String(localized: "Favorite")
-        ) {
-          store.toggleFavorite(thread)
-        }
-        if thread.backendId != nil {
-          Section {
-            Button("Export to Markdown") { export(thread, assistantOnly: false) }
-            Button("Export Agent replies only") { export(thread, assistantOnly: true) }
-          } header: {
-            Text(
-              "Exports save to the Transcripts folder",
-              comment: "Menu section header above the Markdown export actions")
-          }
-        }
-        Divider()
-        Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
-      }
-    } label: {
-      CSIconView(icon: .more, size: 14, color: CSColor.textTertiary)
-    }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .help("Thread actions")
+    .accessibilityLabel(
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
+    .accessibilityValue(widthMode.label)
   }
 
   private func beginRename(_ thread: ChatThread) {

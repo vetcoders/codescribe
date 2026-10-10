@@ -315,6 +315,35 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### Agent window header
+
+The detail chrome (`AgentChatView.swift`) carries one title — the current
+thread's — and nothing that competes with it. The native titlebar keeps the
+window title, dragging and the close / minimise / fullscreen controls; the
+content never repeats a window-level header.
+
+- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
+  followed by the turn count, the thread's model and the live turn status.
+  The toggle lives in the detail chrome so it stays reachable while the
+  native sidebar is collapsed.
+- **Right:** exactly two controls. The pin (always on top) shows its state
+  rather than hinting at it — pinned is the filled glyph on an accent plate
+  with the `selected` trait and an "On" Accessibility value, unpinned is the
+  outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
+  `AgentWindowCapabilities` applies the window level.
+- **"•••" menu:** the single home for the header's actions — thread section
+  (Rename, Add to / Remove from favorites, Markdown exports when the thread
+  is persisted), the "Conversation width" submenu (Standard / Wide / Full
+  width, the conversation column's density — not the window size), "Open
+  settings", and the destructive "Delete Thread" last, behind the shared
+  confirmation. There is no separate width selector or Settings gear in the
+  chrome.
+
+An empty thread does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
+no-turns block to the viewport minus everything else the scroll document
+carries (list padding on both edges, the stack gap and the live-edge anchor),
+so the content fits exactly instead of overshooting by those points.
+
 ### Thread history interactions
 
 The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
@@ -324,7 +353,8 @@ share three contracts:
   row's Accessibility activation and the keyboard all call the same `select`
   path in `ThreadRail`. To Accessibility a row is a single button labelled
   with the thread title, with the `selected` trait on the open thread and
-  Rename / Favorite / Delete as named actions; while a title is being renamed
+  Rename / Add to favorites / Delete as named actions, worded exactly as the
+  header menu words them; while a title is being renamed
   the row exposes its children so the text field stays reachable. Rows are
   keyboard focus targets: Return or Space opens the focused row, Up / Down
   opens the neighbouring row in visible order (`ThreadRailNavigation`,

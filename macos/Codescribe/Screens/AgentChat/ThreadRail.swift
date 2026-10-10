@@ -335,8 +335,13 @@ private struct ThreadRow: View {
       .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
   }
 
+  /// One copy for this action everywhere it is offered — the rail's context
+  /// menu, the row's Accessibility action and the header's "•••" menu read the
+  /// same words (Founder brief, round 18, 2026-10-10).
   private var favoriteActionTitle: String {
-    thread.isFavorite ? String(localized: "Unfavorite") : String(localized: "Favorite")
+    thread.isFavorite
+      ? String(localized: "Remove from favorites")
+      : String(localized: "Add to favorites")
   }
 
   private var favoriteHelp: String {
