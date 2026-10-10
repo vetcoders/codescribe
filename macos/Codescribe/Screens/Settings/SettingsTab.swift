@@ -124,10 +124,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Adjust how quickly text appears in the preview window while recording."
       )
     case .dictationPrivacy:
-      String(
-        localized:
-          "See when Codescribe processes audio on this Mac and when it may use cloud services."
-      )
+      String(localized: "See when Codescribe uses online services.")
     case .dictationPermissions:
       String(localized: "Live macOS permission status. Click a missing permission to grant it.")
     }
