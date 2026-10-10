@@ -198,6 +198,9 @@ mod macos {
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
     /// An active tap can consume the configured channel chord.
     const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
+    /// `kCGEventSourceStateHIDSystemState`: what the hardware did, regardless
+    /// of which tap was allowed to see it.
+    const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
 
     // Callback type
     /// Signature CoreGraphics expects for an event tap callback.
@@ -231,6 +234,10 @@ mod macos {
         fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
         /// Read one integer field of an event (here: the virtual keycode).
         fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
+        /// Seconds since the HID system last saw an event of `event_type`,
+        /// whether or not this tap received it (secure keyboard entry hides
+        /// key events from taps but not from the HID state).
+        fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: CGEventType) -> f64;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -770,6 +777,23 @@ mod macos {
                     modifiers.cmd,
                     modifiers.fn_key
                 );
+
+                // Tell the detector when the hardware last typed a key, so an
+                // Option chord whose letter never reached this tap is still
+                // typing and not half of a double-tap.
+                // SAFETY: pure query of the HID system state; no pointers.
+                let key_down_age = unsafe {
+                    CGEventSourceSecondsSinceLastEventType(
+                        K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE,
+                        K_CG_EVENT_KEY_DOWN,
+                    )
+                };
+                if key_down_age.is_finite()
+                    && key_down_age >= 0.0
+                    && let Some(at) = now.checked_sub(Duration::from_secs_f64(key_down_age))
+                {
+                    state.detector.observe_hid_key_down(at);
+                }
 
                 HotkeyDetectorInput::FlagsChanged {
                     now,

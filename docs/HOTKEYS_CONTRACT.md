@@ -244,6 +244,14 @@ recent committed utterance; it must never create a second delivered utterance.
 
 **Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
 **Behavior:** First tap starts recording, second tap toggles send/stop
+**Tap means tap:** an Option press counts as a tap only when it is shorter than
+220 ms (`TAP_MAX_MS`, the same limit the Ctrl double-tap uses) and nothing was
+typed while it was down. Typing with Option (Polish diacritics such as ś, ć, ę)
+never pairs into a double-tap: the detector drops the pair when it saw a letter
+key-down, and also when the HID system reports a key-down during the press even
+though the tap never received the letter (secure keyboard entry, another event
+tap swallowing key events). The CoreGraphics layer passes that HID timestamp
+in through `HotkeyDetector::observe_hid_key_down` on every modifier change.
 **Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
