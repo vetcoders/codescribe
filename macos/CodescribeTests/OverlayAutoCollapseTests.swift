@@ -258,6 +258,61 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .midi)
   }
 
+  func testAgentCaptureKeepsTranscriptionExpandedThroughSilenceThenReturnsAfterStop() {
+    for channel in ["0", "3"] {
+      let (state, clock) = makeState()
+      state.setPresentationMode(.mini)
+      var roster = CsChannelRosterState(
+        channel: channel, audience: channel == "0" ? "all" : "astra", provider: "codex",
+        providerSessionId: "agent-capture", open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true)
+      state.applyChannelRoster([roster])
+      XCTAssertFalse(state.recording, "agent capture must not change dictation lifecycle")
+      XCTAssertTrue(state.audioCaptureActive)
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertNil(state.autoCollapseDeadline)
+      clock.advance(by: 60)
+      XCTAssertEqual(state.presentationMode, .expanded, "silence is still an active take")
+      state.applyChannelRoster([roster])
+      XCTAssertNil(state.autoCollapseDeadline, "unchanged roster cannot arm an idle timer")
+
+      roster.open = false
+      state.applyChannelRoster([roster])
+      XCTAssertFalse(state.audioCaptureActive)
+      XCTAssertEqual(clock.outstanding, 1, "Stop starts the ordinary return interval")
+      clock.advance(by: OverlayAutoCollapse.idleSeconds - 0.5)
+      XCTAssertEqual(state.presentationMode, .expanded)
+      clock.advance(by: 0.5)
+      XCTAssertEqual(state.presentationMode, .mini)
+    }
+  }
+
+  func testAgentCaptureCancelsPredecessorWakeUntilEveryChannelCloses() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    runTake(state)
+    let predecessor = try XCTUnwrap(clock.wakes.last)
+    var first = CsChannelRosterState(
+      channel: "2", audience: "lena", provider: "codex", providerSessionId: "lena-session",
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    var second = CsChannelRosterState(
+      channel: "3", audience: "astra", provider: "codex", providerSessionId: "astra-session",
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+    state.applyChannelRoster([first, second])
+    XCTAssertTrue(predecessor.cancelled)
+    predecessor.run()
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    first.open = false
+    state.applyChannelRoster([first, second])
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded, "remaining recipient still owns capture")
+    second.open = false
+    state.applyChannelRoster([first, second])
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
   func testSuccessorExpansionKeepsTheFirstMemoAndRefusesThePredecessorWake() throws {
     let (state, clock) = makeState()
     state.setPresentationMode(.mini)
