@@ -31,13 +31,15 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let lease = installer.bridgeRoot.appendingPathComponent("leases/\(candidate.leaseID).json")
     try FileManager.default.createDirectory(
       at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)
-    func writeLease(padding: Int, model: String? = nil) throws {
+    func writeLease(padding: Int, model: String? = nil, repository: String? = nil) throws {
       var row: [String: Any] = [
         "schema": "codescribe.agent-bridge.lease.v1", "lease_id": candidate.leaseID,
         "provider": candidate.provider, "provider_session_id": candidate.session,
         "bus": customBus, "pending": [["text": String(repeating: "x", count: padding)]],
       ]
       row["model"] = model
+      row["repository_name"] = repository
+      row["workspace"] = "/tmp/project/worktree"
       try JSONSerialization.data(withJSONObject: row).write(to: lease)
     }
     try writeLease(padding: 5 << 20)
@@ -55,6 +57,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(
       withModel["2"]?.identity, resolved["2"]?.identity,
       "Changing display metadata must not change playback identity")
+    try writeLease(padding: 0, model: "gpt-6.1-sol", repository: "codescribe")
+    let withRepository = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(withRepository["2"]?.descriptor, "Codex · gpt-6.1-sol · codescribe")
+    XCTAssertEqual(withRepository["2"]?.workspace, "/tmp/project/worktree")
+    XCTAssertEqual(withRepository["2"]?.identity, resolved["2"]?.identity)
     try writeLease(padding: 16 << 20)
     let oversized = await RealAgentBridgeInstaller.boundPlaybackAgents(
       for: ["2": candidate], installer: installer)
