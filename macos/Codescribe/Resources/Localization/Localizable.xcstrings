@@ -3281,16 +3281,6 @@
         }
       }
     },
-    "Base size; Agent mode stays proportionally larger" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wielkość domyślna. W trybie agentowym wskaźnik jest proporcjonalnie większy."
-          }
-        }
-      }
-    },
     "Basic" : {
       "comment" : "Operating lane: dictation only",
       "localizations" : {
@@ -3961,6 +3951,16 @@
         }
       }
     },
+    "Choose how to start Codescribe's modes and how to control recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wybierz, jak uruchamiać tryby Codescribe i sterować nagrywaniem."
+          }
+        }
+      }
+    },
     "Choose how you want to use Codescribe." : {
       "comment" : "Setup chapter heading",
       "localizations" : {
@@ -3989,16 +3989,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
-          }
-        }
-      }
-    },
-    "Choose the shortcut that pastes the transcript waiting to be inserted." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz skrót, którym wkleisz transkrypcję oczekującą na wstawienie"
           }
         }
       }
@@ -4562,12 +4552,12 @@
         }
       }
     },
-    "Command during Fn hold" : {
+    "Command during the dictation hold" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Command podczas przytrzymywania Fn"
+            "state" : "needs_review",
+            "value" : "Command podczas przytrzymania dyktowania"
           }
         }
       }
@@ -5529,16 +5519,6 @@
         }
       }
     },
-    "Ctrl + digit switches an Agent channel. Choose Fn to use Fn + digit instead." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ctrl + cyfra przełącza kanał Agenta. Wybierz Fn, aby używać Fn + cyfra."
-          }
-        }
-      }
-    },
     "Current" : {
       "localizations" : {
         "pl" : {
@@ -5714,16 +5694,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ustawienia domyślne"
-          }
-        }
-      }
-    },
-    "Deferred insert" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wklejanie na żądanie"
           }
         }
       }
@@ -5917,12 +5887,12 @@
         }
       }
     },
-    "Dictation context" : {
+    "Dictation control" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kontekst dyktowania"
+            "state" : "needs_review",
+            "value" : "Sterowanie dyktowaniem"
           }
         }
       }
@@ -6196,6 +6166,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuca zachowane poprzednie nagranie bez przywracania go"
+          }
+        }
+      }
+    },
+    "During dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podczas dyktowania"
           }
         }
       }
@@ -6530,12 +6510,12 @@
         }
       }
     },
-    "Extra gestures" : {
+    "Extra shortcuts" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodatkowe gesty"
+            "state" : "needs_review",
+            "value" : "Dodatkowe skróty"
           }
         }
       }
@@ -7284,16 +7264,6 @@
         }
       }
     },
-    "Indicator states" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stany wskaźnika"
-          }
-        }
-      }
-    },
     "Individual rule" : {
       "localizations" : {
         "pl" : {
@@ -7578,16 +7548,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz działa"
-          }
-        }
-      }
-    },
-    "Keyboard shortcuts" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skróty klawiszowe"
           }
         }
       }
@@ -10211,6 +10171,16 @@
         }
       }
     },
+    "Pastes the transcript waiting to be inserted. The app in front may handle the same shortcut as well." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wkleja transkrypcję oczekującą na wstawienie. Aplikacja na wierzchu może również obsłużyć ten sam skrót."
+          }
+        }
+      }
+    },
     "Pastes wherever the caret is, terminals too; commands and password fields are held." : {
       "localizations" : {
         "pl" : {
@@ -11236,6 +11206,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Trwa nagrywanie"
+          }
+        }
+      }
+    },
+    "Recording indicator" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wskaźnik nagrywania"
           }
         }
       }
@@ -13003,22 +12983,22 @@
         }
       }
     },
-    "Shift during Fn hold" : {
+    "Shift during the dictation hold" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Shift podczas przytrzymywania Fn"
+            "state" : "needs_review",
+            "value" : "Shift podczas przytrzymania dyktowania"
           }
         }
       }
     },
-    "Shift or Command during an already-started Fn hold attaches the selected text. It does not switch to the Agent." : {
+    "Shortcuts & control" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Shift lub Command podczas już rozpoczętego przytrzymania Fn dołącza zaznaczony tekst. Nie przełącza do Agenta."
+            "state" : "needs_review",
+            "value" : "Skróty i sterowanie"
           }
         }
       }
@@ -13275,6 +13255,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się załadować Silero VAD"
+          }
+        }
+      }
+    },
+    "Size of the indicator next to the cursor" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Rozmiar wskaźnika przy kursorze"
           }
         }
       }
@@ -14259,6 +14249,16 @@
         }
       }
     },
+    "Switch an Agent channel with the chosen modifier plus a digit." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przełączaj kanał Agenta wybranym modyfikatorem z cyfrą."
+          }
+        }
+      }
+    },
     "System Settings" : {
       "comment" : "Button: open the System Settings pane",
       "localizations" : {
@@ -14592,16 +14592,6 @@
         }
       }
     },
-    "The app you are pasting into may handle this shortcut as well." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aplikacja, do której wklejasz, może również obsłużyć ten skrót."
-          }
-        }
-      }
-    },
     "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane." : {
       "localizations" : {
         "pl" : {
@@ -14831,12 +14821,22 @@
         }
       }
     },
-    "The middle mouse button follows the same press, hold and tap rules as Fn. Its ordinary click can still reach the app in front." : {
+    "The middle button follows the same press, hold and tap rules as Fn. Custom mappings in your mouse software can block its standard signal." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Środkowy przycisk myszy działa według tych samych reguł naciśnięcia, przytrzymania i tapnięcia co Fn. Jego zwykłe kliknięcie może nadal dotrzeć do aktywnej aplikacji."
+            "state" : "needs_review",
+            "value" : "Środkowy przycisk działa według tych samych zasad naciśnięcia, przytrzymania i stuknięcia co Fn. Własne przypisania w oprogramowaniu myszy mogą zablokować jego standardowy sygnał."
+          }
+        }
+      }
+    },
+    "The mode shortcuts need saving. Everything else applies as soon as you change it." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Skróty trybów wymagają zapisania. Pozostałe ustawienia zapisują się automatycznie."
           }
         }
       }
@@ -14962,16 +14962,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dotychczasowy tekst jest dostępny, ale może być niepełny."
-          }
-        }
-      }
-    },
-    "The three mode gestures are saved with the button below. Every other setting here applies as soon as you change it." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Trzy gesty trybów zapisujesz przyciskiem poniżej. Pozostałe ustawienia na tej karcie działają od razu po zmianie."
           }
         }
       }
@@ -16353,12 +16343,12 @@
         }
       }
     },
-    "Where the transcript goes when a Hold or toggle take ends." : {
+    "While a dictation hold is running, press the chosen key to attach the selected text." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz, czy Codescribe ma automatycznie wklejać treść transkrypcji."
+            "state" : "needs_review",
+            "value" : "Gdy trwa przytrzymanie dyktowania, naciśnij wybrany klawisz, aby dołączyć zaznaczony tekst."
           }
         }
       }
