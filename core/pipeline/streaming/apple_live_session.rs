@@ -4521,13 +4521,16 @@ impl AppleSealState {
                 }) {
                     continue;
                 }
+                let targets = selected.iter().map(SlotTarget::from).collect::<Vec<_>>();
+                let witnesses = ledger.dictionary_witnesses(owner, &targets);
+                if witnesses.len() < 2 {
+                    continue;
+                }
                 let Some(canonical) = lexicon.candidate(&text) else { continue; };
                 if text.trim_matches(|c: char| !c.is_alphanumeric()) == canonical {
                     continue;
                 }
-                let targets = selected.iter().map(SlotTarget::from).collect::<Vec<_>>();
-                let witnesses = ledger.dictionary_witnesses(owner, &targets);
-                if witnesses.len() < 2 || witnesses.iter().any(|(_, raw)| {
+                if witnesses.iter().any(|(_, raw)| {
                     lexicon.candidate(raw).as_deref() != Some(canonical.as_str())
                 }) {
                     continue;
