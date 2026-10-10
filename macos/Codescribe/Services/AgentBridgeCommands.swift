@@ -31,6 +31,8 @@ struct AgentPlaybackIdentity: Hashable, Sendable {
 struct AgentPlaybackBinding: Equatable, Sendable {
   let identity: AgentPlaybackIdentity
   let model: String?
+  var repositoryName: String? = nil
+  var workspace: String? = nil
 
   var descriptor: String {
     let provider =
@@ -40,8 +42,10 @@ struct AgentPlaybackBinding: Equatable, Sendable {
       case "grok": "Grok"
       default: identity.provider
       }
-    guard let model, !model.isEmpty else { return provider }
-    return "\(provider) · \(model)"
+    return [provider, model, repositoryName]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: " · ")
   }
 }
 
@@ -138,7 +142,13 @@ extension RealAgentBridgeInstaller {
         result[channel] = AgentPlaybackBinding(
           identity: AgentPlaybackIdentity(
             provider: candidate.provider, session: candidate.session, bus: bus),
-          model: model.flatMap { $0.isEmpty || $0.count > 160 ? nil : $0 })
+          model: model.flatMap { $0.isEmpty || $0.count > 160 ? nil : $0 },
+          repositoryName: (row["repository_name"] as? String).flatMap {
+            $0.isEmpty || $0.count > 160 ? nil : $0
+          },
+          workspace: (row["workspace"] as? String).flatMap {
+            $0.hasPrefix("/") && $0.count <= 4096 ? $0 : nil
+          })
       }
       return result
     }.value
