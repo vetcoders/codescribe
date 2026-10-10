@@ -241,6 +241,61 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .mini)
   }
 
+  func testChannelCaptureHoldsAutomaticExpansionUntilClose() {
+    for channel in ["0", "2"] {
+      for compact in [OverlayPresentationMode.mini, .midi] {
+        let (state, clock) = makeState()
+        state.setPresentationMode(compact)
+        var row = CsChannelRosterState(
+          channel: channel, audience: channel == "0" ? "*" : "nina", provider: "codex",
+          providerSessionId: "channel-capture", open: true, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true)
+        state.applyChannelRoster([row])
+        XCTAssertTrue(state.channelAudioCaptureActive)
+        XCTAssertFalse(state.recording, "channel capture has its own controller projection")
+        XCTAssertEqual(state.presentationMode, .expanded)
+        clock.advance(by: 120)
+        state.applyChannelRoster([row])
+        XCTAssertEqual(state.presentationMode, .expanded)
+        XCTAssertEqual(clock.outstanding, 0)
+        XCTAssertNil(state.autoCollapseDeadline)
+
+        row.open = false
+        state.applyChannelRoster([row])
+        XCTAssertEqual(clock.outstanding, 1)
+        clock.advance(by: 9)
+        state.applyChannelRoster([row])
+        XCTAssertEqual(state.presentationMode, .expanded)
+        clock.advance(by: 1)
+        XCTAssertEqual(state.presentationMode, compact)
+      }
+    }
+  }
+
+  func testChannelCaptureCancelsPredecessorCollapse() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    runTake(state)
+    let oldWake = try XCTUnwrap(clock.wakes.last)
+    clock.advance(by: 9)
+    let rows = ["1", "2"].map { channel in
+      CsChannelRosterState(
+        channel: channel, audience: "agent-\(channel)", provider: "codex",
+        providerSessionId: "session-\(channel)", open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true)
+    }
+    state.applyChannelRoster(rows)
+    oldWake.run()
+    state.finishControllerRecording()
+    state.applyChannelRoster([rows[1]])
+    clock.advance(by: 120)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(clock.outstanding, 0, "the remaining open channel still holds the panel")
+    state.applyChannelRoster([])
+    clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
   func testActivityMovesTheDeadlineWithOneOutstandingWake() {
     let (state, clock) = makeState()
     state.setPresentationMode(.midi)
