@@ -1,6 +1,7 @@
 //! Explicit operations address a source observation and exact PCM pins.
 //! Dictionary rules authorize a merge; timed child pins authorize a split.
 
+use super::word_adjudication::negation_contexts;
 use super::*;
 
 /// Align labels inside one PCM group; lexical matching never creates a pin.
@@ -1057,6 +1058,43 @@ impl AcousticLedger {
             .map(|pin| self.ordinary_word_target(&prior, &pins, pin))
             .collect::<Vec<_>>();
         let crossed_partitions = self.crossed_source_partitions(&prior, &pins, &ordinary_targets);
+        // A bounded trial reserves its addressed group before dispatch. Both
+        // its return and later evidence for an unresolved trial must answer
+        // that whole question, including unchanged neighbour labels. Reverting
+        // to per-word decisions would discard group witnesses and budgets.
+        let mut trial_targets = self.retained_word_trial_targets(&observation.occurrence);
+        if let Some(trial) = self
+            .word_evidence_input(observation)
+            .and_then(|input| input.trial.as_ref())
+            && !trial_targets.contains(&trial.targets)
+        {
+            trial_targets.push(trial.targets.clone());
+        }
+        let trial_groups = trial_targets
+            .iter()
+            .filter_map(|targets| {
+                let sources = prior
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source)| targets.contains(&SlotTarget::from(*source)))
+                    .map(|(index, _)| index)
+                    .collect::<BTreeSet<_>>();
+                if sources.len() <= 1 || sources.len() != targets.len() {
+                    return None;
+                }
+                let words = pins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pin)| {
+                        sources
+                            .iter()
+                            .any(|source| self.pin_targets_source(&prior[*source], pin))
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<BTreeSet<_>>();
+                Some((sources, words))
+            })
+            .collect::<Vec<_>>();
         for seed in 0..pins.len() {
             if visited.contains(&seed) {
                 continue;
@@ -1067,6 +1105,12 @@ impl AcousticLedger {
                 // Borrow the ledger only while discovering this component.
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
+                    if trial_groups
+                        .iter()
+                        .any(|(sources, words)| words.contains(&pin) && sources.contains(&source))
+                    {
+                        return true;
+                    }
                     if let Some((sources, _)) = crossed_partitions
                         .iter()
                         .find(|(_, words)| words.contains(&pin))
@@ -1128,7 +1172,8 @@ impl AcousticLedger {
             let all_coarse = sources.iter().all(coarse_source);
             // A coarse hypothesis has no independent word claims. Its
             // refinement still needs the measured partition/source accounting
-            // below; lexical voting applies once physical words exist.
+            // below; a polarity dispute still needs lexical adjudication
+            // before the measured words can replace the held phrase.
             let source_complete =
                 all_coarse || self.asr_source_scope_complete(observation, &sources);
             let authority = sources.iter().all(|source| {
@@ -1158,6 +1203,39 @@ impl AcousticLedger {
                     .count()
                     > 1
             });
+            // Source lineage may cross today's neighbour boundary. Within an
+            // explicitly reserved group, a bijection of current word centres
+            // proves that no current word was collapsed by that timing jitter.
+            // This only admits a geometric question; lexical confirmation is
+            // still required below before any label or partition can change.
+            let preserves_trial_words = trial_groups
+                .iter()
+                .any(|(sources, _)| *sources == source_indices)
+                && sources.len() == outputs.len()
+                && sources.iter().all(|source| {
+                    !self.coarse_word_source(source)
+                        && outputs
+                            .iter()
+                            .filter(|word| {
+                                let midpoint = source.sample_start
+                                    + (source.sample_end - source.sample_start) / 2;
+                                word.sample_start <= midpoint && midpoint < word.sample_end
+                            })
+                            .count()
+                            == 1
+                })
+                && outputs.iter().all(|word| {
+                    word.text.split_whitespace().count() == 1
+                        && sources
+                            .iter()
+                            .filter(|source| {
+                                let midpoint = source.sample_start
+                                    + (source.sample_end - source.sample_start) / 2;
+                                word.sample_start <= midpoint && midpoint < word.sample_end
+                            })
+                            .count()
+                            == 1
+                });
             // A completed word-grain decode covering every addressed source
             // is a partition receipt. It does not turn word timestamp gaps into
             // untranscribed speech or fabricate a speech-coverage receipt.
@@ -1191,7 +1269,7 @@ impl AcousticLedger {
             // A completed word-grain window proves which PCM was observed.
             // It does not authorize a merge of already distinct complete Words.
             // Pin or speech coverage alone cannot retire their word evidence.
-            let geometry = !collapses_complete_words
+            let geometry = (!collapses_complete_words || preserves_trial_words)
                 && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                     == sources.len()
                 && outputs
@@ -1278,14 +1356,20 @@ impl AcousticLedger {
                 && preserve_group_content(&held, &candidate).is_ok_and(|(_, retained)| !retained);
             // Scope proof stays available for a real partition. It cannot
             // clear ambiguity or speech debt for an unproved contraction.
-            let window_partition = window_refinement && !collapses_complete_words;
+            let window_partition =
+                window_refinement && (!collapses_complete_words || preserves_trial_words);
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
                     || content_refinement
                     || partial_refinement
                     || window_partition);
-            let local_choice = if !all_coarse && source_complete && geometry && !ambiguous {
+            // Word timestamps may refine a phrase's geometry, but cannot
+            // silently reverse its polarity. Route that disagreement through
+            // the existing lexical authority even while the source is coarse.
+            let lexical_refinement =
+                !all_coarse || negation_contexts(&held) != negation_contexts(&candidate);
+            let local_choice = if lexical_refinement && source_complete && geometry && !ambiguous {
                 self.adjudicate_word_sources(observation, &sources, &outputs)
             } else {
                 None

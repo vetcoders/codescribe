@@ -136,7 +136,7 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
 }
 
 #[test]
-fn partition_guard_keeps_one_word_context_arbitration_available() {
+fn deeper_context_alone_cannot_replace_even_one_exact_word() {
     let owner = OccurrenceIdentity::new("one-word-context", 1, 0, 160_000);
     let mut pcm = vec![0.0; 160_000];
     pcm[48_000..64_000].fill(0.2);
@@ -158,14 +158,196 @@ fn partition_guard_keeps_one_word_context_arbitration_available() {
         "poprawiona",
         Some((0, 128_000)),
     );
-    assert_eq!(ledger.text_of(&owner), Some("poprawiona"));
+    assert_eq!(ledger.text_of(&owner), Some("pierwsza"));
     assert!(
         ledger
             .word_choices()
             .iter()
-            .any(|choice| choice.accepted && choice.reason == "band_authority")
+            .any(|choice| !choice.accepted && choice.reason == "lexical_disagreement")
     );
     assert!(!ledger.is_sealed(&owner));
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        3,
+        "poprawiona",
+        Some((8_000, 136_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("poprawiona"));
+    assert!(ledger.word_choices().iter().any(|choice| {
+        choice.accepted && choice.lexical_resolved && choice.reason == "source_agreement"
+    }));
+}
+
+/// Establish the multi-target lexical question directly at its authority seam.
+/// Later frames go through ordinary admission, so the fixture does not grant
+/// those frames the grouping that v11 is responsible for retaining.
+fn unresolved_group_trial() -> (
+    AcousticLedger,
+    OccurrenceIdentity,
+    super::word_adjudication::WordTrial,
+) {
+    let owner = OccurrenceIdentity::new("retained-group", 1, 0, 192_000);
+    let mut pcm = vec![0.0; 192_000];
+    pcm[48_000..56_000].fill(0.2);
+    pcm[64_000..72_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let initial = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    let held = [
+        WordPin::new(48_000, 56_000, "tej").with_decode_window(0, 144_000),
+        WordPin::new(64_000, 72_000, "cholemsyce").with_decode_window(0, 144_000),
+    ];
+    assert!(ledger.admit_word_slots(&initial, &held).grants_mutation());
+    let sources = ledger.slots_of(&owner).unwrap().to_vec();
+    let question = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    let candidate = [
+        WordPin::new(48_000, 56_000, "tej").with_decode_window(8_000, 152_000),
+        WordPin::new(64_000, 72_000, "wstępnej").with_decode_window(8_000, 152_000),
+    ];
+    ledger.prepare_word_evidence(&question, &candidate);
+    let mut outputs = sources.clone();
+    for (output, pin) in outputs.iter_mut().zip(&candidate) {
+        output.text = pin.text.clone();
+        output.observation = question.clone();
+    }
+    assert_eq!(
+        ledger.adjudicate_word_sources(&question, &sources, &outputs),
+        Some(false)
+    );
+    let trial = ledger.next_word_trial(true).expect("full group conflict");
+    assert_eq!(trial.targets.len(), 2);
+    let answer = ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+    let pins = [
+        WordPin::new(48_000, 56_000, "tej").with_decode_window(16_000, 160_000),
+        WordPin::new(64_000, 72_000, "forensyce").with_decode_window(16_000, 160_000),
+    ];
+    assert!(
+        !ledger
+            .admit_word_trial(&trial, &answer, &pins, &pins)
+            .grants_mutation()
+    );
+    assert_eq!(ledger.text_of(&owner), Some("tej cholemsyce"));
+    assert_eq!(
+        ledger.retained_word_trial_targets(&owner),
+        vec![trial.targets.clone()]
+    );
+    (ledger, owner, trial)
+}
+
+#[test]
+fn unresolved_group_retains_witness_until_a_fresh_complete_ordinary_frame() {
+    let (mut ledger, owner, trial) = unresolved_group_trial();
+    for (generation, start, end, expected) in [
+        (4, 16_000, 160_000, "tej cholemsyce"),
+        (5, 4_000, 168_000, "tej forensyce"),
+    ] {
+        let frame = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            generation,
+            generation,
+            owner.clone(),
+        );
+        let pins = [
+            WordPin::new(48_000, 56_000, "tej").with_decode_window(start, end),
+            WordPin::new(64_000, 72_000, "forensyce").with_decode_window(start, end),
+        ];
+        ledger.admit_word_slots(&frame, &pins);
+        assert_eq!(ledger.text_of(&owner), Some(expected));
+        if generation == 4 {
+            assert_eq!(
+                ledger.retained_word_trial_targets(&owner),
+                vec![trial.targets.clone()]
+            );
+        }
+    }
+    assert!(ledger.word_choices().iter().any(|choice| {
+        choice.accepted
+            && choice.targets == trial.targets
+            && choice.lexical_resolved
+            && choice.reason == "source_agreement"
+    }));
+    assert!(ledger.retained_word_trial_targets(&owner).is_empty());
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn partial_apple_and_whisper_cannot_shrink_group_or_reopen_trial_budgets() {
+    let (mut ledger, owner, trial) = unresolved_group_trial();
+    for (generation, producer) in [
+        (4, ObservationProducer::Apple),
+        (5, ObservationProducer::Whisper),
+    ] {
+        let before = serde_json::to_value(ledger.word_finality(&owner)).unwrap();
+        let frame = ObservationIdentity::new(producer, generation, generation, owner.clone());
+        let pins = [WordPin::new(64_000, 72_000, "forensyce").with_decode_window(4_000, 168_000)];
+        ledger.admit_word_slots(&frame, &pins);
+        assert_eq!(ledger.text_of(&owner), Some("tej cholemsyce"));
+        assert_eq!(
+            serde_json::to_value(ledger.word_finality(&owner)).unwrap(),
+            before
+        );
+        assert_eq!(
+            ledger.retained_word_trial_targets(&owner),
+            vec![trial.targets.clone()]
+        );
+        assert!(
+            ledger.next_word_trial(true).is_none(),
+            "shared trial cannot reopen"
+        );
+    }
+    let fresh = ledger
+        .next_word_trial_before_horizon(true, None, Some((16_000, 0..192_000)), 192_000)
+        .expect("partial observations did not consume the independent native budget");
+    assert!(fresh.fresh_decode);
+    assert_eq!(fresh.targets, trial.targets);
+    ledger.close_word_trial(&fresh, "inference_failed");
+    let frame = ObservationIdentity::new(ObservationProducer::Whisper, 6, 6, owner.clone());
+    ledger.admit_word_slots(
+        &frame,
+        &[WordPin::new(64_000, 72_000, "forensyce").with_decode_window(4_000, 168_000)],
+    );
+    assert!(ledger.next_word_trial(true).is_none());
+    assert!(
+        ledger
+            .next_word_trial_before_horizon(true, None, Some((16_000, 0..192_000)), 192_000)
+            .is_none()
+    );
+    assert_eq!(
+        ledger.retained_word_trial_targets(&owner),
+        vec![trial.targets]
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn measured_phrase_refinement_cannot_add_or_remove_a_negation_by_context() {
+    for (held, first_word) in [("nie testuj", "już"), ("już testuj", "nie")] {
+        let owner = OccurrenceIdentity::new("phrase-polarity", 1, 48_000, 72_000);
+        let mut pcm = vec![0.0; 160_000];
+        pcm[48_000..56_000].fill(0.2);
+        pcm[64_000..72_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(
+            owner.clone(),
+            [ObservationProducer::Apple, ObservationProducer::Whisper],
+        );
+        let initial = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+        assert!(ledger.admit(&initial, held).grants_mutation());
+        let frame = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        let pins = [
+            WordPin::new(48_000, 56_000, first_word).with_decode_window(0, 144_000),
+            WordPin::new(64_000, 72_000, "testuj").with_decode_window(0, 144_000),
+        ];
+        ledger.admit_word_slots(&frame, &pins);
+        assert_eq!(ledger.text_of(&owner), Some(held));
+        assert!(ledger.word_choices().iter().any(
+            |choice| !choice.accepted && choice.reason == "negation_requires_lexical_evidence"
+        ));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
 }
 
 #[test]

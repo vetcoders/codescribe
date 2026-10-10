@@ -13,7 +13,15 @@ use serde::{Deserialize, Serialize};
 /// alternatives from one frame cannot become a complete group witness.
 /// v7: uncorroborated relabelling must keep the exact physical word partition,
 /// including its boundaries when admission handles a group as separate words.
-pub const WORD_POLICY: &str = "word-adjudication/v7";
+/// v8: phrase refinement cannot bypass a negation dispute. Context authority
+/// alone cannot add, remove or move a negation against an existing label.
+/// v9: decode context is an eligibility gate, never lexical corroboration.
+/// A different label needs source agreement or a confirmed bounded trial.
+/// v10: trial targets include measured neighbours intersecting the disputed
+/// source lineage before dispatch. Returned context cannot expand that scope.
+/// v11: unresolved trial groups retain their scope for ordinary evidence;
+/// partial observations cannot discard their witnesses or renew trial budgets.
+pub const WORD_POLICY: &str = "word-adjudication/v11";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +155,51 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
     normalize_word_token(a) == normalize_word_token(b)
 }
 
+/// Compare labels only after PCM has resolved the addressed component.
+/// Neighbours distinguish a moved negation from a punctuation/case change;
+/// these tokens never find a target, create pins or certify what was spoken.
+pub(super) fn negation_contexts(label: &str) -> Vec<(String, String, String)> {
+    let words = label
+        .split_whitespace()
+        .map(|token| normalize_word_token(token).replace('’', "'"))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| {
+            matches!(
+                word.as_str(),
+                "nie"
+                    | "bez"
+                    | "nigdy"
+                    | "not"
+                    | "no"
+                    | "never"
+                    | "without"
+                    | "don't"
+                    | "doesn't"
+                    | "can't"
+                    | "cannot"
+                    | "won't"
+                    | "isn't"
+                    | "aren't"
+            )
+        })
+        .map(|(index, word)| {
+            (
+                index
+                    .checked_sub(1)
+                    .and_then(|i| words.get(i))
+                    .cloned()
+                    .unwrap_or_default(),
+                word.clone(),
+                words.get(index + 1).cloned().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// `context_quality` saturation: the pin sits in the middle third of its
 /// decode window. That region is the publication band — with 9 s windows at
 /// 3 s strides every instant has exactly one window whose band owns it, and
@@ -177,21 +230,6 @@ pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
     let margin = (start - left).min(right - end);
     ((u128::from(margin) * 3 * u128::from(FULL_CONTEXT_QUALITY) / u128::from(right - left))
         .min(u128::from(FULL_CONTEXT_QUALITY))) as u32
-}
-
-/// PCM authority a Whisper witness holds over its own source scope: 2 when
-/// the scope sits in its window's publication band (the grid gives every
-/// instant one such window), 1 with label-changing rights, 0 for edge
-/// evidence. A tier, not a score: two witnesses in the same tier are equal
-/// and their dispute stays with the agreement machinery.
-fn pcm_authority(q: u32) -> u8 {
-    if q >= FULL_CONTEXT_QUALITY {
-        2
-    } else if q >= BAND_RIGHTS_FLOOR {
-        1
-    } else {
-        0
-    }
 }
 
 impl WordHypothesis {
@@ -813,8 +851,10 @@ impl AcousticLedger {
             );
             return Some(false);
         }
+        let negation_disagrees = negation_contexts(&compose_label(sources))
+            != negation_contexts(&compose_label(outputs));
         if sources.is_empty()
-            || sources.iter().all(|source| self.coarse_word_source(source))
+            || (sources.iter().all(|source| self.coarse_word_source(source)) && !negation_disagrees)
             || !sources
                 .iter()
                 .all(|source| acoustic_pair(source.producer, observation.producer))
@@ -822,6 +862,23 @@ impl AcousticLedger {
             return None;
         }
         let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+        if self
+            .retained_word_trial_targets(&observation.occurrence)
+            .iter()
+            .any(|group| {
+                group.iter().any(|target| targets.contains(target))
+                    && !group.iter().all(|target| targets.contains(target))
+            })
+        {
+            self.record_word_choice(
+                observation,
+                sources,
+                outputs,
+                "partial_adjudication_scope",
+                false,
+            );
+            return Some(false);
+        }
         let provisional_apple = self.provisional_apple_revision(observation, sources);
         let candidate = self.hypothesis(observation, sources, outputs);
         let complete = self.asr_source_scope_complete(observation, sources) && candidate.complete;
@@ -956,65 +1013,13 @@ impl AcousticLedger {
                 && agreement
                 && fresh
                 && band_rights);
-        // First placement is ungated, so an edge or off-band decode can hold a
-        // word only because it arrived first; the same decode arriving second
-        // would be refused above. Without corroboration on either side, the
-        // witness whose PCM context places this exact scope higher keeps the
-        // label. The dispute stays open: no agreement was reached, so the
-        // conflict, its trial and the word finality still say so.
-        // A deeper decode margin does not prove new word boundaries. Restrict
-        // this uncorroborated path to one source and one output with unchanged
-        // bounds. Equal word counts alone are insufficient: admission can
-        // address a regrouping as separate 1:1 pairs with shifted boundaries.
-        // Such a change needs source agreement or a confirmed bounded trial.
+        // Decode margin measures available context, not the truth of a label.
+        // Even an exact 1:1 replacement needs lexical evidence. Partition
+        // changes retain a distinct refusal for the addressed PCM component.
         let preserves_word_partition = sources.len() == 1
             && outputs.len() == 1
             && sources[0].sample_start == outputs[0].sample_start
             && sources[0].sample_end == outputs[0].sample_end;
-        let band_authority = trial.is_none()
-            && !lexical_resolved
-            && raw_disagrees
-            && preserves_word_partition
-            && fresh
-            && complete
-            && candidate.acoustic_boundaries_complete
-            && geometry_preserves_complete_source
-            && candidate.family() == ObservationProducer::Whisper
-            && component.incumbent.family() == ObservationProducer::Whisper
-            && {
-                let incumbent_label = component.incumbent.original_text.as_deref();
-                let witnesses = prior_support
-                    .iter()
-                    .filter(|h| {
-                        h.family() == ObservationProducer::Whisper
-                            && h.complete
-                            && h.acoustic_boundaries_complete
-                            && h.decode != candidate.decode
-                            && h.original_text
-                                .as_deref()
-                                .zip(incumbent_label)
-                                .is_some_and(|(a, b)| label_equal(a, b))
-                    })
-                    .collect::<Vec<_>>();
-                let incumbent_authority = witnesses
-                    .iter()
-                    .map(|h| pcm_authority(h.q))
-                    .max()
-                    .unwrap_or(0);
-                // Two rights-holding frames, or the current Apple label, are
-                // corroboration the candidate does not have.
-                let corroborated = witnesses
-                    .iter()
-                    .filter(|h| pcm_authority(h.q) > 0)
-                    .filter_map(|h| h.decode)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    >= 2
-                    || apple
-                        .zip(incumbent_label)
-                        .is_some_and(|(a, b)| label_equal(a, b));
-                !corroborated && pcm_authority(candidate.q) > incumbent_authority
-            };
         let (accepted, reason) = if provisional_apple {
             // A still-provisional Apple word may evolve on the same exact
             // pins. Once Whisper supplies evidence, normal adjudication owns it.
@@ -1031,6 +1036,8 @@ impl AcousticLedger {
             }
         } else if !band_rights {
             (false, "outside_publication_band")
+        } else if negation_disagrees && !lexical_resolved {
+            (false, "negation_requires_lexical_evidence")
         } else if repeated_label {
             // Corroborated timing can extend the same physical word. Keeping
             // its first, shorter pin would turn a later suffix into a new word.
@@ -1045,8 +1052,6 @@ impl AcousticLedger {
             )
         } else if lexical_resolved {
             (true, "source_agreement")
-        } else if band_authority {
-            (true, "band_authority")
         } else if !preserves_word_partition {
             (false, "partition_requires_lexical_evidence")
         } else {
@@ -1209,6 +1214,108 @@ impl AcousticLedger {
         self.select_word_trial(stopping, coverage, context, horizon, true)
     }
 
+    /// An unresolved trial question keeps its physical scope after closure.
+    /// Later ordinary evidence must answer the same group before its witnesses
+    /// or spent budgets can be replaced by narrower components.
+    pub(super) fn retained_word_trial_targets(
+        &self,
+        owner: &OccurrenceIdentity,
+    ) -> Vec<Vec<SlotTarget>> {
+        self.word_adjudication
+            .components
+            .iter()
+            .filter(|component| {
+                component.owner == *owner
+                    && component.conflict
+                    && component.targets.len() > 1
+                    && (component.trial.is_some() || component.last_trial.is_some())
+            })
+            .map(|component| component.targets.clone())
+            .collect()
+    }
+
+    /// A historical pin can straddle the current boundary with a neighbour.
+    /// Reserve both physical targets before decoding instead of rejecting the
+    /// returned partition as an attempt to rewrite unreserved context. This is
+    /// one expansion from the disputed lineage, never a recursive owner sweep.
+    fn word_trial_sources(&self, index: usize, fresh_decode: bool) -> Option<Vec<WordSlot>> {
+        let component = self.word_adjudication.components.get(index)?;
+        let current = self.slots_of(&component.owner)?;
+        let held = current
+            .iter()
+            .filter(|slot| component.targets.contains(&SlotTarget::from(*slot)))
+            .cloned()
+            .collect::<Vec<_>>();
+        if held.is_empty() || held.len() != component.targets.len() {
+            return None;
+        }
+        let ranges = self.word_source_ranges(&held);
+        if ranges.is_empty() {
+            return None;
+        }
+        let sources = current
+            .iter()
+            .filter(|slot| {
+                component.targets.contains(&SlotTarget::from(*slot))
+                    || ranges.iter().any(|range| {
+                        range.same_capture(&slot.observation.occurrence)
+                            && range.sample_start < slot.sample_end
+                            && slot.sample_start < range.sample_end
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        // An unmeasured phrase or manual word cannot become a neighbour target
+        // merely because its label occupies a broad interval.
+        if sources.iter().any(|slot| {
+            !component.targets.contains(&SlotTarget::from(slot))
+                && (self.coarse_word_source(slot)
+                    || !matches!(
+                        slot.producer,
+                        ObservationProducer::Apple | ObservationProducer::Whisper
+                    ))
+        }) {
+            return None;
+        }
+        let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+        // Grouping cannot steal an active trial, split another component or
+        // reset a neighbour's already-spent shared/fresh trial budget.
+        if self.word_adjudication.components.iter().any(|member| {
+            member.owner == component.owner
+                && member.targets.iter().any(|target| targets.contains(target))
+                && (member
+                    .targets
+                    .iter()
+                    .any(|target| !targets.contains(target))
+                    || member.trial.is_some()
+                    || if fresh_decode {
+                        member.fresh_attempted
+                    } else {
+                        member.attempted
+                    })
+        }) {
+            return None;
+        }
+        Some(sources)
+    }
+
+    /// Only adjudication metadata is grouped. No slot, PCM identity or label
+    /// changes until the returned evidence passes ordinary admission.
+    fn group_word_trial_component(&mut self, index: usize, sources: &[WordSlot]) -> usize {
+        let component = &self.word_adjudication.components[index];
+        let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+        if component.targets == targets {
+            return index;
+        }
+        let owner = component.owner.clone();
+        let grouped = self.component_for_sources(&owner, sources);
+        self.word_adjudication.components.retain(|member| {
+            member.owner != owner || !member.targets.iter().any(|target| targets.contains(target))
+        });
+        self.word_adjudication.components.push(grouped);
+        self.word_adjudication.components.len() - 1
+    }
+
     fn select_word_trial(
         &mut self,
         stopping: bool,
@@ -1217,48 +1324,43 @@ impl AcousticLedger {
         horizon: u64,
         fresh_decode: bool,
     ) -> Option<WordTrial> {
-        let index = self
+        let (index, sources) = self
             .word_adjudication
             .components
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
-                if c.owner.sample_end > horizon
-                    || !c.conflict
-                    || c.trial.is_some()
-                    || if fresh_decode {
-                        c.fresh_attempted
-                    } else {
-                        c.attempted
-                    }
-                    || self.is_sealed(&c.owner)
-                    || (!stopping
-                        && c.support()
-                            .iter()
-                            .filter(|h| h.family() == ObservationProducer::Whisper && h.complete)
-                            .filter_map(|h| h.decode)
-                            .collect::<BTreeSet<_>>()
-                            .len()
-                            < 2)
+            .filter_map(|(index, c)| {
+                if c.owner.sample_end > horizon || !c.conflict || self.is_sealed(&c.owner) {
+                    return None;
+                }
+                let sources = self.word_trial_sources(index, fresh_decode)?;
+                let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
+                let grouped;
+                let evidence = if targets == c.targets {
+                    c
+                } else {
+                    grouped = self.component_for_sources(&c.owner, &sources);
+                    &grouped
+                };
+                if !stopping
+                    && evidence
+                        .support()
+                        .iter()
+                        .filter(|h| h.family() == ObservationProducer::Whisper && h.complete)
+                        .filter_map(|h| h.decode)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        < 2
                 {
-                    return false;
+                    return None;
                 }
                 if coverage.is_none() && context.is_none() {
-                    return true;
+                    return Some((index, sources));
                 }
-                let sources = self
-                    .slots_of(&c.owner)
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|slot| c.targets.contains(&SlotTarget::from(*slot)))
-                    .cloned()
-                    .collect::<Vec<_>>();
                 let ranges = self.word_source_ranges(&sources);
-                if sources.is_empty() || sources.len() != c.targets.len() || ranges.is_empty() {
-                    return false;
-                }
                 if let Some(coverage) = coverage
-                    && (c.has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
+                    && (evidence
+                        .has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
                         || !ranges.iter().all(|range| {
                             range.same_capture(coverage)
                                 && range.sample_start > coverage.sample_start
@@ -1272,9 +1374,9 @@ impl AcousticLedger {
                                 )
                         }))
                 {
-                    return false;
+                    return None;
                 }
-                context.as_ref().is_none_or(|(padding, retained)| {
+                let context_complete = context.as_ref().is_none_or(|(padding, retained)| {
                     let start = ranges
                         .iter()
                         .map(|range| range.sample_start)
@@ -1292,13 +1394,21 @@ impl AcousticLedger {
                     start >= retained.start
                         && end <= retained.end
                         && coverage.map_or_else(
-                            || !c.has_decode(&c.owner, Some(decode)),
+                            || !evidence.has_decode(&c.owner, Some(decode)),
                             |range| range.sample_start <= decode.0 && range.sample_end >= decode.1,
                         )
-                })
+                });
+                context_complete.then_some((index, sources))
             })
-            .max_by_key(|(_, c)| c.whisper.iter().map(|h| h.q).max().unwrap_or(0))
-            .map(|(index, _)| index)?;
+            .max_by_key(|(index, _)| {
+                self.word_adjudication.components[*index]
+                    .whisper
+                    .iter()
+                    .map(|h| h.q)
+                    .max()
+                    .unwrap_or(0)
+            })?;
+        let index = self.group_word_trial_component(index, &sources);
         self.open_word_trial(index, fresh_decode)
     }
 
@@ -1430,11 +1540,14 @@ impl AcousticLedger {
         {
             return Err("recorded trial source ranges differ");
         }
-        let component = self
+        if trial.id != self.word_adjudication.next_trial.saturating_add(1) {
+            return Err("recorded trial sequence differs");
+        }
+        let index = self
             .word_adjudication
             .components
-            .iter_mut()
-            .find(|c| {
+            .iter()
+            .position(|c| {
                 c.owner == trial.owner
                     && c.targets == trial.targets
                     && c.conflict
@@ -1445,11 +1558,29 @@ impl AcousticLedger {
                         !c.attempted
                     }
             })
+            .or_else(|| {
+                // TrialOpened already contains the pre-dispatch target group.
+                // Reconstruct that group by the same physical rule, never by
+                // trusting additional targets supplied by a replay record.
+                self.word_adjudication
+                    .components
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, component)| {
+                        (component.owner == trial.owner && component.conflict)
+                            .then(|| self.word_trial_sources(index, trial.fresh_decode))
+                            .flatten()
+                            .filter(|expanded| {
+                                expanded.iter().map(SlotTarget::from).collect::<Vec<_>>()
+                                    == trial.targets
+                            })
+                            .map(|_| index)
+                    })
+            })
             .ok_or("recorded trial has no current unresolved component")?;
-        if trial.id != self.word_adjudication.next_trial.saturating_add(1) {
-            return Err("recorded trial sequence differs");
-        }
+        let index = self.group_word_trial_component(index, &sources);
         self.word_adjudication.next_trial = trial.id;
+        let component = &mut self.word_adjudication.components[index];
         component.attempted = true;
         component.fresh_attempted |= trial.fresh_decode;
         component.trial = Some(trial.clone());

@@ -24940,23 +24940,22 @@ mod relay_l1_overlap_admission_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(kept, prefix);
             } else {
-                // The original coarse Apple hypothesis is a source label, not five
-                // independently proved Words. Its exact lineage remains available.
+                // A coarse source does not prove five individual Words, but
+                // one uncorroborated frame must not remove its negation either.
+                // New words outside its scope still land independently.
                 assert!(
-                    ledger
-                        .slot_alternatives()
-                        .iter()
-                        .any(|alternative| alternative.candidate == label
-                            && alternative.reason == "resegmentation_source_label"
-                            && alternative.sources.contains(&source))
+                    text.starts_with(label),
+                    "polarity source was erased: {text}"
                 );
+                assert!(ledger.word_choices().iter().any(|choice| !choice.accepted
+                    && choice.reason == "negation_requires_lexical_evidence"));
                 assert_eq!(
                     ledger
                         .slot_operations()
                         .iter()
                         .filter(|operation| operation.sources.contains(&source))
                         .count(),
-                    1
+                    0
                 );
             }
             assert!(ledger.word_deletions().is_empty());
