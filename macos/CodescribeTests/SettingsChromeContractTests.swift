@@ -911,10 +911,12 @@ final class SettingsChromeContractTests: XCTestCase {
       panel.contains("check that recording is ready and adjust the sound settings"),
       "the blurb no longer lists what the sections below already say")
 
-    // The microphone card: one picker, the live input, one refresh action. The
-    // system microphone is the first option of the picker, not a second button
-    // that says the same thing.
-    XCTAssertTrue(panel.contains("Text(\"Refresh\")"))
+    // The microphone card: one picker and the live input; the one refresh
+    // action is the shared chip on the section header (round 8). The system
+    // microphone is the first option of the picker, not a second button that
+    // says the same thing.
+    XCTAssertTrue(panel.contains("SettingsRefreshButton("))
+    XCTAssertTrue(panel.contains("axLabel: \"Refresh audio input devices\""))
     XCTAssertFalse(panel.contains("Button(\"Refresh microphones\")"))
     XCTAssertFalse(panel.contains("Button(\"Use the system microphone\")"))
     XCTAssertTrue(panel.contains("defaultValue: \"System default\""))
