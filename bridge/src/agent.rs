@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions,
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore,
-    ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
+    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, MAX_CONSULTATION_MODE, Message,
+    StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage,
+    ThreadStore, ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
@@ -536,11 +536,11 @@ impl CodescribeAgent {
     /// Recover outstanding cards after attaching or refreshing the UI.
     /// Reading this snapshot never executes or approves a tool.
     pub fn pending_tool_approvals(&self, thread_id: String) -> Vec<CsToolApprovalRequest> {
-        self.approvals
-            .pending_for_thread(&thread_id)
-            .into_iter()
-            .map(Into::into)
-            .collect()
+        let mut pending = self.approvals.pending_for_thread(&thread_id);
+        if let Some(broker) = max_approval_broker() {
+            pending.extend(broker.pending_for_thread(&thread_id));
+        }
+        pending.into_iter().map(Into::into).collect()
     }
 
     /// Answer a pending tool-approval request, resuming the suspended call.
@@ -558,9 +558,21 @@ impl CodescribeAgent {
         approved: bool,
         remember: bool,
     ) -> bool {
+        // A Max consultation turn suspends in the controller's broker; the
+        // Agent window answers that card through the same exact-key match.
         self.approvals
             .resolve(&session_id, &thread_id, &call_id, approved, remember)
+            || max_approval_broker().is_some_and(|broker| {
+                broker.resolve(&session_id, &thread_id, &call_id, approved, remember)
+            })
     }
+}
+
+/// The running controller's Max approval broker, if the app has one. Never
+/// constructs a controller: a settings or chat read must not create a recorder.
+fn max_approval_broker() -> Option<Arc<ApprovalBroker>> {
+    crate::hotkeys::current_controller(&crate::hotkeys::shared_controller())
+        .map(|controller| controller.max_approval_broker())
 }
 
 impl CodescribeAgent {
@@ -576,6 +588,14 @@ impl CodescribeAgent {
         listener: Arc<dyn CsAgentListener>,
         hosted: Option<HostedSession>,
     ) -> Result<String, CsError> {
+        // A Max consultation is Max by identity. Its typed turn joins the
+        // controller's owner (same FIFO, lane, prompt and approvals as speech)
+        // instead of running an Assistive turn that would rewrite the thread.
+        if hosted.is_none() && thread_is_max_consultation(&thread_id).await {
+            return self
+                .run_max_consultation_turn(text, thread_id, attachments, listener)
+                .await;
+        }
         // One fresh seal for the WHOLE turn: lane identity, provider
         // credential, stream options and persistence labels all read the same
         // generation, and a key saved in Settings reaches the next send.
@@ -676,6 +696,140 @@ impl CodescribeAgent {
         // thread deletion, where persisting would resurrect the thread).
         deliver_completed_thread(thread_id, messages, provider_label, model).await;
         Ok(final_text)
+    }
+}
+
+/// True when the stored thread is a Max consultation. A missing or unreadable
+/// thread is not one: a brand-new composer thread has nothing on disk yet.
+async fn thread_is_max_consultation(thread_id: &str) -> bool {
+    let id = thread_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        ThreadStore::new()
+            .ok()
+            .and_then(|store| store.load_thread(&id).ok())
+            .is_some_and(|thread| thread.mode == MAX_CONSULTATION_MODE)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Monotonic composer turn ids for Max consultations. The journal refuses a
+/// repeated id, so a restart must never recycle one: wall-clock nanos plus a
+/// process counter.
+fn next_max_composer_turn_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "composer:{nanos}:{}",
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// Forward one owner event of the rendered turn to the Agent-window listener.
+/// Terminals are not forwarded here: the owner's reply receipt is the single
+/// source of success or failure, so neither is ever signalled twice. Returns
+/// `true` once the owner has emitted this turn's terminal.
+fn forward_max_consultation_event(event: AgentUiEvent, listener: &dyn CsAgentListener) -> bool {
+    match event {
+        AgentUiEvent::TextDelta(delta) => listener.on_text_delta(delta),
+        AgentUiEvent::TextDone(text) => listener.on_text_done(text),
+        AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
+        AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
+        AgentUiEvent::ToolApprovalRequested(request) => {
+            listener.on_tool_approval_requested(request.into());
+        }
+        AgentUiEvent::ToolResult {
+            name,
+            id,
+            summary,
+            is_error,
+        } => listener.on_tool_result(name, id, summary, is_error),
+        AgentUiEvent::Done | AgentUiEvent::Error(_) => return true,
+    }
+    false
+}
+
+impl CodescribeAgent {
+    /// Run a typed turn on the selected Max consultation through the running
+    /// app's controller. Streams the owner's events for exactly this turn to
+    /// `listener`; history is persisted by the owner (mode `max`), so nothing
+    /// here writes the thread. Stop cannot abort an admitted Max instruction
+    /// (the owner never replays or rolls back tool effects); `cancel_turn`
+    /// therefore reports no active turn for a consultation.
+    async fn run_max_consultation_turn(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<ImageAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let controller = crate::hotkeys::current_controller(&crate::hotkeys::shared_controller())
+            .ok_or_else(|| CsError::Agent {
+            msg: "Max consultation needs the running app; open it from the menu bar app"
+                .to_string(),
+        })?;
+        let turn_id = next_max_composer_turn_id();
+        // Subscribe before admission: the owner never replays deltas.
+        let mut events = controller.subscribe_max_consultation_events();
+        let mut answer = controller
+            .enqueue_max_consultation_text_turn(&thread_id, turn_id.clone(), text, attachments)
+            .await
+            .map_err(|error| CsError::Agent {
+                msg: format!("{error:#}"),
+            })?;
+        tracing::info!(
+            target: "codescribe::agent_delivery",
+            "max_composer_turn_admitted thread_id={thread_id} turn_id={turn_id}"
+        );
+        let mine = |event: &codescribe::controller::MaxConsultationEvent| {
+            event.consultation_id == thread_id && event.turn_id == turn_id
+        };
+        let mut terminal_seen = false;
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                event = events.recv(), if !terminal_seen => {
+                    match event {
+                        Ok(event) if mine(&event) => {
+                            terminal_seen =
+                                forward_max_consultation_event(event.event, listener.as_ref());
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                "Max consultation renderer lagged by {skipped} events; history stays durable"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            terminal_seen = true;
+                        }
+                    }
+                }
+                outcome = &mut answer => break outcome,
+            }
+        };
+        // The owner emits the terminal before answering; pick up anything still
+        // queued for this turn so the final text never trails the receipt.
+        while let Ok(event) = events.try_recv() {
+            if mine(&event) && forward_max_consultation_event(event.event, listener.as_ref()) {
+                break;
+            }
+        }
+        match outcome {
+            Ok(Ok(answer)) => {
+                listener.on_done();
+                Ok(answer.text)
+            }
+            Ok(Err(error)) => Err(CsError::Agent {
+                msg: format!("{error:#}"),
+            }),
+            Err(_) => Err(CsError::Agent {
+                msg: "Max consultation owner stopped before replying".to_string(),
+            }),
+        }
     }
 }
 
@@ -1295,6 +1449,51 @@ mod tests {
         fn name(&self) -> &str {
             "scripted-provider"
         }
+    }
+
+    /// Owner terminals end the render loop but are never forwarded: the reply
+    /// receipt is the one terminal the Agent window sees, so a Max turn can
+    /// not be signalled done or failed twice.
+    #[test]
+    fn max_consultation_events_forward_content_and_stop_at_terminals() {
+        let listener = RecordingListener::default();
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::TextDelta("a".into()),
+            &listener
+        ));
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::ToolExecuting {
+                name: "read_file".into(),
+                id: "call-1".into(),
+            },
+            &listener
+        ));
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::TextDone("answer".into()),
+            &listener
+        ));
+        assert!(forward_max_consultation_event(
+            AgentUiEvent::Done,
+            &listener
+        ));
+        assert!(forward_max_consultation_event(
+            AgentUiEvent::Error("provider".into()),
+            &listener
+        ));
+        assert!(listener.tool_started.load(Ordering::SeqCst));
+        assert_eq!(listener.text_done_count.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.done_count.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.error_count.load(Ordering::SeqCst), 0);
+    }
+
+    /// The consultation journal refuses a repeated turn id, so composer ids
+    /// must be unique within a process and distinguishable across restarts.
+    #[test]
+    fn max_composer_turn_ids_never_repeat() {
+        let ids: std::collections::HashSet<String> =
+            (0..64).map(|_| next_max_composer_turn_id()).collect();
+        assert_eq!(ids.len(), 64);
+        assert!(ids.iter().all(|id| id.starts_with("composer:")));
     }
 
     /// Listener that only records that a tool started executing — the signal
