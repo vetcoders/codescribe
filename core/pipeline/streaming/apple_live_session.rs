@@ -4477,6 +4477,137 @@ impl AppleSealState {
         }
     }
 
+    /// Fuzzy retrieval can label only settled, exact current word targets.
+    /// Two independent complete Whisper frames must retrieve the same canonical
+    /// from the raw labels for every source. No guessed label becomes ASR input.
+    fn apply_corroborated_lexicon(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        owner: &OccurrenceIdentity,
+        request: u64,
+    ) {
+        use crate::pipeline::acoustic_ledger::{DictionarySlotRule, SlotTarget};
+        if self.capture_stopping {
+            return;
+        }
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.is_sealed(owner) {
+            return;
+        }
+        let sources = ledger.slots_of(owner).unwrap_or(&[]).to_vec();
+        let lexicon = super::live_lexicon::FuzzyLexicon::load(&self.lexicon_custom_path);
+        let mut cursor = 0;
+        while cursor < sources.len() {
+            let mut consumed = 1;
+            for count in (1..=3.min(sources.len() - cursor)).rev() {
+                let selected = &sources[cursor..cursor + count];
+                if selected.iter().any(|source| {
+                    source.producer == LedgerObservationProducer::ManualHuman
+                        || source.surface_rewritten
+                        || source.text.split_whitespace().count() != 1
+                }) || selected.windows(2).any(|pair| {
+                    pair[0].sample_end > pair[1].sample_start
+                        || pair[0]
+                            .text
+                            .trim_matches(|c: char| !c.is_alphanumeric())
+                            .to_lowercase()
+                            == pair[1]
+                                .text
+                                .trim_matches(|c: char| !c.is_alphanumeric())
+                                .to_lowercase()
+                }) {
+                    continue;
+                }
+                let input = selected
+                    .iter()
+                    .map(|source| source.text.clone())
+                    .collect::<Vec<_>>();
+                let text = input.join(" ");
+                // No internal sentence boundary can be swallowed by a merge.
+                if selected[..count - 1].iter().any(|source| {
+                    source
+                        .text
+                        .chars()
+                        .any(|c| matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '…'))
+                }) {
+                    continue;
+                }
+                let Some(canonical) = lexicon.candidate(&text) else {
+                    continue;
+                };
+                if text.trim_matches(|c: char| !c.is_alphanumeric()) == canonical {
+                    continue;
+                }
+                let targets = selected.iter().map(SlotTarget::from).collect::<Vec<_>>();
+                let witnesses = ledger.dictionary_witnesses(owner, &targets);
+                if witnesses.len() < 2
+                    || witnesses.iter().any(|(_, raw)| {
+                        lexicon.candidate(raw).as_deref() != Some(canonical.as_str())
+                    })
+                {
+                    continue;
+                }
+                let prefix = text
+                    .chars()
+                    .take_while(|c| !c.is_alphanumeric())
+                    .collect::<String>();
+                let suffix = text
+                    .chars()
+                    .rev()
+                    .take_while(|c| !c.is_alphanumeric())
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                let rule = DictionarySlotRule {
+                    id: format!(
+                        "corroborated-lexicon/v1/{:?}/{}=>{}",
+                        witnesses, text, canonical
+                    ),
+                    input,
+                    canonical: format!("{prefix}{canonical}{suffix}"),
+                };
+                let observation = ledger.next_word_observation(
+                    LedgerObservationProducer::Lexicon,
+                    request,
+                    owner,
+                );
+                let receipt = if count == 1 {
+                    ledger
+                        .rewrite_dictionary_slots(&observation, &[(targets[0].clone(), rule)])
+                        .ok()
+                        .filter(MutationReceipt::grants_mutation)
+                } else {
+                    ledger
+                        .merge_word_slots(&observation, &targets, &rule)
+                        .ok()
+                        .and_then(|_| {
+                            ledger
+                                .layer_trail()
+                                .last()
+                                .map(|entry| entry.decision.clone())
+                        })
+                };
+                let Some(receipt) = receipt else {
+                    continue;
+                };
+                let label = ledger.text_of(owner).unwrap_or("").to_string();
+                self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(1);
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                });
+                consumed = count;
+                break;
+            }
+            cursor += consumed;
+        }
+    }
+
     /// Dictionary shape changes are separate from ASR admission. Only settled
     /// committed sources can be merged; the ledger retains their exact PCM and
     /// refuses sealed, stale, or protected targets. No new ASR witness is minted.
@@ -4486,6 +4617,7 @@ impl AppleSealState {
         owner: &OccurrenceIdentity,
         request: u64,
     ) {
+        self.apply_corroborated_lexicon(ev_tx, owner, request);
         use crate::pipeline::acoustic_ledger::SlotTarget;
         let mut ledger = self
             .acoustic_ledger
@@ -30235,6 +30367,10 @@ pub fn forensic_word_conservation_trace(
 #[cfg(test)]
 #[path = "capture_decode_budget_contract_tests.rs"]
 mod capture_decode_budget_contract_tests;
+
+#[cfg(test)]
+#[path = "corroborated_lexicon_contract_tests.rs"]
+mod corroborated_lexicon_contract_tests;
 
 #[cfg(test)]
 mod bounded_lexical_trial_tests {
