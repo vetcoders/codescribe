@@ -59,6 +59,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let body = try section(
       of: overlay, from: "private var bodySection", to: "private var transcriptScroll")
     XCTAssertFalse(body.contains("OverlayEvidence"))
+    let transcript = try section(
+      of: overlay, from: "private var transcriptScroll", to: "private var revisionStatusRow")
+    XCTAssertFalse(
+      transcript.contains("state.liveEvidence"),
+      "Uncommitted hypotheses stay in the bounded evidence chip, outside transcript height")
     let container = try section(
       of: overlay, from: "private func bottomChromeContainer", to: "private func canvasStack")
     XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
