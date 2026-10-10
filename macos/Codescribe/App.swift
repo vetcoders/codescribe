@@ -190,6 +190,9 @@ struct CodescribeApp: App {
       try await delegate.restartForInterfaceLanguage(
         relaunch: .plain, beforeTermination: beforeTermination)
     }
+    model.onNewMaxConsultation = {
+      AppModel.shared.overlay.state.setMaxPreparationError(nil)
+    }
     return model
   }
 
@@ -1105,12 +1108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch readiness {
         case .disabled: break
         case .storedChain: appLogger.info("Codescribe Max startup Responses chain ready")
-        case .replayOnly: appLogger.info("Codescribe Max provider ready; protocol uses full-history replay")
+        case .replayOnly:
+          appLogger.info("Codescribe Max provider ready; protocol uses full-history replay")
         }
       } catch {
         model.overlay.state.setMaxPreparationError(String(describing: error))
         appLogger.error(
-          "Codescribe Max preparation requires attention: \(String(describing: error), privacy: .public)")
+          "Codescribe Max preparation requires attention: \(String(describing: error), privacy: .public)"
+        )
       }
     }
   }
@@ -1124,7 +1129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } catch {
         model.overlay.state.setTranscriptStorageError(String(describing: error))
         appLogger.error(
-          "Codescribe transcript storage preparation failed: \(String(describing: error), privacy: .public)")
+          "Codescribe transcript storage preparation failed: \(String(describing: error), privacy: .public)"
+        )
       }
     }
   }

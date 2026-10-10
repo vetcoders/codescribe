@@ -1,6 +1,74 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Max settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia Maxa…"
+          }
+        }
+      }
+    },
+    "Consultation settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Consultation settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia konsultacji…"
+          }
+        }
+      }
+    },
+    "Agent connection settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agent connection settings…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ustawienia połączenia Agenta…"
+          }
+        }
+      }
+    },
+    "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max korzysta z połączenia Agenta. Sprawdź dostawcę i logowanie lub rozpocznij nową konsultację. Dotychczasowa historia zostanie zachowana."
+          }
+        }
+      }
+    },
     "Word pins and PCM slots" : {
       "extractionState" : "manual",
       "localizations" : {
