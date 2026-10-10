@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 /// source lineage before dispatch. Returned context cannot expand that scope.
 /// v11: unresolved trial groups retain their scope for ordinary evidence;
 /// partial observations cannot discard their witnesses or renew trial budgets.
-pub const WORD_POLICY: &str = "word-adjudication/v11";
+/// v12: all unresolved groups keep one scope; settled groups may separate
+/// into physical words while retaining producer identity and spent budgets.
+pub const WORD_POLICY: &str = "word-adjudication/v12";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,6 +831,175 @@ impl AcousticLedger {
         component
     }
 
+    /// Project one retained witness onto a settled physical word. Ambiguous
+    /// partitions remain incomplete frame markers, so they cannot vote but
+    /// reissuing that decode still cannot count as independent evidence.
+    fn project_word_hypothesis(
+        &self,
+        hypothesis: &WordHypothesis,
+        sources: &[WordSlot],
+        index: usize,
+    ) -> WordHypothesis {
+        let contains_centre = |pin: &SourceWord, source: &WordSlot| {
+            let midpoint = source.sample_start + (source.sample_end - source.sample_start) / 2;
+            pin.sample_start <= midpoint && midpoint < pin.sample_end
+        };
+        let bijection = hypothesis
+            .observation
+            .occurrence
+            .same_capture(&sources[index].observation.occurrence)
+            && hypothesis.pins.len() == sources.len()
+            && sources.iter().all(|source| {
+                hypothesis
+                    .pins
+                    .iter()
+                    .filter(|pin| contains_centre(pin, source))
+                    .count()
+                    == 1
+            })
+            && hypothesis.pins.iter().all(|pin| {
+                pin.surface.split_whitespace().count() == 1
+                    && sources
+                        .iter()
+                        .filter(|source| contains_centre(pin, source))
+                        .count()
+                        == 1
+            })
+            && hypothesis
+                .pins
+                .windows(2)
+                .all(|pair| pair[0].sample_end <= pair[1].sample_start);
+        let source = &sources[index];
+        let mut projected = hypothesis.clone();
+        projected.targets = vec![SlotTarget::from(source)];
+        let pin = bijection
+            .then(|| {
+                hypothesis
+                    .pins
+                    .iter()
+                    .find(|pin| contains_centre(pin, source))
+            })
+            .flatten();
+        let Some(pin) = pin else {
+            projected.pins.clear();
+            projected.original_text = None;
+            projected.surface.clear();
+            projected.complete = false;
+            projected.acoustic_boundaries_complete = false;
+            projected.q = 0;
+            return projected;
+        };
+        let ranges = self.word_source_ranges(std::slice::from_ref(source));
+        let start = ranges
+            .iter()
+            .map(|range| range.sample_start)
+            .chain(std::iter::once(pin.sample_start))
+            .min()
+            .unwrap_or(pin.sample_start);
+        let end = ranges
+            .iter()
+            .map(|range| range.sample_end)
+            .chain(std::iter::once(pin.sample_end))
+            .max()
+            .unwrap_or(pin.sample_end);
+        projected.pins = vec![pin.clone()];
+        projected.original_text = pin.original_text.clone();
+        projected.surface = pin.surface.clone();
+        projected.complete &= hypothesis
+            .decode
+            .is_some_and(|(s, e)| s < e && s <= start && end <= e);
+        projected.acoustic_boundaries_complete &= projected.complete;
+        projected.q = hypothesis
+            .decode
+            .map_or(0, |decode| context_quality(start, end, decode));
+        projected
+    }
+
+    /// Separating a settled group changes only adjudication metadata. Keep
+    /// every word's frame identity and budgets before a narrower observation
+    /// can replace one target and retire the former group.
+    fn split_settled_word_components(
+        &mut self,
+        owner: &OccurrenceIdentity,
+        targets: &[SlotTarget],
+    ) -> Result<(), &'static str> {
+        let current = self.slots_of(owner).unwrap_or(&[]);
+        let mut splits = Vec::new();
+        let mut count = self.word_adjudication.components.len();
+        for (index, component) in self.word_adjudication.components.iter().enumerate() {
+            if component.owner != *owner
+                || component.conflict
+                || component.trial.is_some()
+                || !component.targets.iter().any(|target| targets.contains(target))
+                || component.targets.iter().all(|target| targets.contains(target))
+            {
+                continue;
+            }
+            if self
+                .word_adjudication
+                .components
+                .iter()
+                .enumerate()
+                .any(|(other, member)| {
+                    other != index
+                        && member.owner == *owner
+                        && member
+                            .targets
+                            .iter()
+                            .any(|target| component.targets.contains(target))
+                })
+            {
+                return Err("overlapping_adjudication_scope");
+            }
+            let sources = current
+                .iter()
+                .filter(|source| component.targets.contains(&SlotTarget::from(*source)))
+                .cloned()
+                .collect::<Vec<_>>();
+            if sources.len() != component.targets.len()
+                || sources.iter().any(|source| self.coarse_word_source(source))
+            {
+                return Err("partial_adjudication_scope");
+            }
+            count = count.saturating_sub(1).saturating_add(sources.len());
+            if count > MAX_OPEN_COMPONENTS {
+                return Err("evidence_capacity");
+            }
+            let words = sources
+                .iter()
+                .enumerate()
+                .map(|(word, source)| {
+                    let mut separated = component.clone();
+                    separated.targets = vec![SlotTarget::from(source)];
+                    separated.incumbent =
+                        self.project_word_hypothesis(&component.incumbent, &sources, word);
+                    // Selected surface remains the current committed word,
+                    // even when an older witness cannot be projected safely.
+                    separated.incumbent.surface = source.text.clone();
+                    separated.apple = component
+                        .apple
+                        .iter()
+                        .map(|h| self.project_word_hypothesis(h, &sources, word))
+                        .collect();
+                    separated.whisper = component
+                        .whisper
+                        .iter()
+                        .map(|h| self.project_word_hypothesis(h, &sources, word))
+                        .collect();
+                    separated
+                })
+                .collect::<Vec<_>>();
+            splits.push((index, words));
+        }
+        // All preparations and capacity checks succeeded. No refused partial
+        // preparation may leave half of a group separated.
+        for (index, words) in splits.into_iter().rev() {
+            self.word_adjudication.components.remove(index);
+            self.word_adjudication.components.extend(words);
+        }
+        Ok(())
+    }
+
     /// Returns None for non-Apple/Whisper authority domains. A lexical refusal
     /// never creates missing-speech debt; geometry is checked separately.
     pub(super) fn adjudicate_word_sources(
@@ -864,7 +1035,7 @@ impl AcousticLedger {
         }
         let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
         if self
-            .retained_word_trial_targets(&observation.occurrence)
+            .unresolved_word_target_groups(&observation.occurrence)
             .iter()
             .any(|group| {
                 group.iter().any(|target| targets.contains(target))
@@ -878,6 +1049,10 @@ impl AcousticLedger {
                 "partial_adjudication_scope",
                 false,
             );
+            return Some(false);
+        }
+        if let Err(reason) = self.split_settled_word_components(&observation.occurrence, &targets) {
+            self.record_word_choice(observation, sources, outputs, reason, false);
             return Some(false);
         }
         let provisional_apple = self.provisional_apple_revision(observation, sources);
@@ -1215,10 +1390,10 @@ impl AcousticLedger {
         self.select_word_trial(stopping, coverage, context, horizon, true)
     }
 
-    /// An unresolved trial question keeps its physical scope after closure.
+    /// An unresolved question keeps its physical scope, with or without a trial.
     /// Later ordinary evidence must answer the same group before its witnesses
     /// or spent budgets can be replaced by narrower components.
-    pub(super) fn retained_word_trial_targets(
+    pub(super) fn unresolved_word_target_groups(
         &self,
         owner: &OccurrenceIdentity,
     ) -> Vec<Vec<SlotTarget>> {
@@ -1227,9 +1402,8 @@ impl AcousticLedger {
             .iter()
             .filter(|component| {
                 component.owner == *owner
-                    && component.conflict
+                    && (component.conflict || component.trial.is_some())
                     && component.targets.len() > 1
-                    && (component.trial.is_some() || component.last_trial.is_some())
             })
             .map(|component| component.targets.clone())
             .collect()
