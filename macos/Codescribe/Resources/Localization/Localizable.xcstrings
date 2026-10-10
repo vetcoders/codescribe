@@ -2594,17 +2594,6 @@
         }
       }
     },
-    "Agent — %@" : {
-      "comment" : "The placeholder is a model name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent — %@"
-          }
-        }
-      }
-    },
     "Agentic" : {
       "comment" : "Operating lane: dictation plus an AI agent",
       "localizations" : {
@@ -8951,7 +8940,7 @@
       }
     },
     "New thread" : {
-      "comment" : "Default title of an unnamed conversation\nHeadline of a conversation with no turns yet",
+      "comment" : "Default title of an unnamed conversation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16315,6 +16304,17 @@
         }
       }
     },
+    "What are we doing today?" : {
+      "comment" : "Headline of a conversation with no turns yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Co dziś robimy?"
+          }
+        }
+      }
+    },
     "What can leave this Mac" : {
       "comment" : "Privacy section: outbound data",
       "localizations" : {
@@ -16472,12 +16472,12 @@
         }
       }
     },
-    "Write in the composer, or dictate. The reply stays in this thread." : {
+    "Write or dictate a message to start the conversation." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Napisz wiadomość albo ją podyktuj. Odpowiedź pojawi się w tym wątku."
+            "state" : "needs_review",
+            "value" : "Napisz albo podyktuj wiadomość, żeby rozpocząć rozmowę."
           }
         }
       }
