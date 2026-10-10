@@ -136,6 +136,165 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
 }
 
 #[test]
+fn partition_guard_keeps_one_word_context_arbitration_available() {
+    let owner = OccurrenceIdentity::new("one-word-context", 1, 0, 160_000);
+    let mut pcm = vec![0.0; 160_000];
+    pcm[48_000..64_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        1,
+        "pierwsza",
+        Some((0, 80_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "poprawiona",
+        Some((0, 128_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("poprawiona"));
+    assert!(
+        ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.accepted && choice.reason == "band_authority")
+    );
+    assert!(!ledger.is_sealed(&owner));
+}
+
+#[test]
+fn partition_guard_requires_two_real_windows_for_split_or_same_count_regrouping() {
+    for (held, proposed) in [
+        (
+            vec![(48_000, 64_000, "Gentamycyna")],
+            vec![(48_000, 56_000, "gęta"), (56_000, 64_000, "metodem")],
+        ),
+        (
+            vec![(48_000, 56_000, "z"), (56_000, 64_000, "Gentamycyną")],
+            vec![(48_000, 60_000, "gęta"), (60_000, 64_000, "metodem")],
+        ),
+    ] {
+        let owner = OccurrenceIdentity::new("partition-guard", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 160_000];
+        pcm[48_000..64_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let pins = |words: &[(u64, u64, &str)], start, end| {
+            words
+                .iter()
+                .map(|&(a, b, text)| WordPin::new(a, b, text).with_decode_window(start, end))
+                .collect::<Vec<_>>()
+        };
+        let initial = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&initial, &pins(&held, 0, 80_000))
+                .grants_mutation()
+        );
+        let original = ledger.text_of(&owner).unwrap().to_owned();
+        let original_ranges = ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|p| (p.sample_start, p.sample_end))
+            .collect::<Vec<_>>();
+        let candidate = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        ledger.admit_word_slots(&candidate, &pins(&proposed, 0, 128_000));
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(original.as_str()),
+            "context margin cannot prove a new partition"
+        );
+        assert!(
+            ledger
+                .word_choices()
+                .iter()
+                .any(|c| !c.accepted && c.reason == "partition_requires_lexical_evidence"),
+            "held={held:?}, choices={:?}",
+            ledger.word_choices()
+        );
+        assert_eq!(
+            ledger
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .map(|p| (p.sample_start, p.sample_end))
+                .collect::<Vec<_>>(),
+            original_ranges
+        );
+        let duplicate = ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+        ledger.admit_word_slots(&duplicate, &pins(&proposed, 0, 128_000));
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(original.as_str()),
+            "replayed window is not corroboration"
+        );
+        let corroborating =
+            ObservationIdentity::new(ObservationProducer::Whisper, 4, 4, owner.clone());
+        ledger.admit_word_slots(&corroborating, &pins(&proposed, 8_000, 136_000));
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some("gęta metodem"),
+            "real lexical corroboration still authorizes a split"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn partition_guard_preserves_native_overlap_geometry_and_five_physical_iwo() {
+    let owner = OccurrenceIdentity::new("gentamycyna-geometry", 1, 2_621_952, 2_866_688);
+    let mut pcm = vec![0.0; 3_027_456];
+    let mut held = (0..5)
+        .map(|i| (2_640_000 + i * 20_000, 2_648_000 + i * 20_000, "Iwo"))
+        .collect::<Vec<_>>();
+    held.extend([
+        (2_804_160, 2_808_960, "z"),
+        (2_808_960, 2_856_000, "Gentamycyną."),
+    ]);
+    for &(start, end, _) in &held {
+        pcm[start as usize..end as usize].fill(0.2);
+    }
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, 48_000);
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let initial = ObservationIdentity::new(ObservationProducer::Whisper, 18, 1, owner.clone());
+    let pins = held
+        .iter()
+        .map(|&(a, b, text)| WordPin::new(a, b, text).with_decode_window(2_448_000, 2_880_000))
+        .collect::<Vec<_>>();
+    assert!(ledger.admit_word_slots(&initial, &pins).grants_mutation());
+    let original = ledger.text_of(&owner).unwrap().to_owned();
+    let candidate = ObservationIdentity::new(ObservationProducer::Whisper, 20, 2, owner.clone());
+    let offered = [
+        (2_804_160, 2_807_040, "z"),
+        (2_807_040, 2_821_440, "gęta"),
+        (2_821_440, 2_856_000, "metodem."),
+    ]
+    .into_iter()
+    .map(|(a, b, text)| WordPin::new(a, b, text).with_decode_window(2_736_000, 3_027_456))
+    .collect::<Vec<_>>();
+    ledger.admit_word_slots(&candidate, &offered);
+    assert_eq!(ledger.text_of(&owner), Some(original.as_str()));
+    assert_eq!(
+        ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .filter(|p| p.text == "Iwo")
+            .count(),
+        5
+    );
+    assert!(!ledger.is_sealed(&owner));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
 fn dictionary_witnesses_require_distinct_complete_current_word_windows() {
     let owner = OccurrenceIdentity::new("dictionary-witness", 1, 0, 160_000);
     let mut pcm = vec![0.0; 160_000];
