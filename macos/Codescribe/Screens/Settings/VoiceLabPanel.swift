@@ -401,6 +401,9 @@ struct VoiceLabPanel: View {
         }
       }
 
+      DictionaryWordPins(configDir: model.configDir)
+        .padding(.top, CSSpace.section)
+
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
         SettingsSectionLabel(
           String(localized: "Suggested rules · \(model.ruleCandidates.count)")
