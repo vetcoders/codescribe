@@ -202,10 +202,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if isKeyWindow, let transcript = firstResponder as? LiveTranscriptNativeTextView,
-      transcript.performSelectedCopy(with: event)
+    if isKeyWindow, event.type == .keyDown,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c",
+      let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:)))
     {
-      return true
+      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
     }
     return super.performKeyEquivalent(with: event)
   }
@@ -275,6 +277,18 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dragMoved = false
       if moved { onUserDragEnded?(origin) }
     default:
+      if event.type == .leftMouseDown, let contentView {
+        var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
+        while let view = hit {
+          // SwiftUI uses different native text classes across macOS versions.
+          // Follow public responder capabilities, not a private class name.
+          if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+            takeKeyForTranscript()
+            break
+          }
+          hit = view.superview
+        }
+      }
       super.sendEvent(event)
       if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }

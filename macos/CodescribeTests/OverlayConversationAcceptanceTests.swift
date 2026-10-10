@@ -49,10 +49,92 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testSelectableMessageTextOpensOverlayKeyboardGate() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    defer { panel.close() }
+    let host = NSHostingView(rootView: MarkdownText(raw: "Wiadomość agenta"))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    func selectableText(in view: NSView) -> NSView? {
+      if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+        return view
+      }
+      return view.subviews.lazy.compactMap { selectableText(in: $0) }.first
+    }
+    let field = try XCTUnwrap(selectableText(in: host))
+    let point = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+    XCTAssertFalse(panel.canBecomeKey)
+    let event = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: point, modifierFlags: [],
+        timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 0, clickCount: 1, pressure: 1))
+    let mouseUp = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseUp, location: point, modifierFlags: [],
+        timestamp: 0.01, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 1, clickCount: 1, pressure: 0))
+    NSApp.postEvent(mouseUp, atStart: true)
+    panel.sendEvent(event)
+    XCTAssertTrue(panel.allowsKeyForTranscript)
+    panel.releaseKeyAfterTranscript()
+    XCTAssertFalse(panel.canBecomeKey)
+  }
+
+  @MainActor
+  func testCommandCCopiesThroughFocusedNativeResponder() throws {
+    class CopyTarget: NSTextView {
+      var copiedText: String?
+      override func copy(_ sender: Any?) {
+        copiedText = (string as NSString).substring(with: selectedRange())
+      }
+    }
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    defer { panel.close() }
+    let text = CopyTarget(frame: panel.contentLayoutRect)
+    text.string = "alpha beta gamma"
+    text.isEditable = false
+    text.isSelectable = true
+    panel.contentView = text
+    panel.orderFrontRegardless()
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(text))
+    text.setSelectedRange(NSRange(location: 6, length: 4))
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "c",
+        charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8))
+    XCTAssertTrue(panel.performKeyEquivalent(with: key))
+    XCTAssertEqual(text.copiedText, "beta")
+  }
+
+  @MainActor
+  func testMessageCopyPreservesFullRawMarkdown() {
+    let pasteboard = NSPasteboard.withUniqueName()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.setString("poprzednia zawartość", forType: .string)
+    let raw = "Pierwszy akapit.\n\n```swift\nlet wynik = \"całość\"\n```\n\nOstatni akapit."
+    chatCopy(raw, to: pasteboard)
+    XCTAssertEqual(pasteboard.string(forType: .string), raw)
+  }
+
+  @MainActor
   func testChannelZeroHasEditableComposerAndReturnSendsDraft() throws {
     var draft = ""
     var sent: [String] = []
-    let conversation = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let conversation = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let view = OverlayConversationView(
       conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
       pendingControls: [], controlErrors: [:], onControl: { _, _ in },
@@ -61,7 +143,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let host = NSHostingView(rootView: view)
     host.sizingOptions = []
     host.frame = NSRect(x: 0, y: 0, width: 480, height: 500)
-    let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
     defer { window.close() }
