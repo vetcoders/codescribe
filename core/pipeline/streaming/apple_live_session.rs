@@ -22310,6 +22310,140 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn forensic_unrouted_edge_pin_retains_debt_and_late_apple_is_not_finality() {
+        // d152 geometry scaled from 48kHz to this fixture's 16kHz. These
+        // supplied hypotheses test accounting, not model recognition.
+        let session = "unrouted-edge-late-apple";
+        let (mut lane, owner, _requests, _) =
+            forensic_boundary_capture(session, 14_592, 198_144, &[(0, 198_144)]);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            AdmitWindow {
+                request_id: 71,
+                sample_start: 0,
+                sample_end: 128_000,
+            },
+            &[(1, owner.clone())],
+            &[word_pin(session, "Opowiedz", 0, 26_880)],
+            LedgerObservationProducer::Whisper,
+        );
+        assert!(
+            routes[0].exclusive.is_empty(),
+            "the midpoint is before the owner"
+        );
+        {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let diagnostic = ledger.recovery_diagnostic(&owner);
+            let rejected = diagnostic
+                .rejected_pins
+                .iter()
+                .find(|pin| pin.sample_start == 0 && pin.sample_end == 26_880)
+                .expect("the actual rejected edge pin must survive routing");
+            assert_eq!(rejected.decode, Some((0, 128_000)));
+            assert_eq!(rejected.observation.request, 71);
+            assert!(!rejected.accepted_observation);
+            assert!(
+                rejected
+                    .refusal_reasons
+                    .iter()
+                    .any(|r| r == "decode_window_clipped")
+            );
+            assert!(ledger.slots_of(&owner).unwrap_or(&[]).is_empty());
+            assert!(!ledger.is_sealed(&owner));
+        }
+        let late = FusionWord {
+            confidence: None,
+            text: "Opowiedz".into(),
+            sample_start: 18_944,
+            sample_end: 25_184,
+        };
+        let current = TranscriptSegment {
+            confidence: None,
+            text: late.text.clone(),
+            start_ts: late.sample_start as f32 / RATE as f32,
+            end_ts: late.sample_end as f32 / RATE as f32,
+        };
+        let outcome = admit_late_apple_words(&mut lane.state, &lane.tx, 72, &[late], &[current]);
+        assert_eq!(outcome.admitted_into.get(&owner), Some(&1));
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Opowiedz"));
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "one Apple label cannot certify all recovery"
+        );
+        assert_eq!(
+            ledger.seal_terminal(session, 1),
+            Err(crate::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending)
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_unrouted_edge_pin_requires_measured_intersection_energy() {
+        for measured in [false, true] {
+            let session = format!("unrouted-edge-no-energy-{measured}");
+            let mut lane = open(&session);
+            let owner = OccurrenceIdentity::new(&session, 1, 14_592, 198_144);
+            stage(&mut lane, 1, owner.clone(), "mi dalej");
+            if measured {
+                record_energy(&lane, &[vec![0.0; 198_144]]);
+            }
+            lane.state.route_overlap_pins(
+                &lane.tx,
+                AdmitWindow {
+                    request_id: 71,
+                    sample_start: 0,
+                    sample_end: 128_000,
+                },
+                &[(1, owner.clone())],
+                &[word_pin(&session, "Opowiedz", 0, 26_880)],
+                LedgerObservationProducer::Whisper,
+            );
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.recovery_diagnostic(&owner).rejected_pins.is_empty());
+            assert_eq!(ledger.text_of(&owner), Some("mi dalej"));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_unrouted_edge_pin_does_not_grant_phrase_or_other_backend_authority() {
+        for phrase in [false, true] {
+            for producer in [
+                LedgerObservationProducer::Whisper,
+                LedgerObservationProducer::CloudLive,
+            ] {
+                if !phrase && producer == LedgerObservationProducer::Whisper {
+                    continue;
+                }
+                let session = format!("unrouted-edge-source-{phrase}-{producer:?}");
+                let (mut lane, owner, _requests, _) =
+                    forensic_boundary_capture(&session, 14_592, 198_144, &[(0, 198_144)]);
+                let pin = if phrase {
+                    segment(&session, "Opowiedz mi", 0, 26_880)
+                } else {
+                    word_pin(&session, "Opowiedz", 0, 26_880)
+                };
+                lane.state.route_overlap_pins(
+                    &lane.tx,
+                    AdmitWindow {
+                        request_id: 71,
+                        sample_start: 0,
+                        sample_end: 128_000,
+                    },
+                    &[(1, owner.clone())],
+                    &[pin],
+                    producer,
+                );
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert!(ledger.recovery_diagnostic(&owner).rejected_pins.is_empty());
+                assert!(ledger.slots_of(&owner).unwrap_or(&[]).is_empty());
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn forensic_boundary_owner_straddle_inside_actual_decoder_keeps_word() {
         for mode in BufferMode::BOTH {
             let session = mode.session("forensic-owner-not-decoder-edge");
