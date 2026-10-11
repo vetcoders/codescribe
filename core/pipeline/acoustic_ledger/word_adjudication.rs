@@ -41,7 +41,9 @@ use serde::{Deserialize, Serialize};
 /// question without a prior reservation; lexical adjudication still decides.
 /// v21: capture origin does not prove a complete acoustic onset. Retain the
 /// observed word without granting boundary, trial or recovery completeness.
-pub const WORD_POLICY: &str = "word-adjudication/v21";
+/// v22: returned scope needs complete evidence for every held decoder word;
+/// one complete neighbour cannot settle a clipped word through its window.
+pub const WORD_POLICY: &str = "word-adjudication/v22";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
