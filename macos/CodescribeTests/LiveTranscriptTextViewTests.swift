@@ -1,10 +1,88 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testActivityUnderlineExistsOnEmptyCanvasAndRemovesForEditingOrStop() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    func update(active: Bool, editing: Bool = false) {
+      LiveTranscriptTextView(
+        text: "", isEditable: editing, appearance: .dark,
+        showsActivityUnderline: active
+      ).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      fixture.textView.layoutSubtreeIfNeeded()
+    }
+    update(active: true)
+    let marker = try XCTUnwrap(
+      fixture.textView.subviews.first {
+        $0 is NSHostingView<TranscriptActivityUnderline>
+      })
+    XCTAssertFalse(marker.isHidden)
+    XCTAssertEqual(marker.frame.width, 10)
+    XCTAssertGreaterThan(marker.frame.minY, fixture.textView.textContainerOrigin.y)
+    XCTAssertNil(marker.hitTest(NSPoint(x: marker.bounds.midX, y: marker.bounds.midY)))
+    XCTAssertFalse(marker.isAccessibilityElement())
+    XCTAssertEqual(fixture.textView.string, "")
+    update(active: true, editing: true)
+    XCTAssertNil(marker.superview)
+    update(active: true)
+    XCTAssertNotNil(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+    update(active: false)
+    XCTAssertFalse(
+      fixture.textView.subviews.contains { $0 is NSHostingView<TranscriptActivityUnderline> })
+  }
+
+  func testActivityUnderlineTracksUnicodeAndNewlineTailWithoutChangingSelectionOrCopy() async throws
+  {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    for text in [
+      "Iwo Iwo Iwo Iwo Iwo", "Żółw 🐢 é", "One line\n", String(repeating: "word ", count: 80),
+    ] {
+      let fixture = makeScrollFixture()
+      defer {
+        fixture.coordinator.detach()
+        fixture.window.close()
+      }
+      LiveTranscriptTextView(text: text, appearance: .dark, showsActivityUnderline: true).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      await nextMainQueueTurn()
+      fixture.textView.layoutSubtreeIfNeeded()
+      fixture.textView.setSelectedRange(NSRange(location: 0, length: 3))
+      let selected = fixture.textView.selectedRange()
+      let viewport = fixture.scrollView.contentView.bounds.origin
+      let marker = try XCTUnwrap(
+        fixture.textView.subviews.first {
+          $0 is NSHostingView<TranscriptActivityUnderline>
+        })
+      let tail = NSRange(location: (text as NSString).length, length: 0)
+      let caret = fixture.textView.convert(
+        fixture.window.convertFromScreen(
+          fixture.textView.firstRect(
+            forCharacterRange: tail,
+            actualRange: nil)), from: nil)
+      XCTAssertFalse(marker.isHidden, text)
+      XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
+      XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
+      fixture.textView.needsLayout = true
+      fixture.textView.layoutSubtreeIfNeeded()
+      XCTAssertEqual(fixture.textView.selectedRange(), selected)
+      XCTAssertEqual(fixture.scrollView.contentView.bounds.origin, viewport)
+      XCTAssertTrue(fixture.textView.copySelection(to: board))
+      XCTAssertEqual(board.string(forType: .string), (text as NSString).substring(with: selected))
+      XCTAssertEqual(fixture.textView.string, text)
+    }
+  }
+
   func testNativeTranscriptDisablesWritingTools() {
     let textView = LiveTranscriptTextView.makeTextView()
     if #available(macOS 15.0, *) {
