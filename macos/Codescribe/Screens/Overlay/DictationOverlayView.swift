@@ -218,7 +218,7 @@ struct OverlayRecordingControls: View {
       if let onPresentationSelect {
         Picker(
           "Live preview",
-          selection: Binding(get: { presentationMode }, set: onPresentationSelect)
+          selection: Binding(get: { presentationMode }, set: { onPresentationSelect($0) })
         ) {
           Text("Collapse widget").tag(OverlayPresentationMode.mini)
           Text("Compact").tag(OverlayPresentationMode.midi)
@@ -407,7 +407,6 @@ struct DictationOverlayView: View {
                 Task { await state.controlReply(message, stop: stop) }
               },
               focusRevision: state.conversationFocusRevision,
-              followsLiveChannel: state.channelHudStates[conversation.channel]?.open == true,
               isPresented: !state.isCollapsed,
               draft: Binding(
                 get: { state.conversationDrafts[conversation.id] ?? "" },
@@ -455,6 +454,7 @@ struct DictationOverlayView: View {
               .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
               .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
               .clipShape(RoundedRectangle(cornerRadius: 14))
+              .background { OverlayMenuCursorRegion() }
               .padding(.trailing, 8)
               .accessibilityIdentifier("overlay-agent-sidebar")
               .background {

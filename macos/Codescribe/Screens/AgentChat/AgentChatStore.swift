@@ -356,7 +356,7 @@ enum ToolInspectPresentation {
 struct ChatMessage: Identifiable {
   let id = UUID()
   var role: ChatRole
-  var timestamp: String
+  var timestamp: Date?
   /// Body text. May contain `backtick` code spans for assistant/you turns.
   var text: String
 
@@ -1234,7 +1234,7 @@ final class AgentChatStore: ObservableObject {
       append(
         ChatMessage(
           role: .tool,
-          timestamp: Self.nowTimestamp,
+          timestamp: Date(),
           text: String(
             localized: "Couldn't apply “\(entry.title)”: \(error.userFacingMessage)",
             comment: "Palette pick failed: the picked entry, then the reason it failed")
@@ -2045,9 +2045,9 @@ final class AgentChatStore: ObservableObject {
     // chip (name + optional thumbnail) for what they attached.
     let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url, type: $0.type) }
     persistAttachmentMetadata(sent, for: backendId, userTurnIndex: userTurnIndex)
-    append(ChatMessage(role: .you, timestamp: now(), text: text, attachments: sent), to: threadID)
+    append(ChatMessage(role: .you, timestamp: Date(), text: text, attachments: sent), to: threadID)
     let assistant = ChatMessage(
-      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
+      role: .assistant, timestamp: Date(), text: "", isThinking: true)
     let assistantID = assistant.id
     append(assistant, to: threadID)
     let turnID = queued.id
@@ -2442,7 +2442,7 @@ final class AgentChatStore: ObservableObject {
     // the spoken instruction. The wire + selection/app context ride along on
     // the message for the context chip and "Copy full prompt".
     let userTurn = AssistivePromptParser.presented(
-      ChatMessage(role: .you, timestamp: now(), text: userText)
+      ChatMessage(role: .you, timestamp: Date(), text: userText)
     )
 
     let threadID: UUID
@@ -2488,7 +2488,7 @@ final class AgentChatStore: ObservableObject {
       append(userTurn, to: threadID)
     }
     let assistant = ChatMessage(
-      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
+      role: .assistant, timestamp: Date(), text: "", isThinking: true)
     voiceTurnThreadID = threadID
     voiceAssistantID = assistant.id
     voiceTurnStartedAt = Date()
@@ -2635,7 +2635,7 @@ final class AgentChatStore: ObservableObject {
     guard !didStartDemo, let threadID = threads.first(where: { $0.isRestored })?.id else { return }
     didStartDemo = true
     let demo = ChatMessage(
-      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
+      role: .assistant, timestamp: Date(), text: "", isThinking: true)
     let id = demo.id
     append(demo, to: threadID)
     Task { @MainActor in
@@ -2994,7 +2994,7 @@ final class AgentChatStore: ObservableObject {
       }
       updateToolTitle(threadIndex: ti, messageIndex: row)
     } else {
-      var tool = ChatMessage(role: .tool, timestamp: now(), text: "")
+      var tool = ChatMessage(role: .tool, timestamp: Date(), text: "")
       tool.toolLines = [line]
       tool.toolTitle = Self.toolTitle(for: tool.toolLines)
       threads[ti].messages.insert(tool, at: ai)
@@ -3044,7 +3044,7 @@ final class AgentChatStore: ObservableObject {
       }
       updateToolTitle(threadIndex: ti, messageIndex: row)
     } else {
-      var tool = ChatMessage(role: .tool, timestamp: now(), text: "")
+      var tool = ChatMessage(role: .tool, timestamp: Date(), text: "")
       tool.toolLines = [line]
       tool.toolTitle = Self.toolTitle(for: tool.toolLines)
       threads[ti].messages.insert(tool, at: ai)
@@ -3132,12 +3132,7 @@ final class AgentChatStore: ObservableObject {
     String(localized: "now", comment: "Timestamp of a thread or message created just now")
   }
 
-  private func now() -> String { Self.timeFmt.string(from: Date()) }
-  private static let timeFmt: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm"
-    return f
-  }()
+  private func now() -> Date { Date() }
 
   /// Row-level equality on everything the rail renders. Matched incoming
   /// rows reuse the existing `ChatThread` instances (same `id`s), so equal
@@ -3236,9 +3231,9 @@ final class AgentChatStore: ObservableObject {
   static func seedThreads() -> [ChatThread] {
     var active = ChatThread(title: "auth-refactor", meta: "active · restored", isRestored: true)
     active.messages = [
-      ChatMessage(role: .you, timestamp: "18:39", text: "where do we double-dispatch events?"),
+      ChatMessage(role: .you, timestamp: Date(), text: "where do we double-dispatch events?"),
       ChatMessage(
-        role: .tool, timestamp: "18:39", text: "",
+        role: .tool, timestamp: Date(), text: "",
         toolTitle: "What I checked · 2 tools",
         toolLines: [
           ToolLine(verb: "grep", detail: "events/bus.ts · ui/store.ts"),
@@ -3246,12 +3241,12 @@ final class AgentChatStore: ObservableObject {
         ]
       ),
       ChatMessage(
-        role: .assistant, timestamp: "18:40",
+        role: .assistant, timestamp: Date(),
         text:
           "Two spots. `events/bus.ts` re-emits on retry, and `ui/store.ts` subscribes twice on remount. Want a minimal patch plus a regression test?",
         reasonedSeconds: 2.1
       ),
-      ChatMessage(role: .you, timestamp: "18:41", text: "yes, and add the test"),
+      ChatMessage(role: .you, timestamp: Date(), text: "yes, and add the test"),
     ]
     // updatedAt offsets keep the preview's recency sections honest with the
     // hardcoded meta labels.

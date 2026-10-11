@@ -24,7 +24,7 @@ final class AgentThreadContinuityTests: XCTestCase {
         thread.backendId = row.id
         thread.messagesLoaded = true
         thread.messages = [
-          ChatMessage(role: .assistant, timestamp: "earlier", text: "\(row.id) history")
+          ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "\(row.id) history")
         ]
         return thread
       }

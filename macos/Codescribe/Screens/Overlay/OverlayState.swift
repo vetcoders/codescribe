@@ -2452,14 +2452,6 @@ final class OverlayState {
     showFooterNotice(notice)
   }
 
-  func copyToPasteboard(_ pasteboard: NSPasteboard = .general) {
-    // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
-    captureQualityIfEdited(action: "copy")
-    pasteboard.clearContents()
-    pasteboard.setString(activeText, forType: .string)
-    restartAutoHideCountdown()
-  }
-
   @discardableResult
   func sendToAgent() -> Task<Void, Never>? {
     // One guard for every entry point: while an accepted operation waits for

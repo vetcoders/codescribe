@@ -25,7 +25,7 @@ final class AgentSpeechTests: XCTestCase {
   func testSpeakSendsAssistantTextAndClearsPlayingState() async {
     let engine = Engine()
     let store = AgentChatStore(engine: engine)
-    await store.speak(ChatMessage(role: .assistant, timestamp: "now", text: "Hello"))
+    await store.speak(ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Hello"))
     XCTAssertEqual(engine.spoken, ["Hello"])
     XCTAssertNil(store.speakingMessageID)
     XCTAssertNil(store.speechError)
@@ -36,7 +36,7 @@ final class AgentSpeechTests: XCTestCase {
     engine.unavailable = "unavailable: Anthropic has no speech endpoint"
     let store = AgentChatStore(engine: engine)
     XCTAssertEqual(store.speechUnavailableReason, engine.unavailable)
-    await store.speak(ChatMessage(role: .assistant, timestamp: "now", text: "Hello"))
+    await store.speak(ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Hello"))
     XCTAssertEqual(store.speechError, engine.unavailable)
     XCTAssertTrue(engine.spoken.isEmpty)
   }
@@ -49,7 +49,7 @@ final class AgentSpeechTests: XCTestCase {
         NSLocalizedDescriptionKey: "Speech request failed (HTTP 403)."
       ])
     let store = AgentChatStore(engine: engine)
-    await store.speak(ChatMessage(role: .assistant, timestamp: "now", text: "Hello"))
+    await store.speak(ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Hello"))
     XCTAssertEqual(store.speechError, "Speech request failed (HTTP 403).")
     XCTAssertNil(store.speakingMessageID)
     store.stopSpeaking()
