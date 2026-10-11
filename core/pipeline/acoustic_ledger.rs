@@ -1819,6 +1819,40 @@ impl AcousticLedger {
             {
                 self.refuse_word_slot(observation, &word, Vec::new(), "overlapping_new_pins");
             } else {
+                // Missing a physical target does not prove another word.
+                // A late Apple pin may intersect a complete Whisper Word
+                // while its shifted clock misses the same-slot threshold.
+                // Preserve that uncertainty as evidence and recovery debt;
+                // neither text equality nor weaker overlap grants identity.
+                if word.producer == ObservationProducer::Apple {
+                    let sources = prior
+                        .iter()
+                        .filter(|source| {
+                            source.producer == ObservationProducer::Whisper
+                                && source.sample_start < word.sample_end
+                                && word.sample_start < source.sample_end
+                                && source.text.split_whitespace().count() == 1
+                                && self.complete_word_slot(source)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !sources.is_empty() {
+                        self.record_word_choice(
+                            observation,
+                            &sources,
+                            std::slice::from_ref(&word),
+                            "late_apple_overlap_requires_partition",
+                            false,
+                        );
+                        self.refuse_word_slot(
+                            observation,
+                            &word,
+                            sources,
+                            "late_apple_overlap_requires_partition",
+                        );
+                        continue;
+                    }
+                }
                 // A clipped first hypothesis must not mint a separate Word
                 // which the next window's shifted alignment cannot address.
                 // Retain its PCM/evidence as recovery debt; a later complete
