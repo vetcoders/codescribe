@@ -534,7 +534,8 @@ impl AcousticLedger {
 
     /// New-word admission checks the original producer pin, before owner
     /// projection. Moving an onset inside an owner cannot repair a decode cut.
-    /// The same measured-quiet predicates own both acoustic boundaries.
+    /// An unprojected first word remains visible without claiming a complete
+    /// onset; this guard prevents owner clipping from minting another word.
     pub(super) fn new_word_decode_fence_incomplete(
         &self,
         observation: &ObservationIdentity,
@@ -544,7 +545,8 @@ impl AcousticLedger {
         let bounds = self.decoded_word_windows.get(observation).copied();
         let incomplete = |start, end, decode: Option<(u64, u64)>| {
             decode.is_some_and(|(lo, hi)| {
-                !self.decode_word_onset_complete(owner, lo, hi, start)
+                (start < owner.sample_start
+                    && !self.decode_word_onset_complete(owner, lo, hi, start))
                     || self.decode_word_fence_incomplete(owner, lo, hi, start, end)
             })
         };
