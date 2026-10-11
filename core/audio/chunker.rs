@@ -247,6 +247,7 @@ pub(crate) struct SpeechSession {
     segment_peak_prob: f32,
     /// Speech probability at the last VAD boundary (Start or End).
     last_boundary_prob: f32,
+    last_observed_prob: f32,
     /// Boundary observations waiting for the session-level Silero ingress.
     /// FIFO order is the PCM order in which the iterator produced them.
     vad_boundaries: VecDeque<VadBoundaryEvidence>,
@@ -363,6 +364,7 @@ impl SpeechSession {
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
+            last_observed_prob: 0.0,
             vad_boundaries: VecDeque::new(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
@@ -520,6 +522,7 @@ impl SpeechSession {
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
+            last_observed_prob: 0.0,
             vad_boundaries: VecDeque::new(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
@@ -816,6 +819,72 @@ impl SpeechSession {
             }
         }
 
+        self.finish_pending_segment(&mut events);
+
+        // Safety net: when no segment is active, cap raw_buffer to prevent
+        // unbounded growth.
+        if self.segment_start.is_none() && self.pending_end.is_none() {
+            self.trim_raw_buffer(self.raw_cursor.saturating_sub(self.pre_roll_raw));
+        }
+
+        events
+    }
+
+    pub(crate) fn speech_pad_raw(&self) -> usize {
+        self.speech_pad_raw
+    }
+
+    /// Complete an existing Silero candidate sooner when a timed provider
+    /// phrase ends at the same measured quiet edge. Text cannot close speech.
+    pub(crate) fn confirm_phrase_valley(
+        &mut self,
+        phrase_end: u64,
+        min_valley_samples: u64,
+    ) -> bool {
+        if min_valley_samples == 0 || self.pending_end.is_some() || self.segment_start.is_none() {
+            return false;
+        }
+        let Some(iter) = self.iter_state.as_ref() else {
+            return false;
+        };
+        if !iter.triggered
+            || iter.temp_end == 0
+            || iter.temp_end.saturating_sub(iter.speech_start) <= iter.params.min_speech_samples
+        {
+            return false;
+        }
+        let edge = self.vad_to_raw_index(iter.temp_end) as u64;
+        let decision = self.vad_to_raw_index(iter.current_sample) as u64;
+        let tolerance = self.speech_pad_raw as u64;
+        if decision.saturating_sub(edge) < min_valley_samples
+            || phrase_end < edge.saturating_sub(tolerance)
+            || phrase_end > edge.saturating_add(tolerance)
+        {
+            return false;
+        }
+        let iter = self.iter_state.as_mut().expect("checked iterator");
+        iter.triggered = false;
+        iter.temp_end = 0;
+        iter.prev_end = 0;
+        iter.next_start = 0;
+        self.pending_end = Some((edge as usize).saturating_add(self.speech_pad_raw));
+        self.pending_close_receipt = Some(UtteranceCloseReceipt {
+            decision_sample: decision,
+            cause: UtteranceCloseCause::SilenceFence,
+        });
+        self.record_vad_boundary(VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechEnd,
+            sample: edge,
+            speech_probability: self.last_observed_prob,
+        });
+        let mut events = Vec::new();
+        self.finish_pending_segment(&mut events);
+        events
+            .iter()
+            .any(|event| matches!(event, SpeechEvent::UtteranceFinal))
+    }
+
+    fn finish_pending_segment(&mut self, events: &mut Vec<SpeechEvent>) {
         if let Some(end) = self.pending_end
             && self.raw_cursor >= end
         {
@@ -832,7 +901,7 @@ impl SpeechSession {
                             && let Some(chunk) = self.raw_slice(emit_start, emit_end)
                         {
                             self.push_event_with_speech_vad_samples(
-                                &mut events,
+                                events,
                                 SpeechEvent::Chunk(chunk),
                             );
                         }
@@ -841,7 +910,7 @@ impl SpeechSession {
                         // This is a boundary, not an audio payload. Interim
                         // retention must not erase the observed end of speech.
                         self.push_event_with_speech_vad_samples(
-                            &mut events,
+                            events,
                             SpeechEvent::UtteranceFinal,
                         );
                         self.last_closed_segment_raw_range = Some((start as u64, end as u64));
@@ -866,14 +935,6 @@ impl SpeechSession {
                 self.segment_peak_prob = self.last_boundary_prob;
             }
         }
-
-        // Safety net: when no segment is active, cap raw_buffer to prevent
-        // unbounded growth.
-        if self.segment_start.is_none() && self.pending_end.is_none() {
-            self.trim_raw_buffer(self.raw_cursor.saturating_sub(self.pre_roll_raw));
-        }
-
-        events
     }
 
     /// Half-open raw-sample range of the currently open Supervisor segment.
@@ -1014,6 +1075,7 @@ impl SpeechSession {
     /// which is what keeps [`Self::segment_speech_prob`] from reporting
     /// confidence borrowed from a neighbouring segment.
     fn update_vad_heartbeat(&mut self, speech_prob: f32) {
+        self.last_observed_prob = speech_prob;
         self.max_speech_prob = self.max_speech_prob.max(speech_prob);
         let iter_triggered = self
             .iter_state
@@ -1863,6 +1925,36 @@ impl VadIterState {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn provider_boundary_requires_a_real_contiguous_valley() {
+        let mut session = SpeechSession::new_utterance_with_silence(16_000, 0.55);
+        // Scripted probabilities exercise the production frame clock without a model.
+        for probability in [0.9; 20].into_iter().chain([0.0; 11]) {
+            session.push_scripted_speech_prob_for_test(probability);
+            session.feed(&vec![0.01; vad::CHUNK_SIZE], 0);
+        }
+        let edge = session.vad_to_raw_index(session.iter_state.as_ref().unwrap().temp_end) as u64;
+        assert!(session.open_segment_raw_range().is_some());
+        assert!(!session.confirm_phrase_valley(edge + 16_000, 4_800));
+        assert!(!session.confirm_phrase_valley(edge, 8_000));
+        assert!(session.confirm_phrase_valley(edge, 4_800));
+        assert!(session.open_segment_raw_range().is_none());
+        assert_eq!(
+            session.last_close_receipt().unwrap().cause,
+            UtteranceCloseCause::SilenceFence
+        );
+        assert!(!session.confirm_phrase_valley(edge, 4_800));
+        for _ in 0..20 {
+            session.push_scripted_speech_prob_for_test(0.9);
+            session.feed(&vec![0.01; vad::CHUNK_SIZE], 0);
+        }
+        assert!(session.open_segment_raw_range().is_some());
+        assert!(
+            !session.confirm_phrase_valley(edge, 4_800),
+            "voiced continuation is not silence"
+        );
+    }
 
     #[test]
     fn silence_close_receipt_preserves_the_decision_on_each_raw_clock() {

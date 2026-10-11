@@ -483,6 +483,49 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: fixture.bus), sourceBytes)
   }
 
+  func testCaptureReceiptsWaitForTerminalAndSurviveLateRevisions() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let session = "agent-channel-0-lifecycle"
+    func row(_ revision: Int, _ text: String) -> [String: Any] {
+      [
+        "schema": "codescribe.transcript-evidence.v1", "session_id": session,
+        "audience": "*", "sequence": revision, "reducer_revision": revision,
+        "reducer_action": "commit_delta", "rendered_text": text,
+        "occurrence_session_id": session, "capture_epoch": 1,
+        "sample_start": 3200, "sample_end": 9600, "document_index": 0,
+        "recipients": [fixture.recipient()],
+      ]
+    }
+    try fixture.append(row(1, "Pierwsze"))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    var snapshot = try await reader.readSnapshot()
+    var message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertFalse(message.showsDeliveryReceipts)
+    XCTAssertFalse(message.recipients.isEmpty)
+    var occurrenceTerminal = row(2, "Pierwsza zamknięta fraza")
+    occurrenceTerminal["status"] = "transcript_sealed"
+    try fixture.append(occurrenceTerminal)
+    snapshot = try await reader.readSnapshot()
+    message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertFalse(message.showsDeliveryReceipts, "A phrase terminal does not finish the take")
+    try fixture.append([
+      "schema": "codescribe.channel-session.v1", "channel": "0",
+      "session_id": session, "state": "sealed",
+    ])
+    snapshot = try await reader.readSnapshot()
+    message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertTrue(message.showsDeliveryReceipts)
+    XCTAssertEqual(message.captureState, .finished)
+    try fixture.append(row(3, "Pierwsze i dalsze"))
+    snapshot = try await reader.readSnapshot()
+    message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
+    XCTAssertEqual(message.text, "Pierwsze i dalsze")
+    XCTAssertTrue(message.showsDeliveryReceipts)
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, snapshot)
+  }
+
   func testBroadcastStreamingKeepsNewestReducerRevisionAcrossDelayedBusCopies() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -1638,10 +1681,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
     ]
     var manifest: [String: Any] = [
-        "schema": "codescribe.bus-generations.v1", "root": fixture.bus.path,
-        "stream_id": "synthetic-stream", "stream_inode": inode, "stream_dev": dev,
-        "stream_birthtime": NSNull(), "segments": [closed], "active": active, "pending": NSNull(),
-      ]
+      "schema": "codescribe.bus-generations.v1", "root": fixture.bus.path,
+      "stream_id": "synthetic-stream", "stream_inode": inode, "stream_dev": dev,
+      "stream_birthtime": NSNull(), "segments": [closed], "active": active, "pending": NSNull(),
+    ]
     if let volumeUUID { manifest["volume_uuid"] = volumeUUID }
     try fixture.write(
       manifest,

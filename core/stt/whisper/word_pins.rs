@@ -4,7 +4,10 @@
 //! (`whisper/timing.py` `find_alignment`, model card alignment heads):
 //! pre-softmax cross-attention from the checkpoint's alignment heads, softmax,
 //! token-axis z-score, width-7 median filter, mean across heads, then DTW.
-//! A word boundary is a jump in that path. Ranges are never split uniformly
+//! Interior boundaries follow the reference DTW path. Its forced frame-zero
+//! first boundary is replaced by the leading edge of the first predictive
+//! attention peak; it is not a measured onset.
+//! A word boundary is otherwise a jump in that path. Ranges are never split uniformly
 //! across characters or tokens.
 //!
 //! Encoder frames are 20 ms (`SAMPLE_RATE / (HOP_LENGTH * 2) = 50`), the same
@@ -116,6 +119,7 @@ pub fn align_measured_words(
     }
 
     let mut weights = Vec::with_capacity(head_qk.len());
+    let mut onset_weights = vec![0.0_f32; frame_count];
     for head in head_qk {
         // Prefix and EOT participate in token-axis normalization before the
         // DTW slice, just as in find_alignment. Slicing first changes the
@@ -124,6 +128,13 @@ pub fn align_measured_words(
         for (row, src) in matrix.iter_mut().enumerate() {
             src.copy_from_slice(&head[row][..frame_count]);
             softmax_in_place(src);
+        }
+        // Onset reads this token's distribution over time. Token-axis
+        // z-scoring can amplify background where other tokens are absent.
+        let mut first = [matrix[row_start].clone()];
+        median_filter_rows(&mut first, MEDIAN_WIDTH);
+        for (sum, value) in onset_weights.iter_mut().zip(&first[0]) {
+            *sum += value / head_qk.len() as f32;
         }
         zscore_token_axis(&mut matrix);
         median_filter_rows(&mut matrix, MEDIAN_WIDTH);
@@ -147,7 +158,7 @@ pub fn align_measured_words(
         }
     }
     let (text_indices, time_indices) = dtw(&cost);
-    let jump_times = jump_times(&text_indices, &time_indices);
+    let mut jump_times = jump_times(&text_indices, &time_indices);
     if jump_times.len() < rows {
         tracing::info!(
             reason = "incomplete_dtw_path",
@@ -157,6 +168,10 @@ pub fn align_measured_words(
         );
         return None;
     }
+    // Global DTW necessarily opens row zero at frame zero. Read the first
+    // predictive attention peak instead, without moving any interior/tail jump.
+    let onset = first_predictive_onset(&onset_weights)?;
+    jump_times[0] = onset as f32 * ENCODER_FRAME_SECS;
     let mut boundaries = Vec::with_capacity(word_token_counts.len() + 1);
     boundaries.push(0usize);
     let mut cursor = 0usize;
@@ -362,6 +377,34 @@ fn median_filter_rows(matrix: &mut [Vec<f32>], width: usize) {
     }
 }
 
+/// Leading half-height crossing of the dominant predictive attention peak.
+/// Median-filtered time probabilities, averaged across alignment heads.
+/// A flat/nonpositive row has no onset evidence.
+fn first_predictive_onset(scores: &[f32]) -> Option<usize> {
+    let (peak_index, &peak) = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.is_finite())
+        .max_by(|left, right| left.1.total_cmp(right.1))?;
+    if peak <= 0.0 {
+        return None;
+    }
+    let floor = scores
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .min_by(f32::total_cmp)?;
+    if peak - floor <= f32::EPSILON {
+        return None;
+    }
+    let threshold = peak * 0.5;
+    let mut onset = peak_index;
+    while onset > 0 && scores[onset - 1] >= threshold {
+        onset -= 1;
+    }
+    Some(onset)
+}
+
 /// OpenAI `dtw_cpu`: border is infinite, ties prefer a time step.
 fn dtw(cost: &[Vec<f64>]) -> (Vec<usize>, Vec<usize>) {
     let rows = cost.len();
@@ -516,6 +559,29 @@ mod tests {
         // The punctuation token joins the word's span so per-token evidence
         // (A6 confidence aggregation) covers the merged surface.
         assert_eq!((words[1].token_start, words[1].token_len), (1, 2));
+    }
+
+    #[test]
+    fn first_predictive_onset_follows_the_peak_after_leading_silence() {
+        let scores = [-0.2, 0.1, -0.1, 0.2, 1.2, 2.0, 1.4, -0.3];
+        assert_eq!(first_predictive_onset(&scores), Some(4));
+        let mut shifted = vec![-0.2; 5];
+        shifted.extend(scores);
+        assert_eq!(first_predictive_onset(&shifted), Some(9));
+        assert_eq!(first_predictive_onset(&[0.0; 20]), None);
+        assert_eq!(first_predictive_onset(&[-1.0; 20]), None);
+        assert_eq!(first_predictive_onset(&[f32::NAN; 20]), None);
+    }
+
+    #[test]
+    fn first_word_pin_moves_with_attention_not_the_decode_window_origin() {
+        let heads = spike(4, 80, &[(0, 10), (1, 35), (2, 60)]);
+        let words = align_measured_words(&heads, 0, &[1, 1], &["Ostatni", "wyraz"], 80).unwrap();
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].start_secs, 10.0 * ENCODER_FRAME_SECS);
+        assert_eq!(words[0].token_start, 0);
+        assert_eq!(words[1].token_start, 1);
+        assert!(words[0].end_secs > words[0].start_secs);
     }
 
     #[test]
