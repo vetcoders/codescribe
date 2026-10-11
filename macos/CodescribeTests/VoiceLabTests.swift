@@ -570,10 +570,10 @@ final class VoiceLabTests: XCTestCase {
     }
 
     let panel = try voiceLabPanelSource()
-    XCTAssertTrue(panel.contains("Text(origin)"))
+    XCTAssertTrue(panel.contains("Text(row.localizedOrigin)"))
     XCTAssertTrue(
       panel.contains(
-        "accessibilityLabel(\"\\(row.variant) to \\(row.canonical), source \\(origin)\")"
+        "accessibilityLabel(\"\\(row.variant) to \\(row.canonical), source \\(row.localizedOrigin)\")"
       ))
     XCTAssertFalse(
       panel.contains("source \\(row.source)"), "VoiceOver never reads the stored code")
@@ -608,7 +608,8 @@ final class VoiceLabTests: XCTestCase {
     }
     let msg = try XCTUnwrap(model.voiceLabTeachMessage)
     // The mock reports the same rule before and after: nothing new was learned.
-    XCTAssertEqual(msg, "No new rules: everything eligible is already in Dictionary rules · 1 active rule")
+    XCTAssertEqual(
+      msg, "No new rules: everything eligible is already in Dictionary rules · 1 active rule")
   }
 
   /// With more corrections than the page loads, Learn and the counters must

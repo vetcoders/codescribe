@@ -419,7 +419,9 @@ struct DictationOverlayView: View {
               microphoneEnabled: state.canToggleConversationMicrophone(conversation)
                 && !state.pendingChannelToggles.contains(conversation.channel),
               playbackMuted: state.conversationPlaybackMuted(conversation),
-              playbackEnabled: !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
+              playbackEnabled: conversation.channel == "0"
+                ? !state.globalPlaybackPending
+                : !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
               onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
               onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
               playbackError: state.playbackPreferenceError,

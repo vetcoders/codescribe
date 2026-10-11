@@ -1423,6 +1423,32 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
   }
 
+  func testBroadcastMicrophoneUsesDigitZeroWithoutAnAgentLease() async {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let closed = CsChannelRosterState(
+      channel: "0", audience: "*", provider: "", providerSessionId: "",
+      open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false)
+    state.applyChannelRoster([closed])
+    engine.rosterSnapshot = [
+      CsChannelRosterState(
+        channel: "0", audience: "*", provider: "", providerSessionId: "",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false)
+    ]
+    XCTAssertTrue(state.canToggleConversationMicrophone(broadcast))
+    await state.toggleConversationMicrophone(broadcast)
+    XCTAssertEqual(engine.toggledDigits, [0])
+    XCTAssertTrue(state.conversationMicrophoneOpen(broadcast))
+    let privateUnbound = OverlayConversation(
+      id: "3", channel: "3", name: "Other", owner: nil, messages: [])
+    XCTAssertFalse(state.canToggleConversationMicrophone(privateUnbound))
+    await state.toggleConversationMicrophone(privateUnbound)
+    XCTAssertEqual(engine.toggledDigits, [0])
+  }
+
   func testRosterToggleUsesEngineOnceAndRefreshesItsOpenState() async {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()

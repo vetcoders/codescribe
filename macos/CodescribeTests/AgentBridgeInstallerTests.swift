@@ -139,6 +139,34 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertNil(unreadable[identity], "An existing unreadable object is not a missing receipt")
   }
 
+  func testGlobalPlaybackReceiptHasOneScopeAndDoesNotBorrowPerAgentState() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let path = installer.bridgeRoot.appendingPathComponent("runtime/playback-mutes/global.json")
+    let absent = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+    XCTAssertEqual(absent, false)
+    try FileManager.default.createDirectory(
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    for muted in [true, false] {
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-playback-mute.v1", "scope": "all", "muted": muted,
+      ]
+      try JSONSerialization.data(withJSONObject: row).write(to: path, options: .atomic)
+      let snapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+      XCTAssertEqual(snapshot, muted)
+    }
+    for data in [
+      Data("not-json".utf8),
+      Data(
+        "{\"schema\":\"codescribe.agent-playback-mute.v1\",\"scope\":\"one\",\"muted\":false}".utf8),
+      Data(repeating: 32, count: 65537),
+    ] {
+      try data.write(to: path)
+      let snapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+      XCTAssertNil(snapshot)
+    }
+  }
+
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("home", isDirectory: true)

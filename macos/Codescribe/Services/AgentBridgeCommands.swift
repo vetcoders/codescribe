@@ -70,6 +70,12 @@ private struct AgentPlaybackMuteReceipt: Decodable, Sendable {
   }
 }
 
+private struct GlobalPlaybackMuteReceipt: Decodable, Sendable {
+  let schema: String
+  let scope: String
+  let muted: Bool
+}
+
 /// App-side invocations of the installed managed `cs-bus` command. They live
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
@@ -194,8 +200,55 @@ extension RealAgentBridgeInstaller {
   }
 
   @MainActor
+  static func globalPlaybackMuteSnapshot(
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async -> Bool? {
+    let path = installer.bridgeRoot.appendingPathComponent("runtime/playback-mutes/global.json")
+    return await Task.detached(priority: .utility) {
+      do {
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 65537) ?? Data()
+        guard data.count <= 65536,
+          let row = try? JSONDecoder().decode(GlobalPlaybackMuteReceipt.self, from: data),
+          row.schema == "codescribe.agent-playback-mute.v1", row.scope == "all"
+        else { return nil as Bool? }
+        return row.muted
+      } catch let error as NSError {
+        let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        let missing =
+          error.domain == NSCocoaErrorDomain
+          && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
+          || error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT)
+          || underlying?.domain == NSPOSIXErrorDomain && underlying?.code == Int(ENOENT)
+        return missing ? false : nil
+      }
+    }.value
+  }
+
+  @MainActor
+  static func setGlobalPlaybackMuted(_ muted: Bool) async throws {
+    let installer = RealAgentBridgeInstaller()
+    try await runPlaybackMuteCommand(
+      [muted ? "--mute-all" : "--unmute-all", "--bridge-home", installer.bridgeRoot.path],
+      installer: installer)
+  }
+
+  @MainActor
   static func setPlaybackMuted(_ muted: Bool, for identity: AgentPlaybackIdentity) async throws {
     let installer = RealAgentBridgeInstaller()
+    let arguments = [
+      muted ? "--mute-agent" : "--unmute-agent", "--provider", identity.provider,
+      "--session", identity.session, "--bus", identity.bus,
+      "--bridge-home", installer.bridgeRoot.path,
+    ]
+    try await runPlaybackMuteCommand(arguments, installer: installer)
+  }
+
+  @MainActor
+  private static func runPlaybackMuteCommand(
+    _ arguments: [String], installer: RealAgentBridgeInstaller
+  ) async throws {
     let executable = installer.commandURL("cs-bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
@@ -207,11 +260,6 @@ extension RealAgentBridgeInstaller {
             localized: "Install the agent bridge to control playback.")
         ])
     }
-    let arguments = [
-      muted ? "--mute-agent" : "--unmute-agent", "--provider", identity.provider,
-      "--session", identity.session, "--bus", identity.bus,
-      "--bridge-home", installer.bridgeRoot.path,
-    ]
     var environment = ProcessInfo.processInfo.environment
     let commandDirectories = [
       installer.homeDirectory.appendingPathComponent(".cargo/bin").path,
@@ -356,7 +404,10 @@ extension RealAgentBridgeInstaller {
           domain: "Codescribe.BusText", code: Int(process.terminationStatus),
           userInfo: [
             NSLocalizedDescriptionKey: process.terminationStatus == 4
-              ? String(localized: "Some agents may have received this message. Check read receipts before sending again.")
+              ? String(
+                localized:
+                  "Some agents may have received this message. Check read receipts before sending again."
+              )
               : String(localized: "Message could not be sent. Your draft is retained.")
           ])
       }

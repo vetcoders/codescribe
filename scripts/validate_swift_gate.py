@@ -145,9 +145,16 @@ SWIFT_TEST_MAX_SECONDS="$4"
 SWIFT_TEST_MAX_TEST_SECONDS="$5"
 SWIFT_TEST_LOG="$6"
 shift 6'''),
+    ('runner-isolation', r'''# Xcode forwards only TEST_RUNNER_ variables into the XCTest host. Keep its
+# native config and FFI on Make's disposable test root, never ~/.codescribe.
+: "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
+export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
+export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1'''),
     ('self-test', r'''echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?'''),
-    ('artifact-root', r'''# Match build-app profiles; this test path consumes existing host artifacts.
+    ('artifact-root', r'''# Select the Rust artifact independently from the Swift XCTest configuration.
+# The suite requires DEBUG-only fixtures; release optimization must not remove
+# those fixtures merely because the selected Rust dylib is optimized.
 case "$PROFILE" in
   debug|release|local-release) CONFIG=Debug ;;
   *) echo "test-swift: unsupported profile: $PROFILE" >&2; exit 2 ;;
