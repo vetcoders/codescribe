@@ -51,7 +51,9 @@ use serde::{Deserialize, Serialize};
 /// quiet onset as word admission, instead of rejecting every exact-left pin.
 /// v26: measured speech crossing the left fence keeps near-edge Whisper
 /// timestamps within one encoder frame from claiming a complete onset.
-pub const WORD_POLICY: &str = "word-adjudication/v26";
+/// v27: an incomplete Apple negation context cannot block asking for the
+/// second live witness; returned evidence still needs full lexical adjudication.
+pub const WORD_POLICY: &str = "word-adjudication/v27";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1614,19 +1616,20 @@ impl AcousticLedger {
                     // An incomplete Apple label must not make its second real
                     // witness impossible to request. This spends the existing
                     // trial budget; admission still requires fresh agreement.
+                    // A changed negation neighbour is itself a lexical dispute,
+                    // not a reason to forbid collecting its resolving evidence.
+                    // Only eligibility changes here: this witness alone still
+                    // cannot revise the held label or its physical partition.
                     let first_banded_witness = evidence.apple.last().is_some_and(|apple| {
                         !(apple.complete && apple.acoustic_boundaries_complete)
-                            && apple.original_text.as_deref().is_some_and(|apple_raw| {
-                                support.iter().any(|h| {
-                                    h.family() == ObservationProducer::Whisper
-                                        && h.complete
-                                        && h.acoustic_boundaries_complete
-                                        && h.decode.is_some()
-                                        && h.q >= BAND_RIGHTS_FLOOR
-                                        && h.original_text.as_deref().is_some_and(|raw| {
-                                            negation_contexts(raw) == negation_contexts(apple_raw)
-                                        })
-                                })
+                            && apple.original_text.is_some()
+                            && support.iter().any(|h| {
+                                h.family() == ObservationProducer::Whisper
+                                    && h.complete
+                                    && h.acoustic_boundaries_complete
+                                    && h.decode.is_some()
+                                    && h.q >= BAND_RIGHTS_FLOOR
+                                    && h.original_text.is_some()
                             })
                     });
                     if complete_frames < 2 && !first_banded_witness {
