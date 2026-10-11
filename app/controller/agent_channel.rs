@@ -317,6 +317,8 @@ pub(crate) enum ChannelSealReason {
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
+    /// Capture is handed to dictation, without extending each channel's feed.
+    DictationHandoff,
     /// The process that opened the session ended without closing it (quit,
     /// crash, or a build that wrote no hang-up row). The next controller
     /// start seals it; no microphone of this process ever belonged to it.
@@ -327,7 +329,7 @@ impl ChannelSealReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::Silence => "silence",
-            Self::Hangup => "hangup",
+            Self::Hangup | Self::DictationHandoff => "hangup",
             Self::Orphan => "orphan",
         }
     }
@@ -1013,55 +1015,76 @@ impl RecordingController {
         shared_bus: &Path,
         autoseal_secs: u64,
     ) -> Result<()> {
-        let closed = {
-            let mut recorder_guard = self.recorder.lock().await;
-            match recorder_guard.as_mut() {
-                Some(recorder) => {
-                    if recorder.capture_subscriber_count() == 1 && !recorder.has_take_subscriber() {
-                        recorder.set_level_callback(None);
-                    }
-                    Some(recorder.close_channel_session(open.subscriber).await)
-                }
-                None => None,
-            }
-        };
-        // This foreground owns the close gesture. A late tail never hides a
-        // new channel's badge, changes its state, or broadcasts old UI.
-        let state = self.current_state().await;
-        let channels = self.agent_channels.lock().await;
-        if channels.is_empty() && state == super::State::Idle {
-            hold_badge::hide_hold_badge();
-        }
-        drop(channels);
+        let stopped_at = Instant::now();
         let retained_capture =
             super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
                 codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
             });
         let shared_bus = shared_bus.to_path_buf();
         let live = matches!(open.mode, ChannelOpenMode::Live);
-        let settlement = Self::settle_closed_channel(
-            digit,
-            open,
-            reason,
-            shared_bus,
-            autoseal_secs,
-            closed,
-            retained_capture,
-        );
-        if !live {
-            return settlement.await;
-        }
-        let task = tokio::spawn(async move {
-            if let Err(error) = settlement.await {
-                tracing::warn!(%error, digit, "released channel terminal tail failed");
+        let recorder = Arc::clone(&self.recorder);
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let settlement = async move {
+            let closed = {
+                let mut recorder_guard = recorder.lock().await;
+                match recorder_guard.as_mut() {
+                    Some(recorder) => {
+                        if live && reason == ChannelSealReason::Hangup {
+                            recorder
+                                .await_stop_pause(Some(open.subscriber), stopped_at)
+                                .await;
+                        }
+                        if recorder.capture_subscriber_count() == 1
+                            && !recorder.has_take_subscriber()
+                        {
+                            recorder.set_level_callback(None);
+                        }
+                        Some(recorder.close_channel_session(open.subscriber).await)
+                    }
+                    None => None,
+                }
+            };
+            let _ = closed_tx.send(());
+            Self::settle_closed_channel(
+                digit,
+                open,
+                reason,
+                shared_bus,
+                autoseal_secs,
+                closed,
+                retained_capture,
+            )
+            .await
+        };
+        if live {
+            // Own the physical close before the first wait, including grace.
+            // Dropping the foreign caller must not orphan an open PCM feed.
+            let task = tokio::spawn(async move {
+                if let Err(error) = settlement.await {
+                    tracing::warn!(%error, digit, "released channel terminal tail failed");
+                }
+            });
+            {
+                let mut tails = self
+                    .closed_capture_tails
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                tails.retain(|task| !task.is_finished());
+                tails.push(task);
             }
-        });
-        let mut tails = self
-            .closed_capture_tails
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        tails.retain(|task| !task.is_finished());
-        tails.push(task);
+        } else {
+            settlement.await?;
+        }
+        closed_rx
+            .await
+            .map_err(|_| anyhow!("channel capture close task ended before its fence"))?;
+        // Only this foreground may hide the old badge. A cancelled caller's
+        // retained tail never changes a replacement channel's UI.
+        let state = self.current_state().await;
+        let channels = self.agent_channels.lock().await;
+        if channels.is_empty() && state == super::State::Idle {
+            hold_badge::hide_hold_badge();
+        }
         Ok(())
     }
 
@@ -1296,7 +1319,7 @@ impl RecordingController {
                 .close_open_channel(
                     digit,
                     channel,
-                    ChannelSealReason::Hangup,
+                    ChannelSealReason::DictationHandoff,
                     &bus,
                     channel_autoseal_secs(),
                 )
@@ -1603,6 +1626,67 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cancelled_hangup_caller_retains_owned_capture_close_and_one_seal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        open_stamped(&controller, &binding, &shared_bus, "cancelled-stop").await;
+        let mut open = controller
+            .agent_channels
+            .lock()
+            .await
+            .remove(&3)
+            .expect("open");
+        // Exercise the owned Live close transport without opening a device or ASR.
+        open.mode = ChannelOpenMode::Live;
+        let recorder_guard = controller.recorder.lock().await;
+        let closing_controller = Arc::clone(&controller);
+        let closing_bus = shared_bus.clone();
+        let caller = tokio::spawn(async move {
+            closing_controller
+                .close_open_channel(3, open, ChannelSealReason::Hangup, &closing_bus, 4)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !controller
+                    .closed_capture_tails
+                    .lock()
+                    .expect("tails")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close owner retained before first wait");
+        caller.abort();
+        assert!(caller.await.expect_err("cancelled caller").is_cancelled());
+        drop(recorder_guard);
+        let tail = controller
+            .closed_capture_tails
+            .lock()
+            .expect("tails")
+            .pop()
+            .expect("retained close");
+        tokio::time::timeout(Duration::from_secs(2), tail)
+            .await
+            .expect("tail closes")
+            .expect("tail joined");
+        assert_eq!(controller.capture_subscriber_view().await.0, 0);
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![("cancelled-stop".to_string(), "hangup".to_string())]
+        );
+        assert_eq!(ChannelSealReason::DictationHandoff.as_str(), "hangup");
+        assert_eq!(ChannelSealReason::Silence.as_str(), "silence");
     }
 
     #[test]

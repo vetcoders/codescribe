@@ -29,9 +29,13 @@ use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Real capture retained after an explicit Stop gesture, before subscriber EOF.
+pub const STOP_CAPTURE_GRACE: Duration = Duration::from_millis(1500);
 
 /// How many turns one capture gesture owns.
 ///
@@ -620,6 +624,31 @@ impl StreamingRecorder {
         self.capture_subscribers
             .iter()
             .any(|(_, kind)| *kind != CaptureSubscriberKind::Take)
+    }
+
+    /// Keep this exact subscriber's real PCM flowing until the gesture's fixed
+    /// deadline. `None` selects the current take. The controller owns the stop
+    /// task and retains exclusive access until it releases this feed; neither a
+    /// cancelled waiter nor a repeated Stop can restart this budget.
+    ///
+    /// Automatic silence, handoff and cleanup do not call this. No synthetic
+    /// samples are added, and inactive or already released capture never waits.
+    pub async fn await_stop_pause(
+        &mut self,
+        subscriber: Option<CaptureSubscriberId>,
+        stopped_at: Instant,
+    ) {
+        let Some(id) = subscriber.or(self.take_subscriber) else {
+            return;
+        };
+        if !self.recorder.is_active()
+            || !self.capture_subscribers.iter().any(|(held, _)| *held == id)
+        {
+            return;
+        }
+        let deadline = tokio::time::Instant::from_std(stopped_at) + STOP_CAPTURE_GRACE;
+        info!(?id, "retaining live PCM for explicit Stop grace");
+        tokio::time::sleep_until(deadline).await;
     }
 
     /// Release the take's own subscription ahead of the stop tail.
@@ -1669,6 +1698,122 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tokio::time::Duration;
+
+    #[tokio::test]
+    #[serial(tts_duck)]
+    async fn stop_pause_preserves_five_pcm_blocks_until_subscriber_eof() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().expect("recorder");
+        let mut channel = recorder.register_channel_feed();
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let take = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        recorder.recorder.set_active_for_test(true);
+        let feeds = Arc::clone(&recorder.pcm_feeds);
+        let dropped = Arc::clone(&recorder.dropped_chunks);
+        let producer = tokio::spawn(async move {
+            for occurrence in 1..=5 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let block = vec![occurrence as f32 / 10.0; 16];
+                offer_pcm_to_feeds(&mut feeds.lock().expect("feeds"), &block, &dropped);
+            }
+        });
+        let gesture = Instant::now();
+        recorder.await_stop_pause(Some(channel.id), gesture).await;
+        assert!(gesture.elapsed() >= STOP_CAPTURE_GRACE);
+        producer.await.expect("producer");
+        for occurrence in 1..=5 {
+            let expected = vec![occurrence as f32 / 10.0; 16];
+            assert_eq!(channel.receiver.try_recv().expect("channel PCM"), expected);
+            assert_eq!(take_rx.try_recv().expect("take PCM"), expected);
+        }
+        assert!(matches!(
+            channel.receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(recorder.dropped_chunks.load(Ordering::Relaxed), 0);
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            recorder.await_stop_pause(Some(channel.id), gesture),
+        )
+        .await
+        .expect("repeated Stop keeps original deadline");
+        assert!(!recorder.release_capture_subscriber(channel.id));
+        assert!(
+            channel.receiver.recv().await.is_none(),
+            "EOF only after release"
+        );
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().expect("feeds"),
+            &[0.7],
+            &recorder.dropped_chunks,
+        );
+        assert_eq!(
+            take_rx.try_recv().expect("other subscriber remains live"),
+            vec![0.7]
+        );
+        assert!(recorder.release_capture_subscriber(take));
+        assert!(take_rx.recv().await.is_none());
+        recorder.recorder.set_active_for_test(false);
+    }
+
+    #[tokio::test]
+    async fn stop_pause_skips_inactive_missing_released_and_expired_capture() {
+        let mut recorder = StreamingRecorder::new().expect("recorder");
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            recorder.await_stop_pause(None, Instant::now()),
+        )
+        .await
+        .expect("no take");
+        let channel = recorder.register_channel_feed();
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            recorder.await_stop_pause(Some(channel.id), Instant::now()),
+        )
+        .await
+        .expect("inactive capture");
+        recorder.recorder.set_active_for_test(true);
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            recorder.await_stop_pause(Some(channel.id), Instant::now() - Duration::from_secs(2)),
+        )
+        .await
+        .expect("elapsed gesture");
+        recorder.release_capture_subscriber(channel.id);
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            recorder.await_stop_pause(Some(channel.id), Instant::now()),
+        )
+        .await
+        .expect("released subscriber");
+        recorder.recorder.set_active_for_test(false);
+    }
+
+    #[tokio::test]
+    async fn stop_pause_cancelled_waiter_keeps_feed_and_original_deadline() {
+        let mut recorder = StreamingRecorder::new().expect("recorder");
+        let mut channel = recorder.register_channel_feed();
+        recorder.recorder.set_active_for_test(true);
+        let gesture = Instant::now();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(30),
+                recorder.await_stop_pause(Some(channel.id), gesture)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(recorder.capture_subscriber_count(), 1);
+        assert!(matches!(
+            channel.receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        recorder.await_stop_pause(Some(channel.id), gesture).await;
+        assert!(gesture.elapsed() >= STOP_CAPTURE_GRACE);
+        recorder.release_capture_subscriber(channel.id);
+        assert!(channel.receiver.recv().await.is_none());
+        recorder.recorder.set_active_for_test(false);
+    }
 
     #[test]
     fn channel_silence_is_not_read_from_the_take_field() {
