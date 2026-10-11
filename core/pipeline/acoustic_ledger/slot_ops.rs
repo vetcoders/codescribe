@@ -532,6 +532,40 @@ impl AcousticLedger {
         })
     }
 
+    /// New-word admission checks the original producer pin, before owner
+    /// projection. Moving an onset inside an owner cannot repair a decode cut.
+    /// An unprojected first word remains visible without claiming a complete
+    /// onset; this guard prevents owner clipping from minting another word.
+    pub(super) fn new_word_decode_fence_incomplete(
+        &self,
+        observation: &ObservationIdentity,
+        word: &WordSlot,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        let bounds = self.decoded_word_windows.get(observation).copied();
+        let incomplete = |start, end, decode: Option<(u64, u64)>| {
+            decode.is_some_and(|(lo, hi)| {
+                (start < owner.sample_start
+                    && !self.decode_word_onset_complete(owner, lo, hi, start))
+                    || self.decode_word_fence_incomplete(owner, lo, hi, start, end)
+            })
+        };
+        let mut matched = false;
+        if let Some(input) = self.word_evidence_input(observation) {
+            for pin in &input.words {
+                if pin.sample_start.max(owner.sample_start) == word.sample_start
+                    && pin.sample_end.min(owner.sample_end) == word.sample_end
+                {
+                    matched = true;
+                    if incomplete(pin.sample_start, pin.sample_end, pin.decode.or(bounds)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        !matched && incomplete(word.sample_start, word.sample_end, bounds)
+    }
+
     /// Whisper Word alignment uses 20 ms encoder frames (word_pins.rs),
     /// converted onto the capture clock with at most one sample of rounding.
     /// This uncertainty is geometry, never a wait or an extension of issued PCM.
