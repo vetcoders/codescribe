@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""One disposable, network-denied local MCP ping. No production path arguments."""
+"""Disposable sandboxed MCP fixture: one local ping or bounded stdio service."""
 
 import argparse
 import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
+import selectors
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -19,6 +22,16 @@ SPEC.loader.exec_module(PROBE)
 D = PROBE.DEMUX
 SANDBOX = Path("/usr/bin/sandbox-exec")
 PYTHON = Path(sys.executable).resolve()
+MAX_TRAFFIC = 2 << 20
+MAX_FRAMES = 16
+
+
+def pinned_publisher():
+    """Use the installed user's fixed binary, never PATH or inherited HOME."""
+    candidate = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cargo" / "bin" / "codescribe"
+    if candidate.is_symlink() or not candidate.is_file() or not os.access(candidate, os.X_OK):
+        raise RuntimeError("fixed canonical publisher is unavailable")
+    return candidate.resolve(strict=True)
 
 
 def sandbox_profile(root, publisher):
@@ -56,7 +69,7 @@ def fixture(root):
     return session, identity, bus
 
 
-def exchange(root, session, identity, bus, publisher, timeout):
+def start_child(root, session, bus, publisher, *, text):
     if sys.platform != "darwin" or not SANDBOX.is_file():
         raise RuntimeError("macOS sandbox-exec is required; no unsandboxed mode")
     profile = root / "sandbox.sb"
@@ -65,6 +78,28 @@ def exchange(root, session, identity, bus, publisher, timeout):
     argv = [str(SANDBOX), "-f", str(profile), str(PYTHON), "-B",
             str(SOURCE / "mcp-mailbox-probe.py"), "--provider", "fixture", "--session", session,
             "--bridge-home", str(root), "--bus", str(bus), "--fixture-root", str(root)]
+    # PATH contains only the pinned publisher's directory, not caller entries.
+    env = {"PATH": str(publisher.parent), "HOME": str(root),
+           "TMPDIR": str(root), "PYTHONUTF8": "1"}
+    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=text, env=env, cwd=root,
+                            bufsize=-1 if text else 0, start_new_session=True)
+
+
+def stop_child(child):
+    """Stop only our group, including the canonical publisher, and reap it."""
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        child.wait(timeout=2)
+    finally:
+        for stream in (child.stdin, child.stdout, child.stderr):
+            stream.close()
+
+
+def exchange(root, session, identity, bus, publisher, timeout):
     calls = [{"jsonrpc": "2.0", "id": 1, "method": "initialize"},
              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}]
     for n, (name, args) in enumerate([
@@ -72,20 +107,11 @@ def exchange(root, session, identity, bus, publisher, timeout):
         ("reply", {"request_id": identity, "text": "pong"})], start=3):
         calls.append({"jsonrpc": "2.0", "id": n, "method": "tools/call",
                       "params": {"name": name, "arguments": args}})
-    # No inherited credentials, real HOME or user-supplied command/paths.
-    env = {"PATH": f"{publisher.parent}:/usr/bin:/bin", "HOME": str(root),
-           "TMPDIR": str(root), "PYTHONUTF8": "1"}
-    child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, env=env, cwd=root, start_new_session=True)
+    child = start_child(root, session, bus, publisher, text=True)
     try:
         output, errors = child.communicate("".join(json.dumps(row) + "\n" for row in calls), timeout=timeout)
     finally:
-        # Stop the owned group, including a publisher left by interruption.
-        try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        child.wait(timeout=2)
+        stop_child(child)
     if child.returncode or errors:
         raise RuntimeError("sandboxed probe failed; no unsandboxed retry")
     responses = [json.loads(line) for line in output.splitlines()]
@@ -108,30 +134,144 @@ def exchange(root, session, identity, bus, publisher, timeout):
             "network": "denied_by_sandbox", "native_queue": "disabled", "spoken": False}
 
 
-def run(timeout=15):
+class FrameBudget:
+    """Bound NDJSON before forwarding, including incomplete lines and totals."""
+    def __init__(self):
+        self.pending = bytearray()
+        self.total = 0
+        self.frames = 0
+
+    def feed(self, data):
+        self.total += len(data)
+        if self.total > MAX_TRAFFIC:
+            raise ValueError("stdio traffic limit exceeded")
+        self.pending.extend(data)
+        ready = bytearray()
+        while (end := self.pending.find(b"\n")) >= 0:
+            if end + 1 > PROBE.LIMIT:
+                raise ValueError("stdio frame limit exceeded")
+            self.frames += 1
+            if self.frames > MAX_FRAMES:
+                raise ValueError("stdio frame count exceeded")
+            ready.extend(self.pending[:end + 1])
+            del self.pending[:end + 1]
+        if len(self.pending) >= PROBE.LIMIT:
+            raise ValueError("unterminated stdio frame limit exceeded")
+        return ready
+
+    def finish(self):
+        if self.pending:
+            raise ValueError("EOF inside stdio frame")
+
+
+def relay(child, timeout, incoming, outgoing):
+    """One nonblocking stdio relay; slow input/output cannot defeat deadline."""
+    input_fd, output_fd = incoming.fileno(), outgoing.fileno()
+    child_in, child_out, child_err = child.stdin.fileno(), child.stdout.fileno(), child.stderr.fileno()
+    reads = {input_fd: (child_in, FrameBudget()), child_out: (output_fd, FrameBudget()), child_err: None}
+    writes = {child_in: bytearray(), output_fd: bytearray()}
+    original = {fd: os.get_blocking(fd) for fd in (*reads, *writes)}
+    deadline = time.monotonic() + timeout
+    try:
+        for fd in original:
+            os.set_blocking(fd, False)
+        with selectors.DefaultSelector() as selector:
+            for fd in reads:
+                selector.register(fd, selectors.EVENT_READ)
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise subprocess.TimeoutExpired("synthetic stdio service", timeout)
+                if input_fd not in reads and not writes[child_in] and not child.stdin.closed:
+                    child.stdin.close()
+                if child_out not in reads and child_err not in reads and not writes[output_fd]:
+                    if child.wait(timeout=left) != 0:
+                        raise RuntimeError("sandboxed service failed")
+                    return
+                for key, _ in selector.select(left):
+                    fd = key.fd
+                    # Another event in this batch may have unregistered this fd.
+                    if fd not in reads and (fd not in writes or not writes[fd]):
+                        continue
+                    try:
+                        if fd in reads:
+                            data = os.read(fd, 65536)
+                            route = reads[fd]
+                            if not data:
+                                selector.unregister(fd)
+                                del reads[fd]
+                                if route:
+                                    route[1].finish()
+                                if fd == child_out and input_fd in reads:
+                                    reads[input_fd][1].finish()
+                                    selector.unregister(input_fd)
+                                    del reads[input_fd]
+                                    if writes[child_in]:
+                                        raise RuntimeError("service closed before input drained")
+                            elif route is None:
+                                # Never relay raw child diagnostics to the caller.
+                                raise RuntimeError("sandboxed service emitted diagnostics")
+                            else:
+                                destination, budget = route
+                                framed = budget.feed(data)
+                                if framed:
+                                    if not writes[destination]:
+                                        selector.register(destination, selectors.EVENT_WRITE)
+                                    writes[destination].extend(framed)
+                        else:
+                            count = os.write(fd, writes[fd][:65536])
+                            if not count:
+                                raise RuntimeError("stdio write stalled")
+                            del writes[fd][:count]
+                            if not writes[fd]:
+                                selector.unregister(fd)
+                    except BlockingIOError:
+                        continue
+    finally:
+        # Restore caller-owned stdio flags; child pipes may already be closed.
+        for fd, blocking in original.items():
+            if fd in (input_fd, output_fd):
+                os.set_blocking(fd, blocking)
+
+
+def serve(root, session, bus, publisher, timeout):
+    child = start_child(root, session, bus, publisher, text=False)
+    try:
+        relay(child, timeout, sys.stdin.buffer, sys.stdout.buffer)
+    finally:
+        stop_child(child)
+
+
+def run(timeout=15, service=False):
     if not 0.05 <= timeout <= 30:
         raise ValueError("timeout must be between 0.05 and 30 seconds")
     with tempfile.TemporaryDirectory(prefix="codescribe-synthetic-ping-") as temporary:
         root = Path(temporary).resolve()
         root.chmod(0o700)
         session, identity, bus = fixture(root)
-        publisher = Path(D.reply_publisher_command(root)).resolve(strict=True)
-        result = exchange(root, session, identity, bus, publisher, timeout)
+        publisher = pinned_publisher()
+        if service:
+            serve(root, session, bus, publisher, timeout)
+            result = None
+        else:
+            result = exchange(root, session, identity, bus, publisher, timeout)
     if root.exists():
         raise RuntimeError("fixture cleanup failed")
-    return {**result, "fixture_removed": True}
+    return {**result, "fixture_removed": True} if result is not None else None
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=float, default=15)
+    parser.add_argument("--serve", action="store_true", help="bounded fixture-only MCP stdio server")
     args = parser.parse_args()
     try:
-        result = run(args.timeout)
+        result = run(args.timeout, service=args.serve)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         sys.stderr.write("Synthetic ping refused, failed or timed out; no broader retry.\n")
         return 1
-    print(json.dumps(result))
+    if result is not None:
+        print(json.dumps(result))
     return 0
 
 

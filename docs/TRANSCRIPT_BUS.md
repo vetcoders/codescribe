@@ -1198,6 +1198,10 @@ owned process group on timeout and cleans only its own fixture. The maximum
 requested exchange timeout is 30 seconds. No autostart or persistent listener.
 
 The child receives a minimal environment with HOME/TMPDIR inside the fixture.
+The launcher pins the publisher to `.cargo/bin/codescribe` under the OS account's
+home directory, refuses a symlink or missing executable, and does not discover
+it through inherited HOME/PATH. The child's PATH contains only that binary's
+directory. It does not install or build the publisher.
 Synthetic mode requires provider `fixture`, a matching owner marker, exact
 bridge/bus paths and no symlink escapes. It disables native queue settlement.
 The launcher requires macOS sandbox-exec with default-deny rules, read access to
@@ -1211,3 +1215,46 @@ queue exclusion and cleanup/timeout control logic; they do not prove successful
 OS-sandbox acceptance. Do not use this launcher as a working cloud endpoint or
 claim an OS isolation acceptance result until the protected ping passes. The
 earlier unprotected temporary-mailbox test is separate evidence.
+
+After the executor restart, a startup diagnostic with the unchanged profile
+instead returned code 71, `sandbox_apply: Operation not permitted`, before
+Python started. No broader permission or unprotected retry was attempted.
+Applying the existing profile in a permitted execution context remains a runtime
+prerequisite. Moving the outer launcher to an ordinary Terminal does not preserve
+the executor's protection: the parent is outside the child sandbox, and the
+profile permits broad runtime reads including `/Library` and `/opt/homebrew`.
+Neither source guards nor mock tests establish an absence of all secret access.
+
+### Bounded synthetic stdio service — source/mock checkpoint only
+
+The same launcher now has a `--serve` mode for a future explicitly approved
+local client:
+
+```bash
+python3 -B scripts/mcp-synthetic-ping.py --serve --timeout 15
+```
+
+This command is not an instruction to bypass the current runtime blocker.
+It creates only its own synthetic fixture, starts the same sandboxed MCP probe,
+and forwards client NDJSON requests and server responses over stdio without
+sending a local test exchange. The connection keeps the probe's read-ID state
+for read → exact ACK → empty read → reply. Stdout contains only forwarded MCP
+frames; no final launcher summary is added. Child diagnostics refuse the service
+without forwarding their raw content.
+
+Each direction is limited to 16 newline-terminated frames, 2 MiB of total data,
+and the probe's 1 MiB frame limit. Incomplete EOF, oversized input/output, write
+failure or child diagnostics refuse. Nonblocking I/O gives idle clients and
+backpressured output the same deadline: 15 seconds by default, maximum 30,
+followed by up to 2 seconds to reap the owned process group. The deadline covers
+the relay, not all launcher setup/cleanup. EOF, refusal and timeout stop the
+owned child group and remove the owned fixture; forced parent termination can
+prevent cleanup. There is no autostart, HTTP listener, tunnel, plugin, Events
+subscription, recording, TTS or production path argument.
+
+Sixteen lightweight source/mock tests pass, including the synthetic dispatch
+sequence with a mocked canonical publisher, partial writes, idle deadline,
+diagnostic refusal, frame/traffic limits, fixed publisher selection and fixture
+cleanup. No actual sandboxed service, Rust publisher or OS isolation test ran in
+this checkpoint. The earlier SIGABRT and current sandbox-application restriction
+remain unresolved; this is not a usable or accepted Cloud endpoint.
