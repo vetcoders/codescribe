@@ -357,6 +357,10 @@ actor OverlayChannelDeliveryReader {
     }
     var result = firstIsNewer ? first : second
     let other = firstIsNewer ? second : first
+    // Terminal capture state is monotonic across delayed broadcast mirrors.
+    if first.captureState == .finished || second.captureState == .finished {
+      result.captureState = .finished
+    }
     result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
     if let otherOccurrences = other.occurrenceIDs {
       var occurrences = result.occurrenceIDs ?? []

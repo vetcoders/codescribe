@@ -371,6 +371,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           owner: message.recipients[index].owner,
           deliveryID: delivery, queued: false, accepted: false, acknowledged: false)
       }
+      if kind == "seal" { message.captureState = .finished }
       messages[key] = message
     }
 
@@ -389,13 +390,18 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let key = "typed:" + identity
         if var existing = messages[key] {
           guard row["origin_channel"] as? String == "0", existing.sourceChannel == "0",
-            existing.text == text else { return }
-          for owner in owners where !existing.recipients.contains(where: { $0.owner.id == owner.id }) {
+            existing.text == text
+          else { return }
+          for owner in owners
+          where !existing.recipients.contains(where: { $0.owner.id == owner.id }) {
             historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
-            existing.recipients.append(OverlayConversationRecipient(
-              owner: owner, deliveryID: Self.identity([
-                "native_bus_demux", owner.leaseID, identity, "message", Self.routedAudience(audience),
-              ]), queued: false, accepted: false, acknowledged: false))
+            existing.recipients.append(
+              OverlayConversationRecipient(
+                owner: owner,
+                deliveryID: Self.identity([
+                  "native_bus_demux", owner.leaseID, identity, "message",
+                  Self.routedAudience(audience),
+                ]), queued: false, accepted: false, acknowledged: false))
           }
           store(existing)
           return
@@ -670,6 +676,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
             ?? ""
           : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+      let captureFinished =
+        endedSessions.contains(session) || messages[key]?.captureState == .finished
+      let documentFinished =
+        channelMessage == nil
+        && (terminal || row["status"] as? String == "transcript_sealed")
+      message.captureState = captureFinished || documentFinished ? .finished : .receiving
       if channelMessage != nil {
         var occurrences = messages[key]?.occurrenceIDs ?? []
         let identity = "utterance:" + occurrence
@@ -723,6 +735,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
               queued: false, accepted: false, acknowledged: false)
           }
         }
+        message.captureState = .finished
         messages[id] = message
         if Self.channelMessageKey(session) != nil,
           seenSeals.insert(origin.audience + "\0" + phase).inserted
@@ -908,6 +921,7 @@ struct OverlayReplyPlayback: Codable, Equatable, Sendable {
 
 struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   enum Kind: String, Codable, Sendable { case user, reply }
+  enum CaptureState: String, Codable, Sendable { case receiving, finished }
   let id: String
   let kind: Kind
   var text: String
@@ -924,6 +938,9 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
   var sourceRevision: UInt64? = nil
+  /// Capture lifecycle comes from bus terminals, independently of recipient ACKs.
+  var captureState: CaptureState? = nil
+  var showsDeliveryReceipts: Bool { captureState != .receiving }
   /// Canonical reply synthesis metadata, independent of playback outcome.
   var supportsSpeechPlayback = false
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }

@@ -2335,7 +2335,8 @@ impl AppleSealState {
                 }
             };
         }
-        audio.window_by_samples(start, end)
+        audio
+            .window_by_samples(start, end)
             .filter(|window| window.sample_start == start && window.sample_end == end)
     }
 
@@ -8164,6 +8165,12 @@ fn apple_stream_worker(
                         });
                     }
                 }
+                publish_apple_phrase_at_valley(
+                    &mut state,
+                    &ev_tx,
+                    samples_seen as f32 / sample_rate.max(1) as f32,
+                    consultation.as_mut(),
+                );
                 if state.fusion_seal_armed {
                     if let Some(fusion) = state.fusion.as_ref() {
                         state.speech_progress.observe_speech(
@@ -8595,56 +8602,6 @@ fn apple_stream_worker(
     })
 }
 
-/// Text-only candidate for retaining an open partial across an SFSpeech restart.
-/// The live caller must also veto freezing when the measured onsets overlap.
-///
-/// # Named drop mechanism: `shared_opener_restart_suppresses_freeze`
-///
-/// Measured 2026-08-10 three-way live (same mic/air): our committed raw lost
-/// s6/s8/s10 while native Apple dictation kept them. Loss always followed a
-/// stressor (fast speech / English terms / mumbling). Root cause at the
-/// commit/adjudication layer: SFSpeech rarely emits `isFinal` on long Polish
-/// dictation (13 restarts vs ONE isFinal on the 150 s fixture) and instead
-/// collapses the open hypothesis onto the next sentence. Consecutive Polish
-/// sentences share openers (`Zdanie` / `Zadanie`). The previous freeze rule
-/// treated `prev.hasPrefix(next)` / substring containment as "extends", so a
-/// collapse onto a short shared opener overwrote the prior utterance without
-/// sealing it.
-///
-/// Absence of forward text containment nominates a retention candidate, not a
-/// new physical phrase. Measured revisions use `apple_partials_share_onset` to
-/// keep that candidate out of final admission. The Swift accumulator applies
-/// the same two checks before appending to its final phrase history.
-pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
-    phrase_retention_reason(prev, next).is_some()
-}
-
-/// Both observations must start with a valid timed segment over the same onset.
-/// Touching intervals are disjoint; an invalid first segment cannot borrow a
-/// later word's timing. This only vetoes a synthetic final, never admits words.
-pub(crate) fn apple_partials_share_onset(
-    previous: &[TranscriptSegment],
-    next: &[TranscriptSegment],
-) -> bool {
-    let (Some(previous), Some(next)) = (previous.first(), next.first()) else {
-        return false;
-    };
-    if previous.text.trim().is_empty()
-        || next.text.trim().is_empty()
-        || !previous.start_ts.is_finite()
-        || !previous.end_ts.is_finite()
-        || !next.start_ts.is_finite()
-        || !next.end_ts.is_finite()
-        || previous.start_ts < 0.0
-        || next.start_ts < 0.0
-        || previous.end_ts <= previous.start_ts
-        || next.end_ts <= next.start_ts
-    {
-        return false;
-    }
-    previous.start_ts < next.end_ts && next.start_ts < previous.end_ts
-}
-
 /// A valid later onset follows the complete timed extent of the prior phrase.
 /// This retains physical repetitions even when their labels are identical.
 /// No earlier segment may lack timing or extend beyond the claimed boundary.
@@ -8674,25 +8631,108 @@ pub(crate) fn apple_partials_are_disjoint(
     })
 }
 
-/// Telemetry classification for a text-only retention candidate. This does not
-/// override the measured onset veto in the live caller.
-fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
-    let prev = prev.trim();
-    let next = next.trim();
-    if prev.is_empty() || next.contains(prev) {
-        return None;
+fn apple_partial_restart_has_valley(state: &AppleSealState, next: &[TranscriptSegment]) -> bool {
+    if !apple_partials_are_disjoint(&state.open_partial_segments, next) {
+        return false;
     }
-    if next.is_empty() {
-        return Some("empty_collapse_retained");
+    let (Some(fusion), Some(calibration)) = (&state.fusion, state.energy_calibration.as_ref())
+    else {
+        return false;
+    };
+    let previous = apple_segments_on_pcm_clock(state, &state.open_partial_segments);
+    let next = apple_segments_on_pcm_clock(state, next);
+    match (
+        previous.iter().map(|word| word.range.sample_end).max(),
+        next.first(),
+    ) {
+        (Some(end), Some(start)) => fusion.has_phrase_valley(
+            end,
+            start.range.sample_start,
+            calibration.min_valley_samples,
+        ),
+        _ => false,
     }
-    let prev_chars = prev.chars().count();
-    let next_chars = next.chars().count();
-    let restarted = (next_chars * 3 < prev_chars) || (next_chars <= 15 && prev_chars >= 25);
-    Some(if restarted {
-        "restart_retained"
-    } else {
-        "revision_retained"
-    })
+}
+
+fn retain_open_apple_phrase(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+) {
+    if state.open_partial.is_empty() {
+        return;
+    }
+    let text = std::mem::take(&mut state.open_partial);
+    let segments = std::mem::take(&mut state.open_partial_segments);
+    let rev = state.preview_rev;
+    let (_, events) = close_apple_phrase(
+        state,
+        ev_tx,
+        state.phrase_id,
+        &text,
+        segments,
+        audio_secs,
+        true,
+    );
+    let (final_disposition, refused_evidence) = phrase_final_disposition(&events, &text);
+    let _ = ev_tx.send(EngineEvent::PreviewDisposition {
+        superseded_through_rev: rev,
+        final_disposition,
+        refused_evidence,
+    });
+}
+
+/// Qualify the existing physical owner on a short measured valley aligned
+/// with the current provider's timed phrase end. Reuses ordinary seal/admission.
+fn publish_apple_phrase_at_valley(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+    consultation: Option<&mut LiveConsultationCapture>,
+) {
+    if !state.fusion_seal_armed
+        || state.open_partial.is_empty()
+        || state.open_partial_segments.is_empty()
+        || state.open_partial_segments.iter().any(|word| {
+            !word.start_ts.is_finite()
+                || !word.end_ts.is_finite()
+                || word.start_ts < 0.0
+                || word.end_ts <= word.start_ts
+        })
+    {
+        return;
+    }
+    let Some(calibration) = state.energy_calibration.as_ref() else {
+        return;
+    };
+    let Some(end) = apple_segments_on_pcm_clock(state, &state.open_partial_segments)
+        .iter()
+        .map(|word| word.range.sample_end)
+        .max()
+    else {
+        return;
+    };
+    let Some(fusion) = state.fusion.as_mut() else {
+        return;
+    };
+    let ingest = fusion.confirm_phrase_valley(end, calibration.min_valley_samples);
+    if ingest.closed.is_empty() {
+        return;
+    }
+    if let Some(owner) = consultation
+        && owner.observe(&ingest, fusion.observed_samples()).is_err()
+    {
+        owner.report_refusal(ev_tx);
+    }
+    for evidence in ingest.sideband {
+        let _ = ev_tx.send(EngineEvent::SidebandEvidence { evidence });
+    }
+    info!(
+        phrase_end_sample = end,
+        decision_sample = fusion.observed_samples(),
+        "apple_lifecycle: progressive phrase closed on measured Silero valley"
+    );
+    retain_open_apple_phrase(state, ev_tx, audio_secs);
 }
 
 /// Read the phrase's actual Apple receipts; a successful seal function call
@@ -8767,9 +8807,8 @@ fn phrase_final_disposition(
 /// epoch close does not open that window; arming alone never admits a summary.
 /// Admitted summaries use the existing physical admission and replay receipts.
 ///
-/// On `Partial`, a collapsed restart retains the prior hypothesis unless both
-/// partials carry the same measured onset. That revision updates the open
-/// hypothesis without promoting the superseded wording to a separate final.
+/// Partial revisions replace the open observation. Only a measured Silero
+/// valley permits retention as a closed phrase, independently of its wording.
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -8797,40 +8836,10 @@ fn emit_stream_events(
             LiveStreamEvent::Partial { text, segments } => {
                 state.finishing_phrase_id = None;
                 state.observe_apple_progress(&text, &segments);
-                // Recover a missed phrase restart without freezing a correction
-                // over the same onset that the bridge deliberately left open.
-                let disjoint_restart =
-                    apple_partials_are_disjoint(&state.open_partial_segments, &segments);
-                if (disjoint_restart
-                    || phrase_restart_should_freeze_prior(&state.open_partial, &text))
-                    && !apple_partials_share_onset(&state.open_partial_segments, &segments)
-                {
-                    let reason = if disjoint_restart {
-                        "disjoint_pcm_restart"
-                    } else {
-                        phrase_retention_reason(&state.open_partial, &text)
-                            .expect("text restart candidate must carry a telemetry reason")
-                    };
-                    let frozen = state.open_partial.clone();
-                    info!(
-                        audio_secs,
-                        prev_chars = frozen.chars().count(),
-                        next_chars = text.chars().count(),
-                        reason,
-                        "apple_lifecycle: freeze open partial before restart partial"
-                    );
-                    let frozen_segments = std::mem::take(&mut state.open_partial_segments);
-                    state.open_partial.clear();
-                    let phrase_id = state.phrase_id;
-                    close_apple_phrase(
-                        state,
-                        ev_tx,
-                        phrase_id,
-                        &frozen,
-                        frozen_segments,
-                        audio_secs,
-                        true,
-                    );
+                // Disjoint recognizer timing nominates a restart; measured
+                // Silero silence on this capture epoch is the only authority.
+                if apple_partial_restart_has_valley(state, &segments) {
+                    retain_open_apple_phrase(state, ev_tx, audio_secs);
                 }
                 // Preserve the recognizer pin as a diagnostic receipt. The
                 // mirror paints this phrase at the tail regardless of its pin.
@@ -8868,9 +8877,14 @@ fn emit_stream_events(
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
-                state.open_partial = text.clone();
+                // An empty recognition withdrawal is not evidence that the
+                // preceding physical phrase disappeared. Keep it until a
+                // measured close or a subsequent nonempty observation.
+                if !text.trim().is_empty() {
+                    state.open_partial = text.clone();
+                    state.open_partial_segments = segments;
+                }
                 state.open_partial_pin = pin.range.sample_start;
-                state.open_partial_segments = segments;
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
@@ -13973,14 +13987,7 @@ mod rc_w2_acoustic_tests {
         assert_eq!((segments[0].start_ts, segments[0].end_ts), (0.5, 4.0));
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Ported from the parked `mod tests`: phrase-restart adjudication.
-    // `phrase_restart_should_freeze_prior` is live production
-    // (`apple_live_session.rs:3639`) with a live consumer inside
-    // `emit_stream_events`, and every test of it was parked — so this rule
-    // currently ships unguarded. Nothing here revives a retired helper: the
-    // parked bodies only needed the current `AppleSealState` constructor.
-    // ══════════════════════════════════════════════════════════════════
+    // Timed phrase observation and physical retention contracts.
 
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
@@ -13989,6 +13996,157 @@ mod rc_w2_acoustic_tests {
             start_ts,
             end_ts,
         }
+    }
+
+    #[test]
+    fn progressive_valleys_keep_five_iwo_occurrences_before_native_finals() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(RATE, "progressive-five-iwo".into(), 1);
+        let (requests, _requests_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
+        let (_returns_tx, returns) = std_mpsc::channel();
+        let mut consultation = LiveConsultationCapture {
+            queue: ConsultationInputQueue::new(state.session_id.clone(), state.capture_epoch)
+                .unwrap(),
+            requests,
+            returns,
+            last_assessed: None,
+            assessment_pending: false,
+            answers_pending: 0,
+            speech_open: false,
+            refused: false,
+        };
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, at(0.3)));
+        state.fusion = Some(SileroIngress::new(
+            RATE,
+            &state.session_id,
+            state.capture_epoch,
+        ));
+        state.fusion_seal_armed = true;
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        let mut cursor = 0u64;
+        for repetition in 0..5 {
+            let start = cursor as f32 / RATE as f32;
+            for frame in 0..31 {
+                let speech = frame < 20;
+                let pcm = vec![if speech { 0.25 } else { 0.0 }; 512];
+                writer.push_samples(&pcm);
+                state.audio.push(&pcm);
+                cursor += 512;
+                let fusion = state.fusion.as_mut().unwrap();
+                fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
+                let ingest = fusion.ingest(&pcm, cursor);
+                consultation.observe(&ingest, cursor).unwrap();
+                if frame == 19 {
+                    emit_stream_events(
+                        vec![LiveStreamEvent::Partial {
+                            text: "Iwo".into(),
+                            segments: vec![segment("Iwo", start + 0.1, start + 0.64)],
+                        }],
+                        &tx,
+                        &mut state,
+                        cursor as f32 / RATE as f32,
+                    );
+                }
+                publish_apple_phrase_at_valley(
+                    &mut state,
+                    &tx,
+                    cursor as f32 / RATE as f32,
+                    Some(&mut consultation),
+                );
+            }
+            assert_eq!(
+                state
+                    .fusion
+                    .as_ref()
+                    .unwrap()
+                    .ledger()
+                    .utterances()
+                    .iter()
+                    .filter(|utterance| utterance.closed)
+                    .count(),
+                repetition + 1
+            );
+            assert!(
+                state.open_partial.is_empty(),
+                "short measured valley publishes the phrase"
+            );
+            assert!(
+                !consultation.speech_open,
+                "Max receives the same physical close"
+            );
+            assert_eq!(consultation.queue.pending_groups(), 1);
+        }
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let words = ledger
+            .occurrences()
+            .filter_map(|owner| ledger.slots_of(owner))
+            .flatten()
+            .filter(|word| word.text == "Iwo")
+            .count();
+        assert_eq!(words, 5);
+        drop(ledger);
+        let mut finals = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::UtteranceFinal { text, .. } = event {
+                finals.push(text);
+            }
+        }
+        assert_eq!(
+            finals
+                .iter()
+                .flat_map(|text| text.split_whitespace())
+                .filter(|word| *word == "Iwo")
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn partial_restart_needs_measured_valley_not_changed_words_or_timestamps() {
+        let mut state = state_for("partial-valley", 5.0);
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, at(0.3)));
+        state.open_partial = "Sam poukładać".into();
+        state.open_partial_segments = vec![segment("Sam poukładać", 0.2, 1.0)];
+        let next = [segment("Sam nie mamy", 2.0, 2.5)];
+        assert!(!apple_partial_restart_has_valley(&state, &next));
+        let mut fusion = SileroIngress::new(RATE, &state.session_id, state.capture_epoch);
+        fusion.note_observed_pcm(at(5.0), at(5.0));
+        fusion.observe_boundaries(&[
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: at(0.1),
+                speech_probability: 0.9,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: at(1.0),
+                speech_probability: 0.01,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: at(2.0),
+                speech_probability: 0.9,
+            },
+        ]);
+        state.fusion = Some(fusion);
+        assert!(apple_partial_restart_has_valley(&state, &next));
+        assert!(!apple_partial_restart_has_valley(
+            &state,
+            &[segment("poprawka", 0.8, 1.2)]
+        ));
+        assert!(!apple_partial_restart_has_valley(
+            &state,
+            &[segment("bez pomiaru", 0.0, 0.0)]
+        ));
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .note_observed_pcm(100, at(6.0));
+        assert!(
+            !apple_partial_restart_has_valley(&state, &next),
+            "a capture hole is not silence"
+        );
     }
 
     #[test]
@@ -14028,14 +14186,6 @@ mod rc_w2_acoustic_tests {
     #[test]
     fn partial_revision_timing_matrix_does_not_borrow_invalid_onsets_or_tails() {
         let previous = [segment("Iwo", 0.0, 0.5)];
-        assert!(apple_partials_share_onset(
-            &previous,
-            &[segment("Iwona", 0.2, 0.7)]
-        ));
-        assert!(!apple_partials_share_onset(
-            &previous,
-            &[segment("Iwo", 0.5, 1.0)]
-        ));
         assert!(apple_partials_are_disjoint(
             &previous,
             &[segment("Iwo", 0.5, 1.0)]
@@ -14047,7 +14197,6 @@ mod rc_w2_acoustic_tests {
             segment("", 0.0, 0.5),
         ] {
             let invalid_first = [bad.clone(), segment("Iwo", 1.0, 2.0)];
-            assert!(!apple_partials_share_onset(&previous, &invalid_first));
             assert!(!apple_partials_are_disjoint(&previous, &invalid_first));
             assert!(!apple_partials_are_disjoint(
                 &[previous[0].clone(), bad],
@@ -14058,7 +14207,6 @@ mod rc_w2_acoustic_tests {
             &[previous[0].clone(), segment("ogon", 2.0, 3.0)],
             &[segment("Iwo", 1.0, 1.5)]
         ));
-        assert!(!apple_partials_share_onset(&previous, &[]));
         assert!(!apple_partials_are_disjoint(&previous, &[]));
     }
 
@@ -14103,191 +14251,6 @@ mod rc_w2_acoustic_tests {
         }
         assert_eq!(previews, 1);
         assert_eq!(state.phrase_id, phrase_id);
-    }
-
-    /// Ported unchanged from the parked `mod tests`: the measured phrase-restart
-    /// vectors, including the 40→20 collapse the old rule missed. The table is
-    /// the falsifier — this test fails if any vector's verdict moves, and fails
-    /// if a vector is silently dropped from the fixture.
-    #[test]
-    fn fleet_red_retention_missed_collapse_40_to_20() {
-        let vectors = include_str!("../../../tests/fixtures/phrase_restart_vectors.tsv");
-        let required_ids = [
-            "measured_restart_47_to_12",
-            "measured_revision_95_to_79",
-            "missed_collapse_40_to_20",
-            "shared_opener_sentence_restart",
-            "shared_opener_spoken_variant",
-        ];
-        let mut seen_ids = std::collections::BTreeSet::new();
-
-        for line in vectors.lines().filter(|line| !line.starts_with('#')) {
-            let fields: Vec<_> = line.split('\t').collect();
-            assert_eq!(fields.len(), 4, "malformed phrase restart vector: {line}");
-            seen_ids.insert(fields[0]);
-            let expected = fields[1]
-                .parse::<bool>()
-                .expect("expected_freeze must be true or false");
-            let actual = phrase_restart_should_freeze_prior(fields[2], fields[3]);
-            if fields[0] == "missed_collapse_40_to_20" {
-                assert_eq!(fields[2].chars().count(), 40);
-                assert_eq!(fields[3].chars().count(), 20);
-            }
-            assert_eq!(
-                actual,
-                expected,
-                "phrase restart vector {} diverged: prev_chars={} next_chars={}",
-                fields[0],
-                fields[2].chars().count(),
-                fields[3].chars().count()
-            );
-        }
-
-        for required_id in required_ids {
-            assert!(
-                seen_ids.contains(required_id),
-                "required phrase restart vector missing: {required_id}"
-            );
-        }
-    }
-
-    /// Ported from the parked `mod tests`: after a long open partial, SFSpeech
-    /// collapses onto the next sentence's shared opener. That collapse must
-    /// freeze the prior utterance — the old rule did not, and whole sentences
-    /// disappeared.
-    #[test]
-    fn utterance_drop_shared_opener_restart_freezes_prior_sentence() {
-        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zdanie"),
-            "collapse onto the next sentence's shared opener must freeze s6"
-        );
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zdanie siódme"),
-            "collapse onto a non-prefix next-sentence head must freeze s6"
-        );
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zadanie"),
-            "Zadanie opener (spoken variant) must freeze too"
-        );
-    }
-
-    /// Ported from the parked `mod tests`: revisions and rewinds retain the
-    /// prior text; only a forward extension containing the full prior
-    /// hypothesis may replace it.
-    #[test]
-    fn utterance_drop_revision_and_rewind_retain_prior() {
-        // 95 → 79 char mid-reword classifies as a revision, and still freezes,
-        // because otherwise its removed span has no retained copy anywhere.
-        let prev = format!("{}MIDDLE{}", "x".repeat(50), "y".repeat(39));
-        let next = format!("{}REVISE{}", "x".repeat(50), "y".repeat(23));
-        assert_eq!(prev.len(), 95);
-        assert_eq!(next.len(), 79);
-        assert!(
-            phrase_restart_should_freeze_prior(&prev, &next),
-            "revision must retain the prior hypothesis"
-        );
-        assert!(!phrase_restart_should_freeze_prior(
-            "Zdanie",
-            "Zdanie szóste spokojnie"
-        ));
-        let long = "Hello world this is a long phrase that continues for a while more text here";
-        let rewind: String = long.chars().take(40).collect();
-        assert!(
-            phrase_restart_should_freeze_prior(long, &rewind),
-            "substantial true-prefix rewind must retain its removed suffix"
-        );
-        assert!(phrase_restart_should_freeze_prior(long, ""));
-        assert!(!phrase_restart_should_freeze_prior("", "new phrase"));
-        assert!(!phrase_restart_should_freeze_prior(
-            "middle retained",
-            "new prefix middle retained and suffix"
-        ));
-    }
-
-    /// Ported from the parked `mod tests`: the same rule at the adjudication
-    /// layer, through the live `emit_stream_events` consumer — a partial
-    /// sequence that used to drop the post-stressor sentence now seals it as
-    /// `UtteranceFinal` before the restart partial lands as a preview.
-    #[test]
-    fn utterance_drop_emit_seals_prior_on_shared_opener_partial_restart() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = state_for("rc-w2-utterance-drop", 30.0);
-        // The port needs the real physical qualification owner. Merely setting
-        // calibration leaves the fallback lane unqualified and emits no seals.
-        let mut fusion = SileroIngress::new(RATE, state.session_id.clone(), state.capture_epoch);
-        for (start, end) in [(0, 5), (5, 10), (10, 15)] {
-            fusion.observe(
-                Some((start * u64::from(RATE), end * u64::from(RATE))),
-                true,
-                end * u64::from(RATE),
-            );
-        }
-        state.fusion = Some(fusion);
-        state.fusion_seal_armed = true;
-        let s5 = "Zdanie piąte, szybko bez pauz. Teraz mówię bardzo szybko, bez żadnej przerwy, \
-                  żeby sprawdzić czy silnik nadąża za tempem, którego normalnie unika w \
-                  codziennym dyktowaniu.";
-        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
-        let s7 = "Zdanie siódme Overlap cztery angielskie terminy w polskim";
-        emit_stream_events(
-            vec![
-                LiveStreamEvent::Partial {
-                    text: s5.to_string(),
-                    segments: vec![segment(s5, 0.0, 5.0)],
-                },
-                // The stressor phrase seals cleanly.
-                LiveStreamEvent::PhraseFinal {
-                    text: s5.to_string(),
-                    segments: vec![segment(s5, 0.0, 5.0)],
-                },
-                // The post-stressor sentence builds as an open partial…
-                LiveStreamEvent::Partial {
-                    text: s6.to_string(),
-                    segments: vec![segment(s6, 5.0, 10.0)],
-                },
-                // …then SFSpeech restarts onto the next opener without isFinal.
-                LiveStreamEvent::Partial {
-                    text: "Zdanie".to_string(),
-                    segments: vec![segment("Zdanie", 10.0, 10.5)],
-                },
-                LiveStreamEvent::Partial {
-                    text: s7.to_string(),
-                    segments: vec![segment(s7, 10.0, 15.0)],
-                },
-                LiveStreamEvent::PhraseFinal {
-                    text: s7.to_string(),
-                    segments: vec![segment(s7, 10.0, 15.0)],
-                },
-            ],
-            &tx,
-            &mut state,
-            30.0,
-        );
-        drop(tx);
-        let mut finals = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            if let EngineEvent::UtteranceFinal { text, .. } = event {
-                finals.push(text);
-            }
-        }
-        assert!(
-            finals
-                .iter()
-                .any(|t| t.contains("szóste") || t.contains("szost")),
-            "the post-stressor sentence must be committed, got finals: {finals:?}"
-        );
-        assert!(
-            finals
-                .iter()
-                .any(|t| t.contains("siódme") || t.contains("siodm") || t.contains("Overlap")),
-            "the restarting sentence must still seal, got finals: {finals:?}"
-        );
-        assert!(
-            state.sealed_count >= 3,
-            "s5 + frozen s6 + s7 → at least 3 seals, got {}",
-            state.sealed_count
-        );
     }
 
     /// rc-w3-acoustic-validity: invalid PCM *after* valid PCM, through the real
@@ -15582,7 +15545,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn restart_and_empty_receipt_close_are_numbered_without_admission_inference() {
+    fn untimed_revisions_do_not_mint_phrase_closes_or_admission() {
         let mut state = physical_state("phrase-restart", 2.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let words = vec![segment("Iwo", 0.0, 0.8)];
@@ -15616,14 +15579,11 @@ mod rc_w2_test_rehab {
             &mut state,
             2.0,
         );
-        assert_eq!(state.phrase_id, 4);
-        assert_eq!(
-            state.closed_phrases[&3].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Untimed, 2)])
-        );
+        assert_eq!(state.phrase_id, 3);
+        assert!(!state.closed_phrases.contains_key(&3));
         assert!(state.published_unadmitted_words.iter().any(|word| matches!(
             word.source,
-            UnadmittedAppleWordSource::OpenPartial { phrase_id: 4, .. }
+            UnadmittedAppleWordSource::OpenPartial { phrase_id: 3, .. }
         )));
         drain(&mut rx);
     }
@@ -17062,7 +17022,7 @@ mod rc_w2_test_rehab {
     /// Untimed preview cannot be promoted into committed speech. Preserve the
     /// refusal and prove that the same words with actual timing can still land.
     #[test]
-    fn frozen_partial_without_segments_requires_exact_pcm() {
+    fn untimed_partial_revision_requires_exact_pcm_without_synthetic_final() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = physical_state("untimed-freeze", 3.0, &[(0.0, 2.0)]);
         let prior = "whole prior utterance retained for exact observation";
@@ -17082,7 +17042,7 @@ mod rc_w2_test_rehab {
             2.0,
         );
         let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event,
+        assert!(!events.iter().any(|event| matches!(event,
             EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing"
         )));
         assert!(raw_finals(&events).is_empty());
