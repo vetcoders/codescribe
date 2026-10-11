@@ -108,7 +108,7 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertEqual(panel.frame.width, floor.width, accuracy: 0.5)
       XCTAssertGreaterThanOrEqual(panel.frame.height, floor.height)
       XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
-      XCTAssertEqual(panel.presentationMode, mode)
+      XCTAssertEqual(state.presentationMode, mode)
       panel.endUserResize()
       panel.settleFrameTransition()
     }
@@ -122,7 +122,7 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertGreaterThanOrEqual(panel.frame.height, DictationOverlayWindow.minSize.height)
       XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
       XCTAssertEqual(panel.frame.maxY, start.maxY, accuracy: 0.5)
-      XCTAssertEqual(panel.presentationMode, .expanded)
+      XCTAssertEqual(state.presentationMode, .expanded)
     }
     panel.endUserResize()
     panel.settleFrameTransition()
