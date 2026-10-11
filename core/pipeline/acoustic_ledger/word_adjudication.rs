@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 /// agreement; complete Apple contradictions and negation disputes retain veto.
 /// v14: decode identity survives rolling witness eviction and component
 /// regrouping; replaying an old frame never restores its freshness.
-pub const WORD_POLICY: &str = "word-adjudication/v14";
+/// v15: an incomplete Apple label plus one banded complete Whisper frame
+/// may request a fresh live trial; requesting work grants no mutation rights.
+pub const WORD_POLICY: &str = "word-adjudication/v15";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1194,8 +1196,8 @@ impl AcousticLedger {
         // prior hypothesis that already proposed the same label. Two paths
         // stay ungated on purpose: first placement (at recording start there
         // is no earlier window to own those seconds), and a confirmed trial —
-        // the trial is already the controlled escalation (two prior
-        // witnesses, fresh PCM, a receipt) and is at times the only repair
+        // the trial is already the controlled escalation (retained acoustic
+        // evidence, fresh PCM, a receipt) and is at times the only repair
         // when the banded window itself misread.
         let band_rights = candidate.family() != ObservationProducer::Whisper
             || !raw_disagrees
@@ -1545,17 +1547,36 @@ impl AcousticLedger {
                     grouped = self.component_for_sources(&c.owner, &sources);
                     &grouped
                 };
-                if !stopping
-                    && evidence
-                        .support()
+                if !stopping {
+                    let support = evidence.support();
+                    let complete_frames = support
                         .iter()
                         .filter(|h| h.family() == ObservationProducer::Whisper && h.complete)
                         .filter_map(|h| h.decode)
                         .collect::<BTreeSet<_>>()
-                        .len()
-                        < 2
-                {
-                    return None;
+                        .len();
+                    // An early owner can have only one covering grid frame.
+                    // An incomplete Apple label must not make its second real
+                    // witness impossible to request. This spends the existing
+                    // trial budget; admission still requires fresh agreement.
+                    let first_banded_witness = evidence.apple.last().is_some_and(|apple| {
+                        !(apple.complete && apple.acoustic_boundaries_complete)
+                            && apple.original_text.as_deref().is_some_and(|apple_raw| {
+                                support.iter().any(|h| {
+                                    h.family() == ObservationProducer::Whisper
+                                        && h.complete
+                                        && h.acoustic_boundaries_complete
+                                        && h.decode.is_some()
+                                        && h.q >= BAND_RIGHTS_FLOOR
+                                        && h.original_text.as_deref().is_some_and(|raw| {
+                                            negation_contexts(raw) == negation_contexts(apple_raw)
+                                        })
+                                })
+                            })
+                    });
+                    if complete_frames < 2 && !first_banded_witness {
+                        return None;
+                    }
                 }
                 if coverage.is_none() && context.is_none() {
                     return Some((index, sources));
