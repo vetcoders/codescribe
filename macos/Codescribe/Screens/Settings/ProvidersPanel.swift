@@ -231,6 +231,17 @@ struct ProviderCard: View {
   var onEdit: (() -> Void)?
 
   @State private var confirmRemove = false
+  @State private var showingAdvanced = false
+
+  init(
+    model: SettingsViewModel, provider: CsProviderOption,
+    onEdit: (() -> Void)? = nil, initiallyShowingAdvanced: Bool = false
+  ) {
+    self.model = model
+    self.provider = provider
+    self.onEdit = onEdit
+    _showingAdvanced = State(initialValue: initiallyShowingAdvanced)
+  }
 
   private var isCustom: Bool { provider.kind == "custom" }
   /// Vendors that ship an OAuth flow, or still hold tokens from one.
@@ -272,7 +283,7 @@ struct ProviderCard: View {
           onSignOut: { model.signOutAccount(providerId: provider.id) }
         )
       }
-      DisclosureGroup("Advanced") {
+      DisclosureGroup(isExpanded: $showingAdvanced) {
         VStack(alignment: .leading, spacing: 8) {
           if !isCustom {
             endpointRow
@@ -286,6 +297,8 @@ struct ProviderCard: View {
           }
         }
         .padding(.top, 6)
+      } label: {
+        Text("Advanced")
       }
       .font(CSFont.ui(11.5))
       .foregroundStyle(Color.secondary)

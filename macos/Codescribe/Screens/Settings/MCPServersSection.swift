@@ -149,6 +149,22 @@ struct MCPServerRow: View {
 
   @State private var showingDetails = false
 
+  init(
+    server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
+    permissionLevel: String?, initiallyShowingDetails: Bool = false,
+    onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
+    onRemove: @escaping () -> Void
+  ) {
+    self.server = server
+    self.pending = pending
+    self.result = result
+    self.permissionLevel = permissionLevel
+    self.onToggle = onToggle
+    self.onTest = onTest
+    self.onRemove = onRemove
+    _showingDetails = State(initialValue: initiallyShowingDetails)
+  }
+
   private var isRemote: Bool { server.transport == "remote" }
 
   private var accent: Color {

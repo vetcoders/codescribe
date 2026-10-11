@@ -283,6 +283,29 @@ struct KeyRow: View {
     isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
   }
 
+  init(
+    account: String, label: String, isSet: Bool, optional: Bool = false,
+    embedded: Bool = false, presentation: KeyRowPresentation = .standard,
+    probeResult: CsApiKeyProbeResult?, probePending: Bool,
+    mutationPending: Bool = false, initiallyEditing: Bool = false,
+    onSave: @escaping (String) async throws -> Void,
+    onClear: @escaping () async throws -> Void, onTest: @escaping () -> Void
+  ) {
+    self.account = account
+    self.label = label
+    self.isSet = isSet
+    self.optional = optional
+    self.embedded = embedded
+    self.presentation = presentation
+    self.probeResult = probeResult
+    self.probePending = probePending
+    self.mutationPending = mutationPending
+    self.onSave = onSave
+    self.onClear = onClear
+    self.onTest = onTest
+    _editing = State(initialValue: initiallyEditing)
+  }
+
   var body: some View {
     Group {
       switch presentation {
@@ -483,7 +506,7 @@ extension KeyRow {
   init(
     model: SettingsViewModel, account: String, label: String, isSet: Bool,
     optional: Bool = false, embedded: Bool = false,
-    presentation: KeyRowPresentation = .standard
+    presentation: KeyRowPresentation = .standard, initiallyEditing: Bool = false
   ) {
     self.init(
       account: account, label: label, isSet: isSet, optional: optional, embedded: embedded,
@@ -491,6 +514,7 @@ extension KeyRow {
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
       mutationPending: model.providerMutationPending,
+      initiallyEditing: initiallyEditing,
       onSave: { try await model.saveKey(account: account, secret: $0) },
       onClear: { try await model.clearKey(account: account) },
       onTest: { model.testKey(account: account) })
