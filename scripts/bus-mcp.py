@@ -8,7 +8,23 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
+
+#: Hosts that load the Codescribe plugin, each with a wait window below its
+#: client's tool-call deadline. Junie 26.10.5 aborts any tool call after
+#: 180 s. Claude Code 2.1.296 aborts a stdio tool call that sends nothing for
+#: 30 min, and any call after 1e8 ms. A window that ends with an explicit idle
+#: receipt keeps server and client agreeing on which wait is pending.
+WAIT_SECONDS = {"claude-code": 900, "junie": 150}
+
+#: Claude Code's asyncRewake hook wakes the model on exit code 2, which is
+#: also argparse's usage-error code. The wake therefore exits WAKE_EXIT and the
+#: plugin hook maps only that value to 2: a helper that cannot parse the hook
+#: command stays a logged hook error instead of waking the model every turn.
+WAKE_EXIT = 75
+#: An idle wake re-arms the hook below its configured timeout (21660 s).
+WAKE_SECONDS = 6 * 3600
 
 
 def install_extension(demux, root, directory):
@@ -47,29 +63,135 @@ def schema(properties=None, required=None):
 
 
 TOOLS = [
-    {"name": "codescribe_connect", "description": "Bind THIS Junie session to a named Codescribe channel. Use the real session_id supplied by the native SessionStart hook. Never take over another conversation.",
-     "inputSchema": schema({"session_id": {"type": "string"}, "name": {"type": "string"},
+    {"name": "codescribe_connect", "description": "Bind THIS conversation to a named Codescribe channel. Pass exactly the provider and session_id supplied by the Codescribe session hook. Never take over another conversation.",
+     "inputSchema": schema({"provider": {"type": "string", "enum": sorted(WAIT_SECONDS)},
+                            "session_id": {"type": "string"}, "name": {"type": "string"},
                             "channel": {"type": "string", "pattern": "^[1-9]$"},
                             "voice": {"type": "string"}, "tts_vendor": {"type": "string", "enum": ["xai", "openai"]}},
-                           ["session_id", "name", "channel"])},
-    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Junie release 26.10.5 caps MCP calls at three minutes; this is not indefinite idle wakeup. After a host timeout, stop/report instead of model polling. Cancel to stop waiting. After read, ACK before acting.", "inputSchema": schema()},
+                           ["provider", "session_id", "name", "channel"])},
+    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Ends with an explicit wait_idle receipt before the host's tool deadline (Junie 150 s, Claude Code 900 s); this is not indefinite idle wakeup. A newer wait supersedes this one; cancel to stop waiting. After read, ACK before acting.",
+     "inputSchema": schema({"timeout_seconds": {"type": "integer", "minimum": 1}})},
     {"name": "codescribe_read", "description": "Read one complete pending message without ACKing. Drain before waiting; preserve sender and attachment pointers.", "inputSchema": schema()},
     {"name": "codescribe_ack", "description": "Acknowledge ONLY exact delivery IDs completely read through this MCP connection, immediately before work. ACK means read, not completed.",
      "inputSchema": schema({"delivery_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, ["delivery_ids"])},
     {"name": "codescribe_reply", "description": "Save and speak one requested voice reply associated with an exact read and acknowledged delivery. Retains the existing voice, credentials and microphone/playback interlocks. Report spoken/reason truthfully.",
      "inputSchema": schema({"delivery_id": {"type": "string"}, "text": {"type": "string"}}, ["delivery_id", "text"])},
     {"name": "codescribe_status", "description": "Inspect this connection without claiming listening_verified. Only a fresh delivery and answer prove listening.", "inputSchema": schema()},
-    {"name": "codescribe_detach", "description": "Release this conversation's channel on explicit stop. Unread messages can prevent release; never delete them.", "inputSchema": schema()},
+    {"name": "codescribe_detach", "description": "Release this conversation's channel on explicit stop; stops an active wait first. Unread messages can prevent release; never delete them.", "inputSchema": schema()},
 ]
+
+
+def wake_paths(root, lease_id):
+    directory = root / "runtime" / "native-wake"
+    return directory / f"{lease_id}.lock", directory / f"{lease_id}.json"
+
+
+def wake_armed(root, lease_id):
+    """True while a wake process holds this lease's lock; observing never arms."""
+    lock, _record = wake_paths(root, lease_id)
+    try:
+        descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
+def bound_channel(demux, root, provider, session):
+    bindings = (demux.read_json(root / demux.AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
+    if isinstance(bindings, dict):
+        for slot, entry in bindings.items():
+            if (isinstance(entry, dict) and entry.get("provider") == provider
+                    and entry.get("provider_session_id") == session):
+                return str(slot), entry.get("audience")
+    return None, None
+
+
+def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS, interval=1.0):
+    """Claude Code asyncRewake hook: return WAKE_EXIT once per unannounced delivery.
+
+    The hook never reads, ACKs or replies. It wakes only the Claude Code
+    conversation whose exported session id equals the hook payload, and only
+    while that session owns a channel. One process per lease holds the lock;
+    a later Stop finds it armed and returns at once. Announced IDs are kept
+    until acknowledged, so a message left unread does not wake every turn.
+    """
+    session = payload.get("session_id") if isinstance(payload, dict) else None
+    if not isinstance(session, str) or not session or environ.get("CLAUDE_CODE_SESSION_ID") != session:
+        return 0
+    provider = "claude-code"
+    if bound_channel(demux, root, provider, session)[0] is None:
+        return 0
+    lease_id = demux.lease_identifier(provider, session)
+    lock, record = wake_paths(root, lease_id)
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        host = environ.get("CLAUDE_PID", "")
+        saved = (demux.read_json(record) or {}).get("announced")
+        seen = set(saved) if isinstance(saved, list) else set()
+        args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
+                               bus=bus, bus_overridden=bus is not None)
+        trigger = demux.BusEventTrigger(root / "leases" / f"{lease_id}.json", 0.1)
+        deadline = time.monotonic() + window
+        try:
+            while True:
+                channel, name = bound_channel(demux, root, provider, session)
+                if channel is None:
+                    return 0
+                if host.isdigit() and not demux.process_is_alive(int(host)):
+                    return 0
+                try:
+                    _state, rows = demux.unread_pending(args)
+                    problem = None if demux.live_follower_pid(root, lease_id) else "follower_lost"
+                except (OSError, ValueError) as error:
+                    rows, problem = [], f"mailbox_refused: {error}"
+                unread = [row["delivery_id"] for row in rows]
+                fresh = [identity for identity in unread if identity not in seen]
+                # After this pass every unread delivery is announced; an ACKed
+                # delivery or a resolved problem leaves the set.
+                prior, seen = seen, set(unread) | ({problem} if problem else set())
+                if fresh:
+                    notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
+                              "new_delivery_ids": fresh, **({"problem": problem} if problem else {}),
+                              "instructions": "Read every pending message (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
+                elif problem and problem not in prior:
+                    notice = {"kind": "codescribe_listener_problem", "problem": problem,
+                              "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
+                elif time.monotonic() >= deadline:
+                    notice = {"kind": "codescribe_wait_idle", "waited_seconds": window,
+                              "instructions": "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms."}
+                else:
+                    trigger.wait(timeout=interval)
+                    continue
+                demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen)})
+                sys.stderr.write("Codescribe wake for this conversation: " + json.dumps(
+                    {**notice, "provider": provider, "provider_session_id": session,
+                     "channel": channel, "name": name}, ensure_ascii=False) + "\n")
+                return WAKE_EXIT
+        finally:
+            trigger.close()
+    finally:
+        os.close(descriptor)
 
 
 class Mailbox:
     def __init__(self, demux, root, bus=None):
         self.demux, self.root, self.bus = demux, root, bus
-        self.owner = None
+        self.owner = self.provider = None
         self.read_ids, self.acked_ids, self.replied_ids = set(), set(), set()
         self.lock = threading.RLock()
-        self.wait_lock = threading.Lock()
+        self.wait_guard = threading.Lock()
+        self.active_wait = None
         self.command = [sys.executable, str(Path(demux.__file__).with_name("cs-bus"))]
 
     def run(self, flags, timeout=30):
@@ -77,7 +199,7 @@ class Mailbox:
         if self.bus is not None:
             command += ["--bus", str(self.bus)]
         if self.owner is not None:
-            command += ["--provider", "junie", "--session", self.owner]
+            command += ["--provider", self.provider, "--session", self.owner]
         result = subprocess.run([*command, *flags], capture_output=True, text=True, timeout=timeout)
         if result.returncode:
             # Voice failure still carries its durable reply receipt.
@@ -88,24 +210,27 @@ class Mailbox:
         return rows[0] if len(rows) == 1 else {"receipts": rows}
 
     def connect(self, values):
-        session = values["session_id"]
+        provider, session = values["provider"], values["session_id"]
+        if provider not in WAIT_SECONDS:
+            raise ValueError("provider must be one of: " + ", ".join(sorted(WAIT_SECONDS)))
         if not isinstance(session, str) or not session.strip() or any(ord(c) < 32 for c in session):
             raise ValueError("real native session_id required")
         if not isinstance(values["name"], str) or not values["name"].strip():
             raise ValueError("nonempty agent name required")
         if values["channel"] not in tuple(str(n) for n in range(1, 10)):
             raise ValueError("channel must be a single digit 1-9")
-        if self.owner is not None and self.owner != session:
-            raise ValueError("this MCP connection already belongs to another session")
+        if self.owner is not None and (self.provider, self.owner) != (provider, session):
+            raise ValueError("this MCP connection already belongs to another session; detach it first")
         flags = ["--attach", "--name", values["name"], "--channel", values["channel"]]
         for key, flag in (("voice", "--voice"), ("tts_vendor", "--tts-vendor")):
             if key in values:
                 flags += [flag, values[key]]
-        previous, self.owner = self.owner, session
+        previous = self.provider, self.owner
+        self.provider, self.owner = provider, session
         try:
             return self.run(flags)
         except Exception:
-            self.owner = previous
+            self.provider, self.owner = previous
             raise
 
     def read(self):
@@ -113,28 +238,71 @@ class Mailbox:
         self.read_ids.update(result["read_delivery_ids"])
         return result
 
-    def wait(self, cancel):
-        if not self.wait_lock.acquire(blocking=False):
-            raise ValueError("one Codescribe wait is already active")
+    def stop_wait(self):
+        """Supersede the active wait and wait for it to release its slot."""
+        with self.wait_guard:
+            active = self.active_wait
+        if active is None:
+            return
+        stop, done = active
+        stop.set()
+        if not done.wait(timeout=5):
+            raise ValueError("the previous Codescribe wait did not stop; nothing was read or acknowledged")
+
+    def wait(self, cancel, seconds=None):
+        if self.owner is None:
+            raise ValueError("connect using THIS session's native session_id first")
+        window = WAIT_SECONDS[self.provider]
+        if seconds is not None and not 1 <= seconds <= window:
+            raise ValueError(f"timeout_seconds must be between 1 and {window} for {self.provider}")
+        # A client that gave up on a wait never cancels it (Junie's deadline);
+        # the newer wait supersedes that orphan instead of refusing forever.
+        self.stop_wait()
+        stop, done = threading.Event(), threading.Event()
+        with self.wait_guard:
+            self.active_wait = stop, done
         try:
-            args = SimpleNamespace(bridge_home=self.root, provider="junie", session=self.owner,
+            args = SimpleNamespace(bridge_home=self.root, provider=self.provider, session=self.owner,
                                    bus=self.bus, bus_overridden=self.bus is not None)
-            source = self.root / "leases" / f"{self.demux.lease_identifier('junie', self.owner)}.json"
+            source = self.root / "leases" / f"{self.demux.lease_identifier(self.provider, self.owner)}.json"
             trigger = self.demux.BusEventTrigger(source, 0.1)
+            started = time.monotonic()
+            deadline = started + (window if seconds is None else seconds)
             try:
-                while not cancel.is_set():
+                while not cancel.is_set() and not stop.is_set():
                     _state, rows = self.demux.unread_pending(args)
                     if rows:
                         with self.lock:
+                            if cancel.is_set() or stop.is_set():
+                                break
                             result = self.read()
                         if result["deliveries"]:
                             return result
-                    trigger.wait(timeout=0.5)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        rearm = ("Call codescribe_wait again to keep this listening turn open, or end the turn: "
+                                 "the Codescribe Stop hook wakes this conversation on the next message."
+                                 if self.provider == "claude-code" else "Call codescribe_wait again to keep listening.")
+                        return {"kind": "wait_idle", "provider": self.provider, "provider_session_id": self.owner,
+                                "waited_seconds": round(time.monotonic() - started), "read_delivery_ids": [],
+                                "acknowledged": False, "instructions": "No message arrived. Nothing was read or acknowledged. " + rearm}
+                    trigger.wait(timeout=min(0.5, remaining))
+                if stop.is_set() and not cancel.is_set():
+                    raise ValueError("Codescribe wait superseded by a newer wait or detach; nothing was acknowledged")
                 raise ValueError("Codescribe wait cancelled; nothing was acknowledged")
             finally:
                 trigger.close()
         finally:
-            self.wait_lock.release()
+            with self.wait_guard:
+                if self.active_wait == (stop, done):
+                    self.active_wait = None
+            done.set()
+
+    def status(self):
+        result = self.run(["--status"])
+        if self.provider == "claude-code":
+            result["native_wake_armed"] = wake_armed(self.root, self.demux.lease_identifier(self.provider, self.owner))
+        return result
 
     def call(self, name, values, cancel):
         definition = next((tool for tool in TOOLS if tool["name"] == name), None)
@@ -144,9 +312,17 @@ class Mailbox:
         if not isinstance(values, dict) or set(values) - set(contract["properties"]) or any(key not in values for key in contract["required"]):
             raise ValueError("invalid tool arguments")
         for key, value in values.items():
-            kind = contract["properties"][key]["type"]
-            if kind == "string" and not isinstance(value, str) or kind == "array" and not isinstance(value, list):
+            prop = contract["properties"][key]
+            kind = prop["type"]
+            if (kind == "string" and not isinstance(value, str) or kind == "array" and not isinstance(value, list)
+                    or kind == "integer" and (not isinstance(value, int) or isinstance(value, bool))):
                 raise ValueError("invalid tool argument type")
+            if "enum" in prop and value not in prop["enum"]:
+                raise ValueError(f"{key} must be one of: " + ", ".join(prop["enum"]))
+        if name == "codescribe_wait":
+            return self.wait(cancel, values.get("timeout_seconds"))
+        if name == "codescribe_detach":
+            self.stop_wait()
         with self.lock:
             if name == "codescribe_connect":
                 return self.connect(values)
@@ -172,14 +348,10 @@ class Mailbox:
                 self.replied_ids.add(identity)
                 return self.run(["--say", text, "--reply-to", identity], timeout=300)
             if name == "codescribe_status":
-                return self.run(["--status"])
-            if name == "codescribe_detach":
-                if self.wait_lock.locked():
-                    raise ValueError("cancel the active wait before detaching")
-                result = self.run(["--detach"])
-                self.owner = None
-                return result
-        return self.wait(cancel)
+                return self.status()
+            result = self.run(["--detach"])
+            self.owner = self.provider = None
+            return result
 
 
 def serve(demux, root, bus):
@@ -195,8 +367,9 @@ def serve(demux, root, bus):
         try:
             result = mailbox.call(params.get("name"), params.get("arguments", {}), cancel)
             response = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            response = {"isError": True, "content": [{"type": "text", "text": str(error)}]}
+        except (ValueError, OSError, subprocess.SubprocessError, KeyError, TypeError) as error:
+            # An unexpected helper output shape is still an answer, never a hung request.
+            response = {"isError": True, "content": [{"type": "text", "text": str(error) or type(error).__name__}]}
         try:
             if not cancel.is_set():
                 send({"id": identity, "result": response})
@@ -234,7 +407,7 @@ def serve(demux, root, bus):
                     continue
                 if method == "initialize":
                     send({"id": identity, "result": {"protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codescribe", "version": "1.0.0"}}})
+                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codescribe", "version": "1.1.0"}}})
                 elif method == "ping":
                     send({"id": identity, "result": {}})
                 elif method == "tools/list":
