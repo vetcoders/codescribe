@@ -619,7 +619,6 @@ final class LiveTranscriptNativeTextView: NSTextView {
     guard activityUnderline == nil else { return }
     let underline = TranscriptActivityHostingView(rootView: TranscriptActivityUnderline())
     underline.sizingOptions = []
-    underline.setAccessibilityElement(false)
     underline.isHidden = true
     addSubview(underline)
     activityUnderline = underline
@@ -818,5 +817,9 @@ final class LiveTranscriptNativeTextView: NSTextView {
 
 /// Let native transcript selection and context menus own every pointer event.
 private final class TranscriptActivityHostingView: NSHostingView<TranscriptActivityUnderline> {
+  // NSHostingView computes AX exposure from its hosted content. Keep this
+  // decorative host excluded across every SwiftUI update.
+  override func isAccessibilityElement() -> Bool { false }
+
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
