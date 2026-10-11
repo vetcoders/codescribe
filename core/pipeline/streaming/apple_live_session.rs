@@ -26263,18 +26263,28 @@ mod relay_l1_overlap_admission_tests {
         }
         assert_eq!(ledger.text_of(&owner), Some("zima usza rości dalej"));
         assert_eq!(&ledger.slots_of(&owner).unwrap()[..3], sources.as_slice());
-        for candidate in ["zimą", "szarości"] {
-            assert!(
-                ledger
-                    .word_choices()
-                    .iter()
-                    .any(|choice| choice.candidate.surface == candidate
-                        && !choice.accepted
-                        && !choice.lexical_resolved),
-                "{candidate}: {:?}",
-                ledger.word_choices()
-            );
-        }
+        // Independent word pins are protected before lexical adjudication.
+        // A refused contraction remains an alternative, not a lexical vote.
+        assert!(
+            ledger.slot_alternatives().iter().any(|alternative| {
+                alternative
+                    .candidate
+                    .split_whitespace()
+                    .any(|word| word == "zimą")
+                    && sources[..2]
+                        .iter()
+                        .all(|source| alternative.sources.contains(source))
+            }),
+            "the refused contraction must retain both independent sources"
+        );
+        assert!(
+            ledger.word_choices().iter().any(|choice| {
+                choice.candidate.surface == "szarości"
+                    && !choice.accepted
+                    && !choice.lexical_resolved
+            }),
+            "the legal 1:1 candidate still needs lexical evidence"
+        );
         assert!(!ledger.slot_operations().iter().any(|operation| {
             operation
                 .sources
@@ -26286,7 +26296,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn three_real_frames_resolve_coarse_and_partitioned_sources_without_loss() {
+    fn three_real_frames_preserve_independent_pins_and_refine_coarse_sources() {
         use crate::pipeline::acoustic_ledger::WordPin;
         for partitioned in [false, true] {
             let session = if partitioned {
@@ -26371,7 +26381,7 @@ mod relay_l1_overlap_admission_tests {
             }
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
             let expected = if partitioned {
-                "zimą szarości dalej"
+                "zima usza szarości dalej"
             } else {
                 "na tym naprawdę jesteśmy z Technicznym Foundation."
             };
@@ -26382,7 +26392,7 @@ mod relay_l1_overlap_admission_tests {
                 ledger.word_choices()
             );
             let changed = if partitioned {
-                &sources[..3]
+                &sources[2..3]
             } else {
                 &sources[..]
             };
@@ -26412,7 +26422,28 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
             if partitioned {
-                assert!(ledger.slots_of(&owner).unwrap().contains(&sources[3]));
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(slots.len(), sources.len());
+                for source in [&sources[0], &sources[1], &sources[3]] {
+                    assert!(
+                        slots.contains(source),
+                        "independent source changed: {source:?}"
+                    );
+                    assert!(
+                        !ledger
+                            .slot_operations()
+                            .iter()
+                            .any(|operation| { operation.sources.contains(source) }),
+                        "a protected source must not be retired"
+                    );
+                }
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .all(|operation| { operation.sources.len() <= operation.outputs.len() }),
+                    "lexical agreement cannot contract independent word pins"
+                );
             }
             assert!(ledger.word_deletions().is_empty());
             assert_eq!(ledger.conservation().residue(), 0);
