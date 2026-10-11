@@ -4917,21 +4917,12 @@ impl RecordingController {
                 acoustic_ledger,
                 Some(projection_callback),
             )
+            .with_apple_preview_observer(Arc::new(move |text| {
+                crate::os::hold_badge::update_transcript(cursor_token, text, false);
+            }))
             .with_cursor_observer(Arc::new(move |projection| {
-                // The overlay receives the complete paint snapshot. Only the
-                // cursor badge shortens it to the same five-word tail as before.
-                let mut tail = projection
-                    .text
-                    .split_whitespace()
-                    .rev()
-                    .take(5)
-                    .collect::<Vec<_>>();
-                tail.reverse();
-                crate::os::hold_badge::update_transcript(
-                    cursor_token,
-                    &tail.join(" "),
-                    projection.degraded,
-                );
+                // The overlay retains the complete reducer projection; pointer
+                // paint follows raw Apple partials through its separate observer.
                 match serde_json::to_string(projection) {
                     Ok(json) => {
                         let _ = compact_broadcast.send(IpcEvent {

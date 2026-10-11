@@ -874,9 +874,11 @@ impl RecordingController {
                         Some(Arc::clone(&ledger)),
                         None,
                     )
+                    .with_apple_preview_observer(Arc::new(move |text| {
+                        hold_badge::update_transcript(cursor_token, text, false);
+                    }))
                     .with_cursor_observer(Arc::new(move |projection| {
                         if projection.text.trim().is_empty() {
-                            hold_badge::update_transcript(cursor_token, &open_label, false);
                             return;
                         }
                         *voice_clock
@@ -884,11 +886,6 @@ impl RecordingController {
                             .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
                         projection.text.clone_into(
                             &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
-                        );
-                        hold_badge::update_transcript(
-                            cursor_token,
-                            &projection.text,
-                            projection.degraded,
                         );
                     }))
                     .with_sentence_pause_sec(sentence_pause)

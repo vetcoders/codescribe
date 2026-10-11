@@ -8,6 +8,34 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testActivityCueTracksReceivingUserTurnAcrossRepliesAndTerminal() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let firstSession = "agent-channel-2-active-cue-a"
+    let secondSession = "agent-channel-2-active-cue-b"
+    func view(presented: Bool = true) throws -> OverlayConversationView {
+      OverlayConversationView(
+        conversation: try lenaConversation(bus), palette: .dark, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in }, isPresented: presented,
+        draft: .constant(""), sending: false, sendError: nil, onSend: {})
+    }
+    bus.consume(occurrence(0, revision: 1, text: "Pierwsza fraza", captureSession: firstSession))
+    let user = try XCTUnwrap(lenaConversation(bus).messages.first { $0.kind == .user })
+    XCTAssertEqual(try view().activeCaptureMessageID, user.id)
+    bus.consume(reply(String(repeating: "d", count: 24)))
+    XCTAssertEqual(try view().activeCaptureMessageID, user.id, "A reply does not own capture activity")
+    XCTAssertNil(try view(presented: false).activeCaptureMessageID)
+    endCapture(&bus, session: firstSession)
+    XCTAssertNil(try view().activeCaptureMessageID, "Stop removes the activity cue")
+    bus.consume(occurrence(0, revision: 2, text: "Późna poprawka", captureSession: firstSession))
+    XCTAssertNil(try view().activeCaptureMessageID, "A late text revision cannot reopen capture")
+    bus.consume(occurrence(3200, revision: 1, text: "Nowa fraza", captureSession: secondSession))
+    let next = try XCTUnwrap(lenaConversation(bus).messages.last { $0.kind == .user })
+    XCTAssertNotEqual(next.id, user.id)
+    XCTAssertEqual(try view().activeCaptureMessageID, next.id)
+    XCTAssertEqual(next.text, "Nowa fraza", "The decorative cue never changes transcript bytes")
+  }
+
+  @MainActor
   func testLongConversationResizePreservesLiveEdgeHistoryAndComposer() throws {
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<30 {

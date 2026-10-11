@@ -37,6 +37,23 @@ fn token_is_current(token: u64, generation: u64) -> bool {
     token == generation
 }
 
+/// Bound only the pointer paint; repetition and the source document stay intact.
+#[cfg(any(target_os = "macos", test))]
+fn preview_tail(text: &str) -> String {
+    let mut words = text.split_whitespace().rev().take(3).collect::<Vec<_>>();
+    words.reverse();
+    let tail = words.join(" ");
+    let mut characters = tail.chars().rev().take(120).collect::<Vec<_>>();
+    characters.reverse();
+    characters.into_iter().collect()
+}
+
+/// UI freshness, not an acoustic speech/coverage verdict.
+#[cfg(any(target_os = "macos", test))]
+fn preview_expired(updated_at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    updated_at.is_some_and(|updated| now.saturating_duration_since(updated).as_millis() >= 1200)
+}
+
 /// Text-input shape of the focused UI element, as the delivery throne's paste
 /// gate needs it (`focused_input_field`). An observation, never a destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,7 +365,7 @@ mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tracing::{debug, warn};
 
     use crate::os::Id;
@@ -463,6 +480,7 @@ mod imp {
         config: HoldBadgeConfig,
         last_position: (f64, f64),
         degraded: bool,
+        preview_updated_at: Option<Instant>,
     }
 
     lazy_static::lazy_static! {
@@ -479,6 +497,7 @@ mod imp {
             config: HoldBadgeConfig::default(),
             last_position: (f64::NAN, f64::NAN),
             degraded: false,
+            preview_updated_at: None,
         }));
     }
 
@@ -496,7 +515,8 @@ mod imp {
 
     /// Paint a supplied projection in-place; never show or resurrect a panel.
     pub fn update_transcript(token: u64, text: &str, degraded: bool) {
-        let text = text.chars().take(120).collect::<String>();
+        let text = super::preview_tail(text);
+        let received_at = Instant::now();
         Queue::main().exec_async(move || {
             if !super::token_is_current(token, take_token()) {
                 return;
@@ -507,11 +527,35 @@ mod imp {
                     return;
                 };
                 state.degraded = degraded;
+                state.preview_updated_at = (!text.is_empty()).then_some(received_at);
                 (panel as Id, state.config.diameter, state.config.color)
             };
             unsafe {
-                paint_preview(panel, diameter, base_color, &text, degraded);
+                let fresh = if super::preview_expired(Some(received_at), Instant::now()) {
+                    ""
+                } else {
+                    &text
+                };
+                paint_preview(panel, diameter, base_color, fresh, degraded);
             }
+        });
+    }
+
+    /// A stale label can expire even when the mouse is stationary and the dot does not pulse.
+    fn expire_transcript(token: u64, window_ptr: usize) {
+        Queue::main().exec_async(move || {
+            let paint = {
+                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                if !super::token_is_current(token, take_token())
+                    || state.window != Some(window_ptr)
+                    || !super::preview_expired(state.preview_updated_at, Instant::now())
+                {
+                    return;
+                }
+                state.preview_updated_at = None;
+                (state.config.diameter, state.config.color, state.degraded)
+            };
+            unsafe { paint_preview(window_ptr as Id, paint.0, paint.1, "", paint.2) };
         });
     }
 
@@ -1012,6 +1056,7 @@ mod imp {
                 state.timer_running = true;
                 state.last_position = (f64::NAN, f64::NAN);
                 state.degraded = false;
+                state.preview_updated_at = None;
                 start_updater = !was_running;
             }
 
@@ -1026,7 +1071,7 @@ mod imp {
 
                         // Snapshot state without blocking the main thread. Never hold the lock
                         // during AX queries (get_badge_position), which can be slow or stall.
-                        let (window_ptr, config, should_pulse, last_position) = {
+                        let (window_ptr, config, should_pulse, last_position, preview_due) = {
                             use std::sync::TryLockError;
                             let state = match BADGE_STATE.try_lock() {
                                 Ok(state) => state,
@@ -1046,12 +1091,17 @@ mod imp {
                                 state.config.clone(),
                                 state.config.mode.should_pulse(),
                                 state.last_position,
+                                super::preview_expired(state.preview_updated_at, Instant::now()),
                             )
                         };
 
                         let Some(window_ptr) = window_ptr else {
                             continue;
                         };
+
+                        if preview_due {
+                            expire_transcript(generation, window_ptr);
+                        }
 
                         // Calculate pulse opacity (sine wave from 0.4 to 1.0)
                         let pulse_opacity = if should_pulse {

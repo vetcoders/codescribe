@@ -36,6 +36,8 @@ use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
 /// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
+/// Read-only, ephemeral Apple recognition paint; never a document mutation.
+pub type ApplePreviewObserver = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Passive paint from one opened capture. Sequence 1 binds the display before
 /// any transcription event; later values replace paint, never document truth.
@@ -3293,6 +3295,8 @@ impl VisibleCanvasSnapshot {
 pub struct PresentationEmitter {
     refinement_warnings: Option<Arc<std::sync::Mutex<Vec<String>>>>,
     cursor_observer: Option<CursorObserver>,
+    /// Apple partial paint only; independent of reducer publication and delivery.
+    apple_preview_observer: Option<ApplePreviewObserver>,
     cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
@@ -3582,6 +3586,7 @@ impl PresentationEmitter {
             },
             refinement_warnings: None,
             cursor_observer: None,
+            apple_preview_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
@@ -3619,6 +3624,18 @@ impl PresentationEmitter {
     pub fn with_cursor_observer(mut self, observer: CursorObserver) -> Self {
         self.cursor_observer = Some(observer);
         self
+    }
+
+    /// Observe the existing raw Apple preview without admitting or rewriting words.
+    pub fn with_apple_preview_observer(mut self, observer: ApplePreviewObserver) -> Self {
+        self.apple_preview_observer = Some(observer);
+        self
+    }
+
+    fn paint_apple_preview(&self, text: &str) {
+        if let Some(observer) = &self.apple_preview_observer {
+            self.with_active_presentation(|| observer(text));
+        }
     }
 
     fn paint_cursor(&self, rendered: &str) {
@@ -3714,6 +3731,7 @@ impl PresentationEmitter {
 
     /// Signal the emitter to finish after every queued reducer revision.
     pub async fn finish(&mut self) {
+        self.paint_apple_preview("");
         // Send Finish through channel (ordered after all pending pushes).
         if let Ok(guard) = self.cmd_tx.lock()
             && let Some(tx) = guard.as_ref()
@@ -4893,7 +4911,8 @@ impl EventSink for PresentationEmitter {
                     &tick_budget,
                 );
             }
-            EngineEvent::VadStart { .. } | EngineEvent::VadEnd { .. } => {}
+            EngineEvent::VadStart { .. } => {}
+            EngineEvent::VadEnd { .. } => self.paint_apple_preview(""),
             EngineEvent::SidebandEvidence { evidence } => {
                 debug!(
                     sequence = evidence.sequence,
@@ -4940,6 +4959,7 @@ impl EventSink for PresentationEmitter {
                 );
             }
             EngineEvent::Preview { rev, text, pin } => {
+                self.paint_apple_preview(text);
                 debug!(
                     rev,
                     text_chars = text.chars().count(),
@@ -4962,6 +4982,7 @@ impl EventSink for PresentationEmitter {
                 );
             }
             EngineEvent::NoSpeech { reason } => {
+                self.paint_apple_preview("");
                 if self
                     .stop_snapshot_pending
                     .load(std::sync::atomic::Ordering::SeqCst)
