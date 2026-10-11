@@ -20,6 +20,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserResizeEnded: (() -> Void)?
   var onResizePresentationSelected: ((OverlayPresentationMode) -> Void)?
   var onFrameTransitionCompleted: (() -> Void)?
+  /// The mounted drawer owns its pointer surface above selectable transcript.
+  weak var menuCursorRegion: NSView?
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
   /// or default expanded size: manual sizing, an open editor, or a dirty draft.
   /// The panel remains the only writer of the transition frame.
@@ -217,6 +219,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    if event.type == .cursorUpdate, containsMenuCursorPoint(event.locationInWindow) {
+      NSCursor.arrow.set()
+      return
+    }
     // Text tracking areas can overlap the resize strip even when hitTest
     // returns the container. Dispatching these motions to AppKit first sets
     // an iBeam, then the panel sets a resize cursor on every event.
@@ -260,12 +266,18 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       guard let dragStart else { return }
       let current = screenPoint(for: event)
       let previousOrigin = frame.origin
-      setFrameOrigin(
-        NSPoint(
-          x: dragStart.frame.minX + current.x - dragStart.mouse.x,
-          y: dragStart.frame.minY + current.y - dragStart.mouse.y
-        )
+      let proposed = NSPoint(
+        x: dragStart.frame.minX + current.x - dragStart.mouse.x,
+        y: dragStart.frame.minY + current.y - dragStart.mouse.y
       )
+      // Follow the destination display while dragging; persist only a visible
+      // origin, including when that display is left of the primary screen.
+      let visible =
+        NSScreen.screens.first { $0.frame.contains(current) }?.visibleFrame
+        ?? screen?.visibleFrame
+      setFrameOrigin(
+        visible.map { OverlayPlacement.clampOrigin(proposed, size: frame.size, in: $0) }
+          ?? proposed)
       dragMoved = dragMoved || frame.origin != previousOrigin
     case .leftMouseUp where dragStart != nil:
       let origin = originForPersistence
@@ -365,6 +377,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
     guard let contentView else { return false }
+    if containsMenuCursorPoint(point) {
+      guard NSCursor.current != .arrow else { return false }
+      NSCursor.arrow.set()
+      return true
+    }
     let resizeEdge =
       styleMask.contains(.resizable)
       && OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
@@ -378,6 +395,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Resolve from this panel's hit surface, never the inactive app below it.
   func cursor(at point: NSPoint) -> NSCursor {
     guard let contentView else { return .arrow }
+    if containsMenuCursorPoint(point) { return .arrow }
     if styleMask.contains(.resizable),
       let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode)
     {
@@ -389,6 +407,18 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       hit = view.superview
     }
     return .arrow
+  }
+
+  private func containsMenuCursorPoint(_ point: NSPoint) -> Bool {
+    guard let region = menuCursorRegion, region.window === self,
+      !region.isHiddenOrHasHiddenAncestor
+    else { return false }
+    if styleMask.contains(.resizable), let contentView,
+      OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
+    {
+      return false
+    }
+    return region.visibleRect.contains(region.convert(point, from: nil))
   }
 
   func isWindowDragHit(at point: NSPoint) -> Bool {

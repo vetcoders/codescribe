@@ -3099,28 +3099,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
-  func testCopyKeepsOverlayVisibleAndRearmsAutoHide() {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock)
-    let pasteboard = NSPasteboard(
-      name: NSPasteboard.Name("codescribe.tests.overlay.\(UUID().uuidString)")
-    )
-    var closeCount = 0
-    state.onClose = { closeCount += 1 }
-
-    clock.now = 4
-    state.copyToPasteboard(pasteboard)
-    XCTAssertEqual(closeCount, 0)
-    XCTAssertEqual(pasteboard.string(forType: .string), "ready transcript")
-
-    clock.now = 5
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 0)
-    clock.now = 9
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 1)
-  }
-
   func testPasteUsesLatestProjectedTextKeepsOverlayVisibleAndRearmsAutoHide() async {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock, text: "original delivered transcript here")

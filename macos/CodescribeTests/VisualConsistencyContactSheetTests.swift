@@ -445,12 +445,12 @@ private final class SheetRun {
       messages: [
         ChatMessage(
           role: .you,
-          timestamp: "18:40",
+          timestamp: Date(timeIntervalSince1970: 1_791_729_600),
           text: "Where does the header keep its drag region?"
         ),
         ChatMessage(
           role: .assistant,
-          timestamp: "18:41",
+          timestamp: Date(timeIntervalSince1970: 1_791_729_600),
           text:
             "The header drag region is an inert AppKit view. The transcript stays selectable underneath it, and the toolbelt floats instead of becoming a full-width footer. This sentence is long enough to wrap inside the agent window floor."
         ),

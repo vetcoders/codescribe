@@ -43,3 +43,26 @@ final class OverlayWindowDragRegionView: NSView {
   }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
+
+/// Geometry and mounted identity only; this background never intercepts clicks.
+/// Cursor decisions stay with the existing FloatingOverlayPanel owner.
+struct OverlayMenuCursorRegion: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
+    OverlayMenuCursorRegionView()
+  }
+
+  func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {}
+}
+
+final class OverlayMenuCursorRegionView: NSView {
+  private weak var owner: FloatingOverlayPanel?
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if owner?.menuCursorRegion === self { owner?.menuCursorRegion = nil }
+    owner = window as? FloatingOverlayPanel
+    owner?.menuCursorRegion = self
+  }
+}

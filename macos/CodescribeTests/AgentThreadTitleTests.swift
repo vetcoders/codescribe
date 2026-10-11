@@ -177,7 +177,7 @@ final class AgentThreadTitleTests: XCTestCase {
       let engine = ControllableEngine()
       let provider = TitleThreadsProvider()
       var thread = ChatThread(title: "Existing", meta: "now")
-      thread.messages = [ChatMessage(role: .you, timestamp: "now", text: "first")]
+      thread.messages = [ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "first")]
       let store = makeStore(engine: engine, provider: provider, thread: thread)
       store.draft = "second"
       store.send()

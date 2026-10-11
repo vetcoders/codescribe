@@ -37,7 +37,7 @@ final class AgentVoiceTargetTests: XCTestCase {
     func listThreads() -> [ChatThread] { rows }
     func loadMessages(backendId: String) -> [ChatMessage] {
       loadedIDs.append(backendId)
-      return [ChatMessage(role: .assistant, timestamp: "earlier", text: "Stored conversation")]
+      return [ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Stored conversation")]
     }
     func deleteThread(backendId: String) -> Bool {
       rows.removeAll { $0.backendId == backendId }

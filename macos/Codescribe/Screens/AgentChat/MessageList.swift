@@ -685,13 +685,14 @@ private struct YouTurn: View {
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 5) {
-      HStack(spacing: 8) {
-        Text("You · \(message.timestamp)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
-        CopyMessageButton(text: copyText)
-      }
       VStack(alignment: .leading, spacing: 9) {
+        HStack(spacing: 8) {
+          Text("You")
+          Spacer(minLength: 8)
+          MessageTimestampLabel(date: message.timestamp)
+        }
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
         if !message.attachments.isEmpty {
           WrapLayout(spacing: 6) {
             ForEach(message.attachments) { AttachmentChip(attachment: $0) }
@@ -714,6 +715,10 @@ private struct YouTurn: View {
             selection: message.contextSelection,
             app: message.contextApp
           )
+        }
+        HStack {
+          Spacer(minLength: 0)
+          CopyMessageButton(text: copyText)
         }
       }
       .padding(.horizontal, 15)
@@ -1277,11 +1282,13 @@ private struct ToolTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
-        Text("Tool activity · \(message.timestamp)")
+        Text("Tool activity")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
-        CopyMessageButton(text: copyText)
         Spacer(minLength: 0)
+        MessageTimestampLabel(date: message.timestamp)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
       }
 
       DisclosureGroup(isExpanded: $expanded) {
@@ -1319,6 +1326,10 @@ private struct ToolTurn: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
+      HStack {
+        Spacer(minLength: 0)
+        CopyMessageButton(text: copyText)
+      }
     }
     .frame(
       maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1387,23 +1398,22 @@ private struct AssistantTurn: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack(spacing: 8) {
-        Text("Agent · \(message.timestamp)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-        speechButton
-        if !message.isThinking {
-          CopyMessageButton(text: message.text)
-          if !message.text.isEmpty {
+      VStack(alignment: .leading, spacing: 9) {
+        HStack(spacing: 8) {
+          Text("Agent")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textTertiary)
+          speechButton
+          if !message.isThinking && !message.text.isEmpty {
             RenderModeButton(mode: message.renderMode) {
               onToggleRenderMode(message.id)
             }
           }
+          Spacer(minLength: 8)
+          MessageTimestampLabel(date: message.timestamp)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textTertiary)
         }
-        Spacer(minLength: 0)
-      }
-
-      VStack(alignment: .leading, spacing: 9) {
         if !message.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           ReasoningDisclosure(
             text: message.reasoning,
@@ -1457,6 +1467,12 @@ private struct AssistantTurn: View {
                 MarkdownText(raw: message.text)
               }
             }
+          }
+        }
+        if !message.isThinking {
+          HStack {
+            Spacer(minLength: 0)
+            CopyMessageButton(text: message.text)
           }
         }
       }

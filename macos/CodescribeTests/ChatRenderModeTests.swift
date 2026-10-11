@@ -16,14 +16,14 @@ final class ChatRenderModeTests: XCTestCase {
   }
 
   func testDefaultRenderModeIsRich() {
-    let message = ChatMessage(role: .assistant, timestamp: "now", text: "hi")
+    let message = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "hi")
     XCTAssertEqual(message.renderMode, .rich)
   }
 
   func testStoreToggleFlipsOnlyTheTargetMessage() {
     var thread = ChatThread(title: "t", meta: "now")
-    let first = ChatMessage(role: .assistant, timestamp: "now", text: "one")
-    let second = ChatMessage(role: .assistant, timestamp: "now", text: "two")
+    let first = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "one")
+    let second = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "two")
     thread.messages = [first, second]
     let store = AgentChatStore(threads: [thread])
 
@@ -38,7 +38,7 @@ final class ChatRenderModeTests: XCTestCase {
 
   func testStoreToggleUnknownMessageIsNoOp() {
     var thread = ChatThread(title: "t", meta: "now")
-    thread.messages = [ChatMessage(role: .assistant, timestamp: "now", text: "one")]
+    thread.messages = [ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "one")]
     let store = AgentChatStore(threads: [thread])
 
     store.toggleRenderMode(messageID: UUID(), in: thread.id)

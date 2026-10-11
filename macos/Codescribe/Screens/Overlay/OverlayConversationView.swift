@@ -12,7 +12,6 @@ struct OverlayConversationView: View {
   let controlErrors: [String: String]
   let onControl: (OverlayConversationMessage, Bool) -> Void
   var focusRevision: UInt64 = 0
-  var followsLiveChannel = false
   var isPresented = true
   @Binding var draft: String
   let sending: Bool
@@ -101,8 +100,8 @@ struct OverlayConversationView: View {
           .onChange(of: geometry.size) { _, _ in
             if isPresented, followsLatest { scrollToLatest(proxy) }
           }
-          .onChange(of: orderedMessages.last) { previous, latest in
-            if previous?.id != latest?.id || followsLatest || followsLiveChannel {
+          .onChange(of: orderedMessages.last) { _, _ in
+            if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
               scrollToLatest(proxy)
             }
           }
@@ -335,9 +334,9 @@ struct OverlayConversationView: View {
           Text("Unsolicited reply").font(.system(size: 10 * textScale))
         }
         Spacer(minLength: 8)
-        CopyMessageButton(text: message.text)
-          .buttonStyle(.borderless)
-          .accessibilityIdentifier("overlay-message-copy-\(message.id)")
+        MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
+          .font(.system(size: 10 * textScale))
+          .accessibilityIdentifier("overlay-message-time-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
       if let question = addressedQuestion(for: message) {
@@ -346,10 +345,17 @@ struct OverlayConversationView: View {
           .foregroundStyle(palette.mutedText.color)
           .lineLimit(2)
       }
-      MarkdownText(raw: message.text, size: 13, bodyColor: palette.primaryText.color)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
-      messageReceipts(message)
+      Group {
+        if OversizedBubblePolicy.isOversized(message.text) {
+          OversizedMessageBody(fullText: message.text) { head in
+            MarkdownText(raw: head, size: 13, bodyColor: palette.primaryText.color)
+          }
+        } else {
+          MarkdownText(raw: message.text, size: 13, bodyColor: palette.primaryText.color)
+        }
+      }
+      .fixedSize(horizontal: false, vertical: true)
+      .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       if message.kind == .reply && message.supportsSpeechPlayback {
         HStack(spacing: 10) {
           let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
@@ -385,6 +391,13 @@ struct OverlayConversationView: View {
           Text(verbatim: error)
             .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
         }
+      }
+      HStack(alignment: .bottom) {
+        messageReceipts(message)
+        Spacer(minLength: 8)
+        CopyMessageButton(text: message.text)
+          .buttonStyle(.borderless)
+          .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
     }
     .padding(12)

@@ -207,7 +207,7 @@ final class AssistivePromptParserTests: XCTestCase {
       selection: selection
     )
     let presented = AssistivePromptParser.presented(
-      ChatMessage(role: .you, timestamp: "13:03", text: raw)
+      ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: raw)
     )
     XCTAssertEqual(presented.text, "Spróbujesz jeszcze raz?")
     XCTAssertEqual(presented.wireText, raw)
@@ -240,7 +240,7 @@ final class AssistivePromptParserTests: XCTestCase {
 
   func testPresentedRewritesUserSkeletonMessage() {
     let raw = wire(instruction: "zrób listę zakupów", selection: "mleko, chleb", app: "Notes")
-    let message = ChatMessage(role: .you, timestamp: "10:00", text: raw)
+    let message = ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: raw)
 
     let presented = AssistivePromptParser.presented(message)
 
@@ -251,7 +251,7 @@ final class AssistivePromptParserTests: XCTestCase {
   }
 
   func testPresentedLeavesPlainUserMessageUntouched() {
-    let message = ChatMessage(role: .you, timestamp: "10:00", text: "plain composer text")
+    let message = ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "plain composer text")
     let presented = AssistivePromptParser.presented(message)
     XCTAssertEqual(presented.text, "plain composer text")
     XCTAssertNil(presented.wireText)
@@ -261,7 +261,7 @@ final class AssistivePromptParserTests: XCTestCase {
 
   func testPresentedLeavesAssistantMessageUntouched() {
     let raw = wire(instruction: "echo of the skeleton in a reply")
-    let message = ChatMessage(role: .assistant, timestamp: "10:00", text: raw)
+    let message = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: raw)
     let presented = AssistivePromptParser.presented(message)
     XCTAssertEqual(presented.text, raw)
     XCTAssertNil(presented.wireText)
@@ -279,8 +279,8 @@ final class AssistivePromptParserTests: XCTestCase {
         return thread
       }(),
       messages: [
-        ChatMessage(role: .you, timestamp: "09:00", text: raw),
-        ChatMessage(role: .assistant, timestamp: "09:01", text: "Sure — summary follows."),
+        ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: raw),
+        ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Sure — summary follows."),
       ]
     )
 
@@ -322,13 +322,13 @@ final class AssistivePromptParserTests: XCTestCase {
       instruction: "Cześć. Kim jesteś?",
       selection: String(repeating: "legacy_prompt_body)\" ", count: 400)
     )
-    let liveYou = ChatMessage(role: .you, timestamp: "14:00", text: "live plain message")
+    let liveYou = ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "live plain message")
     let liveAssistant = ChatMessage(
-      role: .assistant, timestamp: "14:01", text: "live assistant reply"
+      role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "live assistant reply"
     )
-    let legacyYou = ChatMessage(role: .you, timestamp: "13:00", text: legacyWire)
+    let legacyYou = ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: legacyWire)
     let legacyAssistant = ChatMessage(
-      role: .assistant, timestamp: "13:01", text: "legacy assistant reply"
+      role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "legacy assistant reply"
     )
 
     var liveThread = ChatThread(title: "live", meta: "now")

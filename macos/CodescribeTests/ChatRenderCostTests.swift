@@ -108,11 +108,11 @@ final class ChatRenderCostTests: XCTestCase {
     var messages: [ChatMessage] = []
     if let pastedChars {
       messages.append(
-        ChatMessage(role: .you, timestamp: "now", text: pastedProse(chars: pastedChars)))
+        ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: pastedProse(chars: pastedChars)))
     }
     messages.append(
-      ChatMessage(role: .you, timestamp: "now", text: "where do we double-dispatch events?"))
-    var tool = ChatMessage(role: .tool, timestamp: "now", text: "")
+      ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "where do we double-dispatch events?"))
+    var tool = ChatMessage(role: .tool, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "")
     tool.toolLines = [
       ToolLine(verb: "grep", detail: "events/bus.ts · ui/store.ts"),
       ToolLine(verb: "read", detail: "2 files · 318 lines"),
@@ -120,7 +120,7 @@ final class ChatRenderCostTests: XCTestCase {
     ]
     messages.append(tool)
     var assistant = ChatMessage(
-      role: .assistant, timestamp: "now",
+      role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600),
       text: streamedMarkdown(chars: streamChars))
     assistant.isStreaming = true
     messages.append(assistant)
