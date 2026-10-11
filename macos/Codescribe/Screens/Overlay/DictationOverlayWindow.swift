@@ -418,7 +418,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     {
       return false
     }
-    return region.visibleRect.contains(region.convert(point, from: nil))
+    guard let parent = region.superview else { return false }
+    // Events use window coordinates. Bound the override by the mounted
+    // drawer's frame as well as its clipped visible rect, in that same space.
+    // A native text hit outside this frame must never inherit menu ownership.
+    let frameInWindow = parent.convert(region.frame, to: nil)
+    let visibleInWindow = region.convert(region.visibleRect, to: nil)
+    return frameInWindow.contains(point) && visibleInWindow.contains(point)
   }
 
   func isWindowDragHit(at point: NSPoint) -> Bool {
