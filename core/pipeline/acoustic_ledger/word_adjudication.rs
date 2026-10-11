@@ -2144,4 +2144,147 @@ mod boundary_group_tests {
         assert!(group.complete);
         assert!(!group.acoustic_boundaries_complete);
     }
+
+    fn capture_boundaries(
+        owner: &OccurrenceIdentity,
+        pcm: &[f32],
+        rate: u32,
+    ) -> (
+        AcousticLedger,
+        crate::audio::capture_receipt::CaptureEnergyOwner,
+    ) {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let mut ledger = super::super::word_adjudication_tests::measured_ledger(owner, pcm);
+        ledger.bind_capture_rate(rate);
+        let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        ledger.record_speech_evidence(&energy.session_active_speech_ranges(
+            &owner.session,
+            owner.capture_epoch,
+            rate,
+        ));
+        ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
+        (ledger, energy)
+    }
+
+    #[test]
+    fn integrator_v26_near_left_crossing_respects_capture_rate_and_actual_quiet() {
+        for rate in [16_000_u32, 48_000] {
+            let resolution = u64::from(rate).div_ceil(50) + 1;
+            let end = u64::from(rate);
+            let owner = OccurrenceIdentity::new("near-left-measured", 1, 0, end);
+            let voiced = vec![0.2_f32; end as usize];
+            let (mut ledger, _) = capture_boundaries(&owner, &voiced, rate);
+            for offset in [1, resolution - 1, resolution] {
+                assert!(
+                    !ledger.decode_word_onset_complete(&owner, 0, end, offset),
+                    "voiced crossing: rate={rate}, offset={offset}"
+                );
+            }
+            assert!(ledger.decode_word_onset_complete(&owner, 0, end, resolution + 1));
+            ledger.speech_evidence = None;
+            assert!(
+                ledger.decode_word_onset_complete(&owner, 0, end, 1),
+                "missing interior measurement does not invent an exact-edge requirement"
+            );
+            assert!(!ledger.decode_word_onset_complete(&owner, 0, end, 0));
+
+            let mut pcm = voiced;
+            pcm[..resolution as usize].fill(0.0);
+            let (mut ledger, energy) = capture_boundaries(&owner, &pcm, rate);
+            let edge = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 0, resolution);
+            ledger.record_decode_fence_energy(
+                &energy,
+                end,
+                [Some((&edge, &pcm[..resolution as usize])), None],
+            );
+            assert!(ledger.decode_word_onset_complete(&owner, 0, end, 0));
+            for offset in [1, resolution - 1, resolution] {
+                assert!(ledger.decode_word_onset_complete(&owner, 0, end, offset));
+            }
+            ledger.record_decode_fence_energy(
+                &energy,
+                end - 1,
+                [Some((&edge, &pcm[..resolution as usize])), None],
+            );
+            assert!(
+                !ledger.decode_word_onset_complete(&owner, 0, end, 0),
+                "short writer cannot authenticate the whole decode"
+            );
+            let foreign =
+                crate::audio::capture_receipt::CaptureEnergyOwner::bind(&owner.session, 2);
+            ledger.record_decode_fence_energy(
+                &foreign,
+                end,
+                [Some((&edge, &pcm[..resolution as usize])), None],
+            );
+            assert!(
+                !ledger.decode_word_onset_complete(&owner, 0, end, 0),
+                "another epoch cannot lend quiet"
+            );
+        }
+    }
+
+    #[test]
+    fn integrator_v24_historical_whisper_keeps_original_boundary_verdict() {
+        for originally_measured in [true, false] {
+            let owner = OccurrenceIdentity::new("retained-boundary-verdict", 1, 0, 64_000);
+            let mut pcm = vec![0.0_f32; 96_000];
+            pcm[8_000..32_000].fill(0.2);
+            let (mut ledger, energy) = capture_boundaries(&owner, &pcm, 16_000);
+            let edge = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 0, 321);
+            if originally_measured {
+                ledger.record_decode_fence_energy(
+                    &energy,
+                    96_000,
+                    [Some((&edge, &pcm[..321])), None],
+                );
+            }
+            let original =
+                ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &original,
+                        &[WordPin::new(0, 32_000, "Iwo").with_decode_window(0, 96_000)]
+                    )
+                    .grants_mutation()
+            );
+            let sources = ledger.slots_of(&owner).unwrap().to_vec();
+            assert_eq!(ledger.complete_word_slot(&sources[0]), originally_measured);
+            // The next decode rolls the producer input and fence snapshot.
+            let next = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+            ledger.prepare_word_evidence(
+                &next,
+                &[WordPin::new(8_000, 32_000, "inne").with_decode_window(4_000, 96_000)],
+            );
+            if originally_measured {
+                ledger.record_decode_fence_energy(&energy, 96_000, [None, None]);
+            } else {
+                ledger.record_decode_fence_energy(
+                    &energy,
+                    96_000,
+                    [Some((&edge, &pcm[..321])), None],
+                );
+            }
+            let historical = ledger.hypothesis(&original, &sources, &sources);
+            assert!(historical.complete);
+            assert_eq!(
+                historical.acoustic_boundaries_complete, originally_measured,
+                "a new fence cannot revoke or grant an original observation's verdict"
+            );
+            let mut changed = sources.clone();
+            changed[0].sample_start += 1;
+            assert!(
+                !ledger
+                    .hypothesis(&original, &changed, &changed)
+                    .acoustic_boundaries_complete,
+                "range drift cannot borrow an exact recorded verdict"
+            );
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
 }
