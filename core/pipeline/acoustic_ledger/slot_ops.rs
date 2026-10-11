@@ -456,7 +456,11 @@ impl AcousticLedger {
             .ranges()
             .iter()
             .any(|range| range.sample_start < word_end && range.sample_end >= end);
-        if !crosses {
+        // A live Silero snapshot can contain only closed ranges. Absence of
+        // the current open range cannot certify quiet at the issued edge.
+        // An exact-edge Word always needs the authenticated PCM quiet receipt
+        // below, even when no closed speech range reaches that edge.
+        if !crosses && word_end < end {
             return false;
         }
         let Some(energy) = &self.decode_fence_energy else {

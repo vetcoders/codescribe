@@ -1819,6 +1819,32 @@ impl AcousticLedger {
             {
                 self.refuse_word_slot(observation, &word, Vec::new(), "overlapping_new_pins");
             } else {
+                // A clipped first hypothesis must not mint a separate Word
+                // which the next window's shifted alignment cannot address.
+                // Retain its PCM/evidence as recovery debt; a later complete
+                // frame can account for it without comparing lexical labels.
+                if word.producer == ObservationProducer::Whisper
+                    && self
+                        .decoded_word_windows
+                        .get(&word.observation)
+                        .is_some_and(|&(start, end)| {
+                            self.decode_word_fence_incomplete(
+                                owner,
+                                start,
+                                end,
+                                word.sample_start,
+                                word.sample_end,
+                            )
+                        })
+                {
+                    self.refuse_word_slot(
+                        observation,
+                        &word,
+                        Vec::new(),
+                        "incomplete_decode_fence_new_word",
+                    );
+                    continue;
+                }
                 // A new pin is not a new word if the same PCM edge already
                 // carries that token, including a group or a neighbouring owner.
                 let normalized = normalize_word_token(&word.text);
