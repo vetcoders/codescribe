@@ -675,6 +675,11 @@ impl Recorder {
         self.is_recording.load(Ordering::SeqCst) || self.stream.is_some()
     }
 
+    #[cfg(test)]
+    pub(super) fn set_active_for_test(&self, active: bool) {
+        self.is_recording.store(active, Ordering::SeqCst);
+    }
+
     /// Starts the audio recording process.
     ///
     /// Clears the buffer, creates and starts a new input stream,
