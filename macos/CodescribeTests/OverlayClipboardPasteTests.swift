@@ -86,6 +86,73 @@ final class OverlayClipboardPasteTests: XCTestCase {
   }
 
   @MainActor
+  func testComposerGrowsWhileTypingWithoutScrollingBeforeItsHeightLimit() throws {
+    let draft = ComposerTypingDraft()
+    let host = NSHostingView(rootView: ComposerTypingSurface(draft: draft))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 300, height: 240)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    let scroll = try XCTUnwrap(text.enclosingScrollView)
+    window.makeFirstResponder(text)
+    let initialHeight = scroll.frame.height
+    var previousHeight = initialHeight
+    var growingHeights: Set<Int> = []
+    for index in 1...70 {
+      text.insertText("słowo\(index) ", replacementRange: text.selectedRange())
+      settle()
+      XCTAssertEqual(text.string, draft.text)
+      XCTAssertGreaterThanOrEqual(scroll.frame.height, previousHeight - 1, "word \(index)")
+      XCTAssertLessThanOrEqual(scroll.frame.height, 113)
+      if scroll.frame.height < 111 {
+        growingHeights.insert(Int(scroll.frame.height.rounded()))
+        XCTAssertEqual(
+          scroll.documentVisibleRect.minY, 0, accuracy: 1,
+          "the field must grow before it starts scrolling, word \(index)")
+        XCTAssertLessThanOrEqual(text.frame.height, scroll.contentSize.height + 1)
+      }
+      let layout = try XCTUnwrap(text.layoutManager)
+      let container = try XCTUnwrap(text.textContainer)
+      layout.ensureLayout(for: container)
+      let glyph = layout.glyphIndexForCharacter(at: text.selectedRange().location - 1)
+      let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        .offsetBy(dx: 0, dy: text.textContainerOrigin.y)
+      XCTAssertLessThanOrEqual(line.maxY, scroll.documentVisibleRect.maxY + 1, "word \(index)")
+      XCTAssertGreaterThanOrEqual(line.minY, scroll.documentVisibleRect.minY - 1, "word \(index)")
+      previousHeight = scroll.frame.height
+    }
+    XCTAssertGreaterThan(growingHeights.count, 2, "the viewport must grow through multiple lines")
+    XCTAssertGreaterThan(scroll.frame.height, initialHeight + 40)
+    XCTAssertGreaterThan(text.frame.height, scroll.contentSize.height)
+    let heightAtLimit = scroll.frame.height
+    scroll.contentView.scroll(to: .zero)
+    scroll.reflectScrolledClipView(scroll.contentView)
+    draft.repaint += 1
+    settle()
+    XCTAssertEqual(scroll.documentVisibleRect.minY, 0, accuracy: 1)
+    XCTAssertEqual(scroll.frame.height, heightAtLimit, accuracy: 1)
+    draft.text = ""
+    settle()
+    XCTAssertEqual(text.string, "")
+    XCTAssertEqual(scroll.frame.height, initialHeight, accuracy: 1)
+    XCTAssertEqual(scroll.documentVisibleRect.minY, 0, accuracy: 1)
+  }
+
+  @MainActor
   func testOverflowingComposerKeepsCaretVisibleAfterRepaintAndAllowsManualScroll() throws {
     var draft = ""
     func composer() -> OverlayConversationComposer {
@@ -199,5 +266,24 @@ final class OverlayClipboardPasteTests: XCTestCase {
     let beforeFailedPaste = draft
     text.paste(nil)
     XCTAssertEqual(draft, beforeFailedPaste, "A failed save must not insert a broken pointer")
+  }
+}
+
+@MainActor
+private final class ComposerTypingDraft: ObservableObject {
+  @Published var text = ""
+  @Published var repaint = 0
+}
+
+private struct ComposerTypingSurface: View {
+  @ObservedObject var draft: ComposerTypingDraft
+
+  var body: some View {
+    VStack {
+      Spacer(minLength: 0)
+      OverlayConversationComposer(
+        palette: draft.repaint.isMultiple(of: 2) ? .dark : .light,
+        draft: $draft.text, sending: false, onSubmit: {})
+    }
   }
 }

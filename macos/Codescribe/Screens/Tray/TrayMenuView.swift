@@ -34,7 +34,7 @@ struct TrayMenuView: View {
       TrayDivider()
       if DeveloperSurface.isEnabled() {
         TrayRow(
-          icon: .diagnostics,
+          icon: .voiceLab,
           title: String(localized: "Voice Lab")
         ) {
           Task { await VoiceLabRuntime.shared.openConsole() }

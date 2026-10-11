@@ -16,6 +16,7 @@ struct OverlayConversationComposer: View {
     URL(fileURLWithPath: try savePastedImage(data: data))
   }
   @State private var pasteError: String?
+  @State private var editorHeight: CGFloat = 28
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -32,14 +33,16 @@ struct OverlayConversationComposer: View {
   private var composerContent: some View {
     HStack(alignment: .bottom, spacing: 8) {
       ConversationMessageField(
-        text: $draft, textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
+        text: $draft, height: $editorHeight,
+        textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
         clipboard: clipboard, saveImage: saveImage,
         onPasteError: { pasteError = $0 }
       )
-      .fixedSize(horizontal: false, vertical: true)
+      .frame(height: editorHeight)
+      .transaction { $0.animation = nil }
       .accessibilityIdentifier("overlay-conversation-composer")
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
@@ -69,6 +72,7 @@ struct OverlayConversationComposer: View {
 /// SwiftUI owns the draft; AppKit owns text editing and the responder chain.
 private struct ConversationMessageField: NSViewRepresentable {
   @Binding var text: String
+  @Binding var height: CGFloat
   let textColor: NSColor
   let fontSize: CGFloat
   let sending: Bool
@@ -83,9 +87,10 @@ private struct ConversationMessageField: NSViewRepresentable {
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
   func makeNSView(context: Context) -> NSScrollView {
-    let scroll = NSScrollView()
+    let scroll = MessageScrollView()
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
+    scroll.scrollerStyle = .overlay
     scroll.autohidesScrollers = true
     scroll.borderType = .noBorder
     let editor = MessageTextView()
@@ -107,12 +112,14 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
     editor.setAccessibilityLabel(placeholder)
+    scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
   }
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
     context.coordinator.parent = self
+    (scroll as? MessageScrollView)?.onHeightChange = { context.coordinator.updateHeight($0) }
     guard let editor = scroll.documentView as? MessageTextView else { return }
     let font = NSFont.systemFont(ofSize: fontSize)
     if editor.font != font {
@@ -142,27 +149,31 @@ private struct ConversationMessageField: NSViewRepresentable {
       editor.revealCaretAfterLayout()
       context.coordinator.applyingExternalText = false
     }
-  }
-
-  func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize?
-  {
-    let width = max(1, proposal.width ?? 300)
-    guard let editor = nsView.documentView as? NSTextView,
-      let container = editor.textContainer, let layout = editor.layoutManager
-    else { return nil }
-    container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
-    layout.ensureLayout(for: container)
-    let height = layout.usedRect(for: container).height + editor.textContainerInset.height * 2
-    let documentSize = NSSize(width: width, height: max(28, height))
-    if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
-    return CGSize(width: width, height: min(112, max(28, height)))
+    scroll.needsLayout = true
   }
 
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ConversationMessageField
     var applyingExternalText = false
+    private var pendingHeight: CGFloat?
+    private var heightUpdateScheduled = false
     init(_ parent: ConversationMessageField) { self.parent = parent }
+
+    func updateHeight(_ height: CGFloat) {
+      pendingHeight = height
+      guard !heightUpdateScheduled, parent.height != height else { return }
+      heightUpdateScheduled = true
+      // AppKit reports the height at its real viewport width. Publish after
+      // this layout pass, rather than changing SwiftUI state during layout.
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        heightUpdateScheduled = false
+        if let pendingHeight, parent.height != pendingHeight {
+          parent.height = pendingHeight
+        }
+      }
+    }
 
     func textDidChange(_ notification: Notification) {
       guard !applyingExternalText else { return }
@@ -191,6 +202,45 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
   }
 
+  private final class MessageScrollView: NSScrollView {
+    var onHeightChange: (CGFloat) -> Void = { _ in }
+    var caretRevealPending = false
+    private var previousViewport = NSSize.zero
+
+    override func layout() {
+      super.layout()
+      guard let editor = documentView as? NSTextView,
+        let container = editor.textContainer, let textLayout = editor.layoutManager,
+        contentSize.width > 0
+      else { return }
+      let viewport = contentSize
+      if previousViewport != viewport, window?.firstResponder === editor {
+        caretRevealPending = true
+      }
+      previousViewport = viewport
+      if editor.frame.width != viewport.width {
+        editor.setFrameSize(NSSize(width: viewport.width, height: editor.frame.height))
+      }
+      container.containerSize = NSSize(width: viewport.width, height: .greatestFiniteMagnitude)
+      textLayout.ensureLayout(for: container)
+      let textHeight = max(
+        textLayout.usedRect(for: container).maxY,
+        textLayout.extraLineFragmentRect.maxY)
+      let documentHeight = ceil(textHeight + editor.textContainerInset.height * 2)
+      let documentSize = NSSize(width: viewport.width, height: max(viewport.height, documentHeight))
+      editor.minSize = NSSize(width: 0, height: viewport.height)
+      if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
+      onHeightChange(min(112, max(28, documentHeight)))
+      if documentHeight <= viewport.height {
+        contentView.scroll(to: .zero)
+        reflectScrolledClipView(contentView)
+      } else if caretRevealPending {
+        editor.scrollRangeToVisible(editor.selectedRange())
+      }
+      caretRevealPending = false
+    }
+  }
+
   private final class MessageTextView: NSTextView {
     var sending = false
     var submit: ((String) -> Void)?
@@ -199,24 +249,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     var pasteImage: (() throws -> URL?)?
     var onPasteError: (String?) -> Void = { _ in }
 
-    private var caretRevealPending = false
-
     func revealCaretAfterLayout() {
-      caretRevealPending = true
-      needsLayout = true
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-      let changed = frame.size != newSize
-      super.setFrameSize(newSize)
-      if changed, window?.firstResponder === self { revealCaretAfterLayout() }
-    }
-
-    override func layout() {
-      super.layout()
-      guard caretRevealPending else { return }
-      caretRevealPending = false
-      scrollRangeToVisible(selectedRange())
+      guard let scroll = enclosingScrollView as? MessageScrollView else { return }
+      scroll.caretRevealPending = true
+      scroll.needsLayout = true
     }
 
     override func paste(_ sender: Any?) {
