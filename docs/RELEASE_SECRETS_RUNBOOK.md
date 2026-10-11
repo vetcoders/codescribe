@@ -8,6 +8,77 @@ Never paste secret values into issues, pull requests, Actions logs, shell
 history, or this document. The commands below read values from local variables
 or standard input and send them directly to GitHub.
 
+## Local standard DMG credentials and execution context
+
+The local `make release-standard` lane reuses the approved Apple credentials
+under `~/.keys/.notary.env` through the named `VSNotary` profile. It does not read
+that file itself. Provisioning the profile is separate from generating or
+rotating credentials; do not create new credentials merely because the profile
+is missing.
+
+Without `--keychain`, `notarytool` stores and reads credentials in the **data
+protection keychain** (iCloud Keychain or Local Items), not a file-based login or
+build keychain. See [Apple TN3147](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool).
+For the normal repository lane, store and validate `VSNotary` without
+`--keychain` or `--sync` in the same native GUI user session that runs the build.
+On Sztudio, use the native Terminal or iTerm2 session of `silver`; an SSH shell
+is a different credential-access context and is not evidence of GUI access.
+
+First try `xcrun notarytool history --keychain-profile VSNotary` in that context.
+Reuse a usable profile without overwriting it. Only a confirmed missing profile
+permits saving the existing approved account, team and app-specific password
+with `notarytool store-credentials VSNotary` and its default validation. Enter
+the password through the secure interactive prompt or standard input; never put
+it in command arguments, shell history or logs. Other access or validation
+errors require diagnosis, not an overwrite or Keychain reset. Prove profile
+access with history and a known recorded submission before starting the build.
+
+Developer ID signing is a separate requirement. Seeing an identity or reading
+Apple history does not prove access to its private key. On Sztudio the existing
+signer may be in `pensieve-build`; resolve any native unlock prompt in the
+approved GUI context and verify an isolated copied executable before the heavy
+build. Do not import a certificate, change ACLs/search lists, reset Keychain or
+substitute another host to hide an access failure.
+
+Sztudio's existing session refresh is `unlock_build_keychain` from
+`~/Git/pensieve/scripts/lib/build-keychain.sh`. Resolve and record its selected
+keychain and password-file paths before calling it; require the existing
+owner-only credential file and keep its value out of logs. This function only
+unlocks the selected file keychain in the caller's security session. It does not
+import keys or alter ACLs, search lists or auto-lock settings. Run it in the
+actual native build process context when that existing signer needs a refresh,
+then prove signing with the isolated copy. Opening a GUI app from SSH does not
+erase inherited SSH environment markers; verify the real terminal ancestry and
+environment rather than clearing markers to make the context guard pass.
+
+After any documentation checkpoint, freeze the actual full source SHA and a
+clean tracked tree. The normal command is:
+
+```sh
+make release-standard CODESCRIBE_DIST_CODESIGN_IDENTITY='Developer ID Application: Maciej Gad (MW223P3NPX)'
+```
+
+This builds the distribution `release` profile with `CSDeveloperSurface=0`.
+Its slim payload embeds Silero, uses runtime/downloaded Whisper, and omits
+MiniLM. It creates a DMG and checksum in the checkout; it does not install the
+app or publish a tag, GitHub Release or appcast. Preserve an existing file at
+the exact output path before invoking the producer.
+
+Keep the complete command log and a durable execution record containing the
+host, context, source SHA, times, exit status and exact artifact path. The
+six-field invocation receipt used internally by `release-standard` is temporary
+and removed on exit. Durable proof comprises the final DMG/checksum, Apple
+submission UUID/info/log, signatures, staple/Gatekeeper and payload-gate results.
+Apple's archive hash describes the submitted pre-staple bytes; the refreshed
+sidecar describes final post-staple bytes. Preserve both without requiring them
+to be identical. Record the mounted app's version, build, source, Lab flag and
+public verification-key parity separately.
+
+A failed command does not justify rerunning the whole release target. If a
+submission UUID exists, inspect that UUID rather than uploading again. Passing
+this local artifact lane does not certify publication, cold installation or
+microphone/voice acceptance; those remain the public checklist's later steps.
+
 ## Prerequisites
 
 - `gh auth status` shows an account allowed to administer
