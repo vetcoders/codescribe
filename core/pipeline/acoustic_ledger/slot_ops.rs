@@ -1305,27 +1305,39 @@ impl AcousticLedger {
                         || (source.producer == observation.producer
                             && source.observation.generation < observation.generation))
             });
-            // Centre inclusion misses an edge-overlapping complete source that
-            // this pin already targets, including through source provenance.
-            let collapses_complete_words = outputs.iter().any(|word| {
-                sources
-                    .iter()
-                    .filter(|source| {
-                        let midpoint =
-                            source.sample_start + (source.sample_end - source.sample_start) / 2;
-                        let complete = self
-                            .complete_decoded_words
-                            .get(&source.observation)
-                            .is_some_and(|ranges| {
-                                ranges.contains(&(source.sample_start, source.sample_end))
-                            });
-                        complete
-                            && (self.pin_targets_source(source, word)
-                                || (word.sample_start <= midpoint && midpoint < word.sample_end))
-                    })
-                    .count()
-                    > 1
-            });
+            // A measured single-word pin remains an independent source even
+            // when Apple supplied no decoder-fence completeness receipt.
+            // Lexical agreement cannot retire that source by merging it with
+            // its neighbor. Coarse labels still carry no separate word pins.
+            let independent_word = |source: &WordSlot| {
+                (self.word_pin_observations.contains(&source.observation)
+                    && source.text.split_whitespace().count() == 1)
+                    || self
+                        .complete_decoded_words
+                        .get(&source.observation)
+                        .is_some_and(|ranges| {
+                            ranges.contains(&(source.sample_start, source.sample_end))
+                        })
+            };
+            let collapses_word_pins = sources
+                .iter()
+                .filter(|source| independent_word(source))
+                .count()
+                > outputs.len()
+                || outputs.iter().any(|word| {
+                    sources
+                        .iter()
+                        .filter(|source| {
+                            let midpoint =
+                                source.sample_start + (source.sample_end - source.sample_start) / 2;
+                            independent_word(source)
+                                && (self.pin_targets_source(source, word)
+                                    || (word.sample_start <= midpoint
+                                        && midpoint < word.sample_end))
+                        })
+                        .count()
+                        > 1
+                });
             // A completed word-grain decode covering every addressed source
             // is a partition receipt. It does not turn word timestamp gaps into
             // untranscribed speech or fabricate a speech-coverage receipt.
@@ -1392,9 +1404,9 @@ impl AcousticLedger {
                 continue;
             }
             // A completed word-grain window proves which PCM was observed.
-            // It does not authorize a merge of already distinct complete Words.
+            // It does not authorize a merge of already distinct word pins.
             // Pin or speech coverage alone cannot retire their word evidence.
-            let geometry = (!collapses_complete_words || preserves_group_words)
+            let geometry = (!collapses_word_pins || preserves_group_words)
                 && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                     == sources.len()
                 && outputs
@@ -1482,7 +1494,7 @@ impl AcousticLedger {
             // Scope proof stays available for a real partition. It cannot
             // clear ambiguity or speech debt for an unproved contraction.
             let window_partition =
-                window_refinement && (!collapses_complete_words || preserves_group_words);
+                window_refinement && (!collapses_word_pins || preserves_group_words);
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
