@@ -1,6 +1,7 @@
 # THE ENGINE — quality-report contract
 
-> Runtime reconciliation: 2026-10-11, source `04fc280c` (0.17.0/build 801).
+> Runtime reconciliation: 2026-10-11, source `b282dc14`. Engine sources match
+> build 798 after the engine-only withdrawal of `d64804be`; later UI is retained.
 > [ENGINE_MAP.md](ENGINE_MAP.md) maps source owners and dated acceptance limits;
 > [STT_CONTRACT.md](STT_CONTRACT.md) describes current routing. The cadence below
 > matches `ENGINE_CONTRACT.whisper_window` and `CaptureWindowPlan`: 9-second
