@@ -57,6 +57,8 @@ elif name == 'xcodebuild':
     assert os.environ['DEVELOPER_DIR'] == '/fixture/xcode'
     data = Path(os.environ['CODESCRIBE_DATA_DIR'])
     assert data.is_dir() and data.parent == Path(s['tmp'])
+    assert os.environ['TEST_RUNNER_CODESCRIBE_DATA_DIR'] == str(data)
+    assert os.environ['TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN'] == '1'
     # Record the effective old project defaults too: baseline guards must execute.
     config = args[args.index('-configuration') + 1] if '-configuration' in args else 'Debug'
     settings = [a.split('=', 1)[1] for a in args if a.startswith('LIBRARY_SEARCH_PATHS=')]

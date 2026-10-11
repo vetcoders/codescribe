@@ -209,11 +209,11 @@ final class OverlayEditKeyGateTests: XCTestCase {
   func testLive1656EphemeralPaintReachesCanvasWithoutCommittingDelivery() throws {
     let state = OverlayState()
     state.handleRecordingPreparing()
+    state.handleRecordingStarted()
     state.applyCompactProjection(
       CsCompactProjection(
         sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 1,
         text: "", degraded: false, evidence: []))
-    state.handleRecordingStarted()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Live1656.ephemeral"))

@@ -440,7 +440,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.invalidatePresence()
     }
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertTrue(panel.styleMask.contains(.resizable))
+    XCTAssertFalse(panel.styleMask.contains(.resizable), "MINI is a drag surface")
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
@@ -595,8 +595,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.setPresentationMode(.mini)
       settle(root)
       XCTAssertEqual(
-        panel.cursor(at: NSPoint(x: 1, y: 23)), OverlayResizeHit.cursor(for: .left),
-        "MINI retains the same resize edge as the other forms")
+        panel.cursor(at: NSPoint(x: 1, y: 23)), .arrow,
+        "MINI is a drag surface; resizing belongs to MIDI and expanded")
     }
   }
 

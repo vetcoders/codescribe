@@ -3715,16 +3715,6 @@
         }
       }
     },
-    "Available tools and integrations": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dostępne narzędzia i integracje"
-          }
-        }
-      }
-    },
     "Awaiting receipt": {
       "localizations": {
         "pl": {
@@ -3908,16 +3898,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Przeglądaj i edytuj prompty bazowe."
-          }
-        }
-      }
-    },
-    "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przeglądaj i edytuj podstawowe prompty. Codescribe może dołączać do nich dodatkowe instrukcje podczas działania."
           }
         }
       }
@@ -5664,17 +5644,6 @@
         }
       }
     },
-    "Configured: %lld · Tested: %lld · Issues: %lld": {
-      "comment": "MCP summary counts",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Skonfigurowane: %1$lld · Przetestowane: %2$lld · Problemy: %3$lld"
-          }
-        }
-      }
-    },
     "Conflicts": {
       "localizations": {
         "pl": {
@@ -6973,16 +6942,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wykryte instalacje"
-          }
-        }
-      }
-    },
-    "Detected installations and runtime": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wykryte instalacje i runtime"
           }
         }
       }
@@ -10512,16 +10471,6 @@
         }
       }
     },
-    "My rules · %lld": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Moje reguły · %lld"
-          }
-        }
-      }
-    },
     "Name": {
       "localizations": {
         "pl": {
@@ -10563,17 +10512,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Narzędzia natywne"
-          }
-        }
-      }
-    },
-    "Native: %lld · Enhanced: %lld · Unavailable: %lld": {
-      "comment": "Capability summary counts",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Natywne: %1$lld · Rozszerzone: %2$lld · Niedostępne: %3$lld"
           }
         }
       }
@@ -10864,16 +10802,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Brak środków na koncie (sprawdź płatności)"
-          }
-        }
-      }
-    },
-    "No custom prompt file yet. Saving creates one at this path.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nie ma jeszcze pliku własnego promptu. Zapis utworzy go w tej ścieżce."
           }
         }
       }
@@ -12181,16 +12109,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wstrzymanie rozpoznawania po ciszy"
-          }
-        }
-      }
-    },
-    "Per-tool permissions · %lld": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Uprawnienia poszczególnych narzędzi · %lld"
           }
         }
       }
@@ -14292,16 +14210,6 @@
         }
       }
     },
-    "Restore default…": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przywróć domyślny…"
-          }
-        }
-      }
-    },
     "Restore only %@": {
       "localizations": {
         "pl": {
@@ -14908,16 +14816,6 @@
         }
       }
     },
-    "Search server or tool": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Szukaj serwera lub narzędzia"
-          }
-        }
-      }
-    },
     "Search settings": {
       "localizations": {
         "pl": {
@@ -15246,16 +15144,6 @@
         }
       }
     },
-    "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ustaw, kiedy Agent może korzystać z narzędzi bez pytania, kiedy potrzebuje Twojej zgody, a kiedy ma odmówić wykonania działania."
-          }
-        }
-      }
-    },
     "Settings": {
       "localizations": {
         "pl": {
@@ -15510,16 +15398,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pokaż surowy tekst"
-          }
-        }
-      }
-    },
-    "Show servers": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pokaż serwery"
           }
         }
       }
@@ -17012,16 +16890,6 @@
         }
       }
     },
-    "The Agent has not run yet — server status is checked on its first turn.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent nie został jeszcze uruchomiony — stan serwerów zostanie sprawdzony przy jego pierwszej turze."
-          }
-        }
-      }
-    },
     "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories.": {
       "localizations": {
         "pl": {
@@ -18302,16 +18170,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Niesklasyfikowane"
-          }
-        }
-      }
-    },
-    "Unclassified tools": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Niesklasyfikowane narzędzia"
           }
         }
       }

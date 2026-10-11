@@ -39,7 +39,11 @@ use serde::{Deserialize, Serialize};
 /// without creating a newer acoustic witness or a higher acoustic authority.
 /// v20: complete bijective word refinements can pose their first group
 /// question without a prior reservation; lexical adjudication still decides.
-pub const WORD_POLICY: &str = "word-adjudication/v20";
+/// v21: capture origin does not prove a complete acoustic onset. Retain the
+/// observed word without granting boundary, trial or recovery completeness.
+/// v22: returned scope needs complete evidence for every held decoder word;
+/// one complete neighbour cannot settle a clipped word through its window.
+pub const WORD_POLICY: &str = "word-adjudication/v22";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,14 +355,11 @@ impl AcousticLedger {
         let complete_words = words
             .iter()
             .filter(|pin| {
-                let starts_inside_capture = pin.decode_sample_start.is_some_and(|start| {
-                    start < pin.sample_start
-                        // Capture origin has no earlier PCM to request. A
-                        // later window edge does not get this exception.
-                        || (observation.producer == ObservationProducer::Whisper
-                            && start == 0
-                            && pin.sample_start == 0)
-                });
+                // No preceding PCM means an unknown onset, not a complete
+                // word. This does not remove the visible observed label.
+                let starts_inside_capture = pin
+                    .decode_sample_start
+                    .is_some_and(|start| start < pin.sample_start);
                 starts_inside_capture
                     && pin.decode_sample_end.is_some_and(|end| {
                         if observation.producer == ObservationProducer::Whisper {
@@ -645,7 +646,7 @@ impl AcousticLedger {
         let acoustic_boundaries_complete = complete
             && decode.is_some_and(|(s, e)| {
                 pins.iter().all(|pin| {
-                    (s < pin.sample_start || pin.sample_start == 0)
+                    s < pin.sample_start
                         && !self.decode_word_fence_incomplete(
                             &observation.occurrence,
                             s,
@@ -2068,23 +2069,37 @@ mod boundary_group_tests {
                 )
                 .is_qualified()
         );
+        // Keep a legally observed Apple baseline. Assess the incomplete Whisper
+        // candidate without admitting a new word clipped at its decode fence.
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &apple,
+                    &[
+                        WordPin::new(16_000, 32_000, "pierwsze"),
+                        WordPin::new(48_000, 64_000, "ucięte"),
+                    ]
+                )
+                .grants_mutation()
+        );
+        let sources = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(sources.len(), 2);
         let observation =
             ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
-        ledger.admit_word_slots(
+        ledger.prepare_word_evidence(
             &observation,
             &[
                 WordPin::new(16_000, 32_000, "pierwsze").with_decode_window(0, 64_000),
                 WordPin::new(48_000, 64_000, "ucięte").with_decode_window(0, 64_000),
             ],
         );
-        let sources = ledger.slots_of(&owner).unwrap();
-        assert_eq!(sources.len(), 2);
-        let components = &ledger.word_adjudication.components;
-        assert!(components[0].incumbent.acoustic_boundaries_complete);
-        assert!(!components[1].incumbent.acoustic_boundaries_complete);
-        let group = ledger.component_for_sources(&owner, sources);
-        assert_eq!(group.whisper.len(), 1);
-        assert!(group.whisper[0].complete);
-        assert!(!group.whisper[0].acoustic_boundaries_complete);
+        let first = ledger.hypothesis(&observation, &sources[..1], &sources[..1]);
+        let second = ledger.hypothesis(&observation, &sources[1..], &sources[1..]);
+        let group = ledger.hypothesis(&observation, &sources, &sources);
+        assert!(first.acoustic_boundaries_complete);
+        assert!(!second.acoustic_boundaries_complete);
+        assert!(group.complete);
+        assert!(!group.acoustic_boundaries_complete);
     }
 }
