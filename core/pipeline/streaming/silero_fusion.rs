@@ -608,28 +608,6 @@ impl SileroIngress {
             out.closed.push(id);
         }
         if let Some((start, end)) = open_range {
-            // A fresh recognizer epoch replays DEFAULT_LEFT_PAD_SECS of PCM.
-            // Its owner must retain that same onset context, including words
-            // before the chunker's narrower pad. Refreshes keep the original
-            // start; a forced split never pads back into the preceding owner.
-            let has_open_owner = self.ledger.utterances().iter().any(|owner| !owner.closed);
-            let start = if !reopens && !has_open_owner {
-                let left_pad = (DEFAULT_LEFT_PAD_SECS * self.sample_rate as f32)
-                    .round()
-                    .max(0.0) as u64;
-                let extra_pad = left_pad.saturating_sub(self.vad.pre_roll_raw() as u64);
-                let previous_end = self
-                    .ledger
-                    .utterances()
-                    .iter()
-                    .rev()
-                    .find(|owner| owner.closed)
-                    .map(|owner| owner.range.sample_end)
-                    .unwrap_or(0);
-                start.saturating_sub(extra_pad).max(previous_end.min(start))
-            } else {
-                start
-            };
             out.open =
                 Some(
                     self.ledger
@@ -804,17 +782,17 @@ mod tests {
     }
 
     #[test]
-    fn recognizer_onset_context_keeps_refresh_split_and_pause_ownership_disjoint() {
+    fn chunker_onset_keeps_refresh_split_and_pause_ownership_disjoint() {
         let mut ingress = SileroIngress::new(48_000, "onset-owner", 1);
         ingress.observe(Some((104_448, 200_000)), false, 200_000);
-        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 104_448);
         assert_eq!(
             ingress.ledger().utterance_covering(96_000).map(|u| u.id),
-            Some(1),
-            "retained recognizer onset PCM has an owner"
+            None,
+            "rollback does not extend ownership to the recognizer's wider context"
         );
         ingress.observe(Some((104_448, 411_648)), false, 411_648);
-        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 104_448);
 
         let split =
             ingress.observe_with_closed_end(Some((240_000, 411_648)), true, Some(240_000), 411_648);
@@ -824,18 +802,18 @@ mod tests {
         assert_eq!(ingress.ledger().utterances()[1].range.sample_start, 240_000);
         ingress.observe_with_closed_end(None, true, Some(411_648), 420_000);
         ingress.observe(Some((425_000, 440_000)), false, 440_000);
-        assert_eq!(ingress.ledger().utterances()[2].range.sample_start, 420_000);
+        assert_eq!(ingress.ledger().utterances()[2].range.sample_start, 425_000);
         for pair in ingress.ledger().utterances().windows(2) {
             assert!(pair[0].range.sample_end <= pair[1].range.sample_start);
         }
 
         let mut beginning = SileroIngress::new(48_000, "onset-zero", 1);
         beginning.observe(Some((1_000, 8_000)), false, 8_000);
-        assert_eq!(beginning.ledger().utterances()[0].range.sample_start, 0);
+        assert_eq!(beginning.ledger().utterances()[0].range.sample_start, 1_000);
     }
 
     #[test]
-    fn onset_padding_keeps_five_scripted_pcm_bursts_as_five_word_owners() {
+    fn five_scripted_pcm_bursts_keep_five_word_owners() {
         let mut ingress = SileroIngress::new(16_000, "five-onsets", 1);
         ingress.vad = SpeechSession::new_utterance_with_silence(16_000, 0.20);
         let mut cursor = 0;
@@ -998,9 +976,7 @@ mod tests {
         assert_eq!(ledger.utterances()[0].range.sample_start, 0);
         assert_eq!(ledger.utterances()[0].range.sample_end, 24_000);
         assert!(ledger.utterances()[0].closed);
-        // Ownership covers the recognizer's 400 ms onset context. The chunker
-        // already supplied 64 ms, leaving 336 ms (5,376 samples) to retain.
-        assert_eq!(ledger.utterances()[1].range.sample_start, 42_624);
+        assert_eq!(ledger.utterances()[1].range.sample_start, second_start);
         assert!(!ledger.utterances()[1].closed);
         assert!(
             ledger.utterances()[1].range.sample_start - ledger.utterances()[0].range.sample_end
@@ -1403,9 +1379,7 @@ mod tests {
         let obs = ingress.observe(Some((16_000, 32_000)), true, 32_000);
         assert_eq!(obs.closed, vec![1]);
         assert_eq!(ingress.ledger().utterances().len(), 1);
-        // Acoustic evidence above stays exact; ownership retains the extra
-        // 336 ms recognizer context before this chunker's padded start.
-        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 10_624);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 16_000);
         assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 32_000);
     }
 
