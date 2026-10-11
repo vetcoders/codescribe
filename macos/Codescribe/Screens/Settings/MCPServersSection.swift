@@ -210,6 +210,7 @@ struct MCPServerRow: View {
             Image(systemName: "chevron.right")
               .font(.system(size: 8, weight: .semibold))
               .rotationEffect(.degrees(showingDetails ? 90 : 0))
+              .accessibilityHidden(true)
           }
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: true, vertical: false)
@@ -413,9 +414,13 @@ private struct MCPServerRowDisclosureStyle: DisclosureGroupStyle {
         configuration.isExpanded.toggle()
       } label: {
         configuration.label
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .contentShape(Rectangle())
       .csFocusRing()
+      .accessibilityElement(children: .combine)
+      .accessibilityValue(configuration.isExpanded ? Text("Expanded") : Text("Collapsed"))
 
       if configuration.isExpanded {
         configuration.content
