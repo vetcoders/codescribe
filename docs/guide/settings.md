@@ -1,12 +1,8 @@
 # Settings & Configuration
 
-Codescribe now has one native Settings window with five tabs:
-
-1. **Transcription**
-2. **Hotkeys**
-3. **AI & Prompts**
-4. **Audio & Input**
-5. **Diagnostics**
+Codescribe has one native Settings window. Choose a section in its sidebar;
+the Dictation section has separate tabs for its concerns. The sections below
+describe the current controls and their runtime contracts.
 
 Configuration still lives in three layers:
 
@@ -243,7 +239,13 @@ names the account, e.g. **Connected as name@example.com**), **Sign in with …**
 otherwise. Vendor endpoints are factory-defined and sit under each card's
 **Advanced** disclosure together with the Keychain account name and the OAuth
 client-id override; custom hosts show their endpoint on the card and edit it
-through **Edit**. **Cloud transcription** holds the File and Live lanes
+through **Edit**. Custom cards use a compact header for the full name,
+protocol and Edit / Remove actions. The next row keeps the complete API
+address visible beside the key-presence summary and Change / Add; at narrow
+widths these groups stack instead of overlapping. Names and addresses wrap.
+Advanced remains available below the configuration, and a stored key still
+describes presence rather than a successful connection.
+**Cloud transcription** holds the File and Live lanes
 (endpoint, key, and for Live the optional gateway session URL); a rejected
 address reads as one sentence under the field, e.g. **This address needs
 ws:// or wss://.** Secrets are stored separately from account sign-in.
@@ -523,11 +525,15 @@ dump.
   asks: an alert names the server and what goes with it (its entry in
   `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
   leaves the configuration as it was, and only "Remove server" removes. "Details"
-  folds the transport, the launch command or server URL, environment keys,
+  sits at the right of the last-handshake row, keeping the collapsed card to
+  two compact rows. Full server names wrap without taking space away from
+  the actions. The disclosure folds the transport, the launch command or server URL, environment keys,
   authentication (token in Keychain or none), the server-wide permission rule
   read from the live policy, the identity the server advertised (name,
   version, protocol) and the raw error of a failed handshake. Identifiers,
   paths and URLs stay verbatim.
+  The Desktop Commander command/permission advisory is also available inside
+  its expanded details.
 - **Last handshake** — Test spawns the server once and lists its tools. The
   card shows "Connection not tested", "Checking the connection…", "Last test:
   passed · N tools" or "Last test: failed" (reason under Details). It is a
@@ -773,8 +779,10 @@ learned, and where the active rules come from.
 - **Dictionary rules** — the active rules as `variant → canonical`. Their
   origin (_From a correction_, _Added by hand_, _From an import_) is stated
   once above the list when every rule shares it, and per row when the origins
-  differ; a screen reader hears it either way. Up to five rules read as a
-  list, more are paged. Rules cannot be edited or removed from the app yet;
+  differ; a screen reader hears it either way. The canonical text owns the
+  accessibility summary label and explicit value while both variant and
+  canonical text remain selectable. Up to five rules read as a list, more are
+  paged. Rules cannot be edited or removed from the app yet;
   see [CONFIG.md](../CONFIG.md) for the lexicon files.
 - **Diagnostic details** — at the very bottom, closed by default: the count of
   records without confidence telemetry. It describes the records, not the
@@ -878,6 +886,15 @@ error remains visible while Settings stays interactive. **Retry license access**
 starts another read when the current operation has returned. Activation and
 removal stay pending until storage succeeds; a failed replacement or removal
 preserves the previously verified license.
+
+The Settings sidebar health footer includes license restoration. While a
+license read is pending it does not claim readiness; if restoration cannot
+be verified it shows a warning that opens License settings. A confirmed read
+with no paid license is not an error: basic dictation remains free. Known
+speech or recording failures retain their own higher-priority status.
+Error details preserve the bridge's cause without displaying its Swift enum
+wrapper. A verification failure offers another read rather than assuming the
+person must replace a key, and it does not delete the stored license.
 
 An unreadable store does not grant Agentic access on a cold start. If a signed
 license was already verified in this process, an access error preserves that

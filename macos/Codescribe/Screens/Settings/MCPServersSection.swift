@@ -24,7 +24,7 @@ struct MCPServersSection: View {
       if model.mcpServers.isEmpty {
         emptyState
       } else {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
           ForEach(model.mcpServers, id: \.name) { server in
             MCPServerRow(
               server: server,
@@ -136,7 +136,7 @@ struct MCPServersSection: View {
 
 // MARK: - One server card (name · state · last test · actions · details)
 
-private struct MCPServerRow: View {
+struct MCPServerRow: View {
   let server: CsMcpServer
   let pending: Bool
   let result: CsMcpTestResult?
@@ -148,6 +148,22 @@ private struct MCPServerRow: View {
   let onRemove: () -> Void
 
   @State private var showingDetails = false
+
+  init(
+    server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
+    permissionLevel: String?, initiallyShowingDetails: Bool = false,
+    onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
+    onRemove: @escaping () -> Void
+  ) {
+    self.server = server
+    self.pending = pending
+    self.result = result
+    self.permissionLevel = permissionLevel
+    self.onToggle = onToggle
+    self.onTest = onTest
+    self.onRemove = onRemove
+    _showingDetails = State(initialValue: initiallyShowingDetails)
+  }
 
   private var isRemote: Bool { server.transport == "remote" }
 
@@ -165,42 +181,45 @@ private struct MCPServerRow: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      HStack(spacing: 10) {
-        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+    VStack(alignment: .leading, spacing: 7) {
+      HStack(alignment: .top, spacing: 10) {
         Text(server.name)
           .font(CSFont.ui(13.5, .semibold))
           .foregroundStyle(Color.primary)
-        Spacer(minLength: 0)
-        enabledButton
-        testButton
-        removeButton
-      }
-
-      lastTestLine
-
-      if server.name == "desktop-commander" {
-        // No hardcoded per-level counts here: the Tools tab renders them from
-        // the live registry. A frozen literal drifts from the policy it
-        // claims to describe (review P2-12).
-        Text(
-          "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots."
-        )
-        .font(CSFont.ui(11, .regular))
-        .foregroundStyle(CSColor.amber)
-        .fixedSize(horizontal: false, vertical: true)
+          .fixedSize(horizontal: false, vertical: true)
+          .layoutPriority(1)
+        Spacer(minLength: 10)
+        HStack(spacing: 7) {
+          enabledButton
+          testButton
+          removeButton
+        }
+        .fixedSize(horizontal: true, vertical: false)
       }
 
       DisclosureGroup(isExpanded: $showingDetails) {
-        details.padding(.top, 6)
+        details.padding(.top, 7)
       } label: {
-        Text("Details")
-          .font(CSFont.ui(11))
+        HStack(spacing: 8) {
+          lastTestLine
+            .layoutPriority(1)
+          Spacer(minLength: 10)
+          HStack(spacing: 5) {
+            Text("Details")
+              .font(CSFont.ui(11))
+            Image(systemName: "chevron.right")
+              .font(.system(size: 8, weight: .semibold))
+              .rotationEffect(.degrees(showingDetails ? 90 : 0))
+              .accessibilityHidden(true)
+          }
           .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: true, vertical: false)
+        }
       }
+      .disclosureGroupStyle(MCPServerRowDisclosureStyle())
     }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(accent.opacity(0.05))
@@ -244,6 +263,18 @@ private struct MCPServerRow: View {
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 5) {
+      if server.name == "desktop-commander" {
+        // No hardcoded per-level counts here: the Tools tab renders them from
+        // the live registry. A frozen literal drifts from the policy it
+        // claims to describe (review P2-12).
+        Text(
+          "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots."
+        )
+        .font(CSFont.ui(11, .regular))
+        .foregroundStyle(CSColor.amber)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.bottom, 2)
+      }
       detailRow(
         String(localized: "Transport"),
         isRemote
@@ -371,6 +402,30 @@ private struct MCPServerRow: View {
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
     .accessibilityHint("Asks for confirmation before removing the server from mcp.json.")
     .help("Remove this server from mcp.json…")
+  }
+}
+
+/// Keeps the compact handshake summary on the left and the disclosure affordance
+/// on the right while allowing the technical body to use the card's full width.
+private struct MCPServerRowDisclosureStyle: DisclosureGroupStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        configuration.isExpanded.toggle()
+      } label: {
+        configuration.label
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .contentShape(Rectangle())
+      .csFocusRing()
+      .accessibilityElement(children: .combine)
+      .accessibilityValue(configuration.isExpanded ? Text("Expanded") : Text("Collapsed"))
+
+      if configuration.isExpanded {
+        configuration.content
+      }
+    }
   }
 }
 

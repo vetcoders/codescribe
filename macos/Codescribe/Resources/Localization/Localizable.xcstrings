@@ -2108,6 +2108,16 @@
         }
       }
     },
+    "API address": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Adres API"
+          }
+        }
+      }
+    },
     "API key": {
       "comment": "Setup provider API key row label",
       "localizations": {
@@ -3191,6 +3201,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Równe tempo, blisko wygodnej prędkości czytania."
+          }
+        }
+      }
+    },
+    "An unexpected license error occurred.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Wystąpił nieoczekiwany błąd licencji."
           }
         }
       }
@@ -6565,6 +6585,16 @@
         }
       }
     },
+    "Couldn't verify the saved license. Try again.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Nie można zweryfikować zapisanej licencji. Spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Creator": {
       "comment": "Settings section: first-run setup and basics",
       "localizations": {
@@ -9366,6 +9396,16 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Klucz licencyjny"
+          }
+        }
+      }
+    },
+    "License verification unavailable": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Nie można potwierdzić licencji"
           }
         }
       }
@@ -17462,6 +17502,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ponownie transkrybowane nagranie nie jest już bieżące"
+          }
+        }
+      }
+    },
+    "The saved license data is invalid.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "needs_review",
+            "value": "Zapisane dane licencji są nieprawidłowe."
           }
         }
       }

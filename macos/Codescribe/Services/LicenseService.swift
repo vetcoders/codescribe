@@ -90,6 +90,21 @@ struct LicenseKeychainError: LocalizedError {
   }
 }
 
+private func licenseErrorDetails(_ error: Error) -> String {
+  switch error {
+  case let bridgeError as CsError:
+    return bridgeError.userFacingMessage
+  case let keychainError as LicenseKeychainError:
+    return keychainError.localizedDescription
+  case is DecodingError:
+    return String(localized: "The saved license data is invalid.")
+  default:
+    // Unexpected errors may include the input that caused them. Keep the
+    // disclosure useful without ever reflecting a license key into the UI.
+    return String(localized: "An unexpected license error occurred.")
+  }
+}
+
 /// Keep the independent Swift license store on the same no-Keychain contract as
 /// the Rust secret bundle. Xcode launches XCTest inside the app host before
 /// `XCTestCase` is necessarily visible to lifecycle code, but it installs these
@@ -214,7 +229,7 @@ final class LicenseService: ObservableObject {
         // verified payload and keep evaluating its time bounds normally.
         readState = .unavailable
         lastError = String(localized: "Couldn't read the saved license. Try again.")
-        lastErrorDetails = error.localizedDescription
+        lastErrorDetails = licenseErrorDetails(error)
         return
       }
       do {
@@ -230,8 +245,8 @@ final class LicenseService: ObservableObject {
         // Successfully read malformed or invalid signed data fails closed.
         persisted = nil
         readState = .unavailable
-        lastError = String(localized: "Couldn't verify the saved license. Enter your key again.")
-        lastErrorDetails = error.localizedDescription
+        lastError = String(localized: "Couldn't verify the saved license. Try again.")
+        lastErrorDetails = licenseErrorDetails(error)
       }
     }
   }
@@ -254,7 +269,7 @@ final class LicenseService: ObservableObject {
       _ = try activateBridge(key, timestamp)
     } catch {
       lastError = String(localized: "Couldn't verify the key. Check that it's correct and complete.")
-      lastErrorDetails = error.localizedDescription
+      lastErrorDetails = licenseErrorDetails(error)
       return false
     }
     do {
@@ -270,7 +285,7 @@ final class LicenseService: ObservableObject {
       return true
     } catch {
       lastError = String(localized: "Couldn't save the key on this Mac. Try again.")
-      lastErrorDetails = error.localizedDescription
+      lastErrorDetails = licenseErrorDetails(error)
       return false
     }
   }
@@ -289,7 +304,7 @@ final class LicenseService: ObservableObject {
       lastErrorDetails = nil
     } catch {
       lastError = String(localized: "Couldn't remove the key. Try again.")
-      lastErrorDetails = error.localizedDescription
+      lastErrorDetails = licenseErrorDetails(error)
     }
   }
 

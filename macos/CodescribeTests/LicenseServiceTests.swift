@@ -253,6 +253,55 @@ final class LicenseServiceTests: XCTestCase {
     await awaitCondition { !service.isBusy }
     XCTAssertEqual(service.readState, .unavailable)
     XCTAssertFalse(service.canUseAgentic)
+    XCTAssertEqual(service.lastErrorDetails, "The saved license data is invalid.")
+  }
+
+  func testBridgeVerificationDetailsPreserveCauseWithoutEnumDumpOrStorageMutation() async throws {
+    let storage = MemoryLicenseKeychain()
+    let durable = try JSONSerialization.data(withJSONObject: [
+      "key": "synthetic-signed-license", "lastOnlineValidation": 1_775_304_000,
+    ])
+    storage.replaceData(durable)
+    let service = LicenseService(
+      keychain: storage, autoload: false,
+      statusBridge: { key, _, _ in
+        guard key != nil else { return .unlicensed }
+        throw CsError.License(msg: "license signature verification failed")
+      })
+
+    service.refresh()
+    await awaitCondition { !service.isBusy }
+
+    XCTAssertEqual(service.readState, .unavailable)
+    XCTAssertEqual(service.lastError, "Couldn't verify the saved license. Try again.")
+    XCTAssertEqual(service.lastErrorDetails, "license signature verification failed")
+    XCTAssertFalse(service.lastErrorDetails?.contains("CsError") ?? true)
+    XCTAssertEqual(storage.data, durable, "presentation must not delete or replace the stored license")
+    XCTAssertFalse(service.canUseAgentic)
+  }
+
+  func testUnexpectedVerificationErrorDoesNotReflectItsInput() async throws {
+    struct InputBearingError: LocalizedError {
+      var errorDescription: String? { "SYNTHETIC_LICENSE_INPUT_NOT_FOR_DISPLAY" }
+    }
+    let storage = MemoryLicenseKeychain()
+    let durable = try JSONSerialization.data(withJSONObject: [
+      "key": "synthetic-signed-license", "lastOnlineValidation": 1_775_304_000,
+    ])
+    storage.replaceData(durable)
+    let service = LicenseService(
+      keychain: storage, autoload: false,
+      statusBridge: { key, _, _ in
+        guard key != nil else { return .unlicensed }
+        throw InputBearingError()
+      })
+
+    service.refresh()
+    await awaitCondition { !service.isBusy }
+
+    XCTAssertEqual(service.lastErrorDetails, "An unexpected license error occurred.")
+    XCTAssertFalse(service.lastErrorDetails?.contains("SYNTHETIC_LICENSE_INPUT") ?? true)
+    XCTAssertEqual(storage.data, durable)
   }
 
 }
