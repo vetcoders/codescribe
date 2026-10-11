@@ -972,60 +972,43 @@ struct DictationOverlayView: View {
   @ViewBuilder
   private var footerMessageRow: some View {
     if let message = footerMessage {
-      HStack(spacing: 8) {
-        OverlayHoverControl(
-          id: "overlay-footer-message", title: message, palette: palette, presented: $footerDetail
-        ) {
-          Text(message)
-            .csMono(10, .medium)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .foregroundStyle(palette.primaryText.color)
-            .accessibilityIdentifier("overlay-footer-notice")
-        } detail: { _ in
-          ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-              if state.transcriptStorageError == nil && state.maxPreparationError != nil {
-                Text(message).fixedSize(horizontal: false, vertical: true)
-                Text(
-                  "Max uses the Agent connection. Check its provider and sign-in, or start a new consultation. Previous history is preserved."
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                Button("Consultation settings…") {
-                  openMaxSettings(.creator, anchor: .maxConsultation)
-                }
-                .accessibilityIdentifier("overlay-open-max-consultation-settings")
-                Button("Agent connection settings…") {
-                  openMaxSettings(.agent)
-                }
-                .accessibilityIdentifier("overlay-open-max-agent-settings")
-              } else if state.presentationStatus != nil && state.archivedTranscript == nil {
-                transcriptStatus
-              } else if state.archivedTranscript == nil
-                && (state.errorDiagnosticDetail != nil || state.mode == .error)
-              {
-                errorBody
-              } else if state.mode == .noSpeech {
-                noSpeechBody
-              } else {
-                Text(message).fixedSize(horizontal: false, vertical: true)
-              }
+      let opensMaxSettings = state.transcriptStorageError == nil && state.maxPreparationError != nil
+      OverlayHoverControl(
+        id: "overlay-footer-message",
+        title: opensMaxSettings
+          ? String(localized: "Click to open Max consultation settings.") : message,
+        palette: palette, presented: $footerDetail,
+        action: opensMaxSettings
+          ? { openMaxSettings(.creator, anchor: .maxConsultation) } : nil
+      ) {
+        Text(message)
+          .csMono(10, .medium)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .foregroundStyle(palette.primaryText.color)
+          .accessibilityIdentifier("overlay-footer-notice")
+      } detail: { _ in
+        ScrollView {
+          VStack(alignment: .leading, spacing: 8) {
+            if state.presentationStatus != nil && state.archivedTranscript == nil {
+              transcriptStatus
+            } else if state.archivedTranscript == nil
+              && (state.errorDiagnosticDetail != nil || state.mode == .error)
+            {
+              errorBody
+            } else if state.mode == .noSpeech {
+              noSpeechBody
+            } else {
+              Text(message).fixedSize(horizontal: false, vertical: true)
             }
           }
-          .frame(maxHeight: 320)
         }
-        if state.transcriptStorageError == nil && state.maxPreparationError != nil {
-          Button("Max settings…") {
-            openMaxSettings(.creator, anchor: .maxConsultation)
-          }
-          .buttonStyle(.plain)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(palette.primaryText.color)
-          .underline()
-          .fixedSize()
-          .accessibilityIdentifier("overlay-max-settings")
-        }
+        .frame(maxHeight: 320)
       }
+      .accessibilityLabel(message)
+      .accessibilityHint(
+        opensMaxSettings ? Text("Click to open Max consultation settings.") : Text("")
+      )
     } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
         warning: warning, palette: palette,
