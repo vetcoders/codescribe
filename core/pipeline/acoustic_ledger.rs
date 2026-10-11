@@ -987,10 +987,11 @@ impl AcousticLedger {
         // authority over the entire offered pin.
         let holds_speech = |source: &WordSlot| {
             source.producer == ObservationProducer::ManualHuman
-                || (self.complete_word_slot(source)
-                    && (source.producer.authority_rank() > observation.producer.authority_rank()
-                        || (source.producer == observation.producer
-                            && source.observation.generation >= observation.generation)))
+                || self.complete_word_source(source).is_some_and(|proof| {
+                    proof.producer.authority_rank() > observation.producer.authority_rank()
+                        || (proof.producer == observation.producer
+                            && proof.observation.generation >= observation.generation)
+                })
         };
         let mut protected = self
             .slots_of(owner)

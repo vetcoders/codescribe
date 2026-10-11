@@ -35,7 +35,9 @@ use serde::{Deserialize, Serialize};
 /// needs a measured partition before it can add another occurrence.
 /// v18: recovery requires complete held decoder words; a Whisper word at
 /// capture origin shares the existing hypothesis boundary exception.
-pub const WORD_POLICY: &str = "word-adjudication/v18";
+/// v19: dictionary spelling retains the decoder's returned scope and rank,
+/// without creating a newer acoustic witness or a higher acoustic authority.
+pub const WORD_POLICY: &str = "word-adjudication/v19";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
