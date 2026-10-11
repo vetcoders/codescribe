@@ -112,79 +112,13 @@ pub struct FormattingConsultation<'a> {
 
 /// Result of a formatting request: the text to use plus how it was obtained.
 ///
-/// `text` is always safe to deliver — on failure it carries the cleaned input
+/// `text` carries the provider's formatting — on failure it carries the input
 /// rather than an error, so the caller never has to invent a fallback.
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
     pub reasoning_text: Option<String>,
     pub status: AiFormatStatus,
-}
-
-/// Corrections changes punctuation and case, never the ordered spoken words.
-/// Repeated words are counted separately. These offsets are text evidence,
-/// not acoustic identities or permission to change a ledger slot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorrectionsWordReceipt {
-    pub raw_word_count: usize,
-    pub output_word_count: usize,
-    pub first_difference: Option<usize>,
-}
-
-impl CorrectionsWordReceipt {
-    pub fn preserves_words(&self) -> bool {
-        self.first_difference.is_none()
-    }
-}
-
-fn corrections_words(text: &str) -> Vec<String> {
-    text.split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
-pub fn corrections_word_receipt(raw: &str, output: &str) -> CorrectionsWordReceipt {
-    let raw = corrections_words(raw);
-    let output = corrections_words(output);
-    let first_difference = raw
-        .iter()
-        .zip(&output)
-        .position(|(before, after)| before != after)
-        .or_else(|| (raw.len() != output.len()).then_some(raw.len().min(output.len())));
-    CorrectionsWordReceipt {
-        raw_word_count: raw.len(),
-        output_word_count: output.len(),
-        first_difference,
-    }
-}
-
-/// Light+ is a candidate floor too: until its word-preserving API is admitted,
-/// a rejected shape retains Raw rather than dropping a hesitation or marker.
-pub fn corrections_floor(raw: &str) -> String {
-    let shaped = crate::pipeline::light_plus::apply(raw);
-    if corrections_word_receipt(raw, &shaped).preserves_words() {
-        shaped
-    } else {
-        raw.to_string()
-    }
-}
-
-fn guard_corrections_result(raw: &str, mut result: AiFormatResult) -> AiFormatResult {
-    let receipt = corrections_word_receipt(raw, &result.text);
-    if !receipt.preserves_words() {
-        warn!(
-            rule = "corrections-words-v1",
-            raw_words = receipt.raw_word_count,
-            output_words = receipt.output_word_count,
-            first_difference = receipt.first_difference,
-            "Corrections rejected: ordered Raw words changed; retaining deterministic floor"
-        );
-        result.text = corrections_floor(raw);
-        result.reasoning_text = None;
-        result.status = AiFormatStatus::Failed;
-    }
-    result
 }
 
 /// One provider reply split into its two channels.
@@ -1180,42 +1114,16 @@ pub async fn format_text_with_status_for_policy(
 ///
 /// Order of the pipeline matters and is load-bearing:
 /// 1. bail out for `Off` policy and sub-floor text (never reaches a provider);
-/// 2. strip Whisper repetition loops locally, before spending a request;
+/// 2. send the source text under the selected policy's sealed prompt;
 /// 3. attempt the provider up to the retry budget, giving up early on errors
 ///    that are deterministic;
-/// 4. re-apply the protected lexicon to the reply, since a model can silently
-///    corrupt proper nouns while rewriting prose;
-/// 5. reject refusal text and classify an unchanged echo as `AiNoop`.
+/// 4. publish formatting as returned: lexical edits and structure belong to
+///    the prompt, not word-count or word-order vetoes;
+/// 5. classify an exact unchanged formatting echo as `AiNoop`.
 ///
-/// Never returns an error: an exhausted budget yields the cleaned input with a
+/// Never returns an error: an exhausted budget yields the original input with a
 /// `Failed` status, so the caller always has text to deliver.
 async fn format_text_with_status_channels_for_policy(
-    text: &str,
-    language: Option<&str>,
-    assistive: bool,
-    runtime_settings: &RuntimeSettingsSnapshot,
-    on_assistant_delta: Option<AiStreamCallback>,
-    on_reasoning_delta: Option<AiReasoningCallback>,
-    consultation: Option<FormattingConsultation<'_>>,
-) -> AiFormatResult {
-    let result = request_format_text_with_status_channels_for_policy(
-        text,
-        language,
-        assistive,
-        runtime_settings,
-        on_assistant_delta,
-        on_reasoning_delta,
-        consultation,
-    )
-    .await;
-    if !assistive && runtime_settings.formatting_policy() == FormattingPolicy::Correction {
-        guard_corrections_result(text, result)
-    } else {
-        result
-    }
-}
-
-async fn request_format_text_with_status_channels_for_policy(
     text: &str,
     language: Option<&str>,
     assistive: bool,
@@ -1271,13 +1179,9 @@ async fn request_format_text_with_status_channels_for_policy(
         };
     }
 
-    // Check for repetition loops - apply simple fix first
-    let cleaned = if has_repetition_loop(text) {
-        info!("Detected repetition loop in transcription");
-        remove_simple_repetitions(text)
-    } else {
-        text.to_string()
-    };
+    // Give the model the actual source. Whether speech repetition is an
+    // intentional emphasis or a false start is governed by its sealed prompt.
+    let cleaned = text.to_string();
 
     let ai_execution = runtime_settings.ai_execution();
     let formatter_execution = ai_execution.formatter();
@@ -1345,10 +1249,11 @@ async fn request_format_text_with_status_channels_for_policy(
             );
             tokio::time::sleep(formatter_execution.retry_delay()).await;
 
-            // Append critical instruction
-            system_prompt.push_str(
-                "\n\nCRITICAL: You MUST format/enhance the text. Do NOT return raw input.",
-            );
+            if assistive {
+                system_prompt.push_str(
+                    "\n\nCRITICAL: You MUST format/enhance the text. Do NOT return raw input.",
+                );
+            }
         }
 
         // Build user message with optional language hint
@@ -1527,7 +1432,7 @@ async fn request_format_text_with_status_channels_for_policy(
                 || formatted_lower.contains("i'm not able")
                 || formatted_lower.contains("as an ai");
 
-            if is_refusal {
+            if assistive && is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
                 return AiFormatResult {
                     text: cleaned,
@@ -1550,9 +1455,9 @@ async fn request_format_text_with_status_channels_for_policy(
                     should_retry = true;
                 }
             } else {
-                // Formatting should preserve content but add structure
-                // If output matches input (effectively same), it's a no-op
-                if content_match {
+                // Paragraphs and spacing are formatting too. Only an exact
+                // echo has no returned change to publish.
+                if formatted == cleaned {
                     warn!("Formatting mode returned AI No-op (raw echo)");
                     return AiFormatResult {
                         text: cleaned,

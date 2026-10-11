@@ -979,20 +979,14 @@ impl TranscriptReducer {
         result: AiFormatResult,
         source_observation: Option<ObservationIdentity>,
     ) -> DerivedTranscriptProjection {
-        let mut status = if result.status == AiFormatStatus::Applied {
+        let status = if result.status == AiFormatStatus::Applied {
             "applied"
         } else {
             "unavailable"
         };
         let mut delivered = policy;
         let mut text = result.text;
-        if policy == FormattingPolicy::Correction
-            && !codescribe_core::ai_formatting::corrections_word_receipt(&source_raw_text, &text)
-                .preserves_words()
-        {
-            status = "corrections_words_rejected";
-            text = source_raw_text.clone();
-        } else if result.status != AiFormatStatus::Applied {
+        if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
         }
