@@ -24,7 +24,7 @@ class InstallBusPayloadTests(unittest.TestCase):
         self.repo = self.work / "repo"
         (self.repo / "scripts").mkdir(parents=True)
         (self.repo / "skills" / "codescribe").mkdir(parents=True)
-        for name in ("install-bus.sh", "build-app.sh", "bus-demux.py", "cs-bus", "cs-say"):
+        for name in ("install-bus.sh", "build-app.sh", "bus-demux.py", "cs-bus", "cs-say", "cs-junie"):
             shutil.copy2(REPO / "scripts" / name, self.repo / "scripts" / name)
         shutil.copy2(REPO / "Cargo.toml", self.repo / "Cargo.toml")
         shutil.copy2(REPO / "skills/codescribe/SKILL.md", self.repo / "skills/codescribe/SKILL.md")

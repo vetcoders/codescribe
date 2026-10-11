@@ -56,7 +56,7 @@ if publisher is not None and (
     raise SystemExit("canonical publisher must be an ordinary executable artifact")
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
-entrypoints = [helper_source, repo / "scripts" / "cs-bus", repo / "scripts" / "cs-say"]
+entrypoints = [helper_source, *(repo / "scripts" / name for name in ("cs-bus", "cs-say", "cs-junie"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (

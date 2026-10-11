@@ -27,7 +27,7 @@ assert manifest["helper"] == "bin/bus-demux.py", manifest
 assert manifest["skill"] == "skills/codescribe", manifest
 import subprocess
 assert manifest["helper_version"] == "9.8.7", manifest
-assert manifest["skill_version"] == "0.10.0", manifest
+assert manifest["skill_version"] == "0.11.0", manifest
 assert manifest["source_commit"] == subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 source_skill = root / "skills" / "codescribe"
@@ -42,7 +42,7 @@ expected = {
     if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
-expected.update({"bin/cs-bus", "bin/cs-say"})
+expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie"})
 listed = {entry["path"] for entry in manifest["files"]}
 actual = {
     path.relative_to(payload).as_posix()
@@ -76,7 +76,7 @@ FAKE_ROOT="$WORKDIR/unsafe-repo"
 mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
-cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$FAKE_ROOT/scripts/"
+cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$FAKE_ROOT/scripts/"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
 if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \
   >"$WORKDIR/unsafe-root.out" 2>"$WORKDIR/unsafe-root.err"; then
@@ -128,6 +128,9 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
 LOCAL_BIN="$WORKDIR/home/.local/bin"
 test ! -L "$LOCAL_BIN/cs-bus"
 test ! -L "$LOCAL_BIN/cs-say"
+test -f "$LOCAL_BIN/cs-junie"
+test ! -L "$LOCAL_BIN/cs-junie"
+"$LOCAL_BIN/cs-junie" --help | grep -q -- '--channel'
 BEFORE_BUS_VERSION="$("$LOCAL_BIN/cs-bus" --version)"
 BEFORE_SAY_VERSION="$("$LOCAL_BIN/cs-say" --version)"
 # Reproduce the older app's explicit replacement with a valid old-style payload.
