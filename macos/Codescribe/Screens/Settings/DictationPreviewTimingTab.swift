@@ -36,7 +36,7 @@ struct DictationPreviewTimingTab: View {
           // while the controls it explains are not interactive.
           if !previewEnabled {
             Text("These values take effect again once the preview is back on.")
-              .font(CSFont.ui(11))
+              .font(CSFont.ui(11.5))
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }

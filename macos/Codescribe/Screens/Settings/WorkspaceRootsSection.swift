@@ -27,15 +27,15 @@ struct WorkspaceRootsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel(String(localized: "Allowed folders"))
+      WorkspaceSectionHeader(String(localized: "Allowed folders"))
 
       Text(
-        "The Agent looks for projects and Git repositories in these folders. It also searches subfolders, but skips hidden folders and build directories."
+        "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories."
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
       .foregroundStyle(Color.secondary)
-      .padding(.top, 8)
+      .padding(.top, 6)
 
       VStack(spacing: 8) {
         ForEach(rows.indices, id: \.self) { index in
@@ -200,5 +200,22 @@ struct WorkspaceRootsSection: View {
     var isDir: ObjCBool = false
     let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir)
     return exists && isDir.boolValue
+  }
+}
+
+/// "Allowed folders" section header. It sat as the shared `SettingsSectionLabel`
+/// (secondary color, subheadline weight), which read as helper text under the
+/// tab's own headline rather than a section heading. This local override reads
+/// one step stronger, same shape as `ProvidersSectionHeader` — a local fix, not
+/// a global header restyle (Founder brief, round 10, 2026-10-10).
+private struct WorkspaceSectionHeader: View {
+  let text: String
+  init(_ text: String) { self.text = text }
+
+  var body: some View {
+    Text(text)
+      .font(CSFont.ui(13, .semibold))
+      .foregroundStyle(Color.primary)
+      .accessibilityAddTraits(.isHeader)
   }
 }

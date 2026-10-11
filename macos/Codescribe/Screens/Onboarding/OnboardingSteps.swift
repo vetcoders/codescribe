@@ -240,7 +240,7 @@ struct LanguageStepView: View {
     case .auto:
       return String(
         localized: LocalizedStringResource(
-          "Auto-detect also works when you speak several languages.",
+          "Auto-detect when you speak several languages.",
           locale: model.interfaceLocale,
           comment: "Detail under the Auto-detect dictation language choice"))
     default: return nil
@@ -422,9 +422,9 @@ struct PermissionsStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings.",
+            "You can continue without granting these permissions. You can also change them later in System Settings.",
             locale: model.interfaceLocale,
-            comment: "Permissions do not block Continue; each row explains its feature consequence")
+            comment: "Permissions do not block Continue; they can be granted later in System Settings")
         )
       )
       .font(.callout)
@@ -521,7 +521,7 @@ struct LocalModelStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Download the dedicated Whisper model to transcribe speech entirely on your Mac, without configuring cloud providers.",
+            "Download the dedicated Whisper model to transcribe entirely on your computer, without configuring cloud providers.",
             locale: model.interfaceLocale,
             comment:
               "Explain the benefit of the local transcription model"))
@@ -533,7 +533,7 @@ struct LocalModelStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "The download continues in the background when you leave this step or close setup. Check its progress in Settings.",
+            "You can move on to the next step. The download finishes in the background.",
             locale: model.interfaceLocale,
             comment:
               "Whisper download never blocks navigation, closing the wizard or completing setup"))
@@ -756,7 +756,7 @@ struct ApiKeyStepView: View {
       return String(
         localized: LocalizedStringResource(
           "Manage", locale: model.interfaceLocale,
-          comment: "Setup Agent account row action for a connected account"))
+          comment: "Setup account and API key row action once connected or stored"))
     }
     return String(
       localized: LocalizedStringResource(
@@ -768,8 +768,8 @@ struct ApiKeyStepView: View {
     if model.selectedProviderKeySet {
       return String(
         localized: LocalizedStringResource(
-          "Change", locale: model.interfaceLocale,
-          comment: "Setup API key row action when a key is stored"))
+          "Manage", locale: model.interfaceLocale,
+          comment: "Setup account and API key row action once connected or stored"))
     }
     return String(
       localized: LocalizedStringResource(
@@ -850,7 +850,7 @@ struct DoneStepView: View {
       EyebrowLabel(
         text: String(
           localized: LocalizedStringResource(
-            "Setup summary", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
+            "Summary", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
       Text(
         String(
           localized: LocalizedStringResource(
@@ -956,39 +956,39 @@ extension PermissionKind {
     case .microphone:
       return String(
         localized: LocalizedStringResource(
-          "Records your voice for dictation. Without it, voice recording is unavailable.",
+          "Without it, voice recording is unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Microphone scope"))
+          comment: "Consequence of a missing Microphone scope"))
     case .accessibility:
       return String(
         localized: LocalizedStringResource(
-          "Types dictated text into other apps. Without it, automatic text insertion is unavailable.",
+          "Without it, automatic text insertion in other apps is unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Accessibility scope"))
+          comment: "Consequence of a missing Accessibility scope"))
     case .inputMonitoring:
       return String(
         localized: LocalizedStringResource(
-          "Detects keyboard shortcuts to start and stop recording. Without it, global recording shortcuts are unavailable.",
+          "Without it, global recording shortcuts are unavailable.",
           locale: locale,
-          comment: "Why the app asks for the Input Monitoring scope"))
+          comment: "Consequence of a missing Input Monitoring scope"))
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Optional — lets the Agent use your screen as context. Without it, screen context is unavailable; dictation still works.",
+          "Optional — without it, the Agent cannot use your screen as context; dictation still works.",
           locale: locale,
-          comment: "Why the app asks for the Screen Recording scope"))
+          comment: "Consequence of a missing Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
-          "Powers Apple live dictation on your computer. Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally.",
+          "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally.",
           locale: locale,
-          comment: "Why the app asks for the Speech Recognition scope"))
+          comment: "Consequence of a missing Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Optional — lets the Agent read protected files you choose as context. Without it, those files stay inaccessible; dictation still works.",
+          "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works.",
           locale: locale,
-          comment: "Why the app asks for the Full Disk Access scope"))
+          comment: "Consequence of a missing Full Disk Access scope"))
     }
   }
 }

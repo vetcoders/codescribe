@@ -85,7 +85,7 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Transcription on your Mac", locale: model.interfaceLocale,
+            "Transcription on your device", locale: model.interfaceLocale,
             comment: "Setup chapter heading for fully local transcription")),
         "arrow.down.circle",
         nil
@@ -116,7 +116,7 @@ struct OnboardingView: View {
       return (
         String(
           localized: LocalizedStringResource(
-            "Setup is complete.", locale: model.interfaceLocale,
+            "Codescribe is ready.", locale: model.interfaceLocale,
             comment: "Setup chapter heading")),
         "checkmark",
         nil

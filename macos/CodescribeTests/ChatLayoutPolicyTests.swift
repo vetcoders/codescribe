@@ -118,22 +118,24 @@ final class ChatLayoutPolicyTests: XCTestCase {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
     }
-    pumpUntil(ceiling: 0.1) {
-      find(host.view) != nil && window.title == "Agent — gpt-6-sol"
+    // The titlebar carries only the app identity; the model reads in the
+    // chrome beside the thread title (Founder brief 2026-10-10).
+    pumpUntil(ceiling: 1.0) {
+      find(host.view) != nil && window.title == "Agent"
     }
-    XCTAssertEqual(window.title, "Agent — gpt-6-sol")
+    XCTAssertEqual(window.title, "Agent")
     let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
     XCTAssertEqual(item.minimumThickness, 267)
     XCTAssertEqual(item.maximumThickness, 360)
 
     store.threads[0].title = "Short"
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 268)
     let shortWidth = item.viewController.view.frame.width
     store.threads[0].title = "Moderately descriptive thread title"
-    pumpUntil(ceiling: 0.15) {
+    pumpUntil(ceiling: 1.0) {
       item.maximumThickness > 267 && item.maximumThickness < 360
     }
     XCTAssertGreaterThan(item.maximumThickness, 267)
@@ -141,16 +143,16 @@ final class ChatLayoutPolicyTests: XCTestCase {
       item.maximumThickness, 360,
       "Intrinsic measurement must produce intermediate widths, not only floor/ceiling buckets")
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360)
     XCTAssertEqual(
       item.viewController.view.frame.width, shortWidth, accuracy: 1,
       "A wider content cap must not expand the user's divider")
     store.threads[0].title = "Short again"
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 267 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 267 }
     XCTAssertEqual(item.maximumThickness, 267)
     store.threads[0].model = String(repeating: "model-name-", count: 10)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     XCTAssertEqual(item.maximumThickness, 360, "Metadata participates in intrinsic row width")
     let retainedThreads = store.threads
     let sidebarBeforeEmpty = sidebarSignature(item.viewController.view)
@@ -171,7 +173,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
       item.maximumThickness, 360, "Transient empty search results must not reset the cap")
     store.threads = retainedThreads
     store.threads[0].title = String(repeating: "Long thread title ", count: 8)
-    pumpUntil(ceiling: 0.15) { item.maximumThickness == 360 }
+    pumpUntil(ceiling: 1.0) { item.maximumThickness == 360 }
     for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
       window.setContentSize(NSSize(width: windowWidth, height: 720))
       for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
@@ -203,8 +205,9 @@ final class ChatLayoutPolicyTests: XCTestCase {
     }
   }
 
-  /// One short slice, then return as soon as `ready` is true. The ceiling is
-  /// the old fixed sleep for that beat, never a larger budget.
+  /// One short slice, then return as soon as `ready` is true. The ceiling
+  /// only caps a run that never becomes ready, so it is sized for a loaded
+  /// gate host, not for the typical beat.
   @MainActor
   private func pumpUntil(ceiling: TimeInterval, _ ready: () -> Bool) {
     pumpUntil(deadline: Date().addingTimeInterval(ceiling), ready)
@@ -238,6 +241,22 @@ final class ChatLayoutPolicyTests: XCTestCase {
     }
     walk(view)
     return hasher.finalize()
+  }
+
+  // MARK: - Empty thread never scrolls (round 18)
+
+  /// The empty block plus everything else in the scroll document must add up
+  /// to exactly the viewport: list padding on both ends, one turn gap and the
+  /// 1 pt live-edge anchor. The old reservation forgot the gap and the anchor
+  /// and overshot by 17 pt — a scrollbar on a thread with no messages.
+  func testEmptyStateFillsViewportWithoutOvershoot() {
+    let viewport: CGFloat = 520
+    let empty = ChatLayoutPolicy.emptyStateHeight(viewportHeight: viewport)
+    let document =
+      empty + ChatLayoutPolicy.turnSpacing + ChatLayoutPolicy.liveEdgeAnchorHeight
+      + 2 * ChatLayoutPolicy.listPadding
+    XCTAssertEqual(document, viewport)
+    XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 10), 0, "never negative")
   }
 
   // MARK: - R1 window-collapse clamps

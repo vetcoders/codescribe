@@ -14,16 +14,14 @@ struct AgentLanesTab: View {
     VStack(alignment: .leading, spacing: 0) {
       LLMLanesSection(model: model)
 
-      SettingsSectionLabel(String(localized: "Automatic send to the Agent"))
-        .padding(.top, CSSpace.section)
-        .padding(.bottom, 8)
       // Mirrors `OverlayState`: armed in Agent mode only, fires after
       // `autoHideDelaySeconds`, cancelled the moment the transcript is edited.
+      // One label, not a section heading repeating the switch name (Founder
+      // brief, round 8, 2026-10-10).
       SettingsControlRow(
-        title: String(localized: "Auto-send to Agent"),
+        title: String(localized: "Auto-send to the Agent"),
         subtitle: String(
-          localized:
-            "In Agent mode, send the untouched transcript after 5 seconds unless you start editing it."
+          localized: "Sends the transcript after 5 seconds unless you start editing it."
         )
       ) {
         Toggle(
@@ -37,6 +35,7 @@ struct AgentLanesTab: View {
         .labelsHidden()
         .tint(CSColor.chromeAccent)
       }
+      .padding(.top, CSSpace.section)
 
       // Collapsed by default: the editors above answer the everyday question;
       // this is where the endpoints and the settings keys live.
