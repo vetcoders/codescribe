@@ -102,6 +102,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   let appearance: OverlayAppearance
   /// Power-mode diagnostics: the popover shows the raw source-scale value.
   let showsDiagnostics: Bool
+  let showsActivityUnderline: Bool
   let contentInsets: NSEdgeInsets
   let onEditingChanged: ((Bool) -> Void)?
   let onTextChange: ((String) -> Void)?
@@ -116,6 +117,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     isEditable: Bool = false,
     appearance: OverlayAppearance,
     showsDiagnostics: Bool = false,
+    showsActivityUnderline: Bool = false,
     contentInsets: NSEdgeInsets = NSEdgeInsetsZero,
     onEditingChanged: ((Bool) -> Void)? = nil,
     onTextChange: ((String) -> Void)? = nil,
@@ -129,6 +131,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     self.isEditable = isEditable
     self.appearance = appearance
     self.showsDiagnostics = showsDiagnostics
+    self.showsActivityUnderline = showsActivityUnderline
     self.contentInsets = contentInsets
     self.onEditingChanged = onEditingChanged
     self.onTextChange = onTextChange
@@ -223,6 +226,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.popoverPalette = OverlayAppearancePalette.resolve(appearance)
     let attributes = transcriptAttributes()
     textView.isEditable = isEditable
+    textView.setTranscriptActivity(showsActivityUnderline && !isEditable)
     textView.allowsUndo = isEditable
     textView.typingAttributes = attributes
     textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
@@ -301,6 +305,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       scroll.reflectScrolledClipView(scroll.contentView)
     }
     coordinator.applyingUpdate = false
+    textView.needsLayout = true
   }
 
   private func transcriptAttributes() -> [NSAttributedString.Key: Any] {
@@ -600,6 +605,69 @@ final class LiveTranscriptScrollView: NSScrollView {
 /// An explicit click takes keyboard focus for native selection/copy.
 /// Editing opens a separate draft gate; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  private var activityUnderline: TranscriptActivityHostingView?
+  private var positioningActivityUnderline = false
+
+  /// One decorative view at the native insertion geometry. It never becomes
+  /// a character, attributed-string attachment, selection or document revision.
+  func setTranscriptActivity(_ active: Bool) {
+    guard active else {
+      activityUnderline?.removeFromSuperview()
+      activityUnderline = nil
+      return
+    }
+    guard activityUnderline == nil else { return }
+    let underline = TranscriptActivityHostingView(rootView: TranscriptActivityUnderline())
+    underline.sizingOptions = []
+    underline.setAccessibilityElement(false)
+    underline.isHidden = true
+    addSubview(underline)
+    activityUnderline = underline
+    needsLayout = true
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    needsLayout = true
+  }
+
+  override func layout() {
+    super.layout()
+    positionActivityUnderline()
+  }
+
+  private func positionActivityUnderline() {
+    guard let underline = activityUnderline, !positioningActivityUnderline else { return }
+    guard let window else {
+      underline.isHidden = true
+      return
+    }
+    positioningActivityUnderline = true
+    defer { positioningActivityUnderline = false }
+    // Capture activity must be visible before TextKit has any glyphs to lay out.
+    if string.isEmpty {
+      let font = typingAttributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 15)
+      let lineHeight = font.ascender - font.descender + font.leading
+      underline.frame = NSRect(
+        x: textContainerOrigin.x + 2, y: textContainerOrigin.y + lineHeight - 4,
+        width: 10, height: 4)
+      underline.isHidden = false
+      return
+    }
+    // NSTextInputClient supplies TextKit's actual insertion rectangle, including
+    // wrapped lines and the empty line after a trailing newline. No selection
+    // or scroll commands are issued by the marker.
+    let end = NSRange(location: (string as NSString).length, length: 0)
+    let screenRect = firstRect(forCharacterRange: end, actualRange: nil)
+    let caret = convert(window.convertFromScreen(screenRect), from: nil)
+    guard caret.minX.isFinite, caret.maxY.isFinite, caret.height > 0 else {
+      underline.isHidden = true
+      return
+    }
+    underline.frame = NSRect(x: caret.minX + 2, y: caret.maxY - 4, width: 10, height: 4)
+    underline.isHidden = false
+  }
+
   static func liveBottomScrollOrigin(
     documentMaxY: CGFloat,
     clipHeight: CGFloat,
@@ -746,4 +814,9 @@ final class LiveTranscriptNativeTextView: NSTextView {
   override func copy(_ sender: Any?) {
     _ = copySelection(to: .general)
   }
+}
+
+/// Let native transcript selection and context menus own every pointer event.
+private final class TranscriptActivityHostingView: NSHostingView<TranscriptActivityUnderline> {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
