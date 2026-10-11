@@ -1258,7 +1258,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "cs-say"].filter { name in
+    ["cs-bus", "cs-say", "cs-junie"].filter { name in
       manifest.files.contains { $0.path == "bin/" + name }
     }
   }

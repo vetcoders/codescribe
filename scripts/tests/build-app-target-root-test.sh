@@ -174,7 +174,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     shutil.copyfile(source, repo / "scripts/build-app.sh")
     (repo / "Cargo.toml").write_text('version = "9.8.7"\n')
     (repo / "skills/codescribe/SKILL.md").write_text("fixture skill\n")
-    for entry in ["bus-demux.py", "cs-bus", "cs-say"]:
+    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie"]:
         (repo / "scripts" / entry).write_text("# fixture helper\n")
     (repo / "scripts/lib").mkdir()
     for helper in ["generate-swift-bindings.sh", "refresh-agent-publisher-manifest.py"]:

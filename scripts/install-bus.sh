@@ -48,5 +48,5 @@ PY
 "$ROOT/scripts/build-app.sh" --stage-agent-bridge "$STAGE/payload" "" "$PUBLISHER"
 build_installer
 "$STAGE/install" "$STAGE/payload"
-echo "Commands: ~/.local/bin/cs-bus and ~/.local/bin/cs-say"
+echo "Commands: ~/.local/bin/cs-bus, ~/.local/bin/cs-say and ~/.local/bin/cs-junie"
 echo "Existing followers stay alive. Reattach this session to adopt the updated runtime."
