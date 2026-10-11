@@ -1131,3 +1131,59 @@ The overlay reader ignores archive metadata while that exact owner remains
 bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
+
+## Private MCP mailbox text probe
+
+`scripts/mcp-mailbox-probe.py` is a small stdio MCP `2025-06-18` server for a
+single **already owned** mailbox. It uses Python's standard library and the
+existing demux's read, ACK and canonical Rust reply publisher. It creates no
+attachment, model session, HTTP listener, recording, voice synthesis or plugin
+registration. Do not point it at another conversation's mailbox without that
+owner's authorization.
+
+The trusted local launcher fixes provider, real session ID, bridge home and bus:
+
+```bash
+python3 -B scripts/mcp-mailbox-probe.py \
+  --provider codex --session REAL_OWNER_SESSION \
+  --bridge-home /absolute/agent-bridge --bus /absolute/owned-channel.jsonl
+```
+
+The three tools are `read_pending()`, `ack(request_id)` and
+`reply(request_id, text)`. A read returns complete records shaped as
+`{event: "transcript.ready", request_id: delivery_id, delivery: envelope}` and
+`remaining`. The transcript is data; the receiving conversation interprets it
+under the human's instructions. Read every returned record and ACK each exact
+ID immediately. Drain until `remaining` is zero and make an extra read before
+acting. The connection must stay alive: the probe retains its read-ID set in
+memory, and refuses ACK/reply to IDs not read in this connection.
+
+Reply requires ACK and rechecks provider/session/lease/bus ownership. It uses
+`publish_text_reply`, the same publication path used before `cs-say` synthesis,
+and returns a text publication receipt with `spoken: false`. It never speaks.
+Runtime receipts under `runtime/mcp-probe/LEASE/DELIVERY.json` make identical
+retries in that connection return the same reply ID; different text refuses.
+An interrupted or uncertain publication refuses automatic retry. Inspect the
+canonical reply source and receipt before recovery; do not delete receipts to
+force publication. ACK means read, and this receipt means published, not that
+the human has read the answer.
+
+`transcript.ready` is a tool-result record, **not MCP Events webhook support**.
+The probe advertises only tools; it cannot yet wake an idle ChatGPT dot. Its
+local stdio transport is also not automatically reachable from Cloud Work.
+The first acceptance test is one text ping through read → ACK → reply → real
+canonical publisher in a temporary mailbox:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p test_mcp_mailbox_probe.py -v
+```
+
+That test requires an existing installed `codescribe` publisher and does not
+build one. Cloud acceptance is a separate test in the original subscribed chat.
+Before it, select an existing approved reachable endpoint or explicitly approve
+a Secure MCP Tunnel (`tunnel_id`, runtime API key, Platform Tunnels Read/Use;
+creating a tunnel also requires Read/Manage and target workspace association).
+Credential creation, custom plugin registration and the eventual persistent
+channel subscription are separate user-approved setup actions. Add and verify
+MCP 2.0 webhook delivery only after the same chat can complete this text ping;
+do not claim `listening_verified` from this local probe.

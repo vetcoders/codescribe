@@ -4277,8 +4277,8 @@ def stop_reply_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def say_reply(args: argparse.Namespace) -> int:
-    """Durably publish reply text before attempting synthesis or playback."""
+def publish_text_reply(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
+    """Publish owned reply text through the canonical writer, without speech."""
     bus, envelope = reply_delivery_envelope(args)
     lease_id = lease_identifier(args.provider, args.session)
     owner = next((item for item in envelope.get("recipients", [])
@@ -4319,6 +4319,12 @@ def say_reply(args: argparse.Namespace) -> int:
     atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
                 {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
                  **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
+    return bus, reply
+
+
+def say_reply(args: argparse.Namespace) -> int:
+    """Durably publish reply text before attempting synthesis or playback."""
+    bus, reply = publish_text_reply(args)
     emit(reply)
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
