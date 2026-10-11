@@ -39,7 +39,9 @@ use serde::{Deserialize, Serialize};
 /// without creating a newer acoustic witness or a higher acoustic authority.
 /// v20: complete bijective word refinements can pose their first group
 /// question without a prior reservation; lexical adjudication still decides.
-pub const WORD_POLICY: &str = "word-adjudication/v20";
+/// v21: capture origin does not prove a complete acoustic onset. Retain the
+/// observed word without granting boundary, trial or recovery completeness.
+pub const WORD_POLICY: &str = "word-adjudication/v21";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,14 +353,11 @@ impl AcousticLedger {
         let complete_words = words
             .iter()
             .filter(|pin| {
-                let starts_inside_capture = pin.decode_sample_start.is_some_and(|start| {
-                    start < pin.sample_start
-                        // Capture origin has no earlier PCM to request. A
-                        // later window edge does not get this exception.
-                        || (observation.producer == ObservationProducer::Whisper
-                            && start == 0
-                            && pin.sample_start == 0)
-                });
+                // No preceding PCM means an unknown onset, not a complete
+                // word. This does not remove the visible observed label.
+                let starts_inside_capture = pin
+                    .decode_sample_start
+                    .is_some_and(|start| start < pin.sample_start);
                 starts_inside_capture
                     && pin.decode_sample_end.is_some_and(|end| {
                         if observation.producer == ObservationProducer::Whisper {
@@ -645,7 +644,7 @@ impl AcousticLedger {
         let acoustic_boundaries_complete = complete
             && decode.is_some_and(|(s, e)| {
                 pins.iter().all(|pin| {
-                    (s < pin.sample_start || pin.sample_start == 0)
+                    s < pin.sample_start
                         && !self.decode_word_fence_incomplete(
                             &observation.occurrence,
                             s,
