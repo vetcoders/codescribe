@@ -1,6 +1,157 @@
 //! Integrator-owned counterexamples for local adjudication, independent of ASR.
 use super::*;
 
+#[test]
+fn rc_origin_word_exception_does_not_authorize_a_later_decode_edge() {
+    for (producer, start, decode_start, complete) in [
+        (ObservationProducer::Whisper, 0, 0, true),
+        (ObservationProducer::Whisper, 8_000, 8_000, false),
+        (ObservationProducer::Apple, 0, 0, false),
+    ] {
+        let owner = OccurrenceIdentity::new("rc-origin-fence", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 160_000];
+        pcm[start as usize..start as usize + 3_200].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let observation = ObservationIdentity::new(producer, 1, 1, owner.clone());
+        ledger.admit_word_slots(
+            &observation,
+            &[WordPin::new(start, start + 3_200, "Iwo").with_decode_window(decode_start, 144_000)],
+        );
+        let held = ledger.slots_of(&owner).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            ledger.complete_word_slot(&held[0]),
+            complete,
+            "{producer:?}/{start}"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn rc_dictionary_spelling_preserves_complete_origin_but_merge_cannot_borrow_it() {
+    let owner = OccurrenceIdentity::new("rc-dictionary-origin", 1, 0, 128_000);
+    let mut pcm = vec![0.0; 160_000];
+    pcm[48_000..56_000].fill(0.2);
+    pcm[64_000..72_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let origin = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &origin,
+                &[
+                    WordPin::new(48_000, 56_000, "doker").with_decode_window(0, 144_000),
+                    WordPin::new(64_000, 72_000, "plan").with_decode_window(0, 144_000),
+                ]
+            )
+            .grants_mutation()
+    );
+    assert!(
+        ledger.returned_word_scope_accounted(&origin),
+        "fixture decode covers the whole owner before spelling changes"
+    );
+    let original = ledger.slots_of(&owner).unwrap()[0].clone();
+    for (generation, input, canonical) in [(2, "doker", "Docker"), (3, "Docker", "DOCKER")] {
+        let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+        let spelling = ObservationIdentity::new(
+            ObservationProducer::Lexicon,
+            generation,
+            generation,
+            owner.clone(),
+        );
+        ledger
+            .rewrite_dictionary_slots(
+                &spelling,
+                &[(
+                    target,
+                    DictionarySlotRule {
+                        id: format!("rc/spelling/{generation}"),
+                        input: vec![input.into()],
+                        canonical: canonical.into(),
+                    },
+                )],
+            )
+            .unwrap();
+        let held = &ledger.slots_of(&owner).unwrap()[0];
+        assert!(ledger.complete_word_slot(held));
+        assert_eq!(ledger.complete_word_source(held), Some(&original));
+        assert!(ledger.returned_word_scope_accounted(&spelling));
+    }
+    let targets = ledger
+        .slots_of(&owner)
+        .unwrap()
+        .iter()
+        .map(SlotTarget::from)
+        .collect::<Vec<_>>();
+    let merge = ObservationIdentity::new(ObservationProducer::Lexicon, 4, 4, owner.clone());
+    ledger
+        .merge_word_slots(
+            &merge,
+            &targets,
+            &DictionarySlotRule {
+                id: "rc/explicit-merge".into(),
+                input: vec!["DOCKER".into(), "plan".into()],
+                canonical: "Dockerplan".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+    assert!(!ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[0]));
+    assert!(!ledger.returned_word_scope_accounted(&merge));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn rc_first_bijective_group_requires_complete_words_and_fresh_lexical_agreement() {
+    for complete in [true, false] {
+        let owner = OccurrenceIdentity::new("rc-first-group", 1, 0, 192_000);
+        let mut pcm = vec![0.0; 192_000];
+        pcm[24_000..40_000].fill(0.2);
+        pcm[40_000..41_000].fill(0.2);
+        pcm[41_000..60_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let initial = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        let held = [
+            WordPin::new(24_000, 40_000, "krople").with_decode_window(0, 144_000),
+            WordPin::new(40_000, 41_000, "z").with_decode_window(0, 144_000),
+            WordPin::new(41_000, 60_000, "kentamycyną").with_decode_window(0, 144_000),
+        ];
+        assert!(ledger.admit_word_slots(&initial, &held).grants_mutation());
+        assert!(ledger.unresolved_word_target_groups(&owner).is_empty());
+        let pins = |start, end| {
+            [
+                WordPin::new(24_000, 40_000, "krople").with_decode_window(start, end),
+                WordPin::new(40_000, 42_000, "z").with_decode_window(start, end),
+                WordPin::new(42_000, 60_000, "gentamicyną").with_decode_window(start, end),
+            ]
+        };
+        let end = if complete { 152_000 } else { 60_000 };
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        ledger.admit_word_slots(&first, &pins(8_000, end));
+        assert_eq!(ledger.text_of(&owner), Some("krople z kentamycyną"));
+        if complete {
+            assert!(
+                ledger.word_choices().iter().any(|choice| {
+                    choice.candidate.surface.contains("gentamicyną") && !choice.accepted
+                }),
+                "the first complete geometry must reach lexical adjudication"
+            );
+            let replay =
+                ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+            ledger.admit_word_slots(&replay, &pins(8_000, end));
+            assert_eq!(ledger.text_of(&owner), Some("krople z kentamycyną"));
+            let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 4, 4, owner.clone());
+            ledger.admit_word_slots(&fresh, &pins(16_000, 160_000));
+            assert_eq!(ledger.text_of(&owner), Some("krople z gentamicyną"));
+        }
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 3);
+        assert!(ledger.word_deletions().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
 pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> AcousticLedger {
     measured_ledger_at_rate(owner, pcm, 16_000)
 }

@@ -6816,9 +6816,11 @@ fn admit_retained_unowned_words(
             if owner.sample_end > before
                 || (owner.sample_start == decode.sample_start && decode.sample_start != 0)
                 || state.fusion.as_ref().is_none_or(|fusion| {
-                    fusion.ledger().utterances().iter().any(|utterance| {
-                        range_overlaps_occurrence(&utterance.range, &owner)
-                    })
+                    fusion
+                        .ledger()
+                        .utterances()
+                        .iter()
+                        .any(|utterance| range_overlaps_occurrence(&utterance.range, &owner))
                 })
             {
                 continue;
