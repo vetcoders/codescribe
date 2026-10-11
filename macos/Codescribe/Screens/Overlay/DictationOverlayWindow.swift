@@ -31,6 +31,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var dragMoved = false
   private var resizeStart: (mouse: NSPoint, frame: NSRect, edge: OverlayResizeHit.Edge)?
   private var requestedResizeSize: NSSize?
+  private var pendingResizePoint: NSPoint?
+  private var resizePaintTask: Task<Void, Never>?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
@@ -261,8 +263,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     switch event.type {
     case .leftMouseDragged where isUserResizing:
-      updateUserResize(to: screenPoint(for: event))
+      scheduleUserResize(to: screenPoint(for: event))
     case .leftMouseUp where isUserResizing:
+      pendingResizePoint = screenPoint(for: event)
       endUserResize()
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       settleFrameTransition()
@@ -311,8 +314,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
   }
 
-  /// Track the edge gesture through the ordinary event loop, so SwiftUI can
-  /// commit each layout before AppKit presents the next window frame.
+  /// Keep only the latest pointer within a display beat. Reflowing SwiftUI
+  /// synchronously for every queued drag event leaves the pointer behind.
+  private func scheduleUserResize(to point: NSPoint) {
+    pendingResizePoint = point
+    guard resizePaintTask == nil else { return }
+    let framesPerSecond = max(30, min(screen?.maximumFramesPerSecond ?? 60, 120))
+    let delay = Duration.nanoseconds(1_000_000_000 / framesPerSecond)
+    resizePaintTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: delay)
+      guard !Task.isCancelled, let self else { return }
+      self.flushPendingResize()
+    }
+  }
+
+  private func flushPendingResize() {
+    resizePaintTask?.cancel()
+    resizePaintTask = nil
+    guard let point = pendingResizePoint else { return }
+    pendingResizePoint = nil
+    updateUserResize(to: point)
+  }
+
   @discardableResult
   func beginUserResize(edge: OverlayResizeHit.Edge, at point: NSPoint) -> Bool {
     guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing,
@@ -337,14 +360,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // Track the fold intent independently of the painted frame. Expanded
     // content cannot fit inside a strip while the gesture is still active.
     requestedResizeSize = requested.size
-    let floor = DictationOverlayWindow.minimumSize(for: presentationMode)
-    var target = requested
-    target.size = NSSize(
-      width: max(requested.width, floor.width), height: max(requested.height, floor.height))
-    // Morphology always pivots on the upper-right corner, regardless of
-    // which edge the Founder grabs. Only a window drag moves the pin.
-    target.origin = NSPoint(
-      x: resizeStart.frame.maxX - target.width, y: resizeStart.frame.maxY - target.height)
+    // The grabbed edge follows the pointer; its opposite edge stays fixed.
+    // Upper-right anchoring belongs to presentation-mode morphs, not gestures.
+    let target = OverlayResizeHit.apply(
+      edge: resizeStart.edge, start: resizeStart.frame,
+      dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
+      minSize: DictationOverlayWindow.minimumSize(for: presentationMode))
     guard target != frame else { return false }
     // Do not force an intermediate paint while hosting geometry is invalidated.
     setFrame(target, display: false)
@@ -352,6 +373,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func endUserResize() {
+    flushPendingResize()
     guard let resizeStart else { return }
     let requested = requestedResizeSize ?? frame.size
     let changed = frame.size != resizeStart.frame.size || requested != resizeStart.frame.size
@@ -382,6 +404,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Closing a panel must not flush a deferred show or revive its geometry.
   private func cancelUserResize() {
+    resizePaintTask?.cancel()
+    resizePaintTask = nil
+    pendingResizePoint = nil
     resizeStart = nil
     requestedResizeSize = nil
     pendingResizePresentation = nil
