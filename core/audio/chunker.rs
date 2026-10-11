@@ -1365,9 +1365,8 @@ impl SpeechSession {
         self.vad_resample_buf.len()
     }
 
-    /// Pre-roll size in raw samples (test-only accessor).
-    #[cfg(test)]
-    pub fn pre_roll_raw(&self) -> usize {
+    /// Pre-roll already included in the raw segment's opening boundary.
+    pub(crate) fn pre_roll_raw(&self) -> usize {
         self.pre_roll_raw
     }
 
