@@ -1066,6 +1066,7 @@ struct DictationOverlayView: View {
         isEditable: state.isTranscriptEditable && !state.isCollapsed,
         appearance: palette.appearance,
         showsDiagnostics: showsDiagnostics,
+        showsActivityUnderline: overlayVisible && state.animatesTranscriptCaret,
         contentInsets: NSEdgeInsets(
           top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
         onEditingChanged: { editing in
@@ -1077,15 +1078,6 @@ struct DictationOverlayView: View {
         onTeachUncertainWord: { state.teachUncertainWord($0, canonical: $1) }
       )
       .modifier(OverlayScrollEdgeEffects())
-      .overlay(alignment: .bottomTrailing) {
-        // The decorative caret yields to the real insertion point while the
-        // canvas is being edited.
-        if !state.isEditingTranscript {
-          BlinkingCaret(animating: overlayVisible && state.animatesTranscriptCaret)
-            .padding(.trailing, 3)
-            .allowsHitTesting(false)
-        }
-      }
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
       // The empty branch is absence of a hint, not copy, so it stays verbatim.
