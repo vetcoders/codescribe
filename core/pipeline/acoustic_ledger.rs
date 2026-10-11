@@ -929,8 +929,9 @@ impl AcousticLedger {
         }
     }
 
-    /// Carry a saved decoder-edge candidate into the existing rejected-pin
-    /// accounting at terminal drain. Its window is provenance, not success.
+    /// Carry a decoder-edge candidate into the existing rejected-pin accounting
+    /// before live admission or at terminal drain. Its window is provenance,
+    /// not success, and the original pin need not have a midpoint owner.
     pub(crate) fn retain_rejected_decode_word(
         &mut self,
         observation: &ObservationIdentity,
