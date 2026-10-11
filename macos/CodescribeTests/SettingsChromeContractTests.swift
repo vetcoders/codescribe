@@ -263,7 +263,10 @@ final class SettingsChromeContractTests: XCTestCase {
     let panel = try XCTUnwrap(sources["ProvidersPanel.swift"])
     let rows = try XCTUnwrap(sources["KeyRows.swift"])
 
-    XCTAssertEqual(panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count, 3)
+    let nativeAdvancedCount = panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count - 1
+    let boundProviderAdvancedCount =
+      panel.components(separatedBy: "DisclosureGroup(isExpanded: $showingAdvanced)").count - 1
+    XCTAssertEqual(nativeAdvancedCount + boundProviderAdvancedCount, 2)
     XCTAssertTrue(panel.contains("String(localized: \"Providers\")"))
     XCTAssertFalse(panel.contains("\"Providers.\""))
     XCTAssertFalse(panel.contains("factory endpoint"))
