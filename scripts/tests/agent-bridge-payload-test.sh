@@ -42,7 +42,15 @@ expected = {
     if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
-expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie"})
+expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py"})
+expected.update({
+    "plugins/.claude-plugin/marketplace.json",
+    "plugins/codescribe/.claude-plugin/plugin.json",
+    "plugins/codescribe/.mcp.json",
+    "plugins/codescribe/hooks/hooks.json",
+    "plugins/codescribe/hooks/session.py",
+    "plugins/codescribe/skills/codescribe/SKILL.md",
+})
 listed = {entry["path"] for entry in manifest["files"]}
 actual = {
     path.relative_to(payload).as_posix()
@@ -76,7 +84,8 @@ FAKE_ROOT="$WORKDIR/unsafe-repo"
 mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
-cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$FAKE_ROOT/scripts/"
+cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$ROOT/scripts/bus-mcp.py" "$FAKE_ROOT/scripts/"
+cp -R "$ROOT/plugins" "$FAKE_ROOT/plugins"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
 if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \
   >"$WORKDIR/unsafe-root.out" 2>"$WORKDIR/unsafe-root.err"; then
@@ -128,6 +137,14 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
 LOCAL_BIN="$WORKDIR/home/.local/bin"
 test ! -L "$LOCAL_BIN/cs-bus"
 test ! -L "$LOCAL_BIN/cs-say"
+test -f "$LOCAL_BIN/bus-mcp.py"
+test ! -x "$LOCAL_BIN/bus-mcp.py"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$LOCAL_BIN/cs-bus" --mcp >"$WORKDIR/native-mcp.json"
+python3 - "$WORKDIR/native-mcp.json" <<'PY'
+import json,sys
+tools = json.load(open(sys.argv[1]))["result"]["tools"]
+assert any(tool["name"] == "codescribe_wait" for tool in tools)
+PY
 test -f "$LOCAL_BIN/cs-junie"
 test ! -L "$LOCAL_BIN/cs-junie"
 "$LOCAL_BIN/cs-junie" --help | grep -q -- '--channel'

@@ -174,8 +174,10 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     shutil.copyfile(source, repo / "scripts/build-app.sh")
     (repo / "Cargo.toml").write_text('version = "9.8.7"\n')
     (repo / "skills/codescribe/SKILL.md").write_text("fixture skill\n")
-    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie"]:
+    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py"]:
         (repo / "scripts" / entry).write_text("# fixture helper\n")
+    (repo / "plugins/.claude-plugin").mkdir(parents=True)
+    (repo / "plugins/.claude-plugin/marketplace.json").write_text('{"name":"fixture","plugins":[]}\n')
     (repo / "scripts/lib").mkdir()
     for helper in ["generate-swift-bindings.sh", "refresh-agent-publisher-manifest.py"]:
         shutil.copyfile(helpers / helper, repo / "scripts/lib" / helper)
