@@ -400,7 +400,7 @@ impl AcousticLedger {
             // A dictionary spelling change keeps the exact measured word.
             // A merge, split, formatter or new geometry cannot borrow that
             // completeness. Walk only earlier operations, even on bad history.
-            let Some((index, operation)) = self.slot_operations[..history_end]
+            let (index, operation) = self.slot_operations[..history_end]
                 .iter()
                 .enumerate()
                 .rev()
@@ -413,10 +413,7 @@ impl AcousticLedger {
                         && operation.sources[0].sample_end == word.sample_end
                         && operation.sources[0].observation.occurrence
                             == word.observation.occurrence
-                })
-            else {
-                return None;
-            };
+                })?;
             history_end = index;
             word = &operation.sources[0];
         }
@@ -463,6 +460,60 @@ impl AcousticLedger {
         .then_some(speech)
     }
 
+    fn decode_fence_is_quiet(&self, owner: &OccurrenceIdentity, start: u64, end: u64) -> bool {
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            .div_ceil(50)
+            .saturating_add(1);
+        let Some(energy) = &self.decode_fence_energy else {
+            return false;
+        };
+        end.checked_sub(start) == Some(resolution)
+            && energy.captured_samples >= end
+            // Authenticate the writer over the whole bounded uncertainty.
+            // Exact retained PCM then measures quiet, not a clipped hop label.
+            && energy
+                .owner
+                .voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
+                .is_some()
+            && energy.quiet_ranges.iter().any(|quiet| {
+                quiet.same_capture(owner)
+                    && quiet.sample_start == start
+                    && quiet.sample_end == end
+            })
+    }
+
+    pub(super) fn decode_word_onset_complete(
+        &self,
+        owner: &OccurrenceIdentity,
+        start: u64,
+        end: u64,
+        word_start: u64,
+    ) -> bool {
+        if start >= end || word_start < start || word_start >= end {
+            return false;
+        }
+        if word_start > start {
+            return true;
+        }
+        let Some(energy) = &self.decode_fence_energy else {
+            return false;
+        };
+        if energy.captured_samples < end
+            || energy
+                .owner
+                .voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
+                .is_none()
+        {
+            return false;
+        }
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            .div_ceil(50)
+            .saturating_add(1);
+        start.checked_add(resolution).is_some_and(|edge_end| {
+            edge_end <= end && self.decode_fence_is_quiet(owner, start, edge_end)
+        })
+    }
+
     /// Whisper Word alignment uses 20 ms encoder frames (word_pins.rs),
     /// converted onto the capture clock with at most one sample of rounding.
     /// This uncertainty is geometry, never a wait or an extension of issued PCM.
@@ -500,30 +551,10 @@ impl AcousticLedger {
         if !crosses && word_end < end {
             return false;
         }
-        let Some(energy) = &self.decode_fence_energy else {
-            return true;
-        };
-        if energy.captured_samples < end {
-            return true;
-        }
         // Clipping a classified capture block does not measure its quiet end.
-        // Authenticate the writer over the entire bounded uncertainty before
-        // consulting the exact retained PCM receipt. A finite downstream view
-        // cannot overrule missing, foreign, invalid or discontinuous capture.
+        // Use the same authenticated exact-PCM predicate as at the onset.
         let edge_start = end.saturating_sub(resolution).max(start);
-        if energy
-            .owner
-            .voiced_hops_in(&window.session, window.capture_epoch, edge_start, end)
-            .is_none()
-        {
-            return true;
-        }
-        !energy.quiet_range.as_ref().is_some_and(|quiet| {
-            quiet.same_capture(&window)
-                && quiet.sample_start == edge_start
-                && quiet.sample_end == end
-                && quiet.sample_end - quiet.sample_start == resolution
-        })
+        !self.decode_fence_is_quiet(&window, edge_start, end)
     }
 
     /// An empty final can account only for measured quiet or speech already
@@ -1577,43 +1608,47 @@ impl AcousticLedger {
         self.speech_evidence = Some(speech.clone());
     }
 
-    /// Retain the existing capture owner and a bounded exact-PCM quiet receipt.
+    /// Retain the existing capture owner and at most two exact-PCM quiet receipts.
     /// Coverage and successful source-work accounting keep their own snapshot.
     pub(crate) fn record_decode_fence_energy(
         &mut self,
         energy: &crate::audio::capture_receipt::CaptureEnergyOwner,
         captured_samples: u64,
-        edge: Option<(&OccurrenceIdentity, &[f32])>,
+        edges: [Option<(&OccurrenceIdentity, &[f32])>; 2],
     ) {
         use crate::audio::capture_receipt::ACTIVE_SPEECH_LINEAR_FLOOR;
 
         let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
             .div_ceil(50)
             .saturating_add(1);
-        let quiet_range = edge.and_then(|(range, samples)| {
-            if !range.is_anchored()
-                || !energy
-                    .identity()
-                    .matches(&range.session, range.capture_epoch)
-                || range.sample_end > captured_samples
-                || range.sample_end - range.sample_start != resolution
-                || samples.len() as u64 != resolution
-                || samples.iter().any(|sample| !sample.is_finite())
-            {
-                return None;
-            }
-            // Same sum-of-squares RMS and active floor as push_samples, now
-            // over actual edge PCM. A single zero crossing cannot prove quiet.
-            let sum_sq = samples.iter().fold(0.0_f64, |sum, sample| {
-                sum + f64::from(*sample) * f64::from(*sample)
-            });
-            let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
-            (rms.is_finite() && rms < ACTIVE_SPEECH_LINEAR_FLOOR).then(|| range.clone())
-        });
+        let quiet_ranges = edges
+            .into_iter()
+            .flatten()
+            .filter_map(|(range, samples)| {
+                if !range.is_anchored()
+                    || !energy
+                        .identity()
+                        .matches(&range.session, range.capture_epoch)
+                    || range.sample_end > captured_samples
+                    || range.sample_end - range.sample_start != resolution
+                    || samples.len() as u64 != resolution
+                    || samples.iter().any(|sample| !sample.is_finite())
+                {
+                    return None;
+                }
+                // Same sum-of-squares RMS and active floor as push_samples, now
+                // over actual edge PCM. A single zero crossing cannot prove quiet.
+                let sum_sq = samples.iter().fold(0.0_f64, |sum, sample| {
+                    sum + f64::from(*sample) * f64::from(*sample)
+                });
+                let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+                (rms.is_finite() && rms < ACTIVE_SPEECH_LINEAR_FLOOR).then(|| range.clone())
+            })
+            .collect();
         self.decode_fence_energy = Some(DecodeFenceEnergy {
             owner: energy.clone(),
             captured_samples,
-            quiet_range,
+            quiet_ranges,
         });
     }
 
