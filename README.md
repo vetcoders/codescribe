@@ -84,6 +84,14 @@ flowchart TB
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
+### Junie plugin
+
+`cs-junie --name junie --channel 6 --project /path/to/repo` connects a persistent
+Junie ACP session to Codescribe. Messages start agent turns directly; idle time
+does not call the model, and no terminal-output wakeup is required. Add `--speak`
+to use the existing voice profile. Install with `make install-bus`.
+See [setup, permissions and recovery](docs/JUNIE_PLUGIN.md).
+
 ## OpenAI Provider
 
 Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI formatting and assistive mode.
