@@ -33,6 +33,17 @@ it in command arguments, shell history or logs. Other access or validation
 errors require diagnosis, not an overwrite or Keychain reset. Prove profile
 access with history and a known recorded submission before starting the build.
 
+Keep that GUI session unlocked and connected through submission, stapling and
+verification. A screen lock can make the data protection keychain unavailable;
+`notarytool` may report `No Keychain password item found for profile` even though
+the profile still exists. After unlocking the same session, retry only the
+read-only history/info checks before considering any credential write. The
+Sztudio standard lane reproduced this access failure and recovered the existing
+profile without re-creating it. See
+[Apple DTS guidance](https://developer.apple.com/forums/thread/769902).
+Do not disconnect a remote display to reduce controller load during this lane;
+minimize its window while retaining the connection.
+
 Developer ID signing is a separate requirement. Seeing an identity or reading
 Apple history does not prove access to its private key. On Sztudio the existing
 signer may be in `pensieve-build`; resolve any native unlock prompt in the
@@ -52,7 +63,10 @@ erase inherited SSH environment markers; verify the real terminal ancestry and
 environment rather than clearing markers to make the context guard pass.
 
 After any documentation checkpoint, freeze the actual full source SHA and a
-clean tracked tree. The normal command is:
+clean tracked tree. Check `rustc --version` and `cargo --version` in this native
+shell: the workspace requires Rust 1.94 or later. If an older Homebrew compiler
+wins PATH, select an existing supported toolchain for this process; do not alter
+global shell or rustup configuration as part of the release. The normal command is:
 
 ```sh
 make release-standard CODESCRIBE_DIST_CODESIGN_IDENTITY='Developer ID Application: Maciej Gad (MW223P3NPX)'
