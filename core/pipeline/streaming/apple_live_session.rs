@@ -8539,8 +8539,8 @@ fn apple_stream_worker(
     })
 }
 
-/// Whether an open partial must be frozen before accepting a collapsed next
-/// hypothesis from SFSpeech.
+/// Text-only candidate for retaining an open partial across an SFSpeech restart.
+/// The live caller must also veto freezing when the measured onsets overlap.
 ///
 /// # Named drop mechanism: `shared_opener_restart_suppresses_freeze`
 ///
@@ -8555,16 +8555,71 @@ fn apple_stream_worker(
 /// collapse onto a short shared opener overwrote the prior utterance without
 /// sealing it.
 ///
-/// Freeze whenever `next` does not retain `prev` in full. The old restart
-/// thresholds classify telemetry only; revision and same-phrase rewind are
-/// retained too because this call site otherwise overwrites the only copy.
-/// Kept in lockstep with `SfSpeechPhraseAccumulator` in the Swift bridge.
+/// Absence of forward text containment nominates a retention candidate, not a
+/// new physical phrase. Measured revisions use `apple_partials_share_onset` to
+/// keep that candidate out of final admission. The Swift accumulator applies
+/// the same two checks before appending to its final phrase history.
 pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
     phrase_retention_reason(prev, next).is_some()
 }
 
-/// Telemetry classification for a retention decision. Text safety depends
-/// only on forward containment, never on the restart/revision classifier.
+/// Both observations must start with a valid timed segment over the same onset.
+/// Touching intervals are disjoint; an invalid first segment cannot borrow a
+/// later word's timing. This only vetoes a synthetic final, never admits words.
+pub(crate) fn apple_partials_share_onset(
+    previous: &[TranscriptSegment],
+    next: &[TranscriptSegment],
+) -> bool {
+    let (Some(previous), Some(next)) = (previous.first(), next.first()) else {
+        return false;
+    };
+    if previous.text.trim().is_empty()
+        || next.text.trim().is_empty()
+        || !previous.start_ts.is_finite()
+        || !previous.end_ts.is_finite()
+        || !next.start_ts.is_finite()
+        || !next.end_ts.is_finite()
+        || previous.start_ts < 0.0
+        || next.start_ts < 0.0
+        || previous.end_ts <= previous.start_ts
+        || next.end_ts <= next.start_ts
+    {
+        return false;
+    }
+    previous.start_ts < next.end_ts && next.start_ts < previous.end_ts
+}
+
+/// A valid later onset follows the complete timed extent of the prior phrase.
+/// This retains physical repetitions even when their labels are identical.
+/// No earlier segment may lack timing or extend beyond the claimed boundary.
+pub(crate) fn apple_partials_are_disjoint(
+    previous: &[TranscriptSegment],
+    next: &[TranscriptSegment],
+) -> bool {
+    let Some(next) = next.first() else {
+        return false;
+    };
+    if next.text.trim().is_empty()
+        || !next.start_ts.is_finite()
+        || !next.end_ts.is_finite()
+        || next.start_ts < 0.0
+        || next.end_ts <= next.start_ts
+        || previous.is_empty()
+    {
+        return false;
+    }
+    previous.iter().all(|segment| {
+        !segment.text.trim().is_empty()
+            && segment.start_ts.is_finite()
+            && segment.end_ts.is_finite()
+            && segment.start_ts >= 0.0
+            && segment.end_ts > segment.start_ts
+            && segment.end_ts <= next.start_ts
+    })
+}
+
+/// Telemetry classification for a text-only retention candidate. This does not
+/// override the measured onset veto in the live caller.
 fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
     let prev = prev.trim();
     let next = next.trim();
@@ -8656,9 +8711,9 @@ fn phrase_final_disposition(
 /// epoch close does not open that window; arming alone never admits a summary.
 /// Admitted summaries use the existing physical admission and replay receipts.
 ///
-/// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
-/// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
-/// cannot eat a whole utterance before the bridge emits a `final`.
+/// On `Partial`, a collapsed restart retains the prior hypothesis unless both
+/// partials carry the same measured onset. That revision updates the open
+/// hypothesis without promoting the superseded wording to a separate final.
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -8686,12 +8741,20 @@ fn emit_stream_events(
             LiveStreamEvent::Partial { text, segments } => {
                 state.finishing_phrase_id = None;
                 state.observe_apple_progress(&text, &segments);
-                // Safety net for the named drop mechanism: if the bridge
-                // missed a freeze (shared opener collapse), seal the open
-                // partial here before the rewrite lands.
-                if phrase_restart_should_freeze_prior(&state.open_partial, &text) {
-                    let reason = phrase_retention_reason(&state.open_partial, &text)
-                        .expect("freeze decision must carry a telemetry reason");
+                // Recover a missed phrase restart without freezing a correction
+                // over the same onset that the bridge deliberately left open.
+                let disjoint_restart =
+                    apple_partials_are_disjoint(&state.open_partial_segments, &segments);
+                if (disjoint_restart
+                    || phrase_restart_should_freeze_prior(&state.open_partial, &text))
+                    && !apple_partials_share_onset(&state.open_partial_segments, &segments)
+                {
+                    let reason = if disjoint_restart {
+                        "disjoint_pcm_restart"
+                    } else {
+                        phrase_retention_reason(&state.open_partial, &text)
+                            .expect("text restart candidate must carry a telemetry reason")
+                    };
                     let frozen = state.open_partial.clone();
                     info!(
                         audio_secs,
