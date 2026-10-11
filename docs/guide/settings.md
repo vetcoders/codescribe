@@ -17,7 +17,7 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 ## Open Settings
 
 - Menu bar icon → **Settings**
-- Chat Overlay → **Settings** tab
+- The floating overlay has no Settings tab; open the native Settings window from the menu bar.
 
 ## Creator
 
@@ -743,6 +743,12 @@ learned, and where the active rules come from.
   variant → canonical pair the engine applies). A vocabulary correction is not
   a learned rule; nothing here implies otherwise. They are stated once for the
   page — no section heading repeats them.
+- **Recent corrections** is a filtered list, not a list of every recording.
+  A saved take is eligible when normalized delivered or edited text differs
+  from raw STT, or it has confidence telemetry (average log probability, speech
+  percentage or confidence flags). A new unchanged take without that telemetry
+  does not move the latest correction date. An old correction date alone does
+  not prove recording or persistence stopped.
 - **Recent corrections** — the heading carries the pager (_‹ 2 of 12 ›_), so
   the card below starts with the take itself: date and time in bold, then one
   quiet line with the version, how the take ended when it was not a saved
@@ -784,6 +790,15 @@ learned, and where the active rules come from.
   canonical text remain selectable. Up to five rules read as a list, more are
   paged. Rules cannot be edited or removed from the app yet;
   see [CONFIG.md](../CONFIG.md) for the lexicon files.
+- **Word pins and PCM slots** — expand this separate, read-only view to inspect
+  recorded word slots. Choose a recording or **Latest recorded slots**, then
+  select a pin to see its label, position within its occurrence, time range,
+  sample range/rate, capture epoch and producer/request/generation. **Recorded
+  adjudication** exposes the saved decision. While expanded, the view refreshes
+  every two seconds; **Refresh** requests another read. It reads session slot
+  receipts, not the correction date or a guessed match by transcript text.
+  A missing receipt is shown as missing; Silero or CTC evidence is not invented.
+  Slot timing does not certify seal, complete word coverage or external paste.
 - **Diagnostic details** — at the very bottom, closed by default: the count of
   records without confidence telemetry. It describes the records, not the
   engine, and nothing in it is actionable. Real failures — an unavailable

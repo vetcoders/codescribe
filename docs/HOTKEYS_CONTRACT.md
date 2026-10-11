@@ -6,12 +6,16 @@ Overlay size is selected explicitly. Each ordinary preview-button click advances
 mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
 is the shared pin: the strip grows leftward and the transcript grows downward,
 with display containment applied when the full target cannot fit. The context
-menu also selects any of the three modes directly. All forms support edge
-resizing around that same pin. On release, a height of at least 153 pt selects
-regular; below that, width below 305 pt selects mini and larger width selects
-midi. Compact forms settle to their readable strip sizes; regular retains
-the manually chosen size with its 320 × 260 pt readability floor. Moving the
-window relocates the pin. Pointer entry
+menu also selects any of the three modes directly. Mini is fixed; midi supports
+horizontal resize; regular supports edge and corner resize around that same pin.
+Settled native floors are mini 200 × 46 pt, midi 410 × 46 pt and regular
+320 × 260 pt. During a drag, the painted frame respects the current form's floor.
+The panel separately retains the requested gesture size: on release, requested
+height of at least 153 pt selects regular; below that, requested width below
+305 pt selects mini and larger width selects midi. Thus release-to-fold remains
+available without crushing the current presentation during the drag. Compact
+forms settle to their strip sizes; regular retains its manual size above its
+readability floor. Moving the window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
 
@@ -66,8 +70,21 @@ Each reply's **Play** invokes the installed bus speech owner with its persisted
 reply ID and a fresh playback ticket. **Stop** names the exact emitted active
 ticket and provider session. These controls do not use the built-in chat player.
 The existing voice profiles, microphone interlock and serialization apply;
-failed or refused speech leaves reply text visible. Tab changes never schedule
-historical replay or start extra offscreen sound.
+failed or refused speech leaves reply text visible. Conversation selection never
+schedules historical replay or starts extra offscreen sound.
+
+The per-agent speaker controls automatic playback for the exact provider/session
+and bus. A manual Play is still explicit while that agent is muted. The channel-0
+speaker is the global playback switch: it also covers manual playback and future
+channels, without rewriting individual preferences. The UI confirms a change by
+reading the playback owner's durable receipt; an error is not a confirmed mute.
+The reported save failure remains open as of the 801 UI source cut.
+
+On macOS 15+, the conversation's native size-change scroll anchor owns resize
+anchoring; geometry changes do not also issue a proxy scrollTo. macOS 14 keeps
+the proxy path. Explicit return-to-current and new-message following remain
+separate from resize. This source change does not certify absence of transient
+flicker on a live window.
 
 Opening a capture channel follows the exact provider/session conversation and
 scrolls to its newest message. New messages on that open channel keep the latest
