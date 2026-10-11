@@ -1917,3 +1917,295 @@ fn integrator_v27_negation_dispute_collects_only_fresh_lexical_evidence() {
         }
     }
 }
+
+fn integrator_coarse_return_fixture(
+    name: &str,
+    neighbor: Option<u64>,
+) -> (
+    AcousticLedger,
+    OccurrenceIdentity,
+    super::word_adjudication::WordTrial,
+    Vec<WordPin>,
+) {
+    let owner = OccurrenceIdentity::new(
+        name,
+        1,
+        48_000,
+        if neighbor.is_some() { 120_000 } else { 88_000 },
+    );
+    let mut pcm = vec![0.0; 192_000];
+    for start in [48_000, 64_000, 80_000] {
+        pcm[start..start + 8_000].fill(0.2);
+    }
+    if neighbor.is_some() {
+        pcm[104_000..120_000].fill(0.2);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    ledger.schedule_frontier(
+        owner.clone(),
+        [ObservationProducer::Apple, ObservationProducer::Whisper],
+    );
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+    let receipt = if neighbor.is_some() {
+        ledger.admit_word_slots(&apple, &[WordPin::new(48_000, 88_000, "nie robią teraz")])
+    } else {
+        ledger.admit(&apple, "nie robią teraz")
+    };
+    assert!(receipt.grants_mutation());
+    assert!(ledger.coarse_word_source(&ledger.slots_of(&owner).unwrap()[0]));
+    let words = ["nie", "lepią", "teraz"]
+        .into_iter()
+        .zip([48_000, 64_000, 80_000])
+        .map(|(text, start)| WordPin::new(start, start + 8_000, text))
+        .collect::<Vec<_>>();
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    let first_pins = words
+        .iter()
+        .cloned()
+        .map(|word| word.with_decode_window(0, 160_000))
+        .collect::<Vec<_>>();
+    assert!(
+        !ledger
+            .admit_word_slots(&first, &first_pins)
+            .grants_mutation()
+    );
+    let before = ledger.slots_of(&owner).unwrap().to_vec();
+    let trial = ledger
+        .next_word_trial_before_horizon(
+            false,
+            None,
+            Some((48_000, 0..192_000)),
+            owner.sample_end.max(96_000),
+        )
+        .expect("reserve the disputed coarse group through the normal live scheduler");
+    assert_eq!(trial.targets.len(), 1);
+    assert_eq!(trial.targets[0], SlotTarget::from(&before[0]));
+    assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+    if let Some(start) = neighbor {
+        let neighbor_observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 4, 2, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &neighbor_observation,
+                    &[WordPin::new(start, 120_000, "chroniony sąsiad")],
+                )
+                .grants_mutation()
+        );
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(SlotTarget::from(&slots[0]), trial.targets[0]);
+        assert!(!trial.targets.contains(&SlotTarget::from(&slots[1])));
+    }
+    let returned = words
+        .into_iter()
+        .map(|word| word.with_decode_window(16_000, 144_000))
+        .collect();
+    (ledger, owner, trial, returned)
+}
+
+#[test]
+fn integrator_v28_coarse_return_refuses_clipping_and_partial_partitions() {
+    for case in ["onset", "end", "missing", "cross_left", "cross_right"] {
+        let (mut ledger, owner, trial, mut pins) =
+            integrator_coarse_return_fixture(&format!("coarse-return-{case}"), None);
+        match case {
+            "onset" => {
+                pins = pins
+                    .into_iter()
+                    .map(|word| word.with_decode_window(48_000, 144_000))
+                    .collect();
+            }
+            "end" => {
+                pins = pins
+                    .into_iter()
+                    .map(|word| word.with_decode_window(16_000, 87_999))
+                    .collect();
+            }
+            "missing" => {
+                pins.pop();
+            }
+            "cross_left" => pins[0].sample_start -= 1,
+            "cross_right" => pins[2].sample_end += 1,
+            _ => unreachable!(),
+        }
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let answer = ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+        let receipt = ledger.admit_word_trial(&trial, &answer, &pins, &pins);
+        assert!(!receipt.grants_mutation(), "{case}");
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before, "{case}");
+        assert!(
+            ledger
+                .next_word_trial_before_horizon(false, None, Some((48_000, 0..192_000)), 96_000)
+                .is_none(),
+            "{case}: an incomplete answer does not renew the native budget"
+        );
+        assert_eq!(ledger.conservation().residue(), 0, "{case}");
+    }
+}
+
+#[test]
+fn integrator_v28_coarse_return_preserves_an_unreserved_neighbor() {
+    for crossing in [false, true] {
+        let (mut ledger, owner, trial, mut pins) =
+            integrator_coarse_return_fixture(&format!("coarse-neighbor-{crossing}"), Some(104_000));
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(before.len(), 2);
+        let neighbor = before[1].clone();
+        assert!(ledger.coarse_word_source(&neighbor));
+        assert!(!trial.targets.contains(&SlotTarget::from(&neighbor)));
+        if crossing {
+            // A retimed child crosses both the reserved boundary and the
+            // physically separate, unreserved phrase. It cannot cover either.
+            pins[2].sample_end = 112_000;
+        } else {
+            // Decoder context outside the reserved target must not rewrite
+            // the neighbor, while valid evidence can resolve the actual target.
+            pins.push(
+                WordPin::new(104_000, 120_000, "zmyślony sąsiad")
+                    .with_decode_window(16_000, 144_000),
+            );
+        }
+        let answer = ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+        let receipt = ledger.admit_word_trial(&trial, &answer, &pins, &pins);
+        assert_eq!(receipt.grants_mutation(), !crossing, "crossing={crossing}");
+        assert_eq!(ledger.slots_of(&owner).unwrap().last(), Some(&neighbor));
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(if crossing {
+                "nie robią teraz chroniony sąsiad"
+            } else {
+                "nie lepią teraz chroniony sąsiad"
+            })
+        );
+        if crossing {
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        }
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn integrator_v28_coarse_return_vetoes_an_overlapping_unreserved_source() {
+    let (mut ledger, owner, trial, pins) =
+        integrator_coarse_return_fixture("coarse-neighbor-overlap", Some(86_000));
+    let before = ledger.slots_of(&owner).unwrap().to_vec();
+    assert!(
+        pins.iter()
+            .all(|pin| pin.sample_start >= 48_000 && pin.sample_end <= 88_000)
+    );
+    assert!(pins[2].sample_end > before[1].sample_start);
+    let answer = ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+    assert!(
+        !ledger
+            .admit_word_trial(&trial, &answer, &pins, &pins)
+            .grants_mutation()
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+    assert!(
+        ledger
+            .next_word_trial_before_horizon(false, None, Some((48_000, 0..192_000)), 120_000)
+            .is_none()
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn integrator_v29_native_three_apple_pins_cannot_contract_to_two_whisper_pins() {
+    // Native timestamp geometry; generated fixture PCM is not the human take.
+    let owner = OccurrenceIdentity::new("v29-native-pin-geometry", 1, 997_632, 1_081_344);
+    let mut pcm = vec![0.0; 1_200_000];
+    pcm[1_022_496..1_055_616].fill(0.2);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, 48_000);
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+    let source_pins = [
+        WordPin::new(1_022_496, 1_039_776, "liczę"),
+        WordPin::new(1_039_776, 1_045_536, "na"),
+        WordPin::new(1_045_536, 1_055_616, "to"),
+    ];
+    assert!(
+        ledger
+            .admit_word_slots(&apple, &source_pins)
+            .grants_mutation()
+    );
+    let before = ledger.slots_of(&owner).unwrap().to_vec();
+    assert_eq!(before.len(), 3);
+    assert!(before.iter().all(|slot| !ledger.complete_word_slot(slot)));
+    let operation_start = ledger.slot_operations().len();
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let mut whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    let candidate = [
+        WordPin::new(1_031_040, 1_043_520, "Liczę").with_decode_window(720_000, 1_152_000),
+        WordPin::new(1_043_520, 1_052_160, "na").with_decode_window(720_000, 1_152_000),
+    ];
+    corroborate_candidate(&mut ledger, &mut whisper, &candidate, (864_000, 1_169_408));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 3);
+    assert!(
+        ledger.slot_operations()[operation_start..]
+            .iter()
+            .all(|operation| { operation.sources.len() <= operation.outputs.len() }),
+        "fresh lexical agreement cannot retire separate Apple word pins"
+    );
+    assert!(ledger.word_deletions().is_empty());
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn integrator_v29_five_apple_occurrences_survive_fresh_complete_contraction() {
+    let owner = OccurrenceIdentity::new("v29-five-apple-pins", 1, 48_000, 88_000);
+    let mut pcm = vec![0.0; 192_000];
+    for index in 0..5 {
+        pcm[48_000 + index * 8_000..52_000 + index * 8_000].fill(0.2);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+    let pins = (0..5)
+        .map(|index| WordPin::new(48_000 + index * 8_000, 56_000 + index * 8_000, "Iwo"))
+        .collect::<Vec<_>>();
+    assert!(ledger.admit_word_slots(&apple, &pins).grants_mutation());
+    let before = ledger.slots_of(&owner).unwrap().to_vec();
+    assert_eq!(before.len(), 5);
+    assert!(before.iter().all(|slot| !ledger.complete_word_slot(slot)));
+    let operation_start = ledger.slot_operations().len();
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let mut whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    let candidate = [WordPin::new(48_000, 88_000, "Iwo").with_decode_window(0, 160_000)];
+    corroborate_candidate(&mut ledger, &mut whisper, &candidate, (16_000, 144_000));
+    assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+    assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+    assert_eq!(ledger.slot_operations().len(), operation_start);
+    assert!(ledger.word_deletions().is_empty());
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn integrator_v29_three_apple_pins_still_allow_three_independent_corrections() {
+    let owner = OccurrenceIdentity::new("v29-three-to-three", 1, 48_000, 88_000);
+    let mut pcm = vec![0.0; 192_000];
+    for start in [48_000, 64_000, 80_000] {
+        pcm[start..start + 8_000].fill(0.2);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+    let source = ["mój", "kot", "śpi"]
+        .into_iter()
+        .zip([48_000, 64_000, 80_000])
+        .map(|(text, start)| WordPin::new(start, start + 8_000, text))
+        .collect::<Vec<_>>();
+    assert!(ledger.admit_word_slots(&apple, &source).grants_mutation());
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 3);
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let mut whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    let candidate = ["mój", "pies", "śpi"]
+        .into_iter()
+        .zip([48_000, 64_000, 80_000])
+        .map(|(text, start)| {
+            WordPin::new(start, start + 8_000, text).with_decode_window(0, 160_000)
+        })
+        .collect::<Vec<_>>();
+    corroborate_candidate(&mut ledger, &mut whisper, &candidate, (16_000, 144_000));
+    assert_eq!(ledger.text_of(&owner), Some("mój pies śpi"));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 3);
+    assert!(ledger.word_deletions().is_empty());
+    assert_eq!(ledger.conservation().residue(), 0);
+}
