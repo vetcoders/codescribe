@@ -24,6 +24,12 @@ readable floor. A sufficiently small requested drag can select a compact form
 when released; it does not squeeze an expanded transcript into a tiny frame
 while the gesture is still in progress.
 
+During a manual resize the grabbed edge follows the pointer and its opposite
+edge stays fixed. Pointer events are coalesced to the latest position per
+display interval; release applies the final position immediately. Closing the
+overlay cancels any pending resize. Presentation-mode expansion still uses its
+upper-right anchor.
+
 **Keep visible between takes** and the transcription preview controls are
 separate from starting a recording. Selecting a conversation also does not start
 capture or change the destination of a recording already in progress.

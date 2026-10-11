@@ -81,6 +81,97 @@ private final class PositionedOverlayCursorEvent: NSEvent {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testResizeDragBurstDefersIntermediateLayoutsAndFlushesMouseUp() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 300, y: 200, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.contentView = OverlayContentContainer(hosting: NSView())
+    defer { panel.orderOut(nil) }
+    let initial = panel.frame
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let events = (0...21).map { index -> NSEvent in
+      let type: NSEvent.EventType =
+        index == 0
+        ? .leftMouseDown
+        : index == 21 ? .leftMouseUp : .leftMouseDragged
+      let point = NSPoint(x: 2 - CGFloat(min(index, 20)) * 3, y: 200)
+      let event = mouseEvent(
+        type, at: point, in: panel, timestamp: timestamp,
+        eventNumber: 11000 + index)
+      return NSEvent(cgEvent: event.cgEvent!.copy()!)!
+    }
+    panel.sendEvent(events[0])
+    XCTAssertTrue(panel.isUserResizing)
+    for event in events.dropFirst().dropLast() { panel.sendEvent(event) }
+    XCTAssertEqual(
+      panel.frame, initial, "A pointer burst must not synchronously reflow every event")
+    panel.sendEvent(events.last!)
+    XCTAssertEqual(panel.frame.width, initial.width + 60, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, initial.maxX, accuracy: 0.5)
+    XCTAssertFalse(panel.isUserResizing)
+  }
+
+  @MainActor
+  func testQueuedResizePaintsBeforeReleaseAndCannotReviveAfterCancellation() async throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 300, y: 200, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.contentView = OverlayContentContainer(hosting: NSView())
+    defer {
+      panel.invalidatePresence()
+      panel.orderOut(nil)
+    }
+    let initial = panel.frame
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let events = [NSEvent.EventType.leftMouseDown, .leftMouseDragged].enumerated().map {
+      index, type in
+      let event = mouseEvent(
+        type, at: NSPoint(x: 2 - CGFloat(index) * 30, y: 200),
+        in: panel, timestamp: timestamp, eventNumber: 12000 + index)
+      return NSEvent(cgEvent: event.cgEvent!.copy()!)!
+    }
+    for event in events { panel.sendEvent(event) }
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(panel.isUserResizing)
+    XCTAssertEqual(panel.frame.width, initial.width + 30, accuracy: 0.5)
+    let cancelledFrame = panel.frame
+    let lateEvent = mouseEvent(
+      .leftMouseDragged, at: NSPoint(x: -28, y: 200),
+      in: panel, timestamp: timestamp, eventNumber: 12003)
+    panel.sendEvent(lateEvent)
+    panel.invalidatePresence()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertFalse(panel.isUserResizing)
+    XCTAssertEqual(panel.frame, cancelledFrame)
+  }
+
+  @MainActor
+  func testRightCornersFollowPointerAndKeepOppositeCornerFixed() throws {
+    for edge in [OverlayResizeHit.Edge.topRight, .bottomRight] {
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 600, height: 400),
+        styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+        defer: false)
+      defer { panel.orderOut(nil) }
+      let initial = panel.frame
+      XCTAssertTrue(panel.beginUserResize(edge: edge, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 80, y: 60)))
+      XCTAssertEqual(panel.frame.maxX, initial.maxX + 80, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.minX, initial.minX, accuracy: 0.5)
+      if edge == .topRight {
+        XCTAssertEqual(panel.frame.maxY, initial.maxY + 60, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.minY, initial.minY, accuracy: 0.5)
+      } else {
+        XCTAssertEqual(panel.frame.minY, initial.minY + 60, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, initial.maxY, accuracy: 0.5)
+      }
+      panel.endUserResize()
+    }
+  }
+
+  @MainActor
   func testLiveResizeNeverCrushesTheVisiblePresentationBeforeRelease() throws {
     let state = OverlayState.previewFormatted()
     let panel = try XCTUnwrap(
@@ -132,7 +223,7 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
-  func testExpandedCornersStillReachCompactFormsAroundTheSameUpperRightPin() throws {
+  func testExpandedCornersReachCompactFormsAtTheirDraggedEdges() throws {
     let state = OverlayState.previewFormatted()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -177,8 +268,14 @@ final class OverlayResizeHitTests: XCTestCase {
           sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_500)
           panel.settleFrameTransition()
           XCTAssertEqual(state.presentationMode, target, "\(source) → \(target) via \(edge)")
-          XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-          XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+          let paintedWidth = max(targetSize.width, DictationOverlayWindow.minSize.width)
+          let paintedHeight = max(targetSize.height, DictationOverlayWindow.minSize.height)
+          XCTAssertEqual(
+            panel.frame.maxX, left ? pin.x : pin.x - sourceSize.width + paintedWidth,
+            accuracy: 0.5)
+          XCTAssertEqual(
+            panel.frame.maxY, bottom ? pin.y : pin.y - sourceSize.height + paintedHeight,
+            accuracy: 0.5)
           XCTAssertEqual(state.activeText, text)
           XCTAssertEqual(state.captureGeneration, generation)
           XCTAssertFalse(panel.isUserResizing)
@@ -246,7 +343,8 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: edge == .left ? -60 : 60, y: 200)))
       panel.endUserResize()
       XCTAssertEqual(panel.frame.height, initial.height)
-      XCTAssertEqual(panel.frame.maxX, initial.maxX, accuracy: 0.5)
+      XCTAssertEqual(
+        panel.frame.maxX, initial.maxX + (edge == .right ? 60 : 0), accuracy: 0.5)
     }
     XCTAssertEqual(panel.frame.width, initial.width + 120, accuracy: 0.5)
     XCTAssertEqual(
