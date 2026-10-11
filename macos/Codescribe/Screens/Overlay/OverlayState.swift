@@ -704,7 +704,8 @@ final class OverlayState {
     if autoCollapseInteractionHeld {
       autoCollapse.suspend()
     } else {
-      autoCollapse.restartDeadline()
+      autoCollapse.restartDeadline(
+        after: selectedReplyReadingSeconds ?? OverlayAutoCollapse.idleSeconds)
     }
   }
 
@@ -722,11 +723,33 @@ final class OverlayState {
   /// popover), supplied by the panel's owner. Standalone states have none.
   @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
 
+  /// Reading time comes from the canonical text actually selected on screen.
+  /// At 180 words/minute a long reply is not folded on the ten-second idle
+  /// timer. No receipt or document is marked read by this estimate.
+  private var selectedReplyReadingSeconds: TimeInterval? {
+    guard !showsAgentMonitor, let message = selectedConversation?.messages.last,
+      message.kind == .reply
+    else { return nil }
+    return max(
+      OverlayAutoCollapse.idleSeconds,
+      Double(message.text.split(whereSeparator: \.isWhitespace).count) / 3)
+  }
+
+  /// Synthesis/waiting and playback are presentation activity until their
+  /// canonical ticket becomes terminal. Mirrors and polls add no timer.
+  private var selectedReplyPlaybackActive: Bool {
+    guard !showsAgentMonitor, let selectedConversation else { return false }
+    return selectedConversation.messages.contains { message in
+      message.kind == .reply
+        && message.playback.map { ["waiting", "playing"].contains($0.state) } == true
+    }
+  }
+
   /// Editing, an uncommitted draft, the pointer over the panel, the focused
-  /// composer and a live capture are active interactions.
+  /// composer, a live capture and reply playback are active interactions.
   private var autoCollapseInteractionHeld: Bool {
     isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
-      || activeCaptureOwnsPresentation || autoCollapseExternalHold()
+      || activeCaptureOwnsPresentation || selectedReplyPlaybackActive || autoCollapseExternalHold()
   }
 
   private func autoCollapseDeadlineReached() {
@@ -1322,6 +1345,7 @@ final class OverlayState {
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
+    let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
       onChannelPresentationChanged?()
@@ -1359,6 +1383,12 @@ final class OverlayState {
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
     followNewlyReceivedReply(preservingControllerFocus: controllerPending)
     markVisibleConversationRead()
+    // Playback never reopens or selects a conversation. It only suspends an
+    // existing automatic return; its end starts a full reading interval.
+    // ACKs and identical polls leave the deadline alone.
+    if playbackWasActive != selectedReplyPlaybackActive {
+      restartAutoHideCountdown()
+    }
     onChannelPresentationChanged?()
     freshReplyPresentationRequested = false
   }
@@ -2208,12 +2238,16 @@ final class OverlayState {
   /// Startup diagnostics are projections of the Rust owners, independent of
   /// the current take. Starting a new recording must not hide storage failure.
   func setMaxPreparationError(_ message: String?) {
-    maxPreparationError = message == nil ? nil
+    maxPreparationError =
+      message == nil
+      ? nil
       : String(localized: "Max could not prepare its conversation.")
   }
 
   func setTranscriptStorageError(_ message: String?) {
-    transcriptStorageError = message == nil ? nil
+    transcriptStorageError =
+      message == nil
+      ? nil
       : String(localized: "Transcript history is unavailable. Your text remains visible.")
   }
 
@@ -2954,6 +2988,10 @@ final class OverlayState {
     // Every auto-hide restart is user or presentation activity (drag, resize,
     // edit end, draft resolution, terminal status, archive action).
     noteAutoCollapseActivity()
+    if selectedReplyPlaybackActive {
+      cancelAutoHide()
+      return
+    }
     if hasOpenChannel {
       cancelAutoHide()
       return
@@ -2987,8 +3025,12 @@ final class OverlayState {
       return
     }
     cancelAutoHide()
-    autoHideDeadline = nowProvider() + OverlayState.autoHideDelaySeconds
-    scheduleAutoHideWake(after: OverlayState.autoHideDelaySeconds, generation: captureGeneration)
+    let delay =
+      presentationMode == .expanded
+      ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
+      : OverlayState.autoHideDelaySeconds
+    autoHideDeadline = nowProvider() + delay
+    scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
 
   private func scheduleAutoHideWake(after delay: TimeInterval, generation: UInt64) {
@@ -3007,6 +3049,10 @@ final class OverlayState {
   private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool, generation: UInt64) {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
+    if selectedReplyPlaybackActive {
+      cancelAutoHide()
+      return
+    }
     if pinKeepsOverlayVisible && !agentSessionArmed {
       cancelAutoHide()
       return
@@ -4958,7 +5004,8 @@ extension OverlayState {
     }
     guard pass != .cloud || cloudRetranscribeConfigured else {
       archiveActionError = String(
-        localized: "Cloud transcription is not set up. Use the local pass or configure it in Settings.",
+        localized:
+          "Cloud transcription is not set up. Use the local pass or configure it in Settings.",
         comment: "Cloud retranscription requested without a configured cloud provider")
       showFooterNotice(String(localized: "retranscribe unavailable"))
       return
@@ -5024,7 +5071,8 @@ extension OverlayState {
       self.restartAutoHideCountdown()
       switch (transcribed, committed) {
       case (.failure(let error), _):
-        self.archiveActionError = String(localized: "Couldn't transcribe this take again")
+        self.archiveActionError =
+          String(localized: "Couldn't transcribe this take again")
           + "\n\(String(describing: error))"
         self.showFooterNotice(String(localized: "Retranscription failed"))
       case (.success(let text), nil) where text.isEmpty:

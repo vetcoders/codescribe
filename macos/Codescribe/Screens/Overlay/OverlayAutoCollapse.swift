@@ -75,11 +75,12 @@ final class OverlayAutoCollapse {
     cancelScheduledWake()
   }
 
-  /// A full idle interval from now. Reuses an outstanding wake.
-  func restartDeadline() {
+  /// A full idle/read interval from now. Reuses an outstanding wake.
+  func restartDeadline(after interval: TimeInterval = OverlayAutoCollapse.idleSeconds) {
     guard restoreMode != nil else { return }
-    deadline = now() + Self.idleSeconds
-    if cancelWake == nil { scheduleWake(after: Self.idleSeconds) }
+    let delay = max(Self.idleSeconds, interval)
+    deadline = now() + delay
+    if cancelWake == nil { scheduleWake(after: delay) }
   }
 
   private func scheduleWake(after delay: TimeInterval) {
