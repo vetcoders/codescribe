@@ -828,11 +828,10 @@ impl AcousticLedger {
             && self.slots_of(owner).is_some_and(|pins| {
                 !pins.is_empty()
                     && pins.iter().all(|pin| {
-                        let producer = if pin.producer == ObservationProducer::Lexicon {
-                            self.complete_word_source(pin).map(|source| source.producer)
-                        } else {
-                            Some(pin.producer)
-                        };
+                        // Whole-window return cannot lend completeness to
+                        // another held word, including a clipped capture onset.
+                        // Spelling changes keep only their measured origin.
+                        let producer = self.complete_word_source(pin).map(|source| source.producer);
                         pin.producer == ObservationProducer::ManualHuman
                             || (self.word_pin_observations.contains(&pin.observation)
                                 && pin.text.split_whitespace().count() == 1
