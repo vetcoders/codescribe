@@ -68,6 +68,7 @@ tiny_http = "0.12"
 # Audio
 cpal = "0.18"
 hound = "3.5"
+nnnoiseless = { version = "=0.5.2", default-features = false }
 symphonia = { version = "0.6", features = ["all", "mp3", "pcm", "isomp4", "alac"] }
 
 # Text/embeddings
