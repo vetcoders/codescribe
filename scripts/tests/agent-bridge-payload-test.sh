@@ -27,7 +27,7 @@ assert manifest["helper"] == "bin/bus-demux.py", manifest
 assert manifest["skill"] == "skills/codescribe", manifest
 import subprocess
 assert manifest["helper_version"] == "9.8.7", manifest
-assert manifest["skill_version"] == "0.11.0", manifest
+assert manifest["skill_version"] == "0.12.0", manifest
 assert manifest["source_commit"] == subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 source_skill = root / "skills" / "codescribe"
@@ -48,6 +48,7 @@ expected.update({
     "plugins/codescribe/.claude-plugin/plugin.json",
     "plugins/codescribe/.mcp.json",
     "plugins/codescribe/hooks/hooks.json",
+    "plugins/codescribe/hooks/claude-code.json",
     "plugins/codescribe/hooks/session.py",
     "plugins/codescribe/skills/codescribe/SKILL.md",
 })
