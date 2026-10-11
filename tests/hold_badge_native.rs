@@ -3,9 +3,8 @@
 fn main() {
     use codescribe::os::hold_badge::{self, BadgeMode, HoldBadgeConfig};
     use codescribe::presentation::emitter::PresentationEmitter;
-    use codescribe_core::pipeline::contracts::{
-        EngineEvent, EventSink, UnadmittedAppleWord, UnadmittedAppleWordSource,
-    };
+    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, PreviewPin};
+    use codescribe_core::stt::tail_provider::TailSampleRange;
     use core_foundation::base::TCFType;
     use core_foundation::runloop::{CFRunLoopRunInMode, kCFRunLoopDefaultMode};
     use core_foundation::string::CFString;
@@ -77,31 +76,27 @@ fn main() {
         hold_badge::show_hold_badge_with_config(config(BadgeMode::Hold));
         drain();
         let token = hold_badge::take_token();
-        let emitter = PresentationEmitter::new(delivery.clone(), None, None).with_cursor_observer(
-            Arc::new(move |projection| {
-                hold_badge::update_transcript(token, &projection.text, projection.degraded);
-            }),
-        );
+        let emitter = PresentationEmitter::new(delivery.clone(), None, None)
+            .with_apple_preview_observer(Arc::new(move |text| {
+                hold_badge::update_transcript(token, text);
+            }))
+            .with_cursor_observer(Arc::new(move |projection| {
+                hold_badge::update_warning_state(token, projection.degraded);
+            }));
         emitter.on_capture_opened("native-preview", 1);
-        let mirror = |revision, text: &str| EngineEvent::UnadmittedAppleWords {
-            revision,
-            words: text
-                .split_whitespace()
-                .map(|word| UnadmittedAppleWord {
-                    text: word.into(),
-                    sample_start: 0,
-                    sample_end: 16_000,
-                    source: UnadmittedAppleWordSource::OpenPartial {
-                        rev: revision,
-                        phrase_id: 1,
-                    },
-                })
-                .collect(),
-            closed_phrases: Default::default(),
+        let preview = |rev, text: &str| EngineEvent::Preview {
+            rev,
+            text: text.into(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "native-preview".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            }),
         };
-        emitter.on_event(&mirror(1, "last words from this take"));
+        emitter.on_event(&preview(1, "last words from this take"));
         drain();
-        assert_eq!(text(visible_panel(app)), "last words from this take");
+        assert_eq!(text(visible_panel(app)), "from this take");
         emitter.on_event(&EngineEvent::SpeechIntegrity {
             evidence: codescribe_core::pipeline::contracts::SpeechIntegrity {
                 session_id: "native-preview".into(),
@@ -116,11 +111,33 @@ fn main() {
         let recording_panel = visible_panel(app);
         let warning_color = dot_color(recording_panel);
         assert_eq!(warning_color, [1.0, 0.62, 0.0, 1.0]);
+        emitter.on_event(&preview(2, "now these are new words"));
+        drain();
+        assert_eq!(text(recording_panel), "are new words");
+        assert_eq!(
+            dot_color(recording_panel),
+            warning_color,
+            "New Apple words cannot clear unresolved speech"
+        );
+        emitter.on_event(&EngineEvent::VadEnd {
+            speech_prob: 0.0,
+            ts_ms: 1000,
+        });
+        drain();
+        assert_eq!(
+            text(recording_panel),
+            "",
+            "Quiet clears only the ephemeral words"
+        );
+        assert_eq!(dot_color(recording_panel), warning_color);
+        emitter.on_event(&preview(3, "Iwo Iwo Iwo Iwo Iwo"));
+        drain();
+        assert_eq!(text(recording_panel), "Iwo Iwo Iwo");
         hold_badge::show_hold_badge_with_config(config(BadgeMode::Processing));
         drain();
         assert_eq!(
             text(visible_panel(app)),
-            "last words from this take",
+            "Iwo Iwo Iwo",
             "Processing must preserve the current take preview without another projection"
         );
         assert_eq!(
@@ -137,12 +154,21 @@ fn main() {
         drain();
         hold_badge::show_hold_badge_with_config(config(BadgeMode::Hold));
         drain();
-        emitter.on_event(&mirror(2, "stale prior take"));
+        let next_token = hold_badge::take_token();
+        hold_badge::update_warning_state(next_token, true);
+        drain();
+        emitter.on_event(&preview(4, "stale prior take"));
+        hold_badge::update_warning_state(token, false);
         drain();
         assert_eq!(
             text(visible_panel(app)),
             "",
             "A new take must reject old preview paint"
+        );
+        assert_eq!(
+            dot_color(visible_panel(app)),
+            warning_color,
+            "Old warning paint cannot clear a new take"
         );
         hold_badge::hide_hold_badge();
         drain();

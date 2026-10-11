@@ -5136,6 +5136,93 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
+    fn live_cue_raw_preview(rev: u64, text: &str) -> EngineEvent {
+        EngineEvent::Preview {
+            rev,
+            text: text.into(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 16_000,
+                sample_end: 32_000,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_cue_apple_preview_is_immediate_and_cannot_mutate_delivery() {
+        let (emitter, delivery, ledger) = opened_delivery_take();
+        let paints = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let observed = Arc::clone(&paints);
+        let mut emitter = emitter.with_apple_preview_observer(Arc::new(move |text| {
+            observed.lock().unwrap().push(text.to_owned());
+        }));
+        emitter.on_event(&live_cue_raw_preview(1, "to już bieżące słowa"));
+        assert_eq!(paints.lock().unwrap().as_slice(), ["to już bieżące słowa"]);
+        assert!(delivery.lock().await.is_empty());
+        assert!(
+            ledger
+                .lock()
+                .unwrap()
+                .text_of(&OccurrenceIdentity::new("take", 7, 0, 16_000))
+                .is_none()
+        );
+
+        emitter.on_event(&partial_mirror(2, "pełny podgląd dokumentu", 0, 16_000));
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "Zatwierdzony tekst",
+        );
+        emitter.on_event(&mutation);
+        emitter.on_event(&closed_mirror(
+            3,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            3,
+        ));
+        assert_eq!(
+            paints.lock().unwrap().len(),
+            1,
+            "Reducer paints cannot overwrite the pointer"
+        );
+        emitter.on_event(&EngineEvent::VadEnd {
+            speech_prob: 0.0,
+            ts_ms: 1000,
+        });
+        assert_eq!(paints.lock().unwrap().last().unwrap(), "");
+        emitter.on_event(&live_cue_raw_preview(3, "następna fraza"));
+        emitter.on_event(&EngineEvent::NoSpeech {
+            reason: "fixture quiet".into(),
+        });
+        assert_eq!(paints.lock().unwrap().last().unwrap(), "");
+        emitter.on_event(&live_cue_raw_preview(4, "ostatni podgląd"));
+        emitter.finish().await;
+        assert_eq!(paints.lock().unwrap().last().unwrap(), "");
+        assert_eq!(delivery.lock().await.as_str(), "Zatwierdzony tekst");
+    }
+
+    #[tokio::test]
+    async fn live_cue_retired_take_cannot_paint_late_apple_words() {
+        let (emitter, _, _) = opened_delivery_take();
+        let paints = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let observed = Arc::clone(&paints);
+        let mut emitter = emitter.with_apple_preview_observer(Arc::new(move |text| {
+            observed.lock().unwrap().push(text.to_owned());
+        }));
+        emitter.on_event(&live_cue_raw_preview(1, "bieżąca fraza"));
+        emitter.retire_presentation();
+        emitter.on_event(&live_cue_raw_preview(2, "spóźniona poprzednia fraza"));
+        emitter.on_event(&EngineEvent::VadEnd {
+            speech_prob: 0.0,
+            ts_ms: 1000,
+        });
+        emitter.finish().await;
+        assert_eq!(paints.lock().unwrap().as_slice(), ["bieżąca fraza"]);
+    }
+
     /// A complete mirror containing only this open phrase at its actual PCM range.
     fn partial_mirror(rev: u64, text: &str, start: u64, end: u64) -> EngineEvent {
         mirror(
