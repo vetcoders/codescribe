@@ -49,5 +49,6 @@ PY
 build_installer
 "$STAGE/install" "$STAGE/payload"
 echo "Commands: ~/.local/bin/cs-bus, ~/.local/bin/cs-say and ~/.local/bin/cs-junie"
+echo "Claude Code plugin: /plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins; /plugin install codescribe@codescribe."
 echo "Native Junie extension: cs-bus --install-junie-extension; then /codescribe junie 6 in Junie."
 echo "Existing followers stay alive. Reattach this session to adopt the updated runtime."
