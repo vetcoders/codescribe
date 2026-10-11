@@ -29,10 +29,15 @@
 ### Bounded lexical trials and Stop authority (2026-10-10)
 
 `CaptureWindowPlan` owns both the regular 9-second / 3-second grid and an
-additional live lexical witness. A conflict needs two distinct complete
+additional live lexical witness. A conflict normally needs two distinct complete
 Whisper frames, retained source PCM, and an unsealed owner behind the admission
-horizon. One trial per nine seconds of capture may use at most nine seconds of
-PCM, with up to three seconds of context on either side of its source lineage.
+horizon. An incomplete Apple label may instead request that witness after one
+complete Whisper frame in the publication band, with the same negation context.
+This only requests new evidence: the returned trial must still independently
+corroborate a retained label through ordinary admission. It grants no mutation
+from context quality alone. One trial per nine seconds of capture may use at most
+nine seconds of PCM, with up to three seconds of context on either side of its
+source lineage.
 It uses the existing provider queue and submission/completion identity. It does
 not advance the grid or count a retained decode as fresh corroboration. Failed,
 unavailable, or budget-refused work leaves an explicit unresolved disposition.
