@@ -6173,6 +6173,22 @@
         }
       }
     },
+    "Could not paste this attachment. Use files up to 50 MB and try again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Could not paste this attachment. Use files up to 50 MB and try again."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie udało się wkleić załącznika. Użyj plików do 50 MB i spróbuj ponownie."
+          }
+        }
+      }
+    },
     "Could not refresh threads. The previous list is still shown.": {
       "localizations": {
         "pl": {
@@ -6200,23 +6216,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "nie udało się zapisać notatki"
-          }
-        }
-      }
-    },
-    "Could not save pasted image. Try pasting again.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Could not save pasted image. Try pasting again."
-          }
-        },
-        "pl": {
-          "stringUnit": {
-            "state": "needs_review",
-            "value": "Nie udało się zapisać wklejonego obrazu. Spróbuj wkleić ponownie."
           }
         }
       }
@@ -12049,6 +12048,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wklejaj po dyktowaniu"
+          }
+        }
+      }
+    },
+    "Paste files, images, or long text to attach a local copy.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Paste files, images, or long text to attach a local copy."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wklej plik, obraz lub dłuższy tekst, aby załączyć lokalną kopię."
           }
         }
       }

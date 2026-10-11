@@ -31,6 +31,17 @@ pub fn save_pasted_image(data: Vec<u8>) -> Result<String, CsError> {
         })
 }
 
+/// Persist an arbitrary clipboard file or text excerpt in the attachment store.
+/// The bus receives only the returned path and its metadata.
+#[uniffi::export]
+pub fn save_pasted_attachment(data: Vec<u8>, name: String) -> Result<String, CsError> {
+    codescribe_core::attachment::AttachmentStore::save_clipboard(&data, &name)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })
+}
+
 /// Cumulative token accounting for a thread. Mirrors `TokenUsage`
 /// (`thread_store.rs:105`).
 #[derive(uniffi::Record)]

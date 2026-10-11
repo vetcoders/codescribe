@@ -253,7 +253,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
     text.setSelectedRange(NSRange(location: text.string.utf16.count, length: 0))
     text.paste(nil)
     XCTAssertNil(sent, "Pasting must not publish before Send or Return")
-    XCTAssertEqual(draft, "Obejrzyj:\n\(asset.path)\n")
+    XCTAssertEqual(draft, "Obejrzyj:\n[attachment] \(asset.path)\n")
     XCTAssertNotNil(NSImage(contentsOf: asset))
     let enter = try XCTUnwrap(
       NSEvent.keyEvent(
@@ -266,6 +266,200 @@ final class OverlayClipboardPasteTests: XCTestCase {
     let beforeFailedPaste = draft
     text.paste(nil)
     XCTAssertEqual(draft, beforeFailedPaste, "A failed save must not insert a broken pointer")
+    let input = directory.appendingPathComponent("original.zip")
+    let bytes = Data([80, 75, 3, 4, 0, 255])
+    try bytes.write(to: input)
+    board.clearContents()
+    board.writeObjects([input as NSURL])
+    text.setSelectedRange(NSRange(location: 0, length: "Obejrzyj:".utf16.count))
+    text.paste(nil)
+    XCTAssertFalse(draft.contains("Obejrzyj:"), "native paste replaces the actual selection")
+    let copied = try XCTUnwrap(ConversationAttachmentPointer.extract(from: draft).paths.first)
+    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: copied)), bytes)
+    text.keyDown(with: enter)
+    XCTAssertEqual(sent, draft)
+    try FileManager.default.removeItem(at: input)
+    let retained = draft
+    text.paste(nil)
+    XCTAssertEqual(draft, retained, "unreadable files must retain the draft and its selection")
+  }
+
+  @MainActor
+  func testFinderFilesAreCopiedByteExactlyAndSendOnlyPointers() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let inputs = [
+      ("notatka ze spacją.txt", Data("długi kontekst dla agenta".utf8)),
+      ("archiwum.zip", Data([80, 75, 3, 4, 0, 255])),
+      ("program.bin", Data([0, 1, 255, 0, 127])),
+    ]
+    let files = try inputs.map { name, data in
+      let file = directory.appendingPathComponent(name)
+      try data.write(to: file)
+      return file
+    }
+    XCTAssertTrue(board.writeObjects(files as [NSURL]))
+    let text = try XCTUnwrap(
+      ConversationClipboardAttachment.text(
+        from: board,
+        saveImage: { _ in
+          XCTFail("Finder must preserve original file bytes")
+          return directory
+        },
+        saveFile: { data, name in
+          URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
+        }))
+    let extracted = ConversationAttachmentPointer.extract(from: text)
+    XCTAssertEqual(extracted.paths.count, 3)
+    XCTAssertTrue(extracted.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    for (index, path) in extracted.paths.enumerated() {
+      XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), inputs[index].1)
+      let root = URL(fileURLWithPath: CodescribeConfig().configDir()).resolvingSymlinksInPath()
+      XCTAssertTrue(path.hasPrefix(root.appendingPathComponent("attachments").path + "/"))
+    }
+    // Removing the original files must not break the pending message.
+    for file in files { try FileManager.default.removeItem(at: file) }
+    XCTAssertTrue(extracted.paths.allSatisfy { FileManager.default.fileExists(atPath: $0) })
+    XCTAssertFalse(text.contains("długi kontekst dla agenta"))
+  }
+
+  @MainActor
+  func testLongUTF8PasteIsExternalizedAndShortTextStaysEditable() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let long = String(repeating: "zażółć gęślą jaźń\n", count: 1000)
+    board.setString(long, forType: .string)
+    let pasted = try XCTUnwrap(
+      ConversationClipboardAttachment.text(
+        from: board, saveImage: { _ in throw CocoaError(.fileReadCorruptFile) },
+        saveFile: { data, name in
+          URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
+        }))
+    XCTAssertLessThan(pasted.utf8.count, 1024)
+    let path = try XCTUnwrap(ConversationAttachmentPointer.extract(from: pasted).paths.first)
+    XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), long)
+    board.clearContents()
+    board.setString("krótki tekst", forType: .string)
+    XCTAssertEqual(
+      try ConversationClipboardAttachment.text(
+        from: board, saveImage: { _ in throw CocoaError(.fileWriteUnknown) },
+        saveFile: { _, _ in
+          XCTFail("short text must not create a file")
+          return URL(fileURLWithPath: "/")
+        }),
+      "krótki tekst")
+  }
+
+  @MainActor
+  func testPDFObjectAndStoredFileIdentity() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let bytes = Data("%PDF-test\n".utf8)
+    board.setData(bytes, forType: .pdf)
+    let pointer = try XCTUnwrap(
+      ConversationClipboardAttachment.text(
+        from: board, saveImage: { _ in throw CocoaError(.fileWriteUnknown) },
+        saveFile: { data, name in
+          URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
+        }))
+    let path = try XCTUnwrap(ConversationAttachmentPointer.extract(from: pointer).paths.first)
+    XCTAssertTrue(path.hasSuffix(".pdf"))
+    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
+    XCTAssertEqual(
+      URL(fileURLWithPath: try savePastedAttachment(data: bytes, name: "Pasted.pdf"))
+        .resolvingSymlinksInPath().path, path)
+    let changed = try savePastedAttachment(data: Data([1, 2, 3]), name: "Pasted.pdf")
+    XCTAssertNotEqual(changed, path)
+    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
+    XCTAssertThrowsError(try savePastedAttachment(data: Data(), name: "empty.bin"))
+  }
+
+  @MainActor
+  func testOversizeOrDirectoryPasteDoesNotSaveAnyPointer() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: Data()))
+    defer { try? FileManager.default.removeItem(at: file) }
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.truncate(atOffset: UInt64(ConversationClipboardAttachment.maximumBytes + 1))
+    try handle.close()
+    for source in [file, FileManager.default.temporaryDirectory] {
+      board.clearContents()
+      board.writeObjects([source as NSURL])
+      XCTAssertThrowsError(
+        try ConversationClipboardAttachment.text(
+          from: board,
+          saveImage: { _ in
+            XCTFail("must refuse before save")
+            return file
+          },
+          saveFile: { _, _ in
+            XCTFail("must refuse before save")
+            return file
+          }))
+    }
+  }
+
+  func testAttachmentMarkersRetainProseRejectOutsidePathsAndFollowDraftDeletion() {
+    let root = URL(fileURLWithPath: "/tmp/cs-attachments-test")
+    let pointer = root.appendingPathComponent("attachments/clipboard_abc_note.txt")
+    let text =
+      "proszę przeczytaj\n" + ConversationAttachmentPointer.line(pointer) + "\npotem odpowiedz"
+    let extracted = ConversationAttachmentPointer.extract(from: text, configDirectory: root)
+    XCTAssertEqual(extracted.text, "proszę przeczytaj\npotem odpowiedz")
+    XCTAssertEqual(extracted.paths, [pointer.path])
+    let removed = ConversationAttachmentPointer.extract(from: extracted.text, configDirectory: root)
+    XCTAssertTrue(removed.paths.isEmpty)
+    for outside in [
+      "/etc/passwd", root.path + "/attachments-other/a.txt",
+      root.path + "/attachments/../settings.json",
+    ] {
+      let draft = "[attachment] " + outside
+      let parsed = ConversationAttachmentPointer.extract(from: draft, configDirectory: root)
+      XCTAssertEqual(parsed.text, draft)
+      XCTAssertTrue(parsed.paths.isEmpty)
+    }
+  }
+
+  @MainActor
+  func testAppPublisherPassesAttachmentArgumentsWithoutInliningTheirContents() async throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let bin = home.appendingPathComponent(".local/bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let executable = bin.appendingPathComponent("cs-bus")
+    try """
+    #!/usr/bin/python3
+    # codescribe-managed-command: {"managed_id":"clipboard-test"}
+    import json, pathlib, sys
+    (pathlib.Path(__file__).parent / 'published.json').write_text(
+        json.dumps({'arguments': sys.argv[1:], 'text': sys.stdin.read()}))
+    """.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    let file = try savePastedAttachment(
+      data: Data("NEVER INLINE THIS PAYLOAD".utf8), name: "data.txt")
+    let draft = "Przeczytaj plik\n[attachment] \(file)\n"
+    try await RealAgentBridgeInstaller.sendBusText(
+      owner: nil, text: draft,
+      installer: RealAgentBridgeInstaller(resourceRoot: nil, homeDirectory: home, environment: [:]))
+    let receipt = try XCTUnwrap(
+      JSONSerialization.jsonObject(
+        with: Data(contentsOf: bin.appendingPathComponent("published.json")))
+        as? [String: Any])
+    let arguments = try XCTUnwrap(receipt["arguments"] as? [String])
+    XCTAssertEqual(arguments.prefix(3), ["--send-text", "--channel", "0"])
+    XCTAssertEqual(
+      Array(arguments.suffix(2)),
+      ["--attach-file", URL(fileURLWithPath: file).resolvingSymlinksInPath().path])
+    let text = try XCTUnwrap(receipt["text"] as? String)
+    XCTAssertEqual(text.trimmingCharacters(in: .whitespacesAndNewlines), "Przeczytaj plik")
+    XCTAssertFalse(text.contains("NEVER INLINE"))
+    XCTAssertFalse(
+      text.contains("[attachment]"), "canonical helper appends exactly one metadata pointer")
   }
 }
 

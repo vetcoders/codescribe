@@ -15,6 +15,9 @@ struct OverlayConversationComposer: View {
   var saveImage: (Data) throws -> URL = { data in
     URL(fileURLWithPath: try savePastedImage(data: data))
   }
+  var saveFile: (Data, String) throws -> URL = { data, name in
+    URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
+  }
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
 
@@ -38,12 +41,13 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        clipboard: clipboard, saveImage: saveImage,
+        clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 }
       )
       .frame(height: editorHeight)
       .transaction { $0.animation = nil }
       .accessibilityIdentifier("overlay-conversation-composer")
+      .help("Paste files, images, or long text to attach a local copy.")
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
           Text(verbatim: placeholder)
@@ -82,6 +86,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   var onTypingActivity: () -> Void = {}
   let clipboard: NSPasteboard
   let saveImage: (Data) throws -> URL
+  let saveFile: (Data, String) throws -> URL
   let onPasteError: (String?) -> Void
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -137,9 +142,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.submit = { context.coordinator.submit($0) }
     editor.onEditorActive = { context.coordinator.noteEditorActive($0) }
     editor.onTypingActivity = { context.coordinator.noteTyping() }
-    editor.pasteImage = {
-      guard let data = try ConversationClipboardImage.png(from: clipboard) else { return nil }
-      return try saveImage(data)
+    editor.pastedText = {
+      try ConversationClipboardAttachment.text(
+        from: clipboard, saveImage: saveImage, saveFile: saveFile)
     }
     editor.onPasteError = onPasteError
     if editor.string != text {
@@ -246,7 +251,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     var submit: ((String) -> Void)?
     var onEditorActive: (Bool) -> Void = { _ in }
     var onTypingActivity: () -> Void = {}
-    var pasteImage: (() throws -> URL?)?
+    var pastedText: (() throws -> String?)?
     var onPasteError: (String?) -> Void = { _ in }
 
     func revealCaretAfterLayout() {
@@ -257,8 +262,8 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func paste(_ sender: Any?) {
       do {
-        if let url = try pasteImage?() {
-          insertText("\n\(url.path)\n", replacementRange: selectedRange())
+        if let text = try pastedText?() {
+          insertText(text, replacementRange: selectedRange())
           onPasteError(nil)
           onTypingActivity()
           return
@@ -266,7 +271,9 @@ private struct ConversationMessageField: NSViewRepresentable {
         onPasteError(nil)
         super.paste(sender)
       } catch {
-        onPasteError(String(localized: "Could not save pasted image. Try pasting again."))
+        onPasteError(
+          String(localized: "Could not paste this attachment. Use files up to 50 MB and try again.")
+        )
       }
     }
 
