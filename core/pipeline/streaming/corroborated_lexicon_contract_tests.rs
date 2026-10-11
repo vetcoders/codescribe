@@ -58,7 +58,7 @@ fn fixture(
 
 #[test]
 fn two_complete_frames_correct_one_label_and_keep_five_physical_iwo() {
-    let words = ["Iwo", "Iwo", "Iwo", "Iwo", "Iwo", "Alfaxone."];
+    let words = ["Iwo", "Iwo", "Iwo", "Iwo", "Iwo", "alfaksalon."];
     let (mut state, owner, _) = fixture(&words, &[(0, 128_000), (8_000, 136_000)]);
     let before = state
         .acoustic_ledger
@@ -114,8 +114,8 @@ fn replayed_frame_and_stop_cannot_apply_fuzzy_correction() {
 #[test]
 fn two_frames_merge_only_the_exact_medical_or_programming_word_targets() {
     for (words, expected) in [
-        (["postgrze", "SQL"], "PostgreSQL"),
-        (["Robena", "coxip"], "Robenacoxib"),
+        (["postgre", "sql"], "PostgreSQL"),
+        (["robena", "coxib"], "Robenacoxib"),
     ] {
         let (mut state, owner, _) = fixture(&words, &[(0, 128_000), (8_000, 136_000)]);
         let (events, mut receiver) = mpsc::unbounded_channel();
@@ -133,5 +133,30 @@ fn two_frames_merge_only_the_exact_medical_or_programming_word_targets() {
             receiver.try_recv().unwrap(),
             EngineEvent::LedgerMutation { .. }
         ));
+    }
+}
+
+#[test]
+fn agreeing_fuzzy_only_frames_cannot_invent_registered_spelling_or_merge() {
+    for words in [
+        vec!["Iwo", "Iwo", "Iwo", "Iwo", "Iwo", "Alfaxone."],
+        vec!["postgrze", "SQL"],
+        vec!["Robena", "coxip"],
+    ] {
+        let (mut state, owner, _) = fixture(&words, &[(0, 128_000), (8_000, 136_000)]);
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .slots_of(&owner)
+            .unwrap()
+            .to_vec();
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        state.apply_corroborated_lexicon(&events, &owner, 99);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some(words.join(" ").as_str()));
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert_eq!(state.lexicon_rewrites, 0);
+        assert!(receiver.try_recv().is_err());
     }
 }

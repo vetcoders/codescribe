@@ -10,6 +10,12 @@ SWIFT_TEST_MAX_TEST_SECONDS="$5"
 SWIFT_TEST_LOG="$6"
 shift 6
 
+# Xcode forwards only TEST_RUNNER_ variables into the XCTest host. Keep its
+# native config and FFI on Make's disposable test root, never ~/.codescribe.
+: "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
+export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
+export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
+
 echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?
 # Select the Rust artifact independently from the Swift XCTest configuration.

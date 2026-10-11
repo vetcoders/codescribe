@@ -2274,7 +2274,11 @@ mod tests {
         ];
         match scenario {
             "batch" => {
-                ledger.admit_word_slots(&apple, &[WordPin::new(0, 4_000, "no")]);
+                // This is a replay/lineage test, with preceding PCM for a
+                // complete first correction rather than a capture-edge grant.
+                let mut children = children.clone();
+                children[0].sample_start = 2_000;
+                ledger.admit_word_slots(&apple, &[WordPin::new(2_000, 4_000, "no")]);
                 let mut confirmed = whisper.clone();
                 corroborate_candidate(
                     &mut ledger,
@@ -2629,7 +2633,7 @@ mod tests {
             ledger.admit_pinned_label(
                 &apple,
                 "weryfikowałeś",
-                &[WordPin::new(0, 16_000, "weryfikowałeś")],
+                &[WordPin::new(100, 16_000, "weryfikowałeś")],
             );
             // A word correction supplies its PCM pin, rather than granting
             // whole-label text the authority to replace an existing word.
@@ -2638,7 +2642,7 @@ mod tests {
             let receipt = corroborate_candidate(
                 &mut ledger,
                 &mut observation,
-                &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
+                &[WordPin::new(100, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
                 (0, 24_000),
             );
             assert!(receipt.grants_mutation());
@@ -2647,7 +2651,7 @@ mod tests {
             assert_eq!(operation.kind, SlotOperationKind::Correct);
             assert_eq!(
                 operation.source_ranges.as_slice(),
-                std::slice::from_ref(&owner)
+                &[OccurrenceIdentity::new(session, 7, 100, 16_000)]
             );
             assert_eq!(operation.outputs.len(), 1);
             assert_eq!(
@@ -2655,7 +2659,7 @@ mod tests {
                     operation.outputs[0].sample_start,
                     operation.outputs[0].sample_end
                 ),
-                (0, 16_000)
+                (100, 16_000)
             );
         }
         assert!(

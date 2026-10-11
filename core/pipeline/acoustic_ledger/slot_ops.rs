@@ -828,11 +828,10 @@ impl AcousticLedger {
             && self.slots_of(owner).is_some_and(|pins| {
                 !pins.is_empty()
                     && pins.iter().all(|pin| {
-                        let producer = if pin.producer == ObservationProducer::Lexicon {
-                            self.complete_word_source(pin).map(|source| source.producer)
-                        } else {
-                            Some(pin.producer)
-                        };
+                        // Whole-window return cannot lend completeness to
+                        // another held word, including a clipped capture onset.
+                        // Spelling changes keep only their measured origin.
+                        let producer = self.complete_word_source(pin).map(|source| source.producer);
                         pin.producer == ObservationProducer::ManualHuman
                             || (self.word_pin_observations.contains(&pin.observation)
                                 && pin.text.split_whitespace().count() == 1
@@ -5384,7 +5383,7 @@ mod slot_ops_tests {
 
     #[test]
     fn explicit_split_needs_child_boundaries_otherwise_text_has_group_accuracy() {
-        let mut ledger = measured_pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
+        let mut ledger = measured_pinned(&[WordPin::new(100, 2_000, "naprawdę")]);
         let target = SlotTarget::from(&ledger.slots_of(&owner()).unwrap()[0]);
         let next = observation(ObservationProducer::Whisper, 1);
         assert_eq!(
@@ -5392,7 +5391,7 @@ mod slot_ops_tests {
             Err(SlotOperationRefusal::InvalidEvidence)
         );
         let children = [
-            WordPin::new(0, 1_000, "na").with_decode_window(0, 16_000),
+            WordPin::new(100, 1_000, "na").with_decode_window(0, 16_000),
             WordPin::new(1_000, 2_000, "prawdę").with_decode_window(0, 16_000),
         ];
         let next = observation(ObservationProducer::Whisper, 2);
@@ -5420,15 +5419,15 @@ mod slot_ops_tests {
         assert_eq!(ledger.text_of(&owner()), Some("na prawdę"));
         assert_eq!(
             ledger.slot_source_ranges(&ledger.slots_of(&owner()).unwrap()[0]),
-            vec![OccurrenceIdentity::new("slot-test", 1, 0, 1_000)]
+            vec![OccurrenceIdentity::new("slot-test", 1, 100, 1_000)]
         );
 
-        let mut group = measured_pinned(&[WordPin::new(0, 2_000, "naprawdę")]);
+        let mut group = measured_pinned(&[WordPin::new(100, 2_000, "naprawdę")]);
         let mut next = next;
         corroborate_candidate(
             &mut group,
             &mut next,
-            &[WordPin::new(0, 2_000, "na prawdę").with_decode_window(0, 16_000)],
+            &[WordPin::new(100, 2_000, "na prawdę").with_decode_window(0, 16_000)],
             (0, 20_000),
         );
         assert_eq!(group.slots_of(&owner()).unwrap().len(), 1);
@@ -5756,15 +5755,27 @@ mod slot_ops_tests {
                 &[WordPin::new(owner.sample_start, owner.sample_end, "I")
                     .with_decode_window(0, owner.sample_end)],
             );
-            assert!(receipt.grants_mutation(), "{receipt:?}");
-            let source = ledger.slots_of(&owner).unwrap().to_vec();
-            assert!(!ledger.complete_word_slot(&source[0]));
+            let source = ledger.slots_of(&owner).unwrap_or(&[]).to_vec();
+            if producer == ObservationProducer::Whisper {
+                assert!(!receipt.grants_mutation(), "{receipt:?}");
+                assert!(
+                    source.is_empty(),
+                    "a clipped first Whisper word cannot mint a slot"
+                );
+                assert!(ledger.slot_alternatives().iter().any(|alternative|
+                    alternative.reason == "incomplete_decode_fence_new_word"
+                ));
+            } else {
+                assert!(receipt.grants_mutation(), "{receipt:?}");
+                assert_eq!(source.len(), 1);
+                assert!(!ledger.complete_word_slot(&source[0]));
+            }
             assert!(!ledger.returned_word_scope_accounted(&first));
             assert!(ledger.require_text_recovery(&owner));
             assert!(ledger.note_frontier_return(&owner, producer));
             assert!(ledger.text_recovery_pending(&owner));
             assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-            assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+            assert_eq!(ledger.slots_of(&owner).unwrap_or(&[]), source);
             assert_eq!(ledger.conservation().residue(), 0);
         }
     }

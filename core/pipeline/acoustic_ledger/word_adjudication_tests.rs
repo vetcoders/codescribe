@@ -2,9 +2,10 @@
 use super::*;
 
 #[test]
-fn rc_origin_word_exception_does_not_authorize_a_later_decode_edge() {
+fn rc_word_completeness_requires_pcm_before_the_word() {
     for (producer, start, decode_start, complete) in [
-        (ObservationProducer::Whisper, 0, 0, true),
+        (ObservationProducer::Whisper, 0, 0, false),
+        (ObservationProducer::Whisper, 8_000, 0, true),
         (ObservationProducer::Whisper, 8_000, 8_000, false),
         (ObservationProducer::Apple, 0, 0, false),
     ] {
@@ -24,6 +25,64 @@ fn rc_origin_word_exception_does_not_authorize_a_later_decode_edge() {
             complete,
             "{producer:?}/{start}"
         );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn rc_complete_neighbour_cannot_settle_an_incomplete_origin_or_its_spelling() {
+    for first_start in [0, 4_000] {
+        let owner = OccurrenceIdentity::new("rc-mixed-origin", 1, 0, 128_000);
+        let mut pcm = vec![0.0; 160_000];
+        pcm[first_start as usize..first_start as usize + 3_200].fill(0.2);
+        pcm[48_000..56_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let origin = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &origin,
+                    &[
+                        WordPin::new(first_start, first_start + 3_200, "Iwo")
+                            .with_decode_window(0, 144_000),
+                        WordPin::new(48_000, 56_000, "plan").with_decode_window(0, 144_000),
+                    ]
+                )
+                .grants_mutation()
+        );
+        let complete = first_start > 0;
+        assert_eq!(ledger.text_of(&owner), Some("Iwo plan"));
+        assert!(ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[1]));
+        assert_eq!(ledger.returned_word_scope_accounted(&origin), complete);
+        let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+        let spelling = ObservationIdentity::new(ObservationProducer::Lexicon, 2, 2, owner.clone());
+        ledger
+            .rewrite_dictionary_slots(
+                &spelling,
+                &[(
+                    target,
+                    DictionarySlotRule {
+                        id: "rc/mixed-origin-spelling".into(),
+                        input: vec!["Iwo".into()],
+                        canonical: "IWO".into(),
+                    },
+                )],
+            )
+            .unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("IWO plan"));
+        assert_eq!(
+            ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[0]),
+            complete
+        );
+        assert_eq!(ledger.returned_word_scope_accounted(&spelling), complete);
+        if !complete {
+            assert!(ledger.require_text_recovery(&owner));
+            assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+            assert!(ledger.text_recovery_pending(&owner));
+            assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        }
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
         assert_eq!(ledger.conservation().residue(), 0);
     }
 }
