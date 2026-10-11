@@ -2230,11 +2230,11 @@ class NeutralAstTests(unittest.TestCase):
             ("capability_hold_bypassed", "decision.route == DeliveryRoute::ClipboardHold", "false"),
             ("capability_observation_forged", "helpers::observe_paste_target(frontmost.as_deref())",
              "PasteTarget::UNOBSERVED"),
-            ("identity_transport_replaced", "clipboard::paste_to_stop_target(&paste_text, &target)",
+            ("identity_transport_replaced", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
              "clipboard::paste_and_restore(&paste_text)"),
             ("await_after_target_observation", "let target = clipboard::StopPasteTarget::capture();",
              "let target = clipboard::StopPasteTarget::capture(); self.get_config().await;"),
-            ("request_claimed_without_effect", "match clipboard::paste_to_stop_target(&paste_text, &target)",
+            ("request_claimed_without_effect", "match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
              "match fake_paste_receipt()"),
         ]
         for name, old, new in cases:
@@ -2244,6 +2244,40 @@ class NeutralAstTests(unittest.TestCase):
                                 if row["symbol"] == "execute_clipboard_paste")
                 self.assertFalse(contract["accepted"], name)
                 self.assertFalse(evidence["accepted"], name)
+
+    def test_paste_mode_remains_bound_through_overlay_and_effect(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("overlay_mode_forged", "paste_text_from_overlay", "PasteMode::Comfort", "PasteMode::Safe"),
+            ("mode_parameter_removed", "execute_clipboard_paste", "paste_mode: PasteMode,", ""),
+            ("mode_parameter_ignored", "execute_clipboard_paste",
+             "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
+             "clipboard::paste_to_stop_target(&paste_text, &target, PasteMode::Comfort)"),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate(symbol, old, new))
+                self.assertFalse(evidence["accepted"], name)
+                contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], name)
+
+    def test_refused_archive_link_requires_current_session_and_take(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("foreign_archive", "take_refused_take_archive(refusal.finality.session_id())",
+             'take_refused_take_archive("foreign-session")'),
+            ("archive_lookup_removed", "let archived = take_refused_take_archive(refusal.finality.session_id());", ""),
+            ("archive_link_removed", "self.link_live_archive(take_id.as_deref(), archived).await;", ""),
+            ("take_identity_removed", "self.link_live_archive(take_id.as_deref(), archived).await;",
+             "self.link_live_archive(None, archived).await;"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("process_terminal_stop_error", old, new))
+                self.assertFalse(evidence["accepted"], name)
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "process_terminal_stop_error")
+                self.assertFalse(contract["accepted"], name)
 
     def test_terminal_finality_authority_mutants_rejected(self):
         cases = [
@@ -2270,8 +2304,8 @@ class NeutralAstTests(unittest.TestCase):
         cases = [
             ("else_effect", "execute_clipboard_paste", "self.arm_or_copy_deferred_payload(", "clipboard::paste_and_restore(&paste_text)?; self.arm_or_copy_deferred_payload("),
             ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::PasteRequested", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::PasteRequested"),
-            ("nested_false", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target)", "if false { clipboard::paste_to_stop_target(&paste_text, &target)?; } Ok::<_, Error>(fake_receipt)"),
-            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target)", "(|| clipboard::paste_to_stop_target(&paste_text, &target))()"),
+            ("nested_false", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)", "if false { clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)?; } Ok::<_, Error>(fake_receipt)"),
+            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)", "(|| clipboard::paste_to_stop_target(&paste_text, &target, paste_mode))()"),
             ("closure_refusal", "finish", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
             ("unreachable_shutdown", "finish", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
             ("question_mark_stop", "stop", "self.close_capture().await", "self.close_capture().await?"),
@@ -2513,6 +2547,57 @@ class NeutralAstTests(unittest.TestCase):
             finally:
                 live._occurrences[symbol] = original
 
+    def test_finish_invocation_requires_unique_typed_body_and_matching_reference(self):
+        contracts = self.ast_corridor_contracts()
+        live = VERIFIER.StructuralVerifier(self.repo)
+        _, failures = VERIFIER.verify_code_corridors(live, contracts)
+        self.assertFalse(failures, failures)
+        file, symbol = "core/audio/streaming_recorder.rs", "finish"
+        original = copy.deepcopy(live.body(symbol, file))
+        selected = VERIFIER.corridor_body_rows(
+            original, symbol=symbol, file=file,
+            signature_contains=VERIFIER.AST_SIGNATURES[symbol],
+        )
+        self.assertEqual(len(selected), 1)
+        start, end = selected[0]["start_line"], selected[0]["end_line"]
+        borrowed = next(row for row in original["bodies"] if row["start_line"] == start)
+        wrong_type = copy.deepcopy(original)
+        wrong_type["bodies"] = [row for row in wrong_type["bodies"] if row["start_line"] != start]
+        self.assertTrue(wrong_type["bodies"], "the consuming overload is the negative control")
+        duplicate = copy.deepcopy(original)
+        duplicate["bodies"].append(copy.deepcopy(borrowed))
+        for name, payload in [("wrong_type_only", wrong_type), ("duplicate_borrowed", duplicate)]:
+            with self.subTest(mutation=name):
+                live._bodies[(symbol, file)] = payload
+                try:
+                    _, failures = VERIFIER.verify_code_corridors(live, contracts)
+                    self.assertTrue(any("invocation finish -> terminal_finality" in failure
+                                        and "observed 0" in failure for failure in failures), failures)
+                finally:
+                    live._bodies[(symbol, file)] = original
+        original_occurrences = copy.deepcopy(live.occurrences("terminal_finality"))
+        for name in ("outside_body", "wrong_caller"):
+            mutated = copy.deepcopy(original_occurrences)
+            changed = 0
+            for row in mutated["occurrences"]:
+                enclosing = row.get("enclosing_symbol", {})
+                if (row.get("file") == file and row.get("match_role") == "reference"
+                        and enclosing.get("name") == symbol):
+                    changed += 1
+                    if name == "outside_body":
+                        row["line"] = end + 1
+                    else:
+                        enclosing["name"] = "unrelated_method"
+            self.assertGreater(changed, 0)
+            with self.subTest(mutation=name):
+                live._occurrences["terminal_finality"] = mutated
+                try:
+                    _, failures = VERIFIER.verify_code_corridors(live, contracts)
+                    self.assertTrue(any("invocation finish -> terminal_finality" in failure
+                                        and "observed 0" in failure for failure in failures), failures)
+                finally:
+                    live._occurrences["terminal_finality"] = original_occurrences
+
 
 class RustModuleResolutionTests(unittest.TestCase):
     def test_reports_missing_module_and_accepts_standard_module_file(self) -> None:
@@ -2724,6 +2809,25 @@ class CurrentChainMutantTests(unittest.TestCase):
                 self.assertTrue(
                     any("settings_to_capture_admission" in failure and obligation in failure
                         for failure in failures), (name, failures))
+
+    def test_inline_take_archive_ownership_cannot_be_removed_or_reordered(self):
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = "start_event_session", "core/audio/streaming_recorder.rs"
+        cases = [
+            ("archive_feed_removed", [("archive: Some(archive_feed)", "archive: None")]),
+            ("take_subscriber_removed", [("self.take_subscriber = Some(take_subscriber);", "")]),
+            ("archive_not_retained", [("self.take_archive = Some(archive);", "")]),
+            ("archive_retained_after_publication", [
+                ("self.take_archive = Some(archive);", ""),
+                ("event_sink.on_capture_opened(&session_id, next_capture_epoch);",
+                 "event_sink.on_capture_opened(&session_id, next_capture_epoch); self.take_archive = Some(archive);"),
+            ]),
+        ]
+        for name, pairs in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutations(symbol, file, pairs)
+                self.assertTrue(any("capture_to_ledger" in failure and symbol in failure
+                                    for failure in failures), (name, failures))
 
     def test_acoustic_chain_bypasses_are_rejected(self):
         cases = [
