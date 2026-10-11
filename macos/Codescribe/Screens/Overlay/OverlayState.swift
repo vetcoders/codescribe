@@ -1811,11 +1811,10 @@ final class OverlayState {
     captureStartedAtUptime != nil
   }
 
-  /// Presentation activity only; capture and reducer receipts retain ownership.
-  /// A stopped capture can still carry a listening projection until its seal.
+  /// The visible dictation canvas stays ready even before a take starts.
+  /// This decoration conveys readiness, not microphone or engine activity.
   var animatesTranscriptCaret: Bool {
-    !isCollapsed && !isEditingTranscript && !terminal && presentationStatus == nil
-      && recording && (statusRippling || (mode == .finalizing && transcribing))
+    !isCollapsed && showsMyDictation && !isEditingTranscript
   }
 
   /// Frozen durations stay readable without scheduling another render tick.
