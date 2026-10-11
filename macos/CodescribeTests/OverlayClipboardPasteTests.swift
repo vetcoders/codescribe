@@ -86,6 +86,68 @@ final class OverlayClipboardPasteTests: XCTestCase {
   }
 
   @MainActor
+  func testOverflowingComposerKeepsCaretVisibleAfterRepaintAndAllowsManualScroll() throws {
+    var draft = ""
+    func composer() -> OverlayConversationComposer {
+      OverlayConversationComposer(
+        palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }),
+        sending: false, onSubmit: {})
+    }
+    let host = NSHostingView(rootView: composer())
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 160)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    let scroll = try XCTUnwrap(text.enclosingScrollView)
+    func repaint() {
+      host.rootView = composer()
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+      host.layoutSubtreeIfNeeded()
+    }
+    func assertCaretVisible(file: StaticString = #filePath, line: UInt = #line) throws {
+      let layout = try XCTUnwrap(text.layoutManager)
+      let container = try XCTUnwrap(text.textContainer)
+      layout.ensureLayout(for: container)
+      let glyph = layout.glyphIndexForCharacter(at: text.selectedRange().location - 1)
+      var caret = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+      caret.origin.y += text.textContainerOrigin.y
+      XCTAssertGreaterThanOrEqual(
+        caret.minY, scroll.documentVisibleRect.minY - 1, file: file, line: line)
+      XCTAssertLessThanOrEqual(
+        caret.maxY, scroll.documentVisibleRect.maxY + 1, file: file, line: line)
+    }
+    text.insertText(
+      (1...24).map { "line \($0) with enough words to wrap after the composer viewport narrows" }
+        .joined(separator: "\n"),
+      replacementRange: NSRange(location: 0, length: 0))
+    host.frame.size.width = 280
+    repaint()
+    XCTAssertGreaterThan(text.frame.height, scroll.contentSize.height)
+    try assertCaretVisible()
+    scroll.contentView.scroll(to: .zero)
+    scroll.reflectScrolledClipView(scroll.contentView)
+    repaint()
+    XCTAssertEqual(
+      scroll.documentVisibleRect.minY, 0, accuracy: 1,
+      "an idle repaint must not fight intentional scrolling")
+    text.insertText(" continued", replacementRange: text.selectedRange())
+    repaint()
+    try assertCaretVisible()
+    XCTAssertTrue(draft.hasSuffix("continued"))
+  }
+
+  @MainActor
   func testNativePasteInsertsPersistedPointerAndReturnSendsIt() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
