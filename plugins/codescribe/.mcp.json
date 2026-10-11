@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "codescribe": { "command": "cs-bus", "args": ["--mcp"] }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "codescribe",
+  "owner": { "name": "Vetcoders" },
+  "plugins": [
+    {
+      "name": "codescribe",
+      "source": "./codescribe",
+      "description": "Native Codescribe conversation, mailbox and voice in Junie CLI."
+    }
+  ]
+}
