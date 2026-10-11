@@ -138,7 +138,7 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
 }
 
 #[test]
-fn first_live_word_trial_requires_raw_banded_complete_evidence_against_incomplete_apple() {
+fn one_complete_frame_cannot_request_a_live_word_trial() {
     for case in [
         "eligible",
         "complete-apple",
@@ -183,24 +183,18 @@ fn first_live_word_trial_requires_raw_banded_complete_evidence_against_incomplet
         let before = ledger.slots_of(&owner).unwrap().to_vec();
         let trial =
             ledger.next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000);
-        assert_eq!(trial.is_some(), case == "eligible", "{case}");
+        assert!(trial.is_none(), "one frame is insufficient: {case}");
         assert_eq!(
             ledger.slots_of(&owner).unwrap(),
             before,
             "dispatch cannot mutate: {case}"
         );
-        if let Some(trial) = trial {
-            ledger.close_word_trial(&trial, "inference_failed");
-            assert!(ledger.next_word_trial_before_horizon(
-                false, None, Some((48_000, 0..144_000)), 48_000,
-            ).is_none(), "a failed native attempt still spends its budget");
-        }
     }
 }
 
 #[test]
-fn first_live_trial_still_requires_a_different_frame_agreeing_with_a_retained_label() {
-    for answer in ["PNPM", "unrelated"] {
+fn two_frame_live_trial_requires_fresh_agreement_and_spends_failed_budget() {
+    for answer in ["PNPM", "unrelated", "inference_failed"] {
         let owner =
             OccurrenceIdentity::new(format!("first-live-return-{answer}"), 1, 24_000, 40_000);
         let mut pcm = vec![0.0; 144_000];
@@ -214,13 +208,42 @@ fn first_live_trial_still_requires_a_different_frame_agreeing_with_a_retained_la
             &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
             &[WordPin::new(25_600, 30_400, "PNPM").with_decode_window(0, 144_000)],
         );
+        assert!(
+            ledger
+                .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000,)
+                .is_none()
+        );
+        // A new request for the same physical decode must not count twice.
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 3, 2, owner.clone()),
+            &[WordPin::new(25_600, 30_400, "PNPM").with_decode_window(0, 144_000)],
+        );
+        assert!(
+            ledger
+                .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000,)
+                .is_none()
+        );
+        // Keep an actual dispute while supplying a second distinct frame.
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 4, 3, owner.clone()),
+            &[WordPin::new(25_600, 30_400, "PCM").with_decode_window(0, 128_000)],
+        );
         let trial = ledger
             .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000)
-            .expect("the early owner can request its second physical decode");
+            .expect("two distinct complete frames permit a bounded trial");
         assert_eq!(ledger.text_of(&owner), Some("PTM"));
         let old_frame = OccurrenceIdentity::new(&owner.session, 1, 0, 144_000);
         assert!(ledger.word_trial_has_decode(&trial, &old_frame));
-        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 3, 2, owner.clone());
+        if answer == "inference_failed" {
+            ledger.close_word_trial(&trial, "inference_failed");
+            assert!(ledger.next_word_trial_before_horizon(
+                false, None, Some((48_000, 0..144_000)), 48_000,
+            ).is_none(), "a failed native attempt still spends its budget");
+            assert_eq!(ledger.text_of(&owner), Some("PTM"));
+            assert_eq!(ledger.conservation().residue(), 0);
+            continue;
+        }
+        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 5, 4, owner.clone());
         let pins = [WordPin::new(25_600, 30_400, answer).with_decode_window(0, 78_400)];
         let receipt = ledger.admit_word_trial(&trial, &fresh, &pins, &pins);
         assert_eq!(receipt.grants_mutation(), answer == "PNPM", "{answer}");
