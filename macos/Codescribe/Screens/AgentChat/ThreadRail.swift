@@ -264,7 +264,6 @@ private struct ThreadRow: View {
   let onCancelRename: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
-  @State private var measuredContentWidth: CGFloat = 0
 
   private var isRowFocused: Bool { focus.wrappedValue == thread.id }
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
@@ -279,15 +278,18 @@ private struct ThreadRow: View {
           .hidden()
           .allowsHitTesting(false)
           .accessibilityHidden(true)
-          .onGeometryChange(for: CGFloat.self) {
-            $0.size.width
-          } action: { width in
-            measuredContentWidth = width
+          .background {
+            // Publish the probe's width straight from layout. Relaying it
+            // through @State needed a second render pass to move the new
+            // width into the preference; when nothing else invalidated the
+            // row, that pass never came and the rail cap stayed stale.
+            GeometryReader { probe in
+              Color.clear.preference(
+                key: ThreadRailWidthPreference.self,
+                // Row padding: 12pt per side; rail list padding: 10pt per side.
+                value: probe.size.width + 2 * 12 + 2 * 10)
+            }
           }
-          .preference(
-            key: ThreadRailWidthPreference.self,
-            // Row padding: 12pt per side; rail list padding: 10pt per side.
-            value: measuredContentWidth + 2 * 12 + 2 * 10)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 12)
@@ -333,8 +335,13 @@ private struct ThreadRow: View {
       .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
   }
 
+  /// One copy for this action everywhere it is offered — the rail's context
+  /// menu, the row's Accessibility action and the header's "•••" menu read the
+  /// same words (Founder brief, round 18, 2026-10-10).
   private var favoriteActionTitle: String {
-    thread.isFavorite ? String(localized: "Unfavorite") : String(localized: "Favorite")
+    thread.isFavorite
+      ? String(localized: "Remove from favorites")
+      : String(localized: "Add to favorites")
   }
 
   private var favoriteHelp: String {

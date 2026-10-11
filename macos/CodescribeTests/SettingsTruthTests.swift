@@ -314,7 +314,6 @@ final class SettingsTruthTests: XCTestCase {
       SettingsTab.tabs(in: .engine),
       [
         .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-        .dictationPermissions,
       ],
       "every Dictation concern is a tab; the raw recognition timings live in Lab"
     )
@@ -371,7 +370,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "mcp"), .agentMcp)
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "permission"), .agentTools)
     XCTAssertEqual(
-      SettingsTab.searchLanding(in: .engine, query: "permission"), .dictationPermissions)
+      SettingsTab.searchLanding(in: .engine, query: "permission"), nil,
+      "the duplicated Permissions tab is gone; Creator owns the checklist")
+    XCTAssertTrue(SettingsSection.revealed(by: "permission").contains(.creator))
+    XCTAssertTrue(SettingsSection.revealed(by: "tcc").contains(.creator))
     XCTAssertNil(SettingsTab.searchLanding(in: .agent, query: "  "))
     XCTAssertNil(
       SettingsTab.searchLanding(in: .agent, query: "agent"),
@@ -559,6 +561,13 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+    // Always `aicx`, never `Aicx`, in display names (Founder brief, round 12);
+    // the identity string stays verbatim.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx-http__aicx_index_status"),
+      "aicx index status")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx__aicx_continuity"), "aicx continuity")
 
     // Our own tools are named in the interface language; an MCP server's tools
     // keep the vendor's wording, spelled out of the registry name.
@@ -1331,27 +1340,21 @@ final class SettingsTruthTests: XCTestCase {
       .offline, "the known speech failure must remain visible")
   }
 
-  func testCreatorLanguagePresentationKeepsTruthfulIdentityAndAccessibility() {
+  func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
     XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
-    XCTAssertEqual(
-      choices.map(\.accessibilityLabel),
-      ["Multilingual", "Polish, Fine-tuned", "English, Fine-tuned"]
-    )
-    XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
-    XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The footnote names the rail section literally: Polish needs the
-    // locative, so the title cannot be interpolated. A rail rename must fail
-    // here until the sentence is reworded with it.
+    // The row sentence explains only the one non-obvious choice; the
+    // fine-tuned-models detail left the base view (Founder brief, round 4,
+    // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Domain vocabulary and Dictionary entries improve speech recognition."
+      "Multilingual detects the language automatically."
     )
-    XCTAssertTrue(
-      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
+    XCTAssertFalse(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
   }
 
   func testCreatorLanguageSelectionWritesStableRuntimeCodes() {
@@ -1565,7 +1568,11 @@ final class SettingsTruthTests: XCTestCase {
       promptFileStatus(source: "custom_file", fileExists: true), "Custom prompt file in use.")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: false),
-      "No custom prompt file yet. Saving creates one at this path.")
+      "The custom file is created on save.")
+    // The quiet header tag; the spelled-out source stays as its VoiceOver value.
+    XCTAssertEqual(promptSourceTag("custom_file"), "Custom")
+    XCTAssertEqual(promptSourceTag("built_in_fallback"), "Built-in")
+    XCTAssertNil(promptSourceTag(nil), "no empty capsule for an unknown source")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: true),
       "The file exists but is empty, so the built-in prompt is in use.")
@@ -1644,7 +1651,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(summary.native, 1)
     XCTAssertEqual(summary.enhanced, 1)
     XCTAssertEqual(summary.unavailable, 1)
-    XCTAssertEqual(summary.line, "Native: 1 · Enhanced: 1 · Unavailable: 1")
+    XCTAssertEqual(summary.line, "Capabilities: 1 native · 1 enhanced · 1 unavailable")
 
     let rows = CsCapabilityRow.sampleMatrix
     XCTAssertEqual(rows[0].localizedTier, "Native")

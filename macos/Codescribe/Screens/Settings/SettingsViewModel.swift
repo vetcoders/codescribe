@@ -421,10 +421,15 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var searchKeywords: [String] {
     switch self {
     case .creator:
+      // Creator owns the permission checklist, so the permission vocabulary
+      // lands here — there is no second permission surface under Dictation
+      // (Founder brief, round 14, 2026-10-10).
       settingsSearchTerms(
+        fixed: ["tcc"],
         localized: String(
           localized: "settings.search.section.creator",
-          defaultValue: "setup, onboarding, permissions, quick start, language",
+          defaultValue:
+            "setup, onboarding, permissions, accessibility, input monitoring, quick start, language",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
@@ -698,6 +703,7 @@ enum SettingsAnchor: String, Hashable {
   case audioInput
   case audioReadiness
   case maxConsultation
+  case providersCloudTranscription
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -781,8 +787,8 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
 
   var subtitle: String {
     self == .assistive
-      ? String(localized: "The model behind the Agent and the voice assistant")
-      : String(localized: "Transcript cleanup and formatting")
+      ? String(localized: "The Agent and voice assistant model")
+      : String(localized: "The transcript cleanup model")
   }
 
   var providerKey: String {
@@ -902,7 +908,16 @@ struct LLMLaneModel {
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
-      // any other failure stays generic so a bad key is never guessed.
+      // any other failure stays generic so a bad key is never guessed. With a
+      // signed-in account the sentence says the account still works: the model
+      // list and the account are independent states (Founder brief, round 8).
+      if runtime.accountAuth {
+        return String(
+          localized:
+            "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.",
+          comment: "Model discovery failed while the provider account stays signed in"
+        )
+      }
       return String(
         localized:
           "Could not fetch \(providerDisplayName) models. The API key was rejected. Check it under Providers.",
@@ -2747,8 +2762,9 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
-    // The engine reports every eligible pair it applied, learned before or
-    // not; the growth of the flattened rules list is what is actually new.
+    // The growth of the flattened rules list is what is actually new; the
+    // core's `fromProposed` likewise counts only rules the suggestions newly
+    // added, so a suggestion learned by an earlier run is never credited.
     // Read the list from the engine: the panel's copy may not be loaded yet.
     let rulesBefore = (try? engine.loadLexiconCustomEntries().count) ?? customLexiconEntries.count
     Task { @MainActor [weak self] in
