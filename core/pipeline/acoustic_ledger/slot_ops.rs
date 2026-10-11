@@ -837,7 +837,8 @@ impl AcousticLedger {
                             || (self.word_pin_observations.contains(&pin.observation)
                                 && pin.text.split_whitespace().count() == 1
                                 && producer.is_some_and(|producer| {
-                                    producer.authority_rank() >= observation.producer.authority_rank()
+                                    producer.authority_rank()
+                                        >= observation.producer.authority_rank()
                                 }))
                     })
             })
