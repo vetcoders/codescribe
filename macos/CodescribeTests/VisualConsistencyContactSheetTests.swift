@@ -197,7 +197,7 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
           account: "FIXTURE_KEY", label: String(localized: "API key"), isSet: true,
           optional: true, embedded: true,
           presentation: .customProvider(endpoint: providers[0].endpoint),
-          initiallyEditing: true, probeResult: nil, probePending: false,
+          probeResult: nil, probePending: false, initiallyEditing: true,
           onSave: { _ in }, onClear: {}, onTest: {})
           .padding(CSSpace.xl))
     }
