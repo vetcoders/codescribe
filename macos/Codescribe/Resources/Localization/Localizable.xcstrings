@@ -4861,7 +4861,7 @@
       }
     },
     "Comfort" : {
-      "comment" : "Paste policy: paste wherever the caret is",
+      "comment" : "Paste policy: verified editable destinations",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8404,6 +8404,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Słucha"
+          }
+        }
+      }
+    },
+    "Live preview" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podgląd na żywo"
           }
         }
       }
