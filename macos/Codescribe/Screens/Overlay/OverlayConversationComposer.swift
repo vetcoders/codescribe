@@ -277,6 +277,29 @@ private struct ConversationMessageField: NSViewRepresentable {
       }
     }
 
+    /// A plain-text editor's standard Paste validation rejects image-only
+    /// boards before our attachment-aware paste method can receive the action.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+      if item.action == #selector(NSText.paste(_:)) {
+        return isEditable && pastedText != nil
+      }
+      return super.validateUserInterfaceItem(item)
+    }
+
+    private func performComposerPaste(with event: NSEvent) -> Bool {
+      guard event.type == .keyDown, window?.firstResponder === self,
+        event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+        event.charactersIgnoringModifiers?.lowercased() == "v"
+      else { return false }
+      paste(nil)
+      return true
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+      if performComposerPaste(with: event) { return true }
+      return super.performKeyEquivalent(with: event)
+    }
+
     override func becomeFirstResponder() -> Bool {
       let accepted = super.becomeFirstResponder()
       if accepted { onEditorActive(true) }
@@ -290,6 +313,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     override func keyDown(with event: NSEvent) {
+      if performComposerPaste(with: event) { return }
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
       if [36, 76].contains(event.keyCode), alternate.isEmpty, !hasMarkedText() {
         if !sending && !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
