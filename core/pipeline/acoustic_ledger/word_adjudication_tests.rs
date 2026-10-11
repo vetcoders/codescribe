@@ -202,9 +202,11 @@ fn unresolved_group_trial() -> (
     assert!(ledger.admit_word_slots(&initial, &held).grants_mutation());
     let sources = ledger.slots_of(&owner).unwrap().to_vec();
     let question = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+    // A grid window can extend beyond the narrower bounded trial that follows.
+    // Keep this witness inside the existing three-frame retention horizon.
     let candidate = [
-        WordPin::new(48_000, 56_000, "tej").with_decode_window(8_000, 152_000),
-        WordPin::new(64_000, 72_000, "wstępnej").with_decode_window(8_000, 152_000),
+        WordPin::new(48_000, 56_000, "tej").with_decode_window(8_000, 188_000),
+        WordPin::new(64_000, 72_000, "wstępnej").with_decode_window(8_000, 188_000),
     ];
     ledger.prepare_word_evidence(&question, &candidate);
     let mut outputs = sources.clone();
@@ -230,7 +232,7 @@ fn unresolved_group_trial() -> (
     );
     assert_eq!(ledger.text_of(&owner), Some("tej cholemsyce"));
     assert_eq!(
-        ledger.retained_word_trial_targets(&owner),
+        ledger.unresolved_word_target_groups(&owner),
         vec![trial.targets.clone()]
     );
     (ledger, owner, trial)
@@ -257,7 +259,7 @@ fn unresolved_group_retains_witness_until_a_fresh_complete_ordinary_frame() {
         assert_eq!(ledger.text_of(&owner), Some(expected));
         if generation == 4 {
             assert_eq!(
-                ledger.retained_word_trial_targets(&owner),
+                ledger.unresolved_word_target_groups(&owner),
                 vec![trial.targets.clone()]
             );
         }
@@ -268,7 +270,7 @@ fn unresolved_group_retains_witness_until_a_fresh_complete_ordinary_frame() {
             && choice.lexical_resolved
             && choice.reason == "source_agreement"
     }));
-    assert!(ledger.retained_word_trial_targets(&owner).is_empty());
+    assert!(ledger.unresolved_word_target_groups(&owner).is_empty());
     assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
     assert_eq!(ledger.conservation().residue(), 0);
 }
@@ -290,7 +292,7 @@ fn partial_apple_and_whisper_cannot_shrink_group_or_reopen_trial_budgets() {
             before
         );
         assert_eq!(
-            ledger.retained_word_trial_targets(&owner),
+            ledger.unresolved_word_target_groups(&owner),
             vec![trial.targets.clone()]
         );
         assert!(
@@ -316,9 +318,78 @@ fn partial_apple_and_whisper_cannot_shrink_group_or_reopen_trial_budgets() {
             .is_none()
     );
     assert_eq!(
-        ledger.retained_word_trial_targets(&owner),
+        ledger.unresolved_word_target_groups(&owner),
         vec![trial.targets]
     );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn settled_group_word_correction_keeps_the_other_words_original_witness() {
+    let (mut ledger, owner, trial) = unresolved_group_trial();
+    let full = ObservationIdentity::new(ObservationProducer::Whisper, 4, 4, owner.clone());
+    ledger.admit_word_slots(
+        &full,
+        &[
+            WordPin::new(48_000, 56_000, "tej").with_decode_window(4_000, 168_000),
+            WordPin::new(64_000, 72_000, "forensyce").with_decode_window(4_000, 168_000),
+        ],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("tej forensyce"));
+    assert!(ledger.unresolved_word_target_groups(&owner).is_empty());
+    assert!(
+        ledger
+            .word_choices()
+            .last()
+            .unwrap()
+            .support
+            .iter()
+            .any(|witness| {
+                witness.complete && witness.original_text.as_deref() == Some("tej wstępnej")
+            })
+    );
+    let group_receipt = ledger.word_finality(&owner)[0].trial.clone().unwrap();
+    assert_eq!(group_receipt.trial, trial);
+    for (generation, start, end, expected) in [
+        (5, 0, 176_000, "tej forensyce"),
+        (6, 8_000, 184_000, "tam forensyce"),
+    ] {
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            generation,
+            generation,
+            owner.clone(),
+        );
+        ledger.admit_word_slots(
+            &observation,
+            &[WordPin::new(48_000, 56_000, "tam").with_decode_window(start, end)],
+        );
+        assert_eq!(ledger.text_of(&owner), Some(expected));
+        let finality = ledger.word_finality(&owner);
+        assert_eq!(finality.len(), 2);
+        assert!(finality.iter().all(|word| word.targets.len() == 1));
+        assert!(
+            finality
+                .iter()
+                .all(|word| word.trial.as_ref() == Some(&group_receipt))
+        );
+        serde_json::to_value(&finality).unwrap();
+    }
+    // A retained full-frame witness for word2 survived word1's correction.
+    // A new independent confirmation can use it without another whole-group
+    // decode or two replacement frames after the metadata separation.
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 7, 7, owner.clone());
+    ledger.admit_word_slots(
+        &observation,
+        &[WordPin::new(64_000, 72_000, "wstępnej").with_decode_window(0, 180_000)],
+    );
+    assert_eq!(
+        ledger.text_of(&owner),
+        Some("tam wstępnej"),
+        "latest={:?}",
+        ledger.word_choices().last()
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
     assert_eq!(ledger.conservation().residue(), 0);
 }
 

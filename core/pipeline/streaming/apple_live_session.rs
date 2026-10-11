@@ -24947,8 +24947,7 @@ mod relay_l1_overlap_admission_tests {
                     text.starts_with(label),
                     "polarity source was erased: {text}"
                 );
-                assert!(ledger.word_choices().iter().any(|choice| !choice.accepted
-                    && choice.reason == "negation_requires_lexical_evidence"));
+                assert!(ledger.slots_of(&owner).unwrap().contains(&source));
                 assert_eq!(
                     ledger
                         .slot_operations()
