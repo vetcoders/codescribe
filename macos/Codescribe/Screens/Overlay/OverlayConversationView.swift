@@ -282,7 +282,7 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private func messageReceipts(_ message: OverlayConversationMessage) -> some View {
-    if !message.recipients.isEmpty {
+    if message.showsDeliveryReceipts && !message.recipients.isEmpty {
       if message.recipients.count > 1 {
         let readCount = message.recipients.filter { $0.acknowledged }.count
         Menu {

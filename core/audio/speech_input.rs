@@ -143,26 +143,36 @@ impl SpeechInputArchive {
             if end < start || end > archive.samples {
                 return Err("speech input archive range outside capture".into());
             }
-            let mut reader = hound::WavReader::new(
-                std::io::BufReader::new(archive.file.reopen().map_err(|e| e.to_string())?),
-            ).map_err(|e| e.to_string())?;
+            let mut reader = hound::WavReader::new(std::io::BufReader::new(
+                archive.file.reopen().map_err(|e| e.to_string())?,
+            ))
+            .map_err(|e| e.to_string())?;
             let spec = reader.spec();
-            if spec.channels != 1 || spec.sample_rate != RATE
+            if spec.channels != 1
+                || spec.sample_rate != RATE
                 || spec.sample_format != hound::SampleFormat::Float
                 || spec.bits_per_sample != 32
                 || u64::from(reader.duration()) != archive.samples
             {
                 return Err("speech input archive format/count mismatch".into());
             }
-            reader.seek(u32::try_from(start).map_err(|e| e.to_string())?)
+            reader
+                .seek(u32::try_from(start).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             let length = usize::try_from(end - start).map_err(|e| e.to_string())?;
-            let samples = reader.samples::<f32>().take(length)
-                .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let samples = reader
+                .samples::<f32>()
+                .take(length)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
             if samples.len() != length {
                 return Err("speech input archive truncated".into());
             }
-            Ok(ResolvedAudioWindow { samples, sample_start: start, sample_end: end })
+            Ok(ResolvedAudioWindow {
+                samples,
+                sample_start: start,
+                sample_end: end,
+            })
         })())
     }
 }
@@ -205,9 +215,11 @@ impl SpeechInputStream {
         let started = thread::Builder::new()
             .name("speech-input".into())
             .spawn(move || {
-                let mut input = worker_owner.lock()
+                let mut input = worker_owner
+                    .lock()
                     .expect("speech input receiver handoff lock")
-                    .take().expect("speech input receiver handed off once");
+                    .take()
+                    .expect("speech input receiver handed off once");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     run_conditioner(&mut input, &output, gain, &session, &worker_archive)
                 }));
@@ -227,8 +239,11 @@ impl SpeechInputStream {
         let receiver = match started {
             Ok(_) => SpeechInputReceiver::Enhanced(receiver),
             Err(error) => SpeechInputReceiver::Failed {
-                input: owner.lock().expect("speech input receiver handoff lock")
-                    .take().expect("failed spawn retains capture receiver"),
+                input: owner
+                    .lock()
+                    .expect("speech input receiver handoff lock")
+                    .take()
+                    .expect("failed spawn retains capture receiver"),
                 error: Some(format!("speech input thread unavailable: {error}")),
             },
         };
@@ -237,17 +252,19 @@ impl SpeechInputStream {
 
     pub(crate) async fn recv(&mut self) -> Option<Result<SpeechInputFrame, String>> {
         match &mut self.receiver {
-            SpeechInputReceiver::Raw(input) => input.recv().await.map(|samples| {
-                Ok(SpeechInputFrame { raw: None, samples })
-            }),
+            SpeechInputReceiver::Raw(input) => input
+                .recv()
+                .await
+                .map(|samples| Ok(SpeechInputFrame { raw: None, samples })),
             SpeechInputReceiver::Enhanced(input) => input.recv().await,
             SpeechInputReceiver::Failed { input, error } => {
                 if let Some(error) = error.take() {
                     Some(Err(error))
                 } else {
-                    input.recv().await.map(|samples| {
-                        Ok(SpeechInputFrame { raw: None, samples })
-                    })
+                    input
+                        .recv()
+                        .await
+                        .map(|samples| Ok(SpeechInputFrame { raw: None, samples }))
                 }
             }
         }
@@ -288,8 +305,7 @@ impl SpeechInputConditioner {
             .iter()
             .zip(wet)
             .map(|(dry, wet)| {
-                let mixed = DRY_SHARE * dry * self.gain
-                    + (1.0 - DRY_SHARE) * wet / 32768.0;
+                let mixed = DRY_SHARE * dry * self.gain + (1.0 - DRY_SHARE) * wet / 32768.0;
                 // Unity below the knee; a continuous soft limiter above it.
                 let magnitude = mixed.abs();
                 if magnitude <= 0.8 {
@@ -300,7 +316,10 @@ impl SpeechInputConditioner {
             })
             .collect::<Vec<_>>();
         self.output_samples += previous.len() as u64;
-        Some(SpeechInputFrame { raw: Some(previous), samples })
+        Some(SpeechInputFrame {
+            raw: Some(previous),
+            samples,
+        })
     }
 
     fn push(
@@ -312,10 +331,14 @@ impl SpeechInputConditioner {
         if samples.iter().any(|sample| !sample.is_finite()) {
             return Err("nonfinite capture PCM; projection refused".into());
         }
-        self.input_samples = self.input_samples.checked_add(samples.len() as u64)
+        self.input_samples = self
+            .input_samples
+            .checked_add(samples.len() as u64)
             .ok_or_else(|| "speech input sample count overflow".to_string())?;
         if self.input_samples > MAX_SPOOL_SAMPLES {
-            return Err("speech input projection exceeds 2 GiB spool budget; raw capture retained".into());
+            return Err(
+                "speech input projection exceeds 2 GiB spool budget; raw capture retained".into(),
+            );
         }
         for sample in samples {
             self.pending.push(*sample);
@@ -366,7 +389,8 @@ fn publish_frame(
     for sample in &frame.samples {
         spool.write_sample(*sample).map_err(|e| e.to_string())?;
     }
-    output.blocking_send(Ok(frame))
+    output
+        .blocking_send(Ok(frame))
         .map_err(|_| "speech input consumer closed".to_string())
 }
 
@@ -385,16 +409,23 @@ fn run_conditioner(
         sample_format: hound::SampleFormat::Float,
     };
     let mut spool = hound::WavWriter::new(
-        BufWriter::new(file.reopen().map_err(|e| e.to_string())?), spec,
-    ).map_err(|e| e.to_string())?;
+        BufWriter::new(file.reopen().map_err(|e| e.to_string())?),
+        spec,
+    )
+    .map_err(|e| e.to_string())?;
     let mut conditioner = SpeechInputConditioner::new(gain);
     while let Some(samples) = input.blocking_recv() {
         conditioner.push(&samples, output, &mut spool)?;
     }
     conditioner.finish(output, &mut spool)?;
     spool.finalize().map_err(|e| e.to_string())?;
-    *archive.0.lock().map_err(|_| "speech input archive lock poisoned".to_string())? =
-        Some(ProjectionFile { file, samples: conditioner.output_samples });
+    *archive
+        .0
+        .lock()
+        .map_err(|_| "speech input archive lock poisoned".to_string())? = Some(ProjectionFile {
+        file,
+        samples: conditioner.output_samples,
+    });
     info!(
         session,
         input_samples = conditioner.input_samples,
@@ -403,4 +434,65 @@ fn run_conditioner(
         "speech input projection complete"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn condition(input: &[f32], partition: usize) -> (Vec<f32>, Vec<f32>) {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: RATE,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut spool =
+            hound::WavWriter::new(BufWriter::new(file.reopen().unwrap()), spec).unwrap();
+        let mut conditioner = SpeechInputConditioner::new(4.0);
+        for part in input.chunks(partition) {
+            conditioner.push(part, &tx, &mut spool).unwrap();
+        }
+        conditioner.finish(&tx, &mut spool).unwrap();
+        spool.finalize().unwrap();
+        let mut raw = Vec::new();
+        let mut projected = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let frame = frame.unwrap();
+            raw.extend_from_slice(frame.raw_samples());
+            projected.extend_from_slice(&frame.samples);
+        }
+        let archived = hound::WavReader::open(file.path())
+            .unwrap()
+            .samples::<f32>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        assert_eq!(projected, archived);
+        (raw, projected)
+    }
+
+    #[test]
+    fn speech_input_keeps_every_raw_sample_and_eof_tail_under_repartitioning() {
+        for count in [1, FRAME - 1, FRAME, FRAME + 1, FRAME * 5 + 17] {
+            let input = (0..count)
+                .map(|i| (i as f32 * 0.13).sin() * 0.2)
+                .collect::<Vec<_>>();
+            let (raw, projected) = condition(&input, count);
+            assert_eq!(raw, input);
+            assert_eq!(projected.len(), count);
+            assert!(
+                projected
+                    .iter()
+                    .all(|value| value.is_finite() && value.abs() <= 1.0)
+            );
+            for partition in [1, 37, FRAME] {
+                assert_eq!(
+                    condition(&input, partition),
+                    (raw.clone(), projected.clone())
+                );
+            }
+        }
+    }
 }

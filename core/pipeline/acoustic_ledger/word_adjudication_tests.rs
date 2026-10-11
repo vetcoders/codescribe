@@ -2209,3 +2209,136 @@ fn integrator_v29_three_apple_pins_still_allow_three_independent_corrections() {
     assert!(ledger.word_deletions().is_empty());
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+// Integrator-owned projection falsifiers: the raw decode fence is independent
+// of the owner projection. Synthetic PCM is not native quality acceptance.
+fn integrator_v30_projection_case(
+    owner_bounds: (u64, u64),
+    pin_bounds: (u64, u64),
+    quiet_edges: bool,
+    accepted: bool,
+) {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    let owner = OccurrenceIdentity::new("v30-raw-projection", 1, owner_bounds.0, owner_bounds.1);
+    let mut pcm = vec![0.0; 160_000];
+    pcm[16_000..96_000].fill(0.2);
+    if quiet_edges {
+        pcm[16_000..16_321].fill(0.0);
+        pcm[95_679..96_000].fill(0.0);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    if quiet_edges {
+        let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let left = OccurrenceIdentity::new(&owner.session, 1, 16_000, 16_321);
+        let right = OccurrenceIdentity::new(&owner.session, 1, 95_679, 96_000);
+        ledger.record_decode_fence_energy(
+            &energy,
+            pcm.len() as u64,
+            [
+                Some((&left, &pcm[16_000..16_321])),
+                Some((&right, &pcm[95_679..96_000])),
+            ],
+        );
+    }
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    let receipt = ledger.admit_word_slots(
+        &observation,
+        &[WordPin::new(pin_bounds.0, pin_bounds.1, "Iwo").with_decode_window(16_000, 96_000)],
+    );
+    assert_eq!(
+        receipt.grants_mutation(),
+        accepted,
+        "raw={pin_bounds:?}, owner={owner_bounds:?}, quiet={quiet_edges}"
+    );
+    assert_eq!(
+        ledger.slots_of(&owner).map_or(0, |slots| slots.len()),
+        usize::from(accepted)
+    );
+    if accepted {
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+    } else {
+        let rejected = ledger
+            .rejected_word_pins
+            .get(&owner)
+            .expect("retain refused evidence");
+        assert_eq!(rejected.len(), 1);
+        assert!(ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+    }
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn integrator_v30_raw_left_fence_is_not_repaired_by_owner_clipping() {
+    integrator_v30_projection_case((24_000, 120_000), (16_000, 48_000), false, false);
+}
+
+#[test]
+fn integrator_v30_near_left_voiced_fence_is_not_hidden_by_owner() {
+    integrator_v30_projection_case((24_000, 120_000), (16_160, 48_000), false, false);
+}
+
+#[test]
+fn integrator_v30_raw_right_fence_is_not_repaired_by_owner_clipping() {
+    integrator_v30_projection_case((8_000, 88_000), (48_000, 96_000), false, false);
+}
+
+#[test]
+fn integrator_v30_near_right_voiced_fence_is_not_hidden_by_owner() {
+    integrator_v30_projection_case((8_000, 88_000), (48_000, 95_840), false, false);
+}
+
+#[test]
+fn integrator_v30_authenticated_quiet_edges_preserve_admission() {
+    integrator_v30_projection_case((24_000, 120_000), (16_000, 48_000), true, true);
+    integrator_v30_projection_case((8_000, 88_000), (48_000, 96_000), true, true);
+}
+
+#[test]
+fn integrator_v30_complete_interior_crossing_preserves_admission() {
+    integrator_v30_projection_case((24_000, 120_000), (20_000, 48_000), false, true);
+    integrator_v30_projection_case((8_000, 88_000), (48_000, 92_000), false, true);
+}
+
+#[test]
+fn integrator_v30_five_distinct_iwo_keep_original_source_ranges() {
+    let owner = OccurrenceIdentity::new("v30-five-iwo", 1, 18_000, 150_000);
+    let mut pcm = vec![0.0; 192_000];
+    let ranges = [
+        (16_000, 24_000),
+        (40_000, 48_000),
+        (64_000, 72_000),
+        (88_000, 96_000),
+        (112_000, 120_000),
+    ];
+    for &(start, end) in &ranges {
+        pcm[start as usize..end as usize].fill(0.2);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    let pins = ranges
+        .iter()
+        .map(|&(start, end)| WordPin::new(start, end, "Iwo").with_decode_window(0, 176_000))
+        .collect::<Vec<_>>();
+    assert!(
+        ledger
+            .admit_word_slots(&observation, &pins)
+            .grants_mutation()
+    );
+    let held = ledger.slots_of(&owner).unwrap();
+    assert_eq!(held.len(), 5);
+    assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+    for (word, &(start, end)) in held.iter().zip(&ranges) {
+        assert!(
+            ledger
+                .slot_source_ranges(word)
+                .iter()
+                .any(|range| range.sample_start == start && range.sample_end == end)
+        );
+    }
+    assert_eq!(ledger.conservation().residue(), 0);
+}

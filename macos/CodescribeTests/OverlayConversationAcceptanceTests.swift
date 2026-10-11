@@ -394,6 +394,10 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     question["session_id"] = "agent-channel-0-test"
     question["occurrence_session_id"] = "agent-channel-0-test"
     bus.consume(question)
+    bus.consume([
+      "schema": "codescribe.channel-session.v1", "channel": "0",
+      "session_id": "agent-channel-0-test", "state": "sealed",
+    ])
 
     func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
       guard let element = object as? any NSAccessibilityProtocol else { return [] }
