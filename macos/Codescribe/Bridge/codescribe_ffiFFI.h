@@ -2023,6 +2023,11 @@ RustBuffer uniffi_codescribe_ffi_fn_func_run_vocabulary_ab(uint32_t sample, Rust
 RustBuffer uniffi_codescribe_ffi_fn_func_runtime_llm_lane(RustBuffer lane, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_ATTACHMENT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_ATTACHMENT
+RustBuffer uniffi_codescribe_ffi_fn_func_save_pasted_attachment(RustBuffer data, RustBuffer name, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_IMAGE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_IMAGE
 RustBuffer uniffi_codescribe_ffi_fn_func_save_pasted_image(RustBuffer data, RustCallStatus *_Nonnull out_status
@@ -2481,6 +2486,12 @@ uint16_t uniffi_codescribe_ffi_checksum_func_run_vocabulary_ab(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
 uint16_t uniffi_codescribe_ffi_checksum_func_runtime_llm_lane(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SAVE_PASTED_ATTACHMENT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SAVE_PASTED_ATTACHMENT
+uint16_t uniffi_codescribe_ffi_checksum_func_save_pasted_attachment(void
 
 );
 #endif

@@ -353,8 +353,10 @@ extension RealAgentBridgeInstaller {
 
   /// Written user messages share the installed canonical bus publisher and follower.
   @MainActor
-  static func sendBusText(owner: OverlayConversationOwner?, text: String) async throws {
-    let installer = RealAgentBridgeInstaller()
+  static func sendBusText(
+    owner: OverlayConversationOwner?, text: String,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
     let executable = installer.commandURL("cs-bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
@@ -366,6 +368,7 @@ extension RealAgentBridgeInstaller {
         ])
     }
     let root = installer.bridgeRoot
+    let message = ConversationAttachmentPointer.extract(from: text)
     try await Task.detached(priority: .userInitiated) {
       var arguments = ["--send-text", "--channel", "0", "--bridge-home", root.path]
       if let owner {
@@ -386,6 +389,7 @@ extension RealAgentBridgeInstaller {
           "--bridge-home", root.path,
         ]
       }
+      for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
       process.executableURL = executable
@@ -394,9 +398,9 @@ extension RealAgentBridgeInstaller {
       process.standardOutput = FileHandle.nullDevice
       process.standardError = FileHandle.nullDevice
       // Bound text fits in the pipe; writing happens off the UI thread.
-      guard text.utf8.count <= 65536 else { throw CocoaError(.fileWriteOutOfSpace) }
+      guard message.text.utf8.count <= 65536 else { throw CocoaError(.fileWriteOutOfSpace) }
       try process.run()
-      try input.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+      try input.fileHandleForWriting.write(contentsOf: Data(message.text.utf8))
       try input.fileHandleForWriting.close()
       process.waitUntilExit()
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {

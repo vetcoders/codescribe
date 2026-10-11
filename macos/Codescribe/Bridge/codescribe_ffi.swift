@@ -20155,6 +20155,18 @@ public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
 })
 }
 /**
+ * Persist an arbitrary clipboard file or text excerpt in the attachment store.
+ * The bus receives only the returned path and its metadata.
+ */
+public func savePastedAttachment(data: Data, name: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_save_pasted_attachment(
+        FfiConverterData.lower(data),
+        FfiConverterString.lower(name),$0
+    )
+})
+}
+/**
  * Persist a pasted PNG through the same asset store used by agent conversations.
  * Returns a local file path for the composer; no image bytes enter the bus.
  */
@@ -20349,6 +20361,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_save_pasted_attachment() != 27015) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_save_pasted_image() != 45294) {

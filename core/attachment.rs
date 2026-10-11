@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 // ═══════════════════════════════════════════════════════════
@@ -341,6 +342,50 @@ impl AttachmentStore {
     pub fn save_text(text: &str, name: &str, prefix: &str) -> Result<PathBuf> {
         Self::save_fetched(text.as_bytes(), name, prefix)
     }
+
+    /// Persist pasted bytes before publishing their pointer. Content identity
+    /// prevents a later paste with the same name from changing an earlier one.
+    pub fn save_clipboard(data: &[u8], name: &str) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !data.is_empty() && data.len() as u64 <= MAX_ATTACHMENT_BYTES,
+            "Pasted attachment must contain 1..=50 MiB of data"
+        );
+        let dir = Self::store_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
+        let dir = Self::ensure_dir()?;
+        let hash = Sha256::digest(data)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut name = sanitize_filename(name);
+        while name.len() > 160 {
+            name.pop();
+        }
+        let path = dir.join(format!("clipboard_{hash}_{name}"));
+        if path.exists() {
+            anyhow::ensure!(std::fs::read(&path)? == data, "Stored attachment changed");
+            return Ok(path);
+        }
+        let temporary = dir.join(format!(".paste_{:032x}.tmp", rand::random::<u128>()));
+        let result = (|| -> Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(data)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result?;
+        Ok(path)
+    }
 }
 
 /// Sanitize a filename by replacing unsafe characters.
@@ -373,6 +418,42 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_store_preserves_bytes_and_does_not_overwrite_same_named_pastes() {
+        let first = AttachmentStore::save_clipboard(b"\0\xffZIP\0", "clip.bin").unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), b"\0\xffZIP\0");
+        assert_eq!(
+            AttachmentStore::save_clipboard(b"\0\xffZIP\0", "clip.bin").unwrap(),
+            first
+        );
+        let second = AttachmentStore::save_clipboard(b"different", "clip.bin").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"\0\xffZIP\0");
+        assert_eq!(std::fs::read(&second).unwrap(), b"different");
+    }
+
+    #[test]
+    fn clipboard_store_bounds_names_payloads_and_detects_changed_files() {
+        assert!(AttachmentStore::save_clipboard(b"", "empty").is_err());
+        assert!(
+            AttachmentStore::save_clipboard(
+                &vec![0; MAX_ATTACHMENT_BYTES as usize + 1],
+                "oversized.bin"
+            )
+            .is_err()
+        );
+        let name = format!("../../{}\n.txt", "ż".repeat(200));
+        let path = AttachmentStore::save_clipboard(b"safe name", &name).unwrap();
+        assert_eq!(path.parent(), Some(AttachmentStore::store_dir().as_path()));
+        assert!(path.file_name().unwrap().len() < 256);
+        assert!(!path.file_name().unwrap().to_string_lossy().contains('\n'));
+        assert_eq!(std::fs::read(&path).unwrap(), b"safe name");
+        let changed = AttachmentStore::save_clipboard(b"original", "changed.bin").unwrap();
+        std::fs::write(&changed, b"tampered").unwrap();
+        assert!(AttachmentStore::save_clipboard(b"original", "changed.bin").is_err());
+        std::fs::remove_file(changed).unwrap();
+    }
 
     /// Extension → AttachmentKind matrix including image, pdf, text, and fallback.
     #[test]
