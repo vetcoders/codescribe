@@ -8,6 +8,73 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testLongConversationResizePreservesLiveEdgeHistoryAndComposer() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<30 {
+      var row = reply(String(format: "%024x", index + 1))
+      row["text"] = String(repeating: "Retained **conversation** paragraph.\n\n", count: 8)
+      bus.consume(row)
+    }
+    let conversation = try lenaConversation(bus)
+    let host = NSHostingView(
+      rootView: OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("Retained draft"), sending: false, sendError: nil, onSend: {}))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 532, height: 360)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.orderFrontRegardless()
+    defer { window.close() }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable { return text }
+      return root.subviews.lazy.compactMap { editor($0) }.first
+    }
+    settle()
+    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+    let document = try XCTUnwrap(scroll.documentView)
+    let originalEditor = try XCTUnwrap(editor(host))
+    originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
+    for followsLatest in [true, false] {
+      if !followsLatest {
+        NotificationCenter.default.post(
+          name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        NotificationCenter.default.post(
+          name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(
+          name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        settle()
+      }
+      for width in [CGFloat(360), 680, 420, 600, 360, 532] {
+        window.setContentSize(NSSize(width: width, height: 360))
+        settle()
+        if followsLatest {
+          XCTAssertGreaterThan(scroll.documentVisibleRect.maxY, document.bounds.height - 50)
+        } else {
+          XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
+        }
+        XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+        XCTAssertEqual(originalEditor.string, "Retained draft")
+        XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
+        XCTAssertLessThanOrEqual(document.bounds.width, scroll.bounds.width + 1)
+      }
+    }
+  }
+
+  @MainActor
   func testConversationNamePillExposesChannelAtNormalAndLargeTextSizes() throws {
     func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
       guard let element = object as? any NSAccessibilityProtocol else { return [] }
