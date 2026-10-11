@@ -674,6 +674,25 @@ fn same_pcm_slot(left: &WordSlot, right: &WordSlot) -> bool {
     )
 }
 
+/// Whether `host` contains the centre of `subject`.
+///
+/// A zero-length or reversed subject has no centre. This assigns an owner.
+/// It is not slot identity: [`pcm_ranges_share_slot`] also requires the shorter
+/// range to be mostly covered, and it accepts either centre.
+pub(crate) fn range_contains_pcm_centre(
+    host_start: u64,
+    host_end: u64,
+    subject_start: u64,
+    subject_end: u64,
+) -> bool {
+    let len = subject_end.saturating_sub(subject_start);
+    if len == 0 {
+        return false;
+    }
+    let centre = subject_start + len / 2;
+    host_start <= centre && centre < host_end
+}
+
 fn compose_label(slots: &[WordSlot]) -> String {
     slots
         .iter()
@@ -1639,11 +1658,13 @@ impl AcousticLedger {
                             && ordinary_target != Some(index)
                     })
                     || prior.iter().enumerate().any(|(index, source)| {
-                        let midpoint =
-                            source.sample_start + (source.sample_end - source.sample_start) / 2;
                         !conflicts.contains(&index)
-                            && word.sample_start <= midpoint
-                            && midpoint < word.sample_end
+                            && range_contains_pcm_centre(
+                                word.sample_start,
+                                word.sample_end,
+                                source.sample_start,
+                                source.sample_end,
+                            )
                     }));
             if !conflicts.is_empty()
                 && matches!(
@@ -3143,9 +3164,10 @@ impl AcousticLedger {
         flagged
     }
 
-    /// Select one qualified midpoint owner when physical closures overlap.
-    /// An open owner precedes a sealed owner; equal seal states prefer the
-    /// later closure start. Equal starts use the shorter extent deterministically.
+    /// Select one qualified owner whose range contains the pin centre
+    /// ([`range_contains_pcm_centre`]). An open owner precedes a sealed
+    /// owner; equal seal states prefer the later closure start. Equal starts
+    /// use the shorter extent deterministically.
     pub(crate) fn word_owner_index(
         &self,
         pin: &OccurrenceIdentity,
@@ -3154,15 +3176,18 @@ impl AcousticLedger {
         if !pin.is_anchored() {
             return None;
         }
-        let midpoint = pin.sample_start + pin.sample_len() / 2;
         owners
             .iter()
             .enumerate()
             .filter(|(_, owner)| {
                 pin.same_capture(owner)
                     && self.is_qualified(owner)
-                    && owner.sample_start <= midpoint
-                    && midpoint < owner.sample_end
+                    && range_contains_pcm_centre(
+                        owner.sample_start,
+                        owner.sample_end,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
             })
             .max_by_key(|(_, owner)| {
                 (
@@ -3188,11 +3213,6 @@ impl AcousticLedger {
         open_members: &[OccurrenceIdentity],
         word_grain: bool,
     ) -> OverlapPinClass {
-        fn word_midpoint_in_admit(pin: &OccurrenceIdentity, start: u64, end: u64) -> bool {
-            let midpoint = pin.sample_start + pin.sample_len() / 2;
-            midpoint >= start && midpoint < end
-        }
-
         if !pin.is_anchored() {
             return OverlapPinClass::Unanchored(NoAuthorityReason::ZeroWidth);
         }
@@ -3205,16 +3225,20 @@ impl AcousticLedger {
         // Unqualified geometry candidates have no ledger owner to break a tie.
         // Keep their uniqueness check and the utterance-grain fence below.
         let inside_admit = if word_grain {
-            word_midpoint_in_admit(pin, admit_start, admit_end)
+            range_contains_pcm_centre(admit_start, admit_end, pin.sample_start, pin.sample_end)
         } else {
             pin.sample_start >= admit_start && pin.sample_end <= admit_end
         };
         if word_grain || inside_admit {
-            let midpoint = pin.sample_start + pin.sample_len() / 2;
             let mut owners = open_members.iter().enumerate().filter(|(_, member)| {
                 pin.same_capture(member)
                     && if word_grain {
-                        midpoint >= member.sample_start && midpoint < member.sample_end
+                        range_contains_pcm_centre(
+                            member.sample_start,
+                            member.sample_end,
+                            pin.sample_start,
+                            pin.sample_end,
+                        )
                     } else {
                         pin.sample_start >= member.sample_start
                             && pin.sample_end <= member.sample_end
@@ -5936,6 +5960,26 @@ mod tests {
         assert!(!pcm_ranges_share_slot(1_000, 1_400, 0, 1_200));
         assert!(!same_word_pin(1_000, 1_400, "iwo", 0, 1_200, "iwo"));
         assert!(!same_word_pin(1_000, 1_000, "iwo", 1_000, 2_000, "iwo"));
+    }
+
+    #[test]
+    fn pcm_centre_assigns_an_owner_and_is_not_slot_identity() {
+        // The short word contains the long range's centre.
+        assert!(range_contains_pcm_centre(490, 510, 0, 1_000));
+        assert!(pcm_ranges_share_slot(0, 1_000, 490, 510));
+        // Slot identity can hold while the host misses the subject's centre.
+        // 100..102 centres at 101, which 100..101 does not contain.
+        assert!(!range_contains_pcm_centre(100, 101, 100, 102));
+        assert!(pcm_ranges_share_slot(100, 102, 100, 101));
+        // Seam: neither centre sits in the other range.
+        assert!(!range_contains_pcm_centre(0, 1_200, 1_000, 1_400));
+        assert!(!range_contains_pcm_centre(1_000, 1_400, 0, 1_200));
+        assert!(!pcm_ranges_share_slot(1_000, 1_400, 0, 1_200));
+        // A point is not a centre. Raw `end - start` used to treat the start
+        // as one, and a reversed range underflowed.
+        assert!(!range_contains_pcm_centre(0, 2_000, 1_000, 1_000));
+        assert!(!range_contains_pcm_centre(0, 2_000, 2_000, 1_000));
+        assert!(!range_contains_pcm_centre(0, 2_000, u64::MAX, 0));
     }
 
     #[test]
