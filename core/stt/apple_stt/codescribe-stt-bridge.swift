@@ -1481,19 +1481,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         let segments: [BridgeSegment]
     }
 
-    /// Store the current hypothesis; returns the previous one when SFSpeech
-    /// restarted its phrase (measured on a 150s Polish fixture: 13 restarts,
-    /// ONE `isFinal`). Callers that ignore the return value keep the old
-    /// behaviour — the phrase is still folded into `snapshotPayload`.
+    /// Store the current hypothesis. A measured shared onset identifies a
+    /// revision of the open phrase, not a second phrase to append as final.
+    /// Disjoint restarts still retain the prior phrase in `snapshotPayload`
+    /// and return it to the streaming caller.
     @discardableResult
     fileprivate func storePartial(text: String, segments: [BridgeSegment]) -> FrozenPhrase? {
         lock.lock()
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Retain every prior hypothesis that the next hypothesis does not
-        // contain in full. Restart thresholds classify the transition for
-        // telemetry only; they never authorize overwriting speech.
+        // Retain a prior hypothesis across a phrase restart, but do not mint
+        // a final from a recognizer correction over the same measured onset.
+        // Text containment alone cannot distinguish those two transitions.
         //
         // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
         // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
@@ -1502,11 +1502,15 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // so a post-stressor collapse to the next sentence's short opener
         // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
         // vanished from committed raw while native dictation kept them.
-        // A same-phrase rewind is retained too: without a second retained copy,
-        // overwriting it would still discard the rewound suffix.
+        // When onset timing is unavailable, retain the existing conservative
+        // restart handling; do not invent a physical correspondence from text.
         if !partialText.isEmpty {
             let prev = partialText
-            if let reason = Self.phraseRetentionReason(prev: prev, next: t) {
+            let reason = Self.partialsAreDisjoint(previous: partialSegments, next: segments)
+                ? "disjoint_pcm_restart" : Self.phraseRetentionReason(prev: prev, next: t)
+            if let reason,
+                !Self.partialsShareOnset(previous: partialSegments, next: segments)
+            {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
@@ -1524,14 +1528,60 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         return frozen
     }
 
-    /// Pure freeze decision — kept in lockstep with
-    /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
+    /// Text-only restart candidate. The caller must also apply the measured
+    /// onset veto, mirrored by `apple_partials_share_onset` in Rust.
     fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
         phraseRetentionReason(prev: prev, next: next) != nil
     }
 
-    /// Returns a telemetry classification only when the prior hypothesis must
-    /// be retained. Text safety depends solely on forward containment.
+    /// The first segment of both partials refers to the same open onset only
+    /// when its finite, positive-duration intervals strictly overlap. Do not
+    /// skip an invalid first segment and borrow a later word as onset proof.
+    fileprivate static func partialsShareOnset(
+        previous: [BridgeSegment], next: [BridgeSegment]
+    ) -> Bool {
+        guard let previous = previous.first, let next = next.first else { return false }
+        // Rust receives f32 timestamps. Compare the same precision here so
+        // rounding cannot turn a touching boundary into overlap on one side.
+        let previousStart = Float(previous.startTs)
+        let previousEnd = Float(previous.endTs)
+        let nextStart = Float(next.startTs)
+        let nextEnd = Float(next.endTs)
+        guard !previous.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            previousStart.isFinite, previousEnd.isFinite,
+            nextStart.isFinite, nextEnd.isFinite,
+            previousStart >= 0, nextStart >= 0,
+            previousEnd > previousStart, nextEnd > nextStart
+        else { return false }
+        return previousStart < nextEnd && nextStart < previousEnd
+    }
+
+    /// A later measured phrase must retain the prior one even when the words
+    /// are identical. Every previous segment needs timing before claiming its
+    /// whole range ended; a valid prefix alone cannot prove disjointness.
+    fileprivate static func partialsAreDisjoint(
+        previous: [BridgeSegment], next: [BridgeSegment]
+    ) -> Bool {
+        guard let next = next.first else { return false }
+        let nextStart = Float(next.startTs)
+        let nextEnd = Float(next.endTs)
+        guard !next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            nextStart.isFinite, nextEnd.isFinite,
+            nextStart >= 0, nextEnd > nextStart,
+            !previous.isEmpty
+        else { return false }
+        return previous.allSatisfy { segment in
+            let start = Float(segment.startTs)
+            let end = Float(segment.endTs)
+            return !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && start.isFinite && end.isFinite && start >= 0 && end > start
+                && end <= nextStart
+        }
+    }
+
+    /// Classify a text-only retention candidate; measured onset decides whether
+    /// it is instead a revision of the still-open phrase.
     private static func phraseRetentionReason(prev: String, next: String) -> String? {
         let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
