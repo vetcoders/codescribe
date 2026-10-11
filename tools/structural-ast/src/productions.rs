@@ -8,6 +8,13 @@ use super::Grammar;
 use syn::{Block, Stmt, parse_quote};
 
 pub(super) fn overlay(g: &mut Grammar, body: &Block) {
+    // Keep the product's no-trailing-comma call shape inside a string: rustfmt
+    // may add a trailing comma to a multiline parse_quote! invocation, and
+    // syn correctly preserves that punctuation in the exact AST comparison.
+    let guarded_helper_tail = syn::parse_str::<syn::Expr>(
+        r#"self.execute_clipboard_paste(payload, target_app, "Overlay paste", PasteMode::Comfort).await"#,
+    )
+    .expect("static guarded overlay helper expression must parse");
     g.sequence(
         body,
         vec![
@@ -33,13 +40,7 @@ pub(super) fn overlay(g: &mut Grammar, body: &Block) {
                 "render delivery-only transcript tag",
             ),
             (
-                Stmt::Expr(
-                    parse_quote!(
-                        self.execute_clipboard_paste(payload, target_app, "Overlay paste")
-                            .await
-                    ),
-                    None,
-                ),
+                Stmt::Expr(guarded_helper_tail, None),
                 "await guarded helper tail",
             ),
         ],
@@ -104,7 +105,7 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
             self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
                 &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
         } else if focus_confirmed && preflight.can_post_events() {
-            match clipboard::paste_to_stop_target(&paste_text, &target) {
+            match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode) {
                 Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
                     OverlayPasteDelivery::PasteRequested
                 }

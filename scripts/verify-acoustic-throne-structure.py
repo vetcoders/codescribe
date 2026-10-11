@@ -31,7 +31,7 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=5"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=6"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     # The overlay early return calls `OverlayPasteResult::noop()`; the
@@ -1920,8 +1920,13 @@ def verify_code_corridors(
                 and row["enclosing_symbol"].get("file") == caller_file
             ]
             if caller in AST_BODIES and caller_file == AST_BODIES[caller]:
+                # Some AST-owned symbols are overloaded in one file. Select
+                # the same typed body authenticated for neutral AST evidence;
+                # a same-name consuming helper must not make its borrowed
+                # owner ambiguous or lend that owner a callsite.
                 caller_rows = corridor_body_rows(verifier.body(caller, caller_file),
-                    symbol=caller, file=caller_file, signature_contains=None)
+                    symbol=caller, file=caller_file,
+                    signature_contains=AST_SIGNATURES.get(caller))
                 if len(caller_rows) != 1:
                     matching_rows = []
                 else:

@@ -516,6 +516,15 @@ The `rc-w3-guard-ast` plan admits **only** `codescribe-structural-ast` under
 dependency and reads complete Loctree body JSON from stdin; it never opens
 product source, executes snippets, loads models or opens devices. Python remains
 the gate owner and still requires production definitions and real callsites.
+The current parser identity is grammar 6. Its closed productions require the
+explicit `PasteMode` from overlay selection through the paste effect, and the
+session-bound refused archive lookup plus awaited live-archive link before
+refusal delivery. Capture-corridor witnesses follow the current inline Take
+subscriber and archive ownership order, including retention before capture
+publication. AST caller body selection uses the same typed signature as AST
+validation; ambiguous overloads still fail closed, and production reference,
+caller identity, callee definition, and body-span checks remain mandatory.
+
 The only additional verifier subprocess is exactly:
 
 ```sh
