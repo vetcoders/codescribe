@@ -653,6 +653,9 @@ pub(crate) fn pcm_ranges_share_slot(
 ) -> bool {
     let left_len = left_end.saturating_sub(left_start);
     let right_len = right_end.saturating_sub(right_start);
+    if left_len == 0 || right_len == 0 {
+        return false;
+    }
     let overlap = left_end
         .min(right_end)
         .saturating_sub(left_start.max(right_start));
@@ -5909,6 +5912,27 @@ mod tests {
         assert!(!pcm_ranges_share_slot(1_000, 2_000, 3_000, 4_000));
         assert!(!pcm_ranges_share_slot(2_000, 1_000, 1_000, 2_000));
         assert!(!pcm_ranges_share_slot(1_000, 1_000, 1_000, 1_000));
+    }
+
+    #[test]
+    fn pcm_slot_identity_rejects_empty_and_reversed_ranges_inside_valid_words() {
+        for malformed in [(1_500, 1_500), (2_000, 1_000)] {
+            assert!(!pcm_ranges_share_slot(
+                malformed.0,
+                malformed.1,
+                1_000,
+                3_000
+            ));
+            assert!(!pcm_ranges_share_slot(
+                1_000,
+                3_000,
+                malformed.0,
+                malformed.1
+            ));
+        }
+        assert!(!pcm_ranges_share_slot(0, 0, 0, u64::MAX));
+        assert!(!pcm_ranges_share_slot(0, u64::MAX, u64::MAX, 0));
+        assert!(pcm_ranges_share_slot(1_500, 1_501, 1_000, 3_000));
     }
 
     #[test]
