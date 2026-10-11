@@ -590,7 +590,9 @@ impl WordPin {
     }
 }
 
-/// Compare two owner-clipped word spans without using text as identity.
+/// Replay of one heard word. Geometry is `pcm_ranges_share_slot`.
+/// Normalized text is an additional label check, not a second overlap formula.
+/// A seam that only covers the shorter range is not a replay.
 pub(crate) fn same_word_pin(
     start: u64,
     end: u64,
@@ -599,19 +601,10 @@ pub(crate) fn same_word_pin(
     prior_end: u64,
     prior_text: &str,
 ) -> bool {
-    let overlap = end.min(prior_end).saturating_sub(start.max(prior_start));
-    let shorter = end
-        .saturating_sub(start)
-        .min(prior_end.saturating_sub(prior_start));
-    let normalize = |word: &str| {
-        word.trim_matches(|ch: char| !ch.is_alphanumeric())
-            .to_lowercase()
-    };
-    let normalized = normalize(text);
-    shorter > 0
-        && overlap >= shorter / 2 + shorter % 2
-        && !normalized.is_empty()
-        && normalized == normalize(prior_text)
+    let normalized = normalize_word_token(text);
+    !normalized.is_empty()
+        && normalized == normalize_word_token(prior_text)
+        && pcm_ranges_share_slot(start, end, prior_start, prior_end)
 }
 
 pub(crate) fn normalize_word_token(word: &str) -> String {
@@ -1219,9 +1212,8 @@ impl AcousticLedger {
         );
     }
 
-    /// A replay requires both geometric overlap (at least half the shorter
-    /// clipped slot) and equal normalized text. An occurrence label is not
-    /// evidence that every pin in its range was heard.
+    /// A replay requires one PCM slot and equal normalized text. An occurrence
+    /// label is not evidence that every pin in its range was heard.
     ///
     /// `whisper_only` stays Whisper. A cloud-live slot is heard evidence, but
     /// counting it here would classify a later Whisper pin as an already-heard
@@ -5933,6 +5925,17 @@ mod tests {
         assert!(!pcm_ranges_share_slot(0, 0, 0, u64::MAX));
         assert!(!pcm_ranges_share_slot(0, u64::MAX, u64::MAX, 0));
         assert!(pcm_ranges_share_slot(1_500, 1_501, 1_000, 3_000));
+    }
+
+    #[test]
+    fn same_word_pin_uses_pcm_slot_identity_and_normalized_text() {
+        assert!(same_word_pin(1_000, 2_000, "Iwo,", 1_100, 1_900, "iwo"));
+        assert!(!same_word_pin(1_000, 2_000, "iwo", 1_100, 1_900, "iwa"));
+        // Half the shorter range is covered, and neither midpoint sits inside
+        // the other range. Coverage-only overlap must not call this a replay.
+        assert!(!pcm_ranges_share_slot(1_000, 1_400, 0, 1_200));
+        assert!(!same_word_pin(1_000, 1_400, "iwo", 0, 1_200, "iwo"));
+        assert!(!same_word_pin(1_000, 1_000, "iwo", 1_000, 2_000, "iwo"));
     }
 
     #[test]
