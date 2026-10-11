@@ -1,12 +1,8 @@
 # Settings & Configuration
 
-Codescribe now has one native Settings window with five tabs:
-
-1. **Transcription**
-2. **Hotkeys**
-3. **AI & Prompts**
-4. **Audio & Input**
-5. **Diagnostics**
+Codescribe has one native Settings window. Choose a section in its sidebar;
+the Dictation section has separate tabs for its concerns. The sections below
+describe the current controls and their runtime contracts.
 
 Configuration still lives in three layers:
 
