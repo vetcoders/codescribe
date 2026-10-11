@@ -16,6 +16,7 @@ private final class DragRecordingWindow: NSWindow {
 @MainActor
 final class SetupAppearanceTests: XCTestCase {
   func testAllSemanticIconsHaveSystemGlyphs() {
+    XCTAssertNotEqual(CSIcon.voiceLab.systemName, CSIcon.diagnostics.systemName)
     for icon in CSIcon.allCases {
       XCTAssertNotNil(
         NSImage(systemSymbolName: icon.systemName, accessibilityDescription: nil),
