@@ -1786,3 +1786,39 @@ fn measured_numeric_context_ties_require_a_fresh_bounded_witness() {
         );
     }
 }
+
+#[test]
+fn integrator_v25_shared_trial_distinguishes_quiet_and_voiced_exact_left() {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    for quiet in [true, false] {
+        let (mut ledger, owner) = disputed();
+        let mut pcm = vec![0.0_f32; 160_000];
+        pcm[48_000 + if quiet { 321 } else { 0 }..64_000].fill(0.2);
+        let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        ledger.record_speech_evidence(&energy.session_active_speech_ranges(
+            &owner.session,
+            owner.capture_epoch,
+            16_000,
+        ));
+        let edge = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 48_000, 48_321);
+        ledger.record_decode_fence_energy(
+            &energy,
+            pcm.len() as u64,
+            [Some((&edge, &pcm[48_000..48_321])), None],
+        );
+        let frame = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 48_000, 144_000);
+        assert_eq!(
+            ledger
+                .next_word_trial_in(false, Some(&frame), None)
+                .is_some(),
+            quiet,
+            "only authenticated quiet at the shared frame's left edge may offer the trial"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("56"));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
