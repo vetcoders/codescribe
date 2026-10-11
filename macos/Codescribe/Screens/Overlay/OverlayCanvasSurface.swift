@@ -5,6 +5,7 @@ import SwiftUI
 /// inert regions in `DictationOverlayView`, not by a full-sheet AppKit layer.
 struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
 
@@ -12,7 +13,8 @@ struct OverlayCanvasSurface<Content: View>: View {
     content
       .background {
         OverlayCanvasBackdrop(
-          palette: palette, reduceTransparency: reduceTransparency)
+          palette: palette, reduceTransparency: reduceTransparency,
+          increasedContrast: contrast == .increased)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
@@ -33,13 +35,14 @@ struct OverlayCanvasSurface<Content: View>: View {
 struct OverlayCanvasBackdrop: View {
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
+  var increasedContrast = false
 
   var body: some View {
     ZStack {
-      if reduceTransparency {
+      if reduceTransparency || increasedContrast {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
-        OverlayDesktopMaterial()
+        OverlayDesktopMaterial(palette: palette)
       }
     }
   }
@@ -48,21 +51,39 @@ struct OverlayCanvasBackdrop: View {
 /// Sample the desktop behind the non-activating panel, not its empty content.
 /// Keep the material active while the user types into another application.
 private struct OverlayDesktopMaterial: NSViewRepresentable {
+  let palette: OverlayAppearancePalette
+
   func makeNSView(context: Context) -> NSView {
     if #available(macOS 26, *) {
       let view = OverlayDesktopGlassView()
       view.style = .regular
       view.cornerRadius = CSRadius.window
+      applyAppearance(to: view)
       return view
     }
     let view = OverlayDesktopEffectView()
     view.material = .hudWindow
     view.blendingMode = .behindWindow
     view.state = .active
+    applyAppearance(to: view)
     return view
   }
 
-  func updateNSView(_ nsView: NSView, context: Context) {}
+  func updateNSView(_ nsView: NSView, context: Context) {
+    applyAppearance(to: nsView)
+  }
+
+  private func applyAppearance(to view: NSView) {
+    let name: NSAppearance.Name = palette.appearance == .dark ? .darkAqua : .aqua
+    if view.appearance?.name != name {
+      view.appearance = NSAppearance(named: name)
+    }
+    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView {
+      // Tint native glass toward the text palette, rather than bare desktop colors.
+      let tint = palette.desktopBackground.nsColor.withAlphaComponent(0.72)
+      if glass.tintColor != tint { glass.tintColor = tint }
+    }
+  }
 }
 
 /// One stable background, independent of recording, editing, and toolbelt state.
