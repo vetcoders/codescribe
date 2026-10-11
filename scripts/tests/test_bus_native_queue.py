@@ -284,6 +284,18 @@ class NativeQueueTests(unittest.TestCase):
         with patch.object(DEMUX, "delete_native_queue_submission", return_value=False):
             self.assertTrue(DEMUX.withdraw_acknowledged_queue(self.root, self.lease_id, identity, retry=True))
         self.assertEqual(self.result(identity)["queue_disposition"], "not_pending")
+        self.assertNotIn("withdrawal_reason", self.result(identity))
+
+    def test_provider_error_is_retained_with_ack_for_retry(self):
+        self.prepare_ack_state()
+        identity = self.ids[0]
+        self.accepted_receipt(identity)
+        with patch.object(DEMUX, "delete_native_queue_submission",
+                          side_effect=ValueError("native queue thread/queue/delete refused: -32000")):
+            DEMUX.acknowledge_delivery(self.ack_args(identity))
+        self.assertTrue(DEMUX.delivery_acknowledged(self.root, self.lease_id, identity))
+        self.assertEqual(self.result(identity)["queue_disposition"], "pending")
+        self.assertIn("thread/queue/delete refused: -32000", self.result(identity)["withdrawal_reason"])
 
     def test_ack_during_provider_submission_withdraws_after_acceptance(self):
         self.prepare_ack_state()
@@ -385,6 +397,113 @@ class NativeQueueTests(unittest.TestCase):
         self.assertNotIn("bus-demux.py", help_text)
         self.assertIn("default", help_text)
         self.assertIn("--full", help_text)
+
+
+class NativeQueueStdioTests(unittest.TestCase):
+    THREAD = "11111111-2222-4333-8444-555555555555"
+    SUBMISSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.audit = self.root / "requests.json"
+        self.provider = self.root / "codex"
+
+    def server(self, response, notifications=1):
+        """A separate process enforcing the provider protocol, not helper internals."""
+        self.provider.write_text(
+            "#!" + sys.executable + "\n"
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "assert sys.argv[1:] == ['app-server', '--listen', 'stdio://']\n"
+            "read = lambda: json.loads(sys.stdin.readline())\n"
+            "emit = lambda value: print(json.dumps(value), flush=True)\n"
+            "init = read()\n"
+            "assert init['method'] == 'initialize'\n"
+            "assert init['params']['capabilities']['experimentalApi'] is True\n"
+            f"for _ in range({notifications}): emit({{'method': 'notification'}})\n"
+            "emit({'id': init['id'], 'result': {}})\n"
+            "ready = read()\n"
+            "assert ready == {'method': 'initialized'}\n"
+            "delete = read()\n"
+            "assert delete['method'] == 'thread/queue/delete'\n"
+            f"assert delete['params'] == {{'threadId': {self.THREAD!r}, "
+            f"'queuedSubmissionId': {self.SUBMISSION!r}}}\n"
+            f"Path({str(self.audit)!r}).write_text(json.dumps([init, ready, delete]))\n"
+            f"emit({response!r})\n"
+            "assert sys.stdin.read() == ''\n"
+        )
+        self.provider.chmod(0o700)
+
+    def withdraw(self):
+        with patch("shutil.which", return_value=str(self.provider)):
+            return DEMUX.delete_native_queue_submission(self.root, self.THREAD, self.SUBMISSION)
+
+    def test_separate_stdio_process_deletes_only_owned_id_without_daemon_or_turn(self):
+        self.server({"id": 2, "result": {"deleted": True}})
+        self.assertTrue(self.withdraw())
+        requests = json.loads(self.audit.read_text())
+        self.assertEqual([x["method"] for x in requests],
+                         ["initialize", "initialized", "thread/queue/delete"])
+
+    def test_authoritative_absence_is_returned_as_false(self):
+        self.server({"id": 2, "result": {"deleted": False}})
+        self.assertFalse(self.withdraw())
+
+    def test_non_boolean_receipt_never_settles(self):
+        for value in (None, 0, 1, "false", {}, []):
+            with self.subTest(value=value):
+                self.server({"id": 2, "result": {"deleted": value}})
+                with self.assertRaisesRegex(ValueError, "invalid native queue withdrawal receipt"):
+                    self.withdraw()
+
+    def test_rpc_refusal_retains_specific_error(self):
+        self.server({"id": 2, "error": {"code": -32000, "message": "queue busy"}})
+        with self.assertRaisesRegex(ValueError, "thread/queue/delete refused.*queue busy"):
+            self.withdraw()
+
+    def test_oversized_reply_never_settles(self):
+        self.server({"id": 2, "result": {"deleted": True, "padding": "x" * 65536}})
+        with self.assertRaisesRegex(ValueError, "exceeds byte limit"):
+            self.withdraw()
+
+    def test_unrelated_notifications_share_total_byte_budget(self):
+        self.server({"id": 2, "result": {"deleted": True}}, notifications=3000)
+        with self.assertRaisesRegex(ValueError, "exceeds byte limit"):
+            self.withdraw()
+
+    def test_wrong_identity_refuses_before_starting_provider(self):
+        with patch("subprocess.Popen") as start:
+            for thread, submission in (("foreign", self.SUBMISSION), (self.THREAD, "foreign"),
+                                       (self.THREAD.upper(), self.SUBMISSION.upper())):
+                with self.subTest(thread=thread, submission=submission):
+                    with self.assertRaises(ValueError):
+                        DEMUX.delete_native_queue_submission(self.root, thread, submission)
+            start.assert_not_called()
+
+    def test_closed_provider_never_settles(self):
+        self.provider.write_text("#!" + sys.executable + "\nraise SystemExit(3)\n")
+        self.provider.chmod(0o700)
+        with self.assertRaisesRegex(ValueError, "provider closed before initialize receipt"):
+            self.withdraw()
+
+    def test_timeout_reaps_owned_provider(self):
+        self.provider.write_text("#!" + sys.executable + "\nimport time\ntime.sleep(30)\n")
+        self.provider.chmod(0o700)
+        original = subprocess.Popen
+        started = []
+
+        def start(*args, **kwargs):
+            process = original(*args, **kwargs)
+            started.append(process)
+            return process
+
+        with patch("subprocess.Popen", side_effect=start), patch("select.select", return_value=([], [], [])):
+            with self.assertRaisesRegex(ValueError, "initialize timed out"):
+                self.withdraw()
+        self.assertEqual(len(started), 1)
+        self.assertIsNotNone(started[0].poll())
 
 
 if __name__ == "__main__":

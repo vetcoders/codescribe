@@ -26,6 +26,22 @@ same marker; neither bell nor provider acceptance is a read receipt. Bus history
 and independent command/PCM identities are retained. A submission already
 consumed into model context cannot be recalled by queue deletion.
 
+Local Codex withdrawal uses `codex app-server --listen stdio://` and the
+provider's `thread/queue/delete` API, initialized with experimental API support.
+It uses the same executable, environment and local queue store as the helper's
+`codex queue` submission; it does not require a managed daemon or control socket.
+Cross-process acceptance requires an owned CLI submission visible through this
+API, `deleted: true`, and a subsequent list without that exact ID. A valid
+`deleted: false` means the submission is no longer pending in this local queue;
+it does not recall a message already consumed by the conversation. This contract
+does not select or discover a remote queue endpoint.
+
+The helper bounds total provider stdout to 64 KiB and RPC execution to ten
+seconds, then closes its child
+process after each withdrawal. Failures retain the ACK and owned queue receipt
+for retry, with the concrete transport/RPC error; successful settlement clears
+the previous error. Withdrawal never starts, resumes or steers a turn.
+
 Codescribe publishes one private, append-only NDJSON stream. The Bus observes
 session lifecycle plus occurrence-authenticated `TranscriptRevision` entries;
 it does not own a transcript document and accepts no arbitrary product text.
