@@ -4479,7 +4479,9 @@ impl AppleSealState {
 
     /// Fuzzy retrieval can label only settled, exact current word targets.
     /// Two independent complete Whisper frames must retrieve the same canonical
-    /// from the raw labels for every source. No guessed label becomes ASR input.
+    /// from the raw labels for every source; at least one must actually hear a
+    /// registered form of that canonical. Agreement on a fuzzy-only source is
+    /// not evidence for replacing it. No guessed label becomes ASR input.
     fn apply_corroborated_lexicon(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -4549,6 +4551,9 @@ impl AppleSealState {
                 if witnesses
                     .iter()
                     .any(|(_, raw)| lexicon.candidate(raw).as_deref() != Some(canonical.as_str()))
+                    || !witnesses.iter().any(|(_, raw)| {
+                        lexicon.registered_candidate(raw).as_deref() == Some(canonical.as_str())
+                    })
                 {
                     continue;
                 }
