@@ -27,17 +27,20 @@ Attachment is `attached_unverified`, not proof of voice reception.
    concise text. Check `spoken` and `reason`. Do not claim failed playback succeeded,
    change providers/credentials to hide failure, or replay an uncertain reply.
    For requested peer conversation use the existing cs-bus --send with this same owner.
-5. Call `codescribe_wait` again. **Do not submit/end the listening task between
-   messages.** This native MCP call stays pending during silence: no model polling,
-   no second agent, no terminal-output wakeup. When it returns a complete envelope,
-   ACK it immediately and repeat. New typed prompts can interrupt/cancel the wait.
+5. Call `codescribe_wait` again during the active reception task. Junie release
+   26.10.5 has a fixed three-minute MCP deadline: this call is NOT an indefinite
+   idle wakeup. If the host times it out, report the limitation once and stop the
+   reception task instead of creating a model-polling loop. Preserve the lease
+   and unread mailbox; do not claim continuous listening after task exit.
+   When a complete envelope returns, ACK immediately. Typed prompts can cancel
+   the wait. Never launch another agent or terminal reader to conceal the limit.
 
 Preserve this connection after ordinary answers. Explicit stop: cancel wait, then
 `codescribe_detach`. Never delete pending state. MCP reconnection requires reconnect
 using the same real identity; the mailbox and ACKs are durable, not a new conversation.
 
-This is an ordinary Junie CLI extension. No IDE is required. Continuous listening
-requires Junie to keep its native MCP wait pending; a terminal PID alone is not proof.
+This is an ordinary Junie CLI extension. No IDE is required. A terminal PID alone
+does not prove reception, and release 26.10.5 cannot keep MCP waits pending forever.
 Only a fresh bus message reaching this conversation without a typed nudge, followed
 by an answer, establishes `listening_verified`. Microphone and playback are separate
 acceptance checks. Hook identity is EAP functionality; do not silently fabricate it
