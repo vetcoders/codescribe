@@ -34,11 +34,16 @@ upper-right anchor.
 separate from starting a recording. Selecting a conversation also does not start
 capture or change the destination of a recording already in progress.
 
-While ordinary dictation is recording, a small orange underline blinks at the
-native text tail, including on an empty canvas before the first words arrive.
-It is decorative: it changes no transcript bytes, selection, copy or delivery.
-It disappears when capture stops or editing starts; Reduce Motion keeps it
-steady. This activity cue does not accelerate or change speech recognition.
+A small orange underline indicates readiness on the visible ordinary dictation
+canvas, including when it is empty or a take has finished. It follows the native
+text tail and pulses more quietly when text is present. It is decorative: it
+changes no transcript bytes, selection, copy or delivery, and does not mean the
+microphone is recording. Actual editing, hiding or folding the canvas removes
+it; editable text alone does not. Reduce Motion keeps the marker steady.
+
+The glass is tinted to the light or dark text palette. Increase Contrast and
+Reduce Transparency replace it with an opaque background. These presentation
+changes do not accelerate or change speech recognition.
 
 ## Speak to a channel
 

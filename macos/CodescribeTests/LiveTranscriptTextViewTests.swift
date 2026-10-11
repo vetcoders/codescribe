@@ -6,7 +6,38 @@ import XCTest
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
-  func testActivityUnderlineExistsOnEmptyCanvasAndRemovesForEditingOrStop() throws {
+  func testReadinessSurvivesEditableCapabilityButNotActualEditing() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    func update(_ text: String) {
+      LiveTranscriptTextView(
+        text: text, isEditable: true, appearance: .dark,
+        showsActivityUnderline: true
+      ).update(fixture.textView, coordinator: fixture.coordinator)
+      fixture.textView.layoutSubtreeIfNeeded()
+    }
+    update("")
+    let marker = try XCTUnwrap(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+    XCTAssertFalse(marker.isHidden)
+    XCTAssertFalse(marker.isAccessibilityElement())
+    XCTAssertNil(marker.hitTest(.zero))
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertEqual(fixture.textView.string, "Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertTrue(marker.superview === fixture.textView)
+    fixture.coordinator.isEditing = true
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertNil(marker.superview)
+    fixture.coordinator.isEditing = false
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertNotNil(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+  }
+
+  func testActivityUnderlineExistsOnEmptyCanvasAndRemovesForActualEditingOrHiddenCanvas() throws {
     let fixture = makeScrollFixture()
     defer {
       fixture.coordinator.detach()
@@ -32,7 +63,11 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertFalse(marker.isAccessibilityElement())
     XCTAssertEqual(fixture.textView.string, "")
     update(active: true, editing: true)
+    XCTAssertNotNil(marker.superview, "Editable capability alone is not actual editing")
+    fixture.coordinator.isEditing = true
+    update(active: true, editing: true)
     XCTAssertNil(marker.superview)
+    fixture.coordinator.isEditing = false
     update(active: true)
     XCTAssertNotNil(
       fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
@@ -81,6 +116,68 @@ final class LiveTranscriptTextViewTests: XCTestCase {
       XCTAssertEqual(board.string(forType: .string), (text as NSString).substring(with: selected))
       XCTAssertEqual(fixture.textView.string, text)
     }
+  }
+
+  func testReadyMarkerUsesQuietStyleWithTextAndKeepsSelection() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    for text in ["", "Żółw 🐢 é", "Iwo Iwo Iwo Iwo Iwo", ""] {
+      LiveTranscriptTextView(text: text, appearance: .dark, showsActivityUnderline: true).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      let marker = try XCTUnwrap(
+        fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> }
+          as? NSHostingView<TranscriptActivityUnderline>)
+      XCTAssertEqual(marker.rootView.subdued, !text.isEmpty)
+      XCTAssertEqual(fixture.textView.string, text)
+      XCTAssertFalse(marker.isAccessibilityElement())
+      XCTAssertNil(marker.hitTest(.zero))
+    }
+  }
+
+  func testNativeBackdropChangesAppearanceAndHonorsOpaqueAccessibilityModes() async throws {
+    let host = NSHostingView(
+      rootView: OverlayCanvasBackdrop(palette: .dark, reduceTransparency: false))
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 240, height: 160),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func material(in view: NSView) -> NSView? {
+      if #available(macOS 26, *), view is NSGlassEffectView { return view }
+      if view is NSVisualEffectView { return view }
+      for child in view.subviews {
+        if let found = material(in: child) { return found }
+      }
+      return nil
+    }
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let dark = try XCTUnwrap(material(in: host))
+    XCTAssertEqual(dark.appearance?.name, .darkAqua)
+    host.rootView = OverlayCanvasBackdrop(palette: .light, reduceTransparency: false)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let light = try XCTUnwrap(material(in: host))
+    XCTAssertTrue(dark === light, "Palette update must preserve native material identity")
+    XCTAssertEqual(light.appearance?.name, .aqua)
+    if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
+      XCTAssertEqual(
+        glass.tintColor,
+        OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.72))
+    }
+    host.rootView = OverlayCanvasBackdrop(
+      palette: .light, reduceTransparency: false, increasedContrast: true)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    XCTAssertNil(material(in: host), "Increased contrast must replace translucent native material")
+    host.rootView = OverlayCanvasBackdrop(palette: .dark, reduceTransparency: true)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    XCTAssertNil(material(in: host), "Reduce Transparency must replace translucent native material")
   }
 
   func testNativeTranscriptDisablesWritingTools() {
