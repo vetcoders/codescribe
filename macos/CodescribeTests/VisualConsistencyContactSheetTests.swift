@@ -215,7 +215,21 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
     XCTAssertEqual(licenseModel.settingsHealth.targetSection, .license)
     run.takeDensity(
       id: "license-warning-floor", size: settingsFloor,
-      root: SettingsView(model: licenseModel))
+      // Compose the production panel and footer without SettingsView.onAppear,
+      // which deliberately starts a new license read when its window opens.
+      root: HStack(spacing: 0) {
+        VStack {
+          Spacer()
+          SettingsHealthFooter(model: licenseModel)
+        }
+        .frame(width: 216)
+        Divider()
+        ScrollView {
+          LicensePanel(model: licenseModel)
+            .padding(CSSpace.xl)
+        }
+        .frame(minWidth: SettingsView.detailMinWidth)
+      })
 
     try run.writeArtifacts(to: directory)
     print("SETTINGS_DENSITY_PREVIEWS \(directory.url.path)")
