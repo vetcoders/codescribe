@@ -420,7 +420,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn clipboard_store_preserves_bytes_and_does_not_overwrite_same_named_pastes() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let first = AttachmentStore::save_clipboard(b"\0\xffZIP\0", "clip.bin").unwrap();
         assert_eq!(std::fs::read(&first).unwrap(), b"\0\xffZIP\0");
         assert_eq!(
@@ -434,7 +437,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn clipboard_store_bounds_names_payloads_and_detects_changed_files() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         assert!(AttachmentStore::save_clipboard(b"", "empty").is_err());
         assert!(
             AttachmentStore::save_clipboard(

@@ -979,20 +979,14 @@ impl TranscriptReducer {
         result: AiFormatResult,
         source_observation: Option<ObservationIdentity>,
     ) -> DerivedTranscriptProjection {
-        let mut status = if result.status == AiFormatStatus::Applied {
+        let status = if result.status == AiFormatStatus::Applied {
             "applied"
         } else {
             "unavailable"
         };
         let mut delivered = policy;
         let mut text = result.text;
-        if policy == FormattingPolicy::Correction
-            && !codescribe_core::ai_formatting::corrections_word_receipt(&source_raw_text, &text)
-                .preserves_words()
-        {
-            status = "corrections_words_rejected";
-            text = source_raw_text.clone();
-        } else if result.status != AiFormatStatus::Applied {
+        if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
         }
@@ -9899,7 +9893,7 @@ mod tests {
     }
 
     #[test]
-    fn corrections_losing_a_word_mints_a_floor_without_changing_raw() {
+    fn corrections_lexical_edits_publish_without_changing_raw_or_pcm_pins() {
         let (ledger, mut reducer, occurrence) = sealed_formatter_source("Iwo");
         let raw_revision = reducer.revision;
         let pins = ledger.committed_word_pin_ranges(&occurrence);
@@ -9922,8 +9916,8 @@ mod tests {
         .with_source(source, "Iwo".into(), FormattingPolicy::Correction);
         assert!(reducer.apply_occurrence_label_proposal(&ledger, &proposal));
         let derived = &reducer.derived_projections()[0];
-        assert_eq!(derived.status, "corrections_words_rejected");
-        assert_eq!(derived.rendered_text, "Iwo");
+        assert_eq!(derived.status, "applied");
+        assert_eq!(derived.rendered_text, "Different word");
         assert_eq!(derived.source_raw_revision, source_revision);
         assert_eq!(reducer.revision, raw_revision);
         assert_eq!(reducer.committed_rendered_text(), "Iwo");
@@ -10059,10 +10053,7 @@ mod tests {
             .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
             .unwrap();
         assert_eq!(selected.delivered_mode, "correction");
-        assert_eq!(
-            selected.rendered_text,
-            codescribe_core::ai_formatting::corrections_floor(&raw.source_text)
-        );
+        assert_eq!(selected.rendered_text, raw.source_text);
         assert!(!selected.rendered_text.contains("Smart-only"));
         assert_eq!(
             take.emitter

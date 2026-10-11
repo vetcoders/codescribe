@@ -94,6 +94,139 @@ pub const FORMAT_ON_DEVICE_ENV: &str = "CODESCRIBE_FORMAT_ON_DEVICE";
 mod tests {
     use super::*;
 
+    struct RestoreFormatter(Option<Arc<dyn OnDeviceFormatter>>);
+
+    impl Drop for RestoreFormatter {
+        fn drop(&mut self) {
+            *shared_formatter().write().unwrap() = self.0.take();
+        }
+    }
+
+    async fn prompt_authority_case(
+        raw: &str,
+        answer: Result<String, OnDeviceFormatError>,
+        expected_status: crate::llm::ai_formatting::AiFormatStatus,
+        expected_text: &str,
+    ) {
+        use crate::config::{CapturedRuntimeInputs, Config};
+        use crate::llm::ai_formatting::format_text_with_status_for_policy;
+        use std::sync::Mutex;
+
+        type Calls = Arc<Mutex<Vec<(String, String)>>>;
+        struct Host {
+            answer: Result<String, OnDeviceFormatError>,
+            calls: Calls,
+        }
+        #[async_trait::async_trait]
+        impl OnDeviceFormatter for Host {
+            async fn format(
+                &self,
+                instructions: &str,
+                message: &str,
+            ) -> Result<String, OnDeviceFormatError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((instructions.into(), message.into()));
+                self.answer.clone()
+            }
+        }
+        let _restore = RestoreFormatter(shared_formatter().write().unwrap().take());
+        let calls: Calls = Arc::default();
+        register_on_device_formatter(Arc::new(Host {
+            answer,
+            calls: calls.clone(),
+        }));
+        let root = tempfile::tempdir().unwrap();
+        for policy in ["correction", "smart"] {
+            let mut input = CapturedRuntimeInputs::defaults_at(root.path().into(), 0);
+            input.user_settings.llm_formatting_provider =
+                Some("custom:unconfigured-formatter".into());
+            input.user_settings.formatting_level = Some(policy.into());
+            input.user_settings.format_on_device = Some(true);
+            input.values.format_on_device = true;
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            assert!(!snapshot.llm_lanes().formatting().available());
+            let prompt = snapshot
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content()
+                .to_string();
+            let result = format_text_with_status_for_policy(raw, Some("pl"), &snapshot, None).await;
+            assert_eq!(result.status, expected_status, "{policy}");
+            assert_eq!(result.text, expected_text, "{policy}");
+            let actual = calls.lock().unwrap().last().unwrap().clone();
+            assert_eq!(actual, (prompt, format!("[Language: pl]\n\n{raw}")));
+        }
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_preserves_provider_input_and_accepts_lexical_edits() {
+        prompt_authority_case(
+            "Iwo Iwo Iwo plan był dobry i naprawdę ważny",
+            Ok("Dobry plan był ważny.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "Dobry plan był ważny.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_publishes_paragraph_only_changes() {
+        prompt_authority_case(
+            "To jest pierwsze zdanie. To jest drugie zdanie.",
+            Ok("To jest pierwsze zdanie.\n\nTo jest drugie zdanie.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "To jest pierwsze zdanie.\n\nTo jest drugie zdanie.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_does_not_censor_quoted_refusal_words() {
+        prompt_authority_case(
+            "Please quote the phrase I cannot help in this sentence",
+            Ok("The phrase is: I cannot help.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "The phrase is: I cannot help.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_exact_echo_is_noop() {
+        let raw = "Iwo Iwo Iwo plan był dobry i naprawdę ważny";
+        prompt_authority_case(
+            raw,
+            Ok(raw.into()),
+            crate::llm::ai_formatting::AiFormatStatus::AiNoop,
+            raw,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_actual_provider_error_keeps_original_repetitions() {
+        let raw = "Iwo Iwo Iwo plan był dobry i naprawdę ważny";
+        prompt_authority_case(
+            raw,
+            Err(OnDeviceFormatError::Unavailable(
+                "synthetic host failure".into(),
+            )),
+            crate::llm::ai_formatting::AiFormatStatus::Failed,
+            raw,
+        )
+        .await;
+    }
+
     struct Fixed(&'static str);
 
     #[async_trait::async_trait]
