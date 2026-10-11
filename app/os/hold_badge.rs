@@ -199,6 +199,50 @@ mod tests {
     use super::{BadgeMode, FocusedInputField, HoldBadgeConfig, classify_input_role};
 
     #[test]
+    fn live_cue_pointer_keeps_three_latest_words_and_repetitions() {
+        assert_eq!(super::preview_tail("Iwo Iwo Iwo Iwo Iwo"), "Iwo Iwo Iwo");
+        assert_eq!(
+            super::preview_tail("Dobra to jest nagranie testowe teraz mówię dalej"),
+            "teraz mówię dalej"
+        );
+        assert_eq!(
+            super::preview_tail("\tzażółć\n gęślą\u{a0}jaźń!  "),
+            "zażółć gęślą jaźń!"
+        );
+        assert_eq!(super::preview_tail("  \n\t"), "");
+    }
+
+    #[test]
+    fn live_cue_pointer_bounds_unicode_without_breaking_the_last_word() {
+        let word = "ź".repeat(160);
+        let tail = super::preview_tail(&format!("dawny początek {word}"));
+        assert_eq!(tail, "ź".repeat(120));
+        assert_eq!(tail.chars().count(), 120);
+    }
+
+    #[test]
+    fn live_cue_freshness_expires_and_a_new_partial_renews_it() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        assert!(!super::preview_expired(
+            None,
+            start + Duration::from_secs(4)
+        ));
+        assert!(!super::preview_expired(
+            Some(start),
+            start + Duration::from_millis(1199)
+        ));
+        assert!(super::preview_expired(
+            Some(start),
+            start + Duration::from_millis(1200)
+        ));
+        assert!(!super::preview_expired(
+            Some(start + Duration::from_millis(800)),
+            start + Duration::from_millis(1200)
+        ));
+    }
+
+    #[test]
     fn paste_capability_refuses_pages_disabled_and_read_only_text() {
         use super::classify_input_capability as classify;
         assert_eq!(
