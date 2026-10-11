@@ -38,11 +38,20 @@ corroborate a retained label through ordinary admission. It grants no mutation
 from context quality alone. One trial per nine seconds of capture may use at most
 nine seconds of PCM, with up to three seconds of context on either side of its
 source lineage.
+
 It uses the existing provider queue and submission/completion identity. It does
 not advance the grid or count a retained decode as fresh corroboration. Failed,
 unavailable, or budget-refused work leaves an explicit unresolved disposition.
 No new lexical trial is launched after Stop; existing accepted work drains under
 the same deadline. Context quality ranks acoustic context, not lexical certainty.
+
+A direct Whisper correction of a disagreeing CloudLive word is outside the
+Apple/Whisper adjudication pair, so it must independently meet the same measured
+decode-context floor before Whisper's higher producer rank may replace the
+label. Missing decode bounds grant no correction authority. Same-label evidence,
+first placement, and ManualHuman protection retain their existing admission
+paths; this rule creates no replay, sweep, or additional recovery debt.
+
 
 Stop's automatic Light+ pass may append terminal punctuation only. Earlier
 casing, commas and whitespace keep their existing bytes, including when the last

@@ -194,6 +194,26 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
     normalize_word_token(a) == normalize_word_token(b)
 }
 
+impl AcousticLedger {
+    /// A cross-family Whisper correction needs measured decode context. Missing
+    /// bounds are no evidence, and an edge decode cannot spend Whisper's higher
+    /// authority rank to replace a CloudLive label.
+    pub(super) fn whisper_has_correction_context(
+        &self,
+        observation: &ObservationIdentity,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> bool {
+        if observation.producer != ObservationProducer::Whisper || sample_start >= sample_end {
+            return false;
+        }
+        let Some(decode) = self.decoded_word_windows.get(observation).copied() else {
+            return false;
+        };
+        context_quality(sample_start, sample_end, decode) >= BAND_RIGHTS_FLOOR
+    }
+}
+
 /// Compare labels only after PCM has resolved the addressed component.
 /// Neighbours distinguish a moved negation from a punctuation/case change;
 /// these tokens never find a target, create pins or certify what was spoken.
