@@ -171,13 +171,13 @@ pub(crate) struct TailExecutionObservation {
     pub identity: TailRequestIdentity,
     pub source_input_samples: usize,
     pub sample_rate: u32,
-    pub vad_compacted_input_samples: usize,
+    pub vad_selected_samples: usize,
 }
 
 struct TailExecutionReceipt {
     observation: TailExecutionObservation,
     started: Instant,
-    vad_compaction_measured: bool,
+    vad_selection_measured: bool,
     finished: bool,
 }
 
@@ -188,12 +188,12 @@ impl TailExecutionReceipt {
             identity: request.identity.clone(),
             source_input_samples,
             sample_rate: request.sample_rate,
-            vad_compacted_input_samples: 0,
+            vad_selected_samples: 0,
         };
         let receipt = Self {
             observation,
             started: Instant::now(),
-            vad_compaction_measured: false,
+            vad_selection_measured: false,
             finished: false,
         };
         receipt.log_started();
@@ -220,12 +220,12 @@ impl TailExecutionReceipt {
         );
     }
 
-    fn record_vad_compaction(&mut self, compacted_input_samples: usize) {
-        self.observation.vad_compacted_input_samples = compacted_input_samples;
-        self.vad_compaction_measured = true;
+    fn record_vad_selection(&mut self, selected_samples: usize) {
+        self.observation.vad_selected_samples = selected_samples;
+        self.vad_selection_measured = true;
         let identity = &self.observation.identity;
         tracing::info!(
-            event = "tail_execution_vad_compaction",
+            event = "tail_execution_vad_selection",
             execution_id = %self.observation.execution_id,
             session_id = %identity.range.session,
             capture_epoch = identity.range.capture_epoch,
@@ -238,12 +238,12 @@ impl TailExecutionReceipt {
                 self.observation.source_input_samples,
                 self.observation.sample_rate,
             ),
-            vad_compacted_input_samples = compacted_input_samples,
-            vad_compacted_input_duration_ms = sample_duration_ms(
-                compacted_input_samples,
+            vad_selected_samples = selected_samples,
+            vad_selected_duration_ms = sample_duration_ms(
+                selected_samples,
                 self.observation.sample_rate,
             ),
-            "tail execution VAD compaction measured"
+            "tail execution VAD selection measured"
         );
     }
 
@@ -278,10 +278,10 @@ impl TailExecutionReceipt {
                 self.observation.source_input_samples,
                 self.observation.sample_rate,
             ),
-            vad_compaction_measured = self.vad_compaction_measured,
-            vad_compacted_input_samples = self.observation.vad_compacted_input_samples,
-            vad_compacted_input_duration_ms = sample_duration_ms(
-                self.observation.vad_compacted_input_samples,
+            vad_selection_measured = self.vad_selection_measured,
+            vad_selected_samples = self.observation.vad_selected_samples,
+            vad_selected_duration_ms = sample_duration_ms(
+                self.observation.vad_selected_samples,
                 self.observation.sample_rate,
             ),
             elapsed_ms = self.started.elapsed().as_millis() as u64,
@@ -321,7 +321,7 @@ pub enum TailEvidenceStability {
 pub enum TailTimingQuality {
     /// Segment ranges are exact on the capture PCM clock.
     ExactSampleRange,
-    /// Current in-process Whisper timestamps refer to VAD-compacted speech.
+    /// Provider timestamps refer to VAD-compacted speech, not capture PCM.
     CompactedSpeechRelative,
     /// Deterministic test evidence, not a measured engine timestamp.
     Synthetic,
@@ -590,16 +590,18 @@ impl InProcessTailProvider {
         control.check()?;
         request.validate_pcm(pcm)?;
         let started = Instant::now();
-        let (speech, _, speech_index) =
-            crate::vad::extract_speech_indexed(pcm, request.sample_rate);
-        execution.record_vad_compaction(speech.len());
+        // VAD gates empty speech, as in file transcription. Decode the original
+        // bounded PCM window: compaction can discard quiet onsets and joins
+        // physically separated speech before the model and word alignment.
+        let (speech, _) = crate::vad::extract_speech(pcm, request.sample_rate);
+        execution.record_vad_selection(speech.len());
         let execution_control = execution.execution_control(control);
         control.check()?;
         let (raw, word_segments) = if speech.is_empty() {
             (RawTranscript::default(), None)
         } else {
             super::candle_transcribe_tail_window(
-                &speech,
+                pcm,
                 request.sample_rate,
                 request.language.as_deref(),
                 None,
@@ -607,12 +609,12 @@ impl InProcessTailProvider {
             )?
         };
         let request_range = &request.identity.range;
-        let max_compacted = speech.len() as u64;
+        let source_samples = pcm.len() as u64;
         let to_sample = |seconds: f32| -> u64 {
             if !seconds.is_finite() || seconds <= 0.0 {
                 return 0;
             }
-            ((seconds as f64 * request.sample_rate as f64).round() as u64).min(max_compacted)
+            ((seconds as f64 * request.sample_rate as f64).round() as u64).min(source_samples)
         };
         let map_segments = |segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
                             grain: TailSegmentGrain|
@@ -620,14 +622,8 @@ impl InProcessTailProvider {
             segments
                 .into_iter()
                 .map(|segment| {
-                    let compacted_start = to_sample(segment.start_ts);
-                    let compacted_end = to_sample(segment.end_ts).max(compacted_start);
-                    let (source_start, source_end) = crate::vad::map_compacted_sample_range(
-                        &speech_index,
-                        compacted_start,
-                        compacted_end,
-                    )
-                    .ok_or_else(|| anyhow!("Whisper segment has no source PCM mapping"))?;
+                    let source_start = to_sample(segment.start_ts);
+                    let source_end = to_sample(segment.end_ts).max(source_start);
                     Ok(TimedTailSegment {
                         text: segment.text,
                         range: TailSampleRange {
