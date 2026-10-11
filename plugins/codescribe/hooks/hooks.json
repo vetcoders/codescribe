@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

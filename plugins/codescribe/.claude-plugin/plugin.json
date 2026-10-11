@@ -1,0 +1,6 @@
+{
+  "name": "codescribe",
+  "version": "1.0.0",
+  "description": "Codescribe in the current Junie conversation: connect, wait, read, ACK and reply.",
+  "author": { "name": "Vetcoders" }
+}

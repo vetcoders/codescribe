@@ -2814,7 +2814,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
         "bus", "recipients", "broadcast_id", "channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
-        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
     )
     return {key: payload[key] for key in fields if key in payload}
 
@@ -5947,6 +5947,11 @@ def main() -> int:
                "ACK complete received messages immediately. Codex native queue also wakes the next turn.",
     )
     parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
+    native = parser.add_mutually_exclusive_group()
+    native.add_argument("--mcp", action="store_true", help="serve the native Codescribe MCP conversation over stdio")
+    native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
+    parser.add_argument("--extensions-directory", type=Path, default=None,
+                        help="with --install-junie-extension: override Junie's extensions directory")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
     authority = parser.add_mutually_exclusive_group()
@@ -6139,6 +6144,29 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.mcp or args.install_junie_extension:
+        allowed = {"mcp", "install_junie_extension", "extensions_directory", "bridge_home", "bus", "entrypoint"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("native extension commands combine only with --bridge-home/--bus")
+        if args.extensions_directory and not args.install_junie_extension:
+            parser.error("--extensions-directory requires --install-junie-extension")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        root = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            if args.install_junie_extension:
+                directory = args.extensions_directory or Path(os.environ.get("JUNIE_EXTENSIONS_DEFAULT_LOCATION", str(Path.home() / ".junie/extensions")))
+                emit(module.install_extension(sys.modules[__name__], root, directory.expanduser()))
+            else:
+                module.serve(sys.modules[__name__], root, args.bus)
+            return 0
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: native extension refused: {error}\n")
+            return 3
+    if args.extensions_directory:
+        parser.error("--extensions-directory requires --install-junie-extension")
     if args.mute_all or args.unmute_all:
         allowed = {"mute_all", "unmute_all", "bridge_home", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items()
