@@ -24,25 +24,34 @@ an app or CLI restart. For an already registered local marketplace,
 `cs-bus --install-junie-extension` can enable Codescribe in Junie's user scope;
 it preserves unrelated configuration and refuses to invent a marketplace ID.
 
+The MCP launcher resolves the verified helper at `$HOME/.local/bin/cs-bus` and
+adds the standard macOS helper/interpreter directories to its own PATH. It also
+works when Junie is launched from an app or launchd without a terminal PATH;
+HOME, credentials and the user's shell configuration are never changed.
+
 The `SessionStart`/`UserPromptSubmit` hook supplies Junie's **real session_id**.
 The skill uses it with `codescribe_connect`; an occupied channel is refused, not
 taken over. Existing voice profiles, authentication and permission policy remain
 unchanged. Supply a voice only if you want to change it. Hook support is EAP;
 without a native hook receipt, obtain `/link` rather than inventing an identity.
 
-## How continuous listening works
+## Native reception and the current listening limit
 
 The extension's `codescribe_wait` MCP tool holds one ordinary tool call open
-while the mailbox is empty. It observes the existing Codescribe follower using
-the bus's event trigger; **silence makes no model request**. A fresh message
-returns one complete canonical envelope into the same Junie conversation. The
-agent reads it, explicitly ACKs its exact delivery ID, acts, replies and waits
-again. The wait does not ACK, launch another Junie, simulate terminal keys, or
-rely on background stdout notifications.
+while the mailbox is empty. A fresh message returns one complete canonical
+envelope into the same Junie conversation; the agent reads it, explicitly ACKs
+its exact ID, acts and replies. The wait does not ACK, launch another Junie,
+simulate terminal keys, or rely on background stdout notifications.
 
-Listening stays within the active task: the agent must rearm `codescribe_wait`
-instead of submitting the listening task between messages. Cancelling the tool
-lets a new typed prompt interrupt it; explicit stop cancels and detaches. This
+**Junie release 26.10.5 imposes a fixed three-minute MCP deadline.** Its server
+configuration has no timeout field, and progress notifications do not extend
+the outer deadline. This transport therefore proves native read/ACK/voice,
+not indefinite, zero-model-polling listening. After a timeout, do not silently
+retry a listening loop. Keep the mailbox intact and report that reception needs
+to be resumed. Native task exit leaves a collecting follower, not an active agent.
+
+Reception stays within the active task. Cancelling the tool lets a new typed
+prompt interrupt it; explicit stop cancels and detaches. This
 does **not** inject prompts into an unrelated idle session. Async hook context
 is not used as an idle wakeup, and the native Stop hook retry cap is not disabled.
 
