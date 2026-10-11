@@ -120,7 +120,7 @@ struct TrayMenuView: View {
         style: .primary
       ) { viewModel.onShowAgent() }
 
-      TrayRow(icon: .dock, title: String(localized: "Open widget")) {
+      TrayRow(icon: .dock, title: String(localized: "Show widget")) {
         viewModel.onOpenWidget()
       }
       .accessibilityIdentifier("tray-open-widget")

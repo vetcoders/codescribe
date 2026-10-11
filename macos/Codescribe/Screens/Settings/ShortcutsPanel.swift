@@ -424,10 +424,10 @@ struct ShortcutsPanel: View {
   private var pasteTranscriptRow: some View {
     VStack(alignment: .leading, spacing: 8) {
       VStack(alignment: .leading, spacing: 3) {
-        Text("Paste transcript")
+        Text("Deferred paste")
           .font(CSFont.ui(13.5, .semibold))
           .foregroundStyle(Color.primary)
-        Text("Pastes the waiting transcript. The shortcut may also act in the app in front.")
+        Text("Use the saved transcript when automatic pasting is unavailable.")
           .font(CSFont.ui(11.5, .medium))
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)

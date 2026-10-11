@@ -6827,6 +6827,22 @@
         }
       }
     },
+    "Deferred paste": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deferred paste"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odroczone wklejanie"
+          }
+        }
+      }
+    },
     "Degraded (env override)": {
       "localizations": {
         "pl": {
@@ -15490,6 +15506,23 @@
         }
       }
     },
+    "Show widget": {
+      "comment": "Tray action that reveals the existing widget",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show widget"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż widget"
+          }
+        }
+      }
+    },
     "Shows Agent-only impact and requires typing %@ before continuing.": {
       "localizations": {
         "pl": {
@@ -18556,6 +18589,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "W nazwie serwera użyj tylko liter, cyfr, „_” lub „-”."
+          }
+        }
+      }
+    },
+    "Use the saved transcript when automatic pasting is unavailable.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the saved transcript when automatic pasting is unavailable."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Użyj zachowanej transkrypcji, gdy automatyczne wklejanie jest niedostępne."
           }
         }
       }

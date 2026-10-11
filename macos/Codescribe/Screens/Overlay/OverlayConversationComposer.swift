@@ -101,6 +101,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.textContainer?.widthTracksTextView = true
     editor.isHorizontallyResizable = false
     editor.isVerticallyResizable = true
+    editor.minSize = .zero
+    editor.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
     editor.setAccessibilityLabel(placeholder)
@@ -136,6 +139,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       context.coordinator.applyingExternalText = true
       editor.string = text
       editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+      editor.revealCaretAfterLayout()
       context.coordinator.applyingExternalText = false
     }
   }
@@ -149,6 +153,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
     layout.ensureLayout(for: container)
     let height = layout.usedRect(for: container).height + editor.textContainerInset.height * 2
+    let documentSize = NSSize(width: width, height: max(28, height))
+    if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
     return CGSize(width: width, height: min(112, max(28, height)))
   }
 
@@ -160,8 +166,15 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     func textDidChange(_ notification: Notification) {
       guard !applyingExternalText else { return }
-      if let editor = notification.object as? NSTextView { parent.text = editor.string }
+      if let editor = notification.object as? MessageTextView {
+        parent.text = editor.string
+        editor.revealCaretAfterLayout()
+      }
       parent.onTypingActivity()
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+      (notification.object as? MessageTextView)?.revealCaretAfterLayout()
     }
 
     func noteEditorActive(_ active: Bool) {
@@ -185,6 +198,26 @@ private struct ConversationMessageField: NSViewRepresentable {
     var onTypingActivity: () -> Void = {}
     var pasteImage: (() throws -> URL?)?
     var onPasteError: (String?) -> Void = { _ in }
+
+    private var caretRevealPending = false
+
+    func revealCaretAfterLayout() {
+      caretRevealPending = true
+      needsLayout = true
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+      let changed = frame.size != newSize
+      super.setFrameSize(newSize)
+      if changed, window?.firstResponder === self { revealCaretAfterLayout() }
+    }
+
+    override func layout() {
+      super.layout()
+      guard caretRevealPending else { return }
+      caretRevealPending = false
+      scrollRangeToVisible(selectedRange())
+    }
 
     override func paste(_ sender: Any?) {
       do {
