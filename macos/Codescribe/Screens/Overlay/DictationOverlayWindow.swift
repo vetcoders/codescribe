@@ -220,8 +220,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
-    if event.type == .cursorUpdate, containsMenuCursorPoint(event.locationInWindow) {
-      NSCursor.arrow.set()
+    // The drawer owns cursor motion before overlapping transcript tracking
+    // can set an I-beam. Clicks still follow the native controls below.
+    if event.type == .mouseMoved || event.type == .cursorUpdate,
+      containsMenuCursorPoint(event.locationInWindow)
+    {
+      refreshCursor(at: event.locationInWindow)
       return
     }
     // Text tracking areas can overlap the resize strip even when hitTest

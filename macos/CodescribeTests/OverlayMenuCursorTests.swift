@@ -46,6 +46,77 @@ final class OverlayMenuCursorTests: XCTestCase {
     XCTAssertEqual(panel.cursor(at: NSPoint(x: 400, y: 200)), .iBeam)
   }
 
+  func testMenuMotionDoesNotDispatchOverlappingTextTrackingAndReleasesOwnership() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+    let text = DrawerCursorTrackingTextView(frame: content.bounds)
+    text.isHorizontallyResizable = false
+    text.isVerticallyResizable = false
+    text.string = "Selectable transcript behind the agent drawer"
+    content.addSubview(text)
+    panel.contentView = content
+    text.frame = content.bounds
+    panel.acceptsMouseMovedEvents = true
+    panel.orderFrontRegardless()
+    let saved = NSCursor.current
+    defer {
+      panel.orderOut(nil)
+      saved.set()
+    }
+    text.addTrackingArea(
+      NSTrackingArea(
+        rect: text.bounds, options: [.mouseMoved, .activeAlways], owner: text, userInfo: nil))
+    let selection = NSRange(location: 2, length: 5)
+    text.setSelectedRange(selection)
+    let menu = OverlayMenuCursorRegionView(frame: NSRect(x: 300, y: 100, width: 280, height: 350))
+    content.addSubview(menu)
+    let button = NSButton(title: "Agent", target: nil, action: nil)
+    button.frame = NSRect(x: 320, y: 120, width: 120, height: 30)
+    content.addSubview(button)
+    XCTAssertTrue(content.hitTest(NSPoint(x: 350, y: 135)) === button)
+
+    func move(to point: NSPoint) throws {
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved, location: point, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
+      panel.sendEvent(event)
+    }
+
+    // Prove the mounted native tracking path is active before testing its exclusion.
+    try move(to: NSPoint(x: 100, y: 200))
+    XCTAssertGreaterThan(text.motions, 0)
+    text.motions = 0
+    let inside = NSPoint(x: 400, y: 200)
+    for _ in 0..<20 {
+      try move(to: inside)
+      XCTAssertEqual(NSCursor.current, .arrow)
+    }
+    XCTAssertEqual(text.motions, 0, "Drawer motion must not first set the text cursor")
+    XCTAssertEqual(text.selectedRange(), selection)
+    XCTAssertFalse(panel.refreshCursor(at: inside), "An unchanged arrow needs no second write")
+
+    try move(to: NSPoint(x: 100, y: 200))
+    XCTAssertGreaterThan(text.motions, 0, "Text outside the drawer retains native motion")
+    text.motions = 0
+    menu.isHidden = true
+    try move(to: inside)
+    XCTAssertGreaterThan(text.motions, 0, "Hiding the drawer releases native tracking")
+    text.motions = 0
+    menu.isHidden = false
+    try move(to: inside)
+    XCTAssertEqual(text.motions, 0, "Showing the drawer restores exclusive cursor ownership")
+    menu.removeFromSuperview()
+    try move(to: inside)
+    XCTAssertGreaterThan(text.motions, 0, "Removing the drawer releases native tracking")
+    XCTAssertEqual(text.selectedRange(), selection)
+  }
+
   func testMenuDoesNotTakeResizeOwnershipFromPanelEdges() {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
@@ -60,5 +131,16 @@ final class OverlayMenuCursorTests: XCTestCase {
       panel.cursor(at: NSPoint(x: 599, y: 200)), OverlayResizeHit.cursor(for: .right))
     XCTAssertEqual(
       panel.cursor(at: NSPoint(x: 400, y: 499)), OverlayResizeHit.cursor(for: .top))
+  }
+}
+
+@MainActor
+private final class DrawerCursorTrackingTextView: NSTextView {
+  var motions = 0
+
+  override func mouseMoved(with event: NSEvent) {
+    motions += 1
+    NSCursor.iBeam.set()
+    super.mouseMoved(with: event)
   }
 }
