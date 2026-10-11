@@ -1089,8 +1089,13 @@ impl AcousticLedger {
                 .count()
                 == 1
             && sources.iter().enumerate().all(|(other_index, other)| {
-                let midpoint = other.sample_start + (other.sample_end - other.sample_start) / 2;
-                other_index == *index || midpoint < pin.sample_start || midpoint >= pin.sample_end
+                other_index == *index
+                    || !range_contains_pcm_centre(
+                        pin.sample_start,
+                        pin.sample_end,
+                        other.sample_start,
+                        other.sample_end,
+                    )
             }))
         .then_some(*index)
     }
@@ -1328,12 +1333,14 @@ impl AcousticLedger {
                     sources
                         .iter()
                         .filter(|source| {
-                            let midpoint =
-                                source.sample_start + (source.sample_end - source.sample_start) / 2;
                             independent_word(source)
                                 && (self.pin_targets_source(source, word)
-                                    || (word.sample_start <= midpoint
-                                        && midpoint < word.sample_end))
+                                    || range_contains_pcm_centre(
+                                        word.sample_start,
+                                        word.sample_end,
+                                        source.sample_start,
+                                        source.sample_end,
+                                    ))
                         })
                         .count()
                         > 1
@@ -1372,9 +1379,12 @@ impl AcousticLedger {
                         && outputs
                             .iter()
                             .filter(|word| {
-                                let midpoint = source.sample_start
-                                    + (source.sample_end - source.sample_start) / 2;
-                                word.sample_start <= midpoint && midpoint < word.sample_end
+                                range_contains_pcm_centre(
+                                    word.sample_start,
+                                    word.sample_end,
+                                    source.sample_start,
+                                    source.sample_end,
+                                )
                             })
                             .count()
                             == 1
@@ -1384,9 +1394,12 @@ impl AcousticLedger {
                         && sources
                             .iter()
                             .filter(|source| {
-                                let midpoint = source.sample_start
-                                    + (source.sample_end - source.sample_start) / 2;
-                                word.sample_start <= midpoint && midpoint < word.sample_end
+                                range_contains_pcm_centre(
+                                    word.sample_start,
+                                    word.sample_end,
+                                    source.sample_start,
+                                    source.sample_end,
+                                )
                             })
                             .count()
                             == 1
@@ -1745,15 +1758,18 @@ impl AcousticLedger {
             for (assigned_owner, pin) in &batch.assignments {
                 // Routing is a proposal. Only a committed measured neighbour
                 // may lend its actual pin; qualification alone proves no words.
-                let midpoint = pin.sample_start.saturating_add(pin.sample_len() / 2);
                 if assigned_owner != owner
                     && assigned_owner.same_capture(owner)
                     && pin.same_capture(owner)
                     && pin.is_anchored()
                     && pin.sample_end <= observed
                     && assigned_owner.is_anchored()
-                    && midpoint >= assigned_owner.sample_start
-                    && midpoint < assigned_owner.sample_end
+                    && range_contains_pcm_centre(
+                        assigned_owner.sample_start,
+                        assigned_owner.sample_end,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
                     && (assigned_owner.sample_end <= owner.sample_start
                         || assigned_owner.sample_start >= owner.sample_end)
                     && self.committed.contains_key(assigned_owner)
@@ -5915,8 +5931,12 @@ mod slot_ops_tests {
             let pin = WordPin::new(13_000, 14_000, "Iwo").with_decode_window(0, 32_000);
             assert!(
                 sources.iter().all(|word| {
-                    let midpoint = word.sample_start + (word.sample_end - word.sample_start) / 2;
-                    midpoint < pin.sample_start || midpoint >= pin.sample_end
+                    !range_contains_pcm_centre(
+                        pin.sample_start,
+                        pin.sample_end,
+                        word.sample_start,
+                        word.sample_end,
+                    )
                 }),
                 "the new pin contains zero previous centres, but intersects both physical sources"
             );

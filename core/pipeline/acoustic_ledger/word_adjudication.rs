@@ -918,8 +918,12 @@ impl AcousticLedger {
         index: usize,
     ) -> WordHypothesis {
         let contains_centre = |pin: &SourceWord, source: &WordSlot| {
-            let midpoint = source.sample_start + (source.sample_end - source.sample_start) / 2;
-            pin.sample_start <= midpoint && midpoint < pin.sample_end
+            range_contains_pcm_centre(
+                pin.sample_start,
+                pin.sample_end,
+                source.sample_start,
+                source.sample_end,
+            )
         };
         let bijection = hypothesis
             .observation
