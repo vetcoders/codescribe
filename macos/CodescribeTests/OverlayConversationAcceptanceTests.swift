@@ -792,6 +792,17 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
     XCTAssertEqual(
       jumpButtons().count, 1, "Manual history reading exposes one centered return pill")
+    // Reflow a long mounted conversation, not an empty geometry stand-in.
+    // Reading history must not turn resize into a jump-to-current command.
+    for width in [CGFloat(360), 680, 420, 600, 360, 532] {
+      window.setContentSize(NSSize(width: width, height: 360))
+      settle()
+      XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
+      XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+      XCTAssertEqual(originalEditor.string, "Retained draft")
+      XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
+      XCTAssertLessThanOrEqual(document.bounds.width, scroll.bounds.width + 1)
+    }
     let button = try XCTUnwrap(jumpButtons().first)
     let input = try XCTUnwrap(originalEditor.enclosingScrollView)
     var buttonPosition = CGPoint.zero
@@ -810,6 +821,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success)
     settle()
     XCTAssertGreaterThan(scroll.documentVisibleRect.maxY, document.bounds.height - 50)
+    for width in [CGFloat(360), 680, 420, 600, 360, 532] {
+      window.setContentSize(NSSize(width: width, height: 360))
+      settle()
+      XCTAssertGreaterThan(
+        scroll.documentVisibleRect.maxY, document.bounds.height - 50,
+        "Native size-change anchoring must keep the live edge through reflow")
+    }
     XCTAssertTrue(jumpButtons().isEmpty)
     XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
     XCTAssertEqual(originalEditor.string, "Retained draft")

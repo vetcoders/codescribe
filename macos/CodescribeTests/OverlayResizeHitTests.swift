@@ -81,6 +81,57 @@ private final class PositionedOverlayCursorEvent: NSEvent {
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testLiveResizeNeverCrushesTheVisiblePresentationBeforeRelease() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.presentationFloors"))
+        as? FloatingOverlayPanel)
+    defer { panel.invalidatePresence() }
+    for (mode, floor) in [
+      (OverlayPresentationMode.expanded, DictationOverlayWindow.minSize),
+      (.midi, DictationOverlayWindow.midiSize),
+    ] {
+      state.setPresentationMode(.mini)
+      panel.settleFrameTransition()
+      state.setPresentationMode(mode)
+      panel.settleFrameTransition()
+      XCTAssertEqual(panel.minSize, floor)
+      XCTAssertEqual(panel.contentMinSize, floor)
+      panel.setFrame(
+        NSRect(
+          x: panel.frame.minX - 80, y: panel.frame.minY,
+          width: panel.frame.width + 80, height: panel.frame.height), display: false)
+      let start = panel.frame
+      XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 2_000, y: 0)))
+      XCTAssertEqual(panel.frame.width, floor.width, accuracy: 0.5)
+      XCTAssertGreaterThanOrEqual(panel.frame.height, floor.height)
+      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
+      XCTAssertEqual(panel.presentationMode, mode)
+      panel.endUserResize()
+      panel.settleFrameTransition()
+    }
+    state.setPresentationMode(.expanded)
+    panel.settleFrameTransition()
+    let start = panel.frame
+    XCTAssertTrue(panel.beginUserResize(edge: .bottomLeft, at: .zero))
+    for delta in [CGFloat(100), 500, 2_000] {
+      _ = panel.updateUserResize(to: NSPoint(x: delta, y: delta))
+      XCTAssertGreaterThanOrEqual(panel.frame.width, DictationOverlayWindow.minSize.width)
+      XCTAssertGreaterThanOrEqual(panel.frame.height, DictationOverlayWindow.minSize.height)
+      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxY, start.maxY, accuracy: 0.5)
+      XCTAssertEqual(panel.presentationMode, .expanded)
+    }
+    panel.endUserResize()
+    panel.settleFrameTransition()
+    XCTAssertEqual(state.presentationMode, .mini, "The fold gesture commits only on release")
+    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    XCTAssertFalse(panel.beginUserResize(edge: .left, at: .zero))
+  }
+
+  @MainActor
   func testExpandedCornersStillReachCompactFormsAroundTheSameUpperRightPin() throws {
     let state = OverlayState.previewFormatted()
     let panel = try XCTUnwrap(
