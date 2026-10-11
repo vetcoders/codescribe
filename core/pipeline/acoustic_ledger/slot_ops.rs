@@ -482,7 +482,7 @@ impl AcousticLedger {
             })
     }
 
-    pub(super) fn decode_word_onset_complete(
+    pub(crate) fn decode_word_onset_complete(
         &self,
         owner: &OccurrenceIdentity,
         start: u64,
