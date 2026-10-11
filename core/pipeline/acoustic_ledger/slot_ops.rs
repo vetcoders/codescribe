@@ -378,19 +378,24 @@ impl AcousticLedger {
     }
 
     pub(crate) fn complete_word_slot(&self, source: &WordSlot) -> bool {
+        self.complete_word_source(source).is_some()
+    }
+
+    pub(super) fn complete_word_source<'a>(&'a self, source: &'a WordSlot) -> Option<&'a WordSlot> {
         let mut word = source;
         let mut history_end = self.slot_operations.len();
         loop {
-            if self.word_pin_observations.contains(&word.observation)
+            if word.producer != ObservationProducer::Lexicon
+                && self.word_pin_observations.contains(&word.observation)
                 && self
                     .complete_decoded_words
                     .get(&word.observation)
                     .is_some_and(|ranges| ranges.contains(&(word.sample_start, word.sample_end)))
             {
-                return true;
+                return Some(word);
             }
             if word.producer != ObservationProducer::Lexicon {
-                return false;
+                return None;
             }
             // A dictionary spelling change keeps the exact measured word.
             // A merge, split, formatter or new geometry cannot borrow that
@@ -410,7 +415,7 @@ impl AcousticLedger {
                             == word.observation.occurrence
                 })
             else {
-                return false;
+                return None;
             };
             history_end = index;
             word = &operation.sources[0];
@@ -540,9 +545,11 @@ impl AcousticLedger {
                 continue;
             }
             for pin in &committed.slots {
+                let Some(source) = self.complete_word_source(pin) else {
+                    continue;
+                };
                 if !self.word_pin_observations.contains(&pin.observation)
-                    || pin.producer.authority_rank() < observation.producer.authority_rank()
-                    || !self.complete_word_slot(pin)
+                    || source.producer.authority_rank() < observation.producer.authority_rank()
                 {
                     continue;
                 }
@@ -554,11 +561,13 @@ impl AcousticLedger {
                 // Preserve sparse Word timestamp accounting from an accepted
                 // complete decode, but never lend a rejected/partial scope.
                 if !self.rejected_word_pins.contains_key(held_owner)
-                    && committed
-                        .slots
-                        .iter()
-                        .all(|held| self.complete_word_slot(held))
-                    && let Some(&(lo, hi)) = self.decoded_word_windows.get(&pin.observation)
+                    && committed.slots.iter().all(|held| {
+                        self.complete_word_source(held).is_some_and(|source| {
+                            source.producer.authority_rank()
+                                >= observation.producer.authority_rank()
+                        })
+                    })
+                    && let Some(&(lo, hi)) = self.decoded_word_windows.get(&source.observation)
                 {
                     accounted.push((lo, hi));
                 }
@@ -792,6 +801,22 @@ impl AcousticLedger {
     /// closure owns sealing; word timestamps are not an energy-density map.
     pub(super) fn returned_word_scope_accounted(&self, observation: &ObservationIdentity) -> bool {
         let owner = &observation.occurrence;
+        if observation.producer == ObservationProducer::Lexicon {
+            // Spelling has no decode of its own. Reuse only the complete
+            // measured origin and run the same whole-owner accounting checks.
+            return self.slots_of(owner).is_some_and(|pins| {
+                pins.iter()
+                    .filter(|pin| pin.observation == *observation)
+                    .filter_map(|pin| self.complete_word_source(pin))
+                    .filter(|source| {
+                        matches!(
+                            source.producer,
+                            ObservationProducer::Whisper | ObservationProducer::CloudLive
+                        )
+                    })
+                    .any(|source| self.returned_word_scope_accounted(&source.observation))
+            });
+        }
         let scope_returned = self.decoded_source_scope_accounted(observation, owner);
         scope_returned
             && matches!(
@@ -803,11 +828,17 @@ impl AcousticLedger {
             && self.slots_of(owner).is_some_and(|pins| {
                 !pins.is_empty()
                     && pins.iter().all(|pin| {
+                        let producer = if pin.producer == ObservationProducer::Lexicon {
+                            self.complete_word_source(pin).map(|source| source.producer)
+                        } else {
+                            Some(pin.producer)
+                        };
                         pin.producer == ObservationProducer::ManualHuman
                             || (self.word_pin_observations.contains(&pin.observation)
                                 && pin.text.split_whitespace().count() == 1
-                                && pin.producer.authority_rank()
-                                    >= observation.producer.authority_rank())
+                                && producer.is_some_and(|producer| {
+                                    producer.authority_rank() >= observation.producer.authority_rank()
+                                }))
                     })
             })
     }
@@ -845,12 +876,17 @@ impl AcousticLedger {
                     let children_held = !operation.outputs.is_empty()
                         && operation.outputs.iter().all(|output| {
                             held.iter().any(|pin| {
+                                let proof = if pin.producer == ObservationProducer::ManualHuman {
+                                    Some(pin)
+                                } else {
+                                    self.complete_word_source(pin)
+                                };
                                 self.word_pin_observations.contains(&pin.observation)
-                                    && (pin.producer == ObservationProducer::ManualHuman
-                                        || self.complete_word_slot(pin))
                                     && pin.text.split_whitespace().count() == 1
-                                    && pin.producer.authority_rank()
-                                        >= operation.observation.producer.authority_rank()
+                                    && proof.is_some_and(|source| {
+                                        source.producer.authority_rank()
+                                            >= operation.observation.producer.authority_rank()
+                                    })
                                     && self.slot_descends_from(pin, output)
                             }) || self.word_deletions.iter().any(|deletion| {
                                 deletion.operation.observation.occurrence == *owner
@@ -866,19 +902,25 @@ impl AcousticLedger {
                 let targets = held
                     .iter()
                     .filter(|pin| {
+                        let proof = if pin.producer == ObservationProducer::ManualHuman {
+                            Some(*pin)
+                        } else {
+                            self.complete_word_source(pin)
+                        };
                         self.word_pin_observations.contains(&pin.observation)
                             && pin.observation != source.observation
                             && pin.text.split_whitespace().count() == 1
                             && source.text.split_whitespace().count() == 1
-                            && (pin.producer == ObservationProducer::ManualHuman
-                                || pin.producer.authority_rank() > source.producer.authority_rank()
-                                || (pin.producer == source.producer
-                                    && pin.observation.generation > source.observation.generation))
+                            && proof.is_some_and(|proof| {
+                                proof.observation != source.observation
+                                    && (proof.producer == ObservationProducer::ManualHuman
+                                        || proof.producer.authority_rank()
+                                            > source.producer.authority_rank()
+                                        || (proof.producer == source.producer
+                                            && proof.observation.generation
+                                                > source.observation.generation))
+                            })
                             && self.pin_targets_source(source, pin)
-                            // Recovery is about returned speech, regardless
-                            // of which admission guard retained the debt.
-                            && (pin.producer == ObservationProducer::ManualHuman
-                                || self.complete_word_slot(pin))
                             && rejected.iter().all(|other| {
                                 !self.pin_targets_source(other, pin)
                                     || (other.sample_start == source.sample_start
