@@ -1,6 +1,80 @@
 //! Integrator-owned counterexamples for local adjudication, independent of ASR.
 use super::*;
 
+fn coarse_partial_window_preserves_five_iwo(decode: (u64, u64)) {
+    let owner = OccurrenceIdentity::new("coarse-partial-five-iwo", 1, 14_592, 260_000);
+    let starts = [24_000_u64, 72_000, 120_000, 168_000, 216_000];
+    let mut pcm = vec![0.0; 300_000];
+    for start in starts {
+        pcm[start as usize..start as usize + 16_000].fill(0.2);
+    }
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, 48_000);
+    ledger.schedule_frontier(
+        owner.clone(),
+        [ObservationProducer::Apple, ObservationProducer::Whisper],
+    );
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+    assert!(
+        ledger
+            .admit(&apple, "Iwo Iwo Iwo Iwo Iwo")
+            .grants_mutation()
+    );
+    let held = ledger.slots_of(&owner).unwrap().to_vec();
+    let partial = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
+    let pins = starts
+        .into_iter()
+        .filter(|start| *start > decode.0 && start + 16_000 < decode.1)
+        .map(|start| {
+            WordPin::new(start, start + 16_000, "Iwo").with_decode_window(decode.0, decode.1)
+        })
+        .collect::<Vec<_>>();
+    assert!(!pins.is_empty() && pins.len() < 5);
+    ledger.admit_word_slots(&partial, &pins);
+    assert_eq!(
+        ledger.text_of(&owner),
+        Some("Iwo Iwo Iwo Iwo Iwo"),
+        "A partial decode cannot erase physical speech outside its window"
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap(), held);
+    assert_eq!(ledger.conservation().residue(), 0);
+
+    // A complete window can still refine the same phrase into five measured
+    // words. Protecting the prefix must not prohibit ordinary full refinement.
+    let complete = ObservationIdentity::new(ObservationProducer::Whisper, 3, 2, owner.clone());
+    let all = starts
+        .into_iter()
+        .map(|start| WordPin::new(start, start + 16_000, "Iwo").with_decode_window(0, 300_000))
+        .collect::<Vec<_>>();
+    let receipt = ledger.admit_word_slots(&complete, &all);
+    assert!(
+        matches!(receipt, MutationReceipt::Preserve { .. }),
+        "Complete positive control: {receipt:?}; choices={:?}; slots={:?}",
+        ledger.word_choices(),
+        ledger.slots_of(&owner)
+    );
+    assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 5);
+    for (slot, start) in ledger.slots_of(&owner).unwrap().iter().zip(starts) {
+        assert_eq!(
+            (slot.sample_start, slot.sample_end),
+            (start, start + 16_000)
+        );
+        assert_eq!(slot.producer, ObservationProducer::Whisper);
+        assert!(ledger.complete_word_slot(slot));
+    }
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn integrator_coarse_partial_decode_preserves_five_iwo_prefix() {
+    coarse_partial_window_preserves_five_iwo((144_000, 300_000));
+}
+
+#[test]
+fn integrator_coarse_partial_decode_preserves_five_iwo_suffix() {
+    coarse_partial_window_preserves_five_iwo((0, 144_000));
+}
+
 #[test]
 fn rc_word_completeness_requires_pcm_before_the_word() {
     for (producer, start, decode_start, complete) in [

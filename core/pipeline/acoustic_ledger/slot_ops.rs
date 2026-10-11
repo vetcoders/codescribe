@@ -1506,7 +1506,32 @@ impl AcousticLedger {
             // Individual heard words do not need to cover the rest of a
             // coarse hypothesis. That remainder becomes explicit source debt;
             // a complete measured word still requires complete accounting.
+            // A later decode cannot retire the measured prefix of a coarse
+            // source it never heard. Keep the visible phrase for a bounded
+            // recovery instead of replacing that prefix with hidden debt.
+            // This does not veto progressive first-window tail refinement.
+            let omits_source_prefix =
+                self.decoded_word_windows
+                    .get(observation)
+                    .is_some_and(|(decode_start, _)| {
+                        sources.iter().any(|source| {
+                            let range = OccurrenceIdentity::new(
+                                &source.observation.occurrence.session,
+                                source.observation.occurrence.capture_epoch,
+                                source.sample_start,
+                                source.sample_end,
+                            );
+                            self.measured_speech_for(&range).is_some_and(|speech| {
+                                speech.ranges().iter().any(|voiced| {
+                                    let start = voiced.sample_start.max(source.sample_start);
+                                    let end = voiced.sample_end.min(source.sample_end);
+                                    start < end && start < *decode_start
+                                })
+                            })
+                        })
+                    });
             let partial_refinement = all_coarse
+                && !omits_source_prefix
                 && coverage.is_none()
                 && !window_refinement
                 && outputs.iter().all(|word| {
