@@ -47,7 +47,9 @@ use serde::{Deserialize, Serialize};
 /// fence; capture origin alone still supplies no acoustic boundary evidence.
 /// v24: historical Whisper words retain their recorded acoustic completeness;
 /// a later decode fence cannot revoke or supply that evidence during regrouping.
-pub const WORD_POLICY: &str = "word-adjudication/v24";
+/// v25: shared trials and live unowned recovery use the same authenticated
+/// quiet onset as word admission, instead of rejecting every exact-left pin.
+pub const WORD_POLICY: &str = "word-adjudication/v25";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1638,7 +1640,12 @@ impl AcousticLedger {
                         .has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
                         || !ranges.iter().all(|range| {
                             range.same_capture(coverage)
-                                && range.sample_start > coverage.sample_start
+                                && self.decode_word_onset_complete(
+                                    range,
+                                    coverage.sample_start,
+                                    coverage.sample_end,
+                                    range.sample_start,
+                                )
                                 && range.sample_end <= coverage.sample_end
                                 && !self.decode_word_fence_incomplete(
                                     range,
