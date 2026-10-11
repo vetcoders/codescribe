@@ -1361,19 +1361,9 @@ private func transcribeStreaming(
                 acc.commitFinal(text: text, segments: segments)
                 emitStreamEvent(StreamEventOut(event: "final", text: text, segments: segments))
             } else {
-                // A partial that collapses to an unrelated hypothesis means
-                // SFSpeech restarted its phrase (measured: 13 restarts vs ONE
-                // isFinal over 150s of Polish). The accumulator already folds
-                // the frozen phrase into its snapshot; emitting it here is what
-                // makes the EVENT stream complete and disjoint. Without it the
-                // consumer sees only overlapping partials and re-derives phrase
-                // boundaries wrongly — the duplicated span + dropped span in
-                // the 0.777 parity run.
-                if let frozen = acc.storePartial(text: text, segments: segments) {
-                    emitStreamEvent(
-                        StreamEventOut(
-                            event: "final", text: frozen.text, segments: frozen.segments))
-                }
+                // Raw revisions are observations. Rust retains completed phrases
+                // only across measured PCM valleys; the bridge emits no final here.
+                acc.storeStreamingPartial(text: text, segments: segments)
                 emitStreamEvent(StreamEventOut(event: "partial", text: text, segments: segments))
             }
         }
@@ -1473,9 +1463,17 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         partialSegments = []
     }
 
-    /// A hypothesis the accumulator just froze — the streaming path emits it as
-    /// a `final` event so the Rust side receives DISJOINT phrases instead of
-    /// having to re-derive phrase boundaries from raw partials.
+    /// Live partials replace the snapshot. Offline file accumulation has no
+    /// authority over streaming phrase boundaries or the Rust ledger.
+    fileprivate func storeStreamingPartial(text: String, segments: [BridgeSegment]) {
+        lock.lock()
+        defer { lock.unlock() }
+        partialText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        partialSegments = segments
+    }
+
+    /// A retained hypothesis for offline file accumulation only. Live streaming
+    /// reports raw revisions and delegates physical retention to Rust.
     struct FrozenPhrase {
         let text: String
         let segments: [BridgeSegment]
@@ -1703,6 +1701,11 @@ private func runPartialRevisionAccumulatorSelfTest() -> Int32 {
         if !condition { fputs("partial_revision_self_test FAIL \(label)\n", stderr) }
         return condition
     }
+    let live = SfSpeechPhraseAccumulator(timeOffset: 0)
+    for (index, text) in ["Sam pokła", "Sam poukładać", "Sam nie mamy"].enumerated() {
+        live.storeStreamingPartial(text: text, segments: [segment(text, Double(index), Double(index) + 0.5)])
+        guard expect(live.snapshotPayload()?.text == text, "live revisions never append synthetic finals") else { return 1 }
+    }
     for revised in ["Iwo poprawiony plan", "Iwo"] {
         let acc = SfSpeechPhraseAccumulator(timeOffset: 0)
         acc.storePartial(text: "Iwo stary plan", segments: [segment("Iwo", 0, 0.5)])
@@ -1734,7 +1737,7 @@ private func runPartialRevisionAccumulatorSelfTest() -> Int32 {
     empty.storePartial(text: "Iwo", segments: previous)
     guard expect(empty.storePartial(text: "", segments: [])?.text == "Iwo", "empty collapse retains prior"),
         expect(empty.snapshotPayload()?.text == "Iwo", "empty collapse snapshot") else { return 1 }
-    fputs("partial_revision_self_test PASS cases=14 five_occurrences=synthetic\n", stderr)
+    fputs("partial_revision_self_test PASS offline_cases=14 live_revision_observations=3 five_occurrences=synthetic\n", stderr)
     return 0
 }
 

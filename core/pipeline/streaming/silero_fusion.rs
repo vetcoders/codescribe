@@ -567,6 +567,60 @@ impl SileroIngress {
         out
     }
 
+    /// Provider timing can nominate a boundary; only a continuous, valid
+    /// Silero silence candidate may close the existing physical owner.
+    pub fn confirm_phrase_valley(
+        &mut self,
+        phrase_end: u64,
+        min_valley_samples: u64,
+    ) -> SileroIngest {
+        if !self.vad_available()
+            || self.discontinuous
+            || self.first_invalid_sample.is_some()
+            || self.observed_samples == 0
+            || !self
+                .vad
+                .confirm_phrase_valley(phrase_end, min_valley_samples)
+        {
+            return SileroIngest::default();
+        }
+        let boundaries = self.vad.take_vad_boundaries();
+        let closed_end = self.vad.last_closed_segment_raw_range().map(|(_, end)| end);
+        let mut out = self.observe_with_closed_end(None, true, closed_end, self.observed_samples);
+        if let Some(receipt) = self.vad.last_close_receipt() {
+            for id in &out.closed {
+                self.ledger.close_receipts.insert(*id, receipt);
+            }
+        }
+        out.sideband = self.observe_boundaries(&boundaries);
+        out
+    }
+
+    /// A phrase restart needs a measured non-speech interval between all
+    /// previous word pins and the new onset. Missing observation is not silence.
+    pub fn has_phrase_valley(&self, previous_end: u64, next_start: u64, minimum: u64) -> bool {
+        if minimum == 0
+            || next_start < previous_end
+            || next_start > self.observed_samples
+            || !self.vad_available()
+            || self.discontinuous
+            || self.first_invalid_sample.is_some()
+        {
+            return false;
+        }
+        self.speech
+            .raw_ranges(self.observed_samples)
+            .windows(2)
+            .any(|pair| {
+                let quiet_start = pair[0].1;
+                let quiet_end = pair[1].0;
+                previous_end <= quiet_start.saturating_add(self.vad.speech_pad_raw() as u64)
+                    && next_start >= quiet_end
+                    && quiet_end.saturating_sub(quiet_start) >= minimum
+                    && previous_end <= quiet_end
+            })
+    }
+
     /// The whole decision, separated from the VAD read so it is testable on
     /// synthetic edges (Silero loads from embedded bytes; a unit test that
     /// silently degraded to "no model" would prove nothing). Production calls
