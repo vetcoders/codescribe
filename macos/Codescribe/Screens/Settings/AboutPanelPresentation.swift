@@ -77,6 +77,28 @@ struct ConfigRepairNotice: Equatable {
   /// Whether the row is a warning. A completed repair only informs.
   var isWarning: Bool { kind != .repaired }
 
+  /// Whether every named key is simply one Codescribe does not read: the
+  /// entry is out of date, yet nothing in the running app behaves differently
+  /// because of it, so the notice carries one quiet line instead of a warning
+  /// card (Founder brief, round 16, 2026-10-10). `FORMATTING_LEVEL` is a
+  /// precedence conflict whose value is in effect, so it is never benign, and
+  /// a repair or a refusal keeps its own full record.
+  var isBenignStaleEntry: Bool {
+    kind == .keysNeedReview && !reviewKeys.contains(Self.formattingLevelKey)
+  }
+
+  /// The one-line collapsed form of a benign stale entry. The key, what it
+  /// does in this build and how to clear the notice stay in the expansion.
+  var compactTitle: String {
+    reviewKeys.count == 1
+      ? String(
+        localized: "Stale configuration entry — does not affect operation",
+        comment: "About panel: one .env entry Codescribe does not read")
+      : String(
+        localized: "Stale configuration entries — do not affect operation",
+        comment: "About panel: several .env entries Codescribe does not read")
+  }
+
   /// The collapsed row: what happened.
   var title: String {
     switch kind {

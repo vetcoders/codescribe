@@ -198,6 +198,9 @@ mod macos {
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
     /// An active tap can consume the configured channel chord.
     const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
+    /// `kCGEventSourceStateHIDSystemState`: what the hardware did, regardless
+    /// of which tap was allowed to see it.
+    const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
 
     // Callback type
     /// Signature CoreGraphics expects for an event tap callback.
@@ -229,8 +232,13 @@ mod macos {
         fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
         /// Read the modifier bitfield of an event.
         fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+        fn CGEventGetTimestamp(event: CGEventRef) -> u64;
         /// Read one integer field of an event (here: the virtual keycode).
         fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
+        /// Seconds since the HID system last saw an event of `event_type`,
+        /// whether or not this tap received it (secure keyboard entry hides
+        /// key events from taps but not from the HID state).
+        fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: CGEventType) -> f64;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -730,7 +738,12 @@ mod macos {
         // calls are read-only accessors that take no ownership.
         let flags = unsafe { CGEventGetFlags(event) };
         let modifiers = modifiers_from_flags(flags);
-        let now = Instant::now();
+        // Time the gesture by when the hardware produced the event, not by
+        // when this callback got around to it: a late callback must not make
+        // a long chord look like a short tap.
+        // SAFETY: read-only accessor on the callback-owned `event`.
+        let event_ns = unsafe { CGEventGetTimestamp(event) };
+        let now = instant_from_event_timestamp(event_ns, uptime_raw_ns(), Instant::now());
         let runtime_config = get_hotkey_runtime_config();
 
         let input = match event_type {
@@ -770,6 +783,24 @@ mod macos {
                     modifiers.cmd,
                     modifiers.fn_key
                 );
+
+                // Tell the detector when the hardware last typed a key, so an
+                // Option chord whose letter never reached this tap is still
+                // typing and not half of a double-tap.
+                // SAFETY: pure query of the HID system state; no pointers.
+                let key_down_age = unsafe {
+                    CGEventSourceSecondsSinceLastEventType(
+                        K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE,
+                        K_CG_EVENT_KEY_DOWN,
+                    )
+                };
+                if key_down_age.is_finite()
+                    && key_down_age >= 0.0
+                    && let Some(at) =
+                        Instant::now().checked_sub(Duration::from_secs_f64(key_down_age))
+                {
+                    state.detector.observe_hid_key_down(at);
+                }
 
                 HotkeyDetectorInput::FlagsChanged {
                     now,
@@ -985,6 +1016,34 @@ mod macos {
         Ok(())
     }
 
+    /// Nanoseconds on the clock CoreGraphics stamps events with (mach absolute
+    /// time), which is also the clock behind `Instant` on macOS.
+    fn uptime_raw_ns() -> u64 {
+        // SAFETY: plain libSystem clock read with a constant clock id; no
+        // pointers.
+        unsafe { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+    }
+
+    /// `CLOCK_UPTIME_RAW` from `<time.h>`: mach absolute time in nanoseconds.
+    const CLOCK_UPTIME_RAW: libc::clockid_t = 8;
+
+    unsafe extern "C" {
+        fn clock_gettime_nsec_np(clock_id: libc::clockid_t) -> u64;
+    }
+
+    /// Map a CGEvent timestamp onto `Instant` by its age on the shared clock.
+    /// A missing (zero) or future stamp falls back to the callback time, so a
+    /// synthetic or oddly stamped event can only shorten a hold, never
+    /// lengthen it.
+    fn instant_from_event_timestamp(event_ns: u64, host_ns: u64, host_now: Instant) -> Instant {
+        if event_ns == 0 || event_ns > host_ns {
+            return host_now;
+        }
+        host_now
+            .checked_sub(Duration::from_nanos(host_ns - event_ns))
+            .unwrap_or(host_now)
+    }
+
     #[cfg(test)]
     /// Lifecycle and pure-logic unit tests for the CGEventTap runtime.
     ///
@@ -992,6 +1051,21 @@ mod macos {
     mod tests {
         use super::*;
         use std::sync::Mutex;
+
+        #[test]
+        fn event_timestamp_maps_onto_instant_by_age() {
+            let host_now = Instant::now();
+            let host_ns = 10_000_000_000;
+            // Event produced 100 ms before the callback ran.
+            let at = instant_from_event_timestamp(host_ns - 100_000_000, host_ns, host_now);
+            assert_eq!(host_now.duration_since(at), Duration::from_millis(100));
+            // Unknown or future stamps fall back to the callback time.
+            assert_eq!(instant_from_event_timestamp(0, host_ns, host_now), host_now);
+            assert_eq!(
+                instant_from_event_timestamp(host_ns + 1, host_ns, host_now),
+                host_now
+            );
+        }
 
         /// Serialises lifecycle tests that mutate the process-wide `RUNNING` guard.
         static LIFECYCLE_TEST_LOCK: Mutex<()> = Mutex::new(());

@@ -121,7 +121,11 @@ final class RealTrayEngine: TrayEngine {
 
   func recentTranscripts(limit: Int) -> [TrayTranscript] {
     threads.recentHistory(limit: UInt32(limit)).map { entry in
-      TrayTranscript(path: entry.path, title: Self.historyTitle(entry))
+      TrayTranscript(
+        path: entry.path,
+        time: Self.historyTime(entry),
+        snippet: Self.historySnippet(entry)
+      )
     }
   }
 
@@ -129,17 +133,20 @@ final class RealTrayEngine: TrayEngine {
     try? threads.readHistoryText(path: path)
   }
 
-  /// "HH:mm · <first words>" label for a history entry; falls back to the file
-  /// name when the preview is empty.
-  private static func historyTitle(_ entry: CsHistoryEntry) -> String {
+  /// "HH:mm" capture time for the tray's fixed-width time column.
+  private static func historyTime(_ entry: CsHistoryEntry) -> String {
     let date = Date(timeIntervalSince1970: TimeInterval(entry.timestampMs) / 1000)
-    let time = timeFormatter.string(from: date)
+    return timeFormatter.string(from: date)
+  }
+
+  /// First words of a history entry; falls back to the file name when the
+  /// preview is empty. No character cut here: the core already caps the preview
+  /// at one line of 60 characters, and the tray row owns the visible truncation
+  /// so every entry ends in the same single ellipsis (Founder brief, round 17,
+  /// 2026-10-10).
+  private static func historySnippet(_ entry: CsHistoryEntry) -> String {
     let preview = entry.preview.trimmingCharacters(in: .whitespacesAndNewlines)
-    let snippet =
-      preview.isEmpty
-      ? (entry.path as NSString).lastPathComponent
-      : String(preview.prefix(32))
-    return "\(time) · \(snippet)"
+    return preview.isEmpty ? (entry.path as NSString).lastPathComponent : preview
   }
 
   private static let timeFormatter: DateFormatter = {

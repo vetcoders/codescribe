@@ -71,7 +71,8 @@ pub use run_monitor::{
 };
 pub use session::{AgentSession, ImageAttachment, ToolApprovalFuture, ToolApprovalHandler};
 pub use thread_delivery::{
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
+    MAX_CONSULTATION_MODE, ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt,
+    ThreadDeliverySource,
 };
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};
