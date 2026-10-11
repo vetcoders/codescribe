@@ -435,10 +435,10 @@ impl<'a> WhisperEncoderExecutionReceipt<'a> {
                 observation.source_input_samples,
                 observation.sample_rate,
             ),
-            vad_compacted_input_samples = observation.vad_compacted_input_samples,
-            vad_compacted_sample_rate_hz = observation.sample_rate,
-            vad_compacted_input_duration_ms = sample_duration_ms(
-                observation.vad_compacted_input_samples,
+            vad_selected_samples = observation.vad_selected_samples,
+            vad_sample_rate_hz = observation.sample_rate,
+            vad_selected_duration_ms = sample_duration_ms(
+                observation.vad_selected_samples,
                 observation.sample_rate,
             ),
             encoder_input_samples = self.encoder_input_samples_16k,
