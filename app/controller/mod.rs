@@ -3653,6 +3653,7 @@ impl RecordingController {
         take_id: Option<&str>,
         intent: (bool, bool, CaptureTurnIntent),
         stop: StopCanvasRequest,
+        capture_closed_at: std::time::Instant,
     ) -> StopCanvasDelivery {
         let (assistive, force_ai, capture_turn) = intent;
         let presentation = self.active_presentation.read().await.clone();
@@ -3671,7 +3672,9 @@ impl RecordingController {
                     .and_then(|emitter| emitter.finish_stop_canvas())
                     .filter(|canvas| Some(canvas.session_id.as_str()) == take_id)
             },
-            tokio::time::Instant::from_std(stop.stopped_at),
+            // The virtual capture grace precedes EOF. It must not consume the
+            // recognizers' separate end-final budget after that fence.
+            tokio::time::Instant::from_std(capture_closed_at),
             stop.painted_at_stop,
             armed_order,
             Some(&stop.preemption.0),
@@ -6696,7 +6699,9 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 2 — closing capture before delivery");
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
+            recorder.await_stop_pause(None, stop.stopped_at).await;
             let was_active = recorder.close_capture().await;
+            let capture_closed_at = std::time::Instant::now();
             let mut take = recorder.detach_closed_take(was_active);
             Self::clear_recorder_callbacks(recorder);
             drop(recorder_guard);
@@ -6708,6 +6713,7 @@ impl RecordingController {
                     session_id_snapshot.as_deref(),
                     (assistive, force_ai, capture_turn),
                     stop,
+                    capture_closed_at,
                 )
                 .await;
             if preempted {
@@ -7371,7 +7377,9 @@ impl RecordingController {
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
+        recorder.await_stop_pause(None, stop.stopped_at).await;
         let was_active = recorder.close_capture().await;
+        let capture_closed_at = std::time::Instant::now();
         let mut take = recorder.detach_closed_take(was_active);
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard);
@@ -7388,6 +7396,7 @@ impl RecordingController {
                 take_id.as_deref(),
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop,
+                capture_closed_at,
             )
             .await;
         if preempted {
