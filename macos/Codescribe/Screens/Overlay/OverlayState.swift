@@ -1103,11 +1103,12 @@ final class OverlayState {
   }
 
   private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
-    guard let owner = conversation.owner, let bus = conversation.messages.first?.busPath else {
-      return nil
-    }
-    return AgentPlaybackIdentity(
-      provider: owner.provider, session: owner.providerSessionID, bus: bus)
+    guard let owner = conversation.owner else { return nil }
+    // A conversation merges broadcast mirrors from several buses. Its first
+    // message is document provenance, not the playback owner's leased bus.
+    return channelPlaybackAgents.values.first {
+      $0.identity.provider == owner.provider && $0.identity.session == owner.providerSessionID
+    }?.identity
   }
 
   private func playbackIdentity(for channel: String) -> AgentPlaybackIdentity? {
