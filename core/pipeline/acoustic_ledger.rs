@@ -1857,18 +1857,7 @@ impl AcousticLedger {
                 // Retain its PCM/evidence as recovery debt; a later complete
                 // frame can account for it without comparing lexical labels.
                 if word.producer == ObservationProducer::Whisper
-                    && self
-                        .decoded_word_windows
-                        .get(&word.observation)
-                        .is_some_and(|&(start, end)| {
-                            self.decode_word_fence_incomplete(
-                                owner,
-                                start,
-                                end,
-                                word.sample_start,
-                                word.sample_end,
-                            )
-                        })
+                    && self.new_word_decode_fence_incomplete(observation, &word)
                 {
                     self.refuse_word_slot(
                         observation,

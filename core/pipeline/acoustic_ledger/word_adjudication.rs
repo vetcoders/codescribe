@@ -57,7 +57,9 @@ use serde::{Deserialize, Serialize};
 /// partition proof; unreserved coarse neighbors remain protected.
 /// v29: word-pin multiplicity survives resegmentation even when the source
 /// has no decoder-fence completeness receipt.
-pub const WORD_POLICY: &str = "word-adjudication/v29";
+/// v30: new Whisper words authenticate both original decoder boundaries;
+/// owner projection cannot hide a clipped onset or trailing fence.
+pub const WORD_POLICY: &str = "word-adjudication/v30";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
