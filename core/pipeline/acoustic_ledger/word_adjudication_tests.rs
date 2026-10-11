@@ -128,11 +128,108 @@ fn disputed() -> (AcousticLedger, OccurrenceIdentity) {
         &owner,
         ObservationProducer::Whisper,
         2,
-        "1286",
+        // Keep a real dispute: two agreeing complete frames already resolve
+        // incomplete Apple in v13, before any bounded trial is necessary.
+        "1287",
         Some((8_000, 136_000)),
     );
     assert_eq!(ledger.text_of(&owner), Some("56"));
     (ledger, owner)
+}
+
+#[test]
+fn first_live_word_trial_requires_raw_banded_complete_evidence_against_incomplete_apple() {
+    for case in [
+        "eligible",
+        "complete-apple",
+        "partial",
+        "weak",
+        "apple-rewrite",
+        "whisper-rewrite",
+        "negation",
+    ] {
+        let owner = OccurrenceIdentity::new(format!("first-live-{case}"), 1, 24_000, 40_000);
+        let mut pcm = vec![0.0; 144_000];
+        pcm[25_600..30_400].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let mut apple = WordPin::new(
+            25_600,
+            30_400,
+            if case == "negation" { "nie" } else { "PTM" },
+        );
+        if case == "complete-apple" {
+            apple = apple.with_decode_window(0, 144_000);
+        }
+        if case == "apple-rewrite" {
+            apple = apple.surface_rewritten();
+        }
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone()),
+            &[apple],
+        );
+        let mut whisper = WordPin::new(25_600, 30_400, "PNPM");
+        whisper = match case {
+            "partial" => whisper.with_decode_start(0),
+            "weak" => whisper.with_decode_window(20_000, 164_000),
+            _ => whisper.with_decode_window(0, 144_000),
+        };
+        if case == "whisper-rewrite" {
+            whisper = whisper.surface_rewritten();
+        }
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
+            &[whisper],
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let trial =
+            ledger.next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000);
+        assert_eq!(trial.is_some(), case == "eligible", "{case}");
+        assert_eq!(
+            ledger.slots_of(&owner).unwrap(),
+            before,
+            "dispatch cannot mutate: {case}"
+        );
+        if let Some(trial) = trial {
+            ledger.close_word_trial(&trial, "inference_failed");
+            assert!(ledger.next_word_trial_before_horizon(
+                false, None, Some((48_000, 0..144_000)), 48_000,
+            ).is_none(), "a failed native attempt still spends its budget");
+        }
+    }
+}
+
+#[test]
+fn first_live_trial_still_requires_a_different_frame_agreeing_with_a_retained_label() {
+    for answer in ["PNPM", "unrelated"] {
+        let owner =
+            OccurrenceIdentity::new(format!("first-live-return-{answer}"), 1, 24_000, 40_000);
+        let mut pcm = vec![0.0; 144_000];
+        pcm[25_600..30_400].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone()),
+            &[WordPin::new(25_600, 30_400, "PTM")],
+        );
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
+            &[WordPin::new(25_600, 30_400, "PNPM").with_decode_window(0, 144_000)],
+        );
+        let trial = ledger
+            .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000)
+            .expect("the early owner can request its second physical decode");
+        assert_eq!(ledger.text_of(&owner), Some("PTM"));
+        let old_frame = OccurrenceIdentity::new(&owner.session, 1, 0, 144_000);
+        assert!(ledger.word_trial_has_decode(&trial, &old_frame));
+        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 3, 2, owner.clone());
+        let pins = [WordPin::new(25_600, 30_400, answer).with_decode_window(0, 78_400)];
+        let receipt = ledger.admit_word_trial(&trial, &fresh, &pins, &pins);
+        assert_eq!(receipt.grants_mutation(), answer == "PNPM", "{answer}");
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(if answer == "PNPM" { "PNPM" } else { "PTM" })
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
 }
 
 #[test]
@@ -637,7 +734,7 @@ fn dictionary_witnesses_refuse_missing_pins_and_unresolved_lexical_conflict() {
         &owner,
         ObservationProducer::Whisper,
         2,
-        "Naloxone",
+        "Nalokson",
         Some((8_000, 136_000)),
     );
     assert!(ledger.has_word_conflicts());
@@ -1371,7 +1468,7 @@ fn a_shared_grid_refusal_does_not_spend_the_single_fresh_decode_budget() {
         (
             ObservationProducer::Whisper,
             2,
-            "1286",
+            "1287",
             Some((8_000, 136_000)),
         ),
     ] {

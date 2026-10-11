@@ -13,7 +13,7 @@
    second king.
 3. **The Codescribe overlay canvas is never a legal Cmd+V target.** Its caret
    parks Paste Here. For an explicit Insert, a positively latched Agent
-   composer, Notes, or another foreign caret is legal only after its editable input is positively established; choosing the
+   composer, Notes, or another foreign caret is legal after its retained input or window identity is positively established; choosing the
    Agent route remains an explicit action. Automatic paste obeys the paste mode
    below. Assistive delivers as a first-class Agent message rather than
    synthesizing a focus-derived paste.
@@ -31,13 +31,13 @@
 One persisted choice replaces the old Auto Paste on/off. Settings › Shortcuts
 shows it as a Safe / Comfort / Off segmented control; the tray Quick settings
 row cycles the same value. It governs only automatic Orient paste; explicit
-Insert is explicit intent, and still requires a confirmed editable recipient. To Agent uses its explicit first-class route.
+Insert is explicit intent and uses Comfort capability rules, independently of the automatic paste mode. To Agent uses its explicit first-class route.
 
-| Mode      | Automatic paste                                                        | Held (`ClipboardHold`)                                                             |
-| --------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `safe`    | into a focused enabled text input with writable AX value/selected text | no or unreadable editable input; password field; command-shaped text in a terminal |
-| `comfort` | into a positively established editable input                           | the same capability and terminal guards as Safe                                    |
-| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched    | —                                                                                  |
+| Mode      | Automatic paste                                                                    | Held (`ClipboardHold`)                                                                   |
+| --------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `safe`    | into a focused enabled text input with writable AX value/selected text             | no or unreadable editable input; password field; command-shaped text in a terminal       |
+| `comfort` | into the retained recipient, including terminal windows without editable AX fields | password field; command-shaped text in a terminal; missing or changed recipient identity |
+| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched                | —                                                                                        |
 
 - **Password guard** (`hold_secure_field`): `AXSecureTextField` or macOS secure
   event input (a password prompt owns the keyboard). Holds in every mode.
@@ -53,6 +53,15 @@ Insert is explicit intent, and still requires a confirmed editable recipient. To
   element) runs only for an armed Orient take and can only hold that paste,
   never redirect it. With Codescribe frontmost the field is unobserved, so
   Safe holds.
+
+Comfort, explicit Insert and the Deferred Paste shortcut accept a retained
+focused window when a host exposes no AX text input. They still verify the
+same process and AX identity immediately before clipboard staging and again
+before Cmd+V. A changed or unreadable recipient retains the pending transcript;
+a password field refuses insertion. The read-only Codescribe canvas remains
+ineligible. Successful insertion borrows and restores the clipboard; it does
+not require the user to replace it with Copy first.
+
 - Migration: the retired `auto_paste_enabled` bool folds once into
   `paste_mode` (`true` → `safe`, `false` → `off`); the old key is gone after the
   next save. `true` → `safe` is Claude's assumption (2026-09-29): no Founder

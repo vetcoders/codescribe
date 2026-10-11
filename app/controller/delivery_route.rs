@@ -326,8 +326,8 @@ fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
 ///   dictation never lands in a secret field (Founder s03-028).
 /// - A terminal gets Cmd+V only when the text does not look executable; a
 ///   command-shaped take is held for the user's own ⌘V (Founder s04-036).
-/// - Both automatic modes require an observed editable input. App focus or a
-///   text-shaped role alone never authorizes a keyboard shortcut.
+/// - Safe requires an observed editable input. Comfort permits hosts without
+///   AX text fields; transport still verifies the retained recipient identity.
 ///
 /// The gate can only answer `ClipboardPaste` or `ClipboardHold`.
 fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> DeliveryDecision {
@@ -341,10 +341,12 @@ fn paste_gate(mode: PasteMode, target: PasteTarget, executable: bool) -> Deliver
     if target.terminal && executable {
         return hold("hold_executable");
     }
-    match target.field {
-        FocusedInputField::Text | FocusedInputField::Secure => {}
-        FocusedInputField::NotText => return hold("hold_no_text_field"),
-        FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
+    if mode != PasteMode::Comfort {
+        match target.field {
+            FocusedInputField::Text | FocusedInputField::Secure => {}
+            FocusedInputField::NotText => return hold("hold_no_text_field"),
+            FocusedInputField::Unobserved => return hold("hold_field_unobserved"),
+        }
     }
     DeliveryDecision {
         route: DeliveryRoute::ClipboardPaste,
@@ -389,6 +391,7 @@ pub const TERMINAL_APPS: &[&str] = &[
     "Rio",
     "Wave",
     "vc-terminal",
+    "VC Terminal",
 ];
 
 /// Whether `app_name` is a terminal emulator from [`TERMINAL_APPS`].
@@ -663,7 +666,7 @@ fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
         };
     }
     let gate = paste_gate(
-        PasteMode::Safe,
+        PasteMode::Comfort,
         facts.paste_target,
         facts.executable_payload,
     );
@@ -788,6 +791,68 @@ mod tests {
     }
 
     #[test]
+    fn comfort_pastes_prose_to_terminal_without_an_ax_text_field() {
+        for intent in [
+            DeliveryIntent::OrientDictation,
+            DeliveryIntent::OrientFormat,
+        ] {
+            for field in [FocusedInputField::NotText, FocusedInputField::Unobserved] {
+                let decision = resolve_delivery_route(
+                    intent,
+                    facts(|f| {
+                        f.paste_mode = PasteMode::Comfort;
+                        f.paste_target = PasteTarget {
+                            terminal: true,
+                            field,
+                        };
+                        f.executable_payload = false;
+                    }),
+                );
+                assert_eq!(
+                    decision.route,
+                    DeliveryRoute::ClipboardPaste,
+                    "{intent:?} {field:?}"
+                );
+                assert_eq!(decision.reason, "paste_comfort");
+            }
+        }
+    }
+
+    #[test]
+    fn vc_terminal_prose_and_commands_obey_distinct_paste_modes() {
+        assert!(is_terminal_app("VC Terminal"));
+        for intent in [
+            DeliveryIntent::OrientDictation,
+            DeliveryIntent::OverlayInsert,
+        ] {
+            for executable in [false, true] {
+                let decision = resolve_delivery_route(
+                    intent,
+                    facts(|f| {
+                        f.paste_mode = PasteMode::Comfort;
+                        f.paste_target = PasteTarget {
+                            terminal: is_terminal_app("VC Terminal"),
+                            field: FocusedInputField::NotText,
+                        };
+                        f.executable_payload = executable;
+                    }),
+                );
+                assert_eq!(
+                    decision.route,
+                    if executable {
+                        DeliveryRoute::ClipboardHold
+                    } else {
+                        DeliveryRoute::ClipboardPaste
+                    }
+                );
+                if executable {
+                    assert_eq!(decision.reason, "hold_executable");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn paste_mode_off_archives_only_whatever_the_caret() {
         for target in [
             TEXT_FIELD,
@@ -836,24 +901,10 @@ mod tests {
             (Safe, true, Text, true, Hold, "hold_executable"),
             (Safe, true, Secure, false, Hold, "hold_secure_field"),
             (Comfort, false, Text, false, Paste, "paste_comfort"),
-            (Comfort, false, NotText, false, Hold, "hold_no_text_field"),
-            (
-                Comfort,
-                false,
-                Unobserved,
-                false,
-                Hold,
-                "hold_field_unobserved",
-            ),
+            (Comfort, false, NotText, false, Paste, "paste_comfort"),
+            (Comfort, false, Unobserved, false, Paste, "paste_comfort"),
             (Comfort, false, Secure, false, Hold, "hold_secure_field"),
-            (
-                Comfort,
-                true,
-                Unobserved,
-                false,
-                Hold,
-                "hold_field_unobserved",
-            ),
+            (Comfort, true, Unobserved, false, Paste, "paste_comfort"),
             (Comfort, true, Unobserved, true, Hold, "hold_executable"),
             (Comfort, true, Secure, true, Hold, "hold_secure_field"),
         ];
@@ -1120,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_insert_requires_editable_input_in_every_app() {
+    fn explicit_insert_permits_hosts_without_text_roles_but_refuses_secure_input() {
         for terminal in [false, true] {
             for field in [
                 FocusedInputField::NotText,
@@ -1133,7 +1184,14 @@ mod tests {
                         f.paste_target = PasteTarget { terminal, field };
                     }),
                 );
-                assert_eq!(decision.route, DeliveryRoute::ClipboardHold);
+                assert_eq!(
+                    decision.route,
+                    if field == FocusedInputField::Secure {
+                        DeliveryRoute::ClipboardHold
+                    } else {
+                        DeliveryRoute::ClipboardPaste
+                    }
+                );
             }
         }
     }
@@ -1185,8 +1243,8 @@ mod tests {
             DeliveryIntent::OverlayInsert,
             overlay_insert_facts(true, false),
         );
-        assert_eq!(unobserved.route, DeliveryRoute::ClipboardHold);
-        assert_eq!(unobserved.reason, "hold_field_unobserved");
+        assert_eq!(unobserved.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(unobserved.reason, "explicit_insert");
         let no_target = resolve_transcript_projection_availability(true, false, true, false, false);
         assert!(no_target.can_insert);
         assert!(!no_target.can_paste);

@@ -263,7 +263,7 @@ extension CsPasteMode {
     switch self {
     case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
     case .comfort:
-      return String(localized: "Comfort", comment: "Paste policy: verified editable destinations")
+      return String(localized: "Comfort", comment: "Paste policy: includes terminals without AX text fields")
     case .off:
       return String(
         localized: "settings.paste.policy.off", defaultValue: "Off",
@@ -282,7 +282,7 @@ extension CsPasteMode {
     case .comfort:
       return String(
         localized:
-          "Pastes into a verified editable text field. Without one, Deferred Paste holds the transcript without changing your clipboard."
+          "Pastes into the selected app, including terminals, and restores your clipboard. Password fields and terminal commands go to Deferred Paste."
       )
     case .off:
       return String(localized: "Never pastes automatically; the transcript stays on the overlay.")

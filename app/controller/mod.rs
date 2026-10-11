@@ -3377,7 +3377,7 @@ impl RecordingController {
         let config = self.get_config().await;
         let payload = self.delivery_tagger.render(trimmed, &config, None);
 
-        self.execute_clipboard_paste(payload, target_app, "Overlay paste")
+        self.execute_clipboard_paste(payload, target_app, "Overlay paste", PasteMode::Comfort)
             .await
     }
 
@@ -3398,6 +3398,7 @@ impl RecordingController {
         paste_text: String,
         target_app: Option<String>,
         context: &'static str,
+        paste_mode: PasteMode,
     ) -> Result<OverlayPasteResult> {
         let config = self.get_config().await;
         let focus_confirmed = target_app
@@ -3468,7 +3469,7 @@ impl RecordingController {
                 &mut deferred_insert_failure,
             )?
         } else if focus_confirmed && preflight.can_post_events() {
-            match clipboard::paste_to_stop_target(&paste_text, &target) {
+            match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode) {
                 Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
                     OverlayPasteDelivery::PasteRequested
                 }
@@ -3529,6 +3530,7 @@ impl RecordingController {
         seal_refused: bool,
     ) -> Result<TranscriptDelivery> {
         let config = self.get_config().await;
+        let paste_mode = config.paste_mode;
         self.deliver_stop_transcript_with_sink(
             take_id,
             text,
@@ -3541,7 +3543,7 @@ impl RecordingController {
                             .await
                     }
                     _ => {
-                        self.execute_clipboard_paste(text, target, "Stop-path paste")
+                        self.execute_clipboard_paste(text, target, "Stop-path paste", paste_mode)
                             .await
                     }
                 }
@@ -3697,7 +3699,7 @@ impl RecordingController {
                                     )
                                     .await;
                             }
-                            let outcome = clipboard::paste_to_stop_target(&payload, &stop.target);
+                            let outcome = clipboard::paste_to_stop_target(&payload, &stop.target, config.paste_mode);
                             if !matches!(outcome, Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted) {
                                 if let Err(error) = outcome {
                                     warn!(%error, "Stop-path paste failed; arming deferred insert");
