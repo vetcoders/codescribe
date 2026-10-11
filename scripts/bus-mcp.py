@@ -52,7 +52,7 @@ TOOLS = [
                             "channel": {"type": "string", "pattern": "^[1-9]$"},
                             "voice": {"type": "string"}, "tts_vendor": {"type": "string", "enum": ["xai", "openai"]}},
                            ["session_id", "name", "channel"])},
-    {"name": "codescribe_wait", "description": "Wait for one complete owned message, without invoking a model or ACKing. Remains pending during silence; cancel the tool to stop waiting. After read, ACK before acting. After replying, call this again for continuous listening.", "inputSchema": schema()},
+    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Junie release 26.10.5 caps MCP calls at three minutes; this is not indefinite idle wakeup. After a host timeout, stop/report instead of model polling. Cancel to stop waiting. After read, ACK before acting.", "inputSchema": schema()},
     {"name": "codescribe_read", "description": "Read one complete pending message without ACKing. Drain before waiting; preserve sender and attachment pointers.", "inputSchema": schema()},
     {"name": "codescribe_ack", "description": "Acknowledge ONLY exact delivery IDs completely read through this MCP connection, immediately before work. ACK means read, not completed.",
      "inputSchema": schema({"delivery_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, ["delivery_ids"])},

@@ -2,8 +2,10 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -678,6 +680,27 @@ class MCPProtocolTests(MailboxFixture):
             reader.join(timeout=2)
         self.assertTrue(self.responses.empty(), "EOF produced a cancelled wait result")
         self.assert_not_acknowledged()
+
+
+class NativeLaunchTests(unittest.TestCase):
+    def test_installed_mcp_launch_survives_sparse_path_without_overriding_home(self):
+        config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
+        with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:
+            installed = Path(temporary) / "managed bin"
+            installed.mkdir()
+            for name in ("cs-bus", "bus-demux.py", "bus-mcp.py"):
+                shutil.copy2(SCRIPTS / name, installed / name)
+            # Translate only the managed installation path into this fixture;
+            # production helper bytes and the real HOME remain unchanged.
+            arguments = [value.replace('"$HOME/.local/bin/cs-bus"', f'"{installed / "cs-bus"}"')
+                         for value in config["args"]]
+            env = {**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+            result = subprocess.run([config["command"], *arguments], env=env, input=request,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tools = json.loads(result.stdout)["result"]["tools"]
+            self.assertTrue(any(tool["name"] == "codescribe_wait" for tool in tools))
 
 
 if __name__ == "__main__":

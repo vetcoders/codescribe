@@ -1,5 +1,11 @@
 {
   "mcpServers": {
-    "codescribe": { "command": "cs-bus", "args": ["--mcp"] }
+    "codescribe": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec \"$HOME/.local/bin/cs-bus\" --mcp"
+      ]
+    }
   }
 }
