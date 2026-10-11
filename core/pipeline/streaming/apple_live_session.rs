@@ -17353,7 +17353,8 @@ mod rc_w2_test_rehab {
             request.member_occurrences,
             vec![(
                 1,
-                OccurrenceIdentity::new("exact-tail", 7, sample(0.5), sample(2.0))
+                // 8,000 - 5,376 samples of additional recognizer onset context.
+                OccurrenceIdentity::new("exact-tail", 7, 2_624, sample(2.0))
             )]
         );
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
@@ -17852,8 +17853,14 @@ mod rc_w2_test_rehab {
         {
             let ledger = state.acoustic_ledger.lock().unwrap();
             for (i, &(start, end)) in ranges.iter().enumerate() {
-                let occurrence =
-                    OccurrenceIdentity::new("full-tail", 7, sample(start), sample(end));
+                // These 100 ms gaps are shorter than recognizer context, so
+                // each subsequent owner clamps to the previous closed end.
+                let owner_start = if i == 0 {
+                    sample(start)
+                } else {
+                    sample(ranges[i - 1].1)
+                };
+                let occurrence = OccurrenceIdentity::new("full-tail", 7, owner_start, sample(end));
                 assert_eq!(
                     ledger.text_of(&occurrence),
                     Some(format!("segment {i}").as_str()),
@@ -17877,8 +17884,9 @@ mod rc_w2_test_rehab {
         );
         let events = drain(&mut rx);
         assert_eq!(raw_finals(&events), vec!["Iwo", "Iwo"]);
-        for (id, start, end) in [(1, 0.0, 1.0), (2, 2.0, 3.0)] {
-            let occurrence = OccurrenceIdentity::new("slice-order", 7, sample(start), sample(end));
+        // The second owner retains 5,376 samples before its chunker start.
+        for (id, start, end) in [(1, 0, 16_000), (2, 26_624, 48_000)] {
+            let occurrence = OccurrenceIdentity::new("slice-order", 7, start, end);
             let admission = events.iter().position(|event| matches!(event,
                 EngineEvent::LedgerMutation { observation, receipt, label }
                     if observation.producer == LedgerObservationProducer::Apple
@@ -17919,7 +17927,7 @@ mod rc_w2_test_rehab {
             drain(&mut rx).is_empty(),
             "reconciled slice must not re-emit events"
         );
-        for (id, start, end) in [(1, 0.0, 1.0), (2, 2.0, 3.0)] {
+        for (id, start, end) in [(1, 0, 16_000), (2, 26_624, 48_000)] {
             let receipt = admit_ledger_label(
                 &mut state,
                 &tx,
@@ -17928,7 +17936,7 @@ mod rc_w2_test_rehab {
                         LedgerObservationProducer::Apple,
                         id,
                         0,
-                        OccurrenceIdentity::new("slice-replay", 7, sample(start), sample(end)),
+                        OccurrenceIdentity::new("slice-replay", 7, start, end),
                     ),
                     label: "changed replay",
                     energy: EnergyAdmission::RequireExistingQualification,
