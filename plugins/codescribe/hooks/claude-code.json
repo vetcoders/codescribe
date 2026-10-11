@@ -1,0 +1,29 @@
+{
+  "description": "Claude Code only: wake this conversation when its attached Codescribe mailbox receives a message. Exit 75 from cs-bus is the only wake; every other outcome stays silent.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake; rc=$?; if [ \"$rc\" -eq 75 ]; then exit 2; fi; exit 0",
+            "asyncRewake": true,
+            "timeout": 21660
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake; rc=$?; if [ \"$rc\" -eq 75 ]; then exit 2; fi; exit 0",
+            "asyncRewake": true,
+            "timeout": 21660
+          }
+        ]
+      }
+    ]
+  }
+}
