@@ -762,7 +762,7 @@ impl ConservationTally {
 struct DecodeFenceEnergy {
     owner: CaptureEnergyOwner,
     captured_samples: u64,
-    quiet_range: Option<OccurrenceIdentity>,
+    quiet_ranges: Vec<OccurrenceIdentity>,
 }
 
 #[derive(Debug, Clone, Default)]
