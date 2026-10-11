@@ -6,6 +6,84 @@ import XCTest
 
 final class OverlayClipboardPasteTests: XCTestCase {
   @MainActor
+  func testImageOnlyCommandVPastesThroughTheFocusedNativeComposer() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let image = try bitmap()
+    let pixels: [(Int, Int, NSColor)] = [(0, 0, .red), (1, 0, .green), (0, 1, .blue), (1, 1, .white)]
+    let rgba: [UInt8] = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
+    let buffer = try XCTUnwrap(image.bitmapData)
+    rgba.withUnsafeBufferPointer { bytes in
+      buffer.update(from: bytes.baseAddress!, count: bytes.count)
+    }
+    let png = try XCTUnwrap(image.representation(using: .png, properties: [:]))
+    board.setData(png, forType: .png)
+    XCTAssertNil(board.string(forType: .string))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let asset = directory.appendingPathComponent("image-only.png")
+    var draft = "Obejrzyj:"
+    var sends = 0
+    var saves = 0
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }), sending: false,
+        onSubmit: { sends += 1 }, clipboard: board,
+        saveImage: { bytes in
+          saves += 1
+          try bytes.write(to: asset)
+          return asset
+        }))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 160)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+    func editor(_ view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor($0) }.first
+    }
+    let text = try XCTUnwrap(editor(host))
+    XCTAssertTrue(window.makeFirstResponder(text))
+    text.setSelectedRange(NSRange(location: text.string.utf16.count, length: 0))
+    func commandV(_ flags: NSEvent.ModifierFlags = .command) throws -> NSEvent {
+      try XCTUnwrap(
+        NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+          windowNumber: window.windowNumber, context: nil, characters: "v",
+          charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9))
+    }
+    XCTAssertTrue(text.performKeyEquivalent(with: try commandV()))
+    XCTAssertEqual(draft, "Obejrzyj:\n[attachment] \(asset.path)\n")
+    let stored = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: asset)))
+    XCTAssertEqual(stored.pixelsWide, 2)
+    XCTAssertEqual(stored.pixelsHigh, 2)
+    for (x, y, expected) in pixels {
+      let color = try XCTUnwrap(stored.colorAt(x: x, y: y))
+      let reference = try XCTUnwrap(expected.usingColorSpace(.deviceRGB))
+      XCTAssertEqual(color.redComponent, reference.redComponent, accuracy: 1.0 / 255)
+      XCTAssertEqual(color.greenComponent, reference.greenComponent, accuracy: 1.0 / 255)
+      XCTAssertEqual(color.blueComponent, reference.blueComponent, accuracy: 1.0 / 255)
+      XCTAssertEqual(color.alphaComponent, reference.alphaComponent, accuracy: 1.0 / 255)
+    }
+    XCTAssertEqual(saves, 1, "One shortcut must persist exactly one attachment")
+    XCTAssertEqual(sends, 0, "Pasting never sends the draft")
+    let pasted = draft
+    _ = text.performKeyEquivalent(with: try commandV([.command, .shift]))
+    XCTAssertEqual(draft, pasted, "Modified shortcuts must not paste an attachment")
+    XCTAssertEqual(saves, 1)
+    XCTAssertTrue(window.makeFirstResponder(nil))
+    _ = text.performKeyEquivalent(with: try commandV())
+    XCTAssertEqual(draft, pasted, "An unfocused composer must not steal Paste")
+    XCTAssertEqual(saves, 1)
+  }
+
+  @MainActor
   func testPastedImageUsesCanonicalAssetStoreAndReusesIdenticalBytes() throws {
     let isolatedRoot = CodescribeConfig().configDir()
     XCTAssertNotEqual(isolatedRoot, NSHomeDirectory() + "/.codescribe")
