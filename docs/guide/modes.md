@@ -1,6 +1,6 @@
 # Recording Modes
 
-Codescribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Modes & Shortcuts**.
+Codescribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**.
 
 ---
 
@@ -80,7 +80,7 @@ Notes:
 
 ## Customizing Shortcuts
 
-Open **Settings → Modes & Shortcuts**:
+Open **Settings → Hotkeys**:
 
 - **Dictation** supports:
   - Hold `Fn/Globe`
@@ -99,7 +99,7 @@ Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ## Advanced Tuning
 
-- **Hold delay** and **double‑tap interval** are in **Settings → Modes & Shortcuts**.
+- **Hold delay** and **double‑tap interval** are in **Settings → Hotkeys**.
 
 ---
 

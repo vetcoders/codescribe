@@ -34,11 +34,17 @@ enum TrayQuickToggle {
 }
 
 /// A recent transcript artifact surfaced in the tray's "Open history" submenu.
-/// `path` is the on-disk file (and the stable identity); `title` is a short
-/// display label (time + preview) built by the engine.
+/// `path` is the on-disk file (and the stable identity).
+///
+/// Time and snippet stay two fields, not one joined label: the tray renders the
+/// time in a fixed-width column of its own and truncates only the snippet
+/// (Founder brief, round 17, 2026-10-10).
 struct TrayTranscript: Identifiable {
   let path: String
-  let title: String
+  /// Capture time, already formatted for display ("HH:mm").
+  let time: String
+  /// First words of the transcript, or the file name when there is no preview.
+  let snippet: String
   var id: String { path }
 }
 
@@ -180,7 +186,7 @@ final class MockTrayEngine: TrayEngine {
   func latestTranscriptText() -> String? { transcriptText }
 
   func recentTranscripts(limit: Int) -> [TrayTranscript] {
-    [TrayTranscript(path: historyPath, title: "14:22 · \(transcriptText)")]
+    [TrayTranscript(path: historyPath, time: "14:22", snippet: transcriptText)]
   }
 
   func transcriptText(forPath path: String) -> String? { transcriptText }
