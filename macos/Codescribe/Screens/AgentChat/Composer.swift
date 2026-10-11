@@ -113,7 +113,9 @@ struct Composer: View {
           )
         }
         .csFocusRing()
-        .disabled(!primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn))
+        .disabled(
+          !primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn)
+        )
         .opacity(primaryAction == .stopping ? 0.72 : 1)
         .help(primaryAction.accessibilityLabel)
         .accessibilityIdentifier(ComposerActionAccessibility.identifier)
@@ -638,19 +640,18 @@ struct Composer: View {
   enum PasteDisposition: Equatable {
     /// File URLs on the pasteboard (Finder copy) → stage the image ones.
     case stageFiles
-    /// A bare image with no text (screenshot ⌘⇧⌃4) → save to a temp file, stage.
+    /// An image payload → persist in the app's asset store and stage it.
     case stageImage
     /// Text present (or nothing usable) → let the field editor paste normally.
     case passthroughText
   }
 
   /// Decision table for a composer paste. File URLs win outright; a pasteboard
-  /// image only stages when there is no text alongside it (copying from a
-  /// browser puts image + text on the pasteboard, and the user expects TEXT).
+  /// image wins over its optional filename/URL text representation.
   static func pasteDisposition(hasFileURLs: Bool, hasImage: Bool, hasText: Bool) -> PasteDisposition
   {
     if hasFileURLs { return .stageFiles }
-    if hasImage, !hasText { return .stageImage }
+    if hasImage { return .stageImage }
     return .passthroughText
   }
 
@@ -734,28 +735,12 @@ struct Composer: View {
     }
   }
 
-  /// Persist a bare pasteboard image (screenshot-style TIFF/PNG) to a readable
-  /// temp file and stage it through the shared attachments path.
+  /// Persist clipboard bytes in the canonical asset store before staging.
   @MainActor
   private func stagePastedImage(_ pasteboard: NSPasteboard) {
-    let pngData: Data?
-    if let png = pasteboard.data(forType: .png) {
-      pngData = png
-    } else if let tiff = pasteboard.data(forType: .tiff),
-      let bitmap = NSBitmapImageRep(data: tiff)
-    {
-      pngData = bitmap.representation(using: .png, properties: [:])
-    } else {
-      pngData = nil
-    }
-    guard let pngData else {
-      attachLog.error("paste: pasteboard image had no decodable PNG/TIFF payload")
-      return
-    }
-    let url = FileManager.default.temporaryDirectory
-      .appendingPathComponent("pasted-\(Self.pastedNameFormatter.string(from: Date())).png")
     do {
-      try pngData.write(to: url)
+      guard let pngData = try ConversationClipboardImage.png(from: pasteboard) else { return }
+      let url = URL(fileURLWithPath: try savePastedImage(data: pngData))
       attachLog.info(
         "paste: staged clipboard image bytes=\(pngData.count, privacy: .public) file=\(url.lastPathComponent, privacy: .public)"
       )
@@ -766,13 +751,6 @@ struct Composer: View {
       )
     }
   }
-
-  /// Readable, collision-safe temp-file stamp (`pasted-20260715-140233-421.png`).
-  private static let pastedNameFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
-    return formatter
-  }()
 
   /// Invisible probe resolving the NSWindow this composer lives in, so the
   /// paste monitor can discriminate our window from Settings / the overlay.
