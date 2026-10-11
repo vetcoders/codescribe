@@ -4623,7 +4623,7 @@
       }
     },
     "Comfort" : {
-      "comment" : "Paste policy: verified editable destinations",
+      "comment" : "Paste policy: includes terminals without AX text fields",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10653,12 +10653,18 @@
         }
       }
     },
-    "Pastes into a verified editable text field. Without one, Deferred Paste holds the transcript without changing your clipboard." : {
+    "Pastes into the selected app, including terminals, and restores your clipboard. Password fields and terminal commands go to Deferred Paste." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wkleja do potwierdzonego edytowalnego pola tekstowego. Jeśli takiego pola nie ma, transkrypcja czeka w buforze wklejania na żądanie, bez zmiany schowka."
+            "value" : "Wkleja do wybranej aplikacji, także terminala, i przywraca schowek. Pola haseł i polecenia terminala trafiają do Odroczonego wklejania."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pastes into the selected app, including terminals, and restores your clipboard. Password fields and terminal commands go to Deferred Paste."
           }
         }
       }

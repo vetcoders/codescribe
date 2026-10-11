@@ -18,6 +18,7 @@
 
 use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
+use codescribe_core::config::PasteMode;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::sync::Mutex;
@@ -156,13 +157,13 @@ where
 /// restore path at the moment the user presses the global command.
 pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
     let target = StopPasteTarget::capture();
-    if target.field != crate::os::hold_badge::FocusedInputField::Text || !target.readable() {
+    if target.field == crate::os::hold_badge::FocusedInputField::Secure || !target.readable() {
         anyhow::bail!(
-            "Select an editable text field before inserting. The transcript remains available."
+            "Select a non-password recipient before inserting. The transcript remains available."
         );
     }
     deliver_deferred_insert_at(Instant::now(), |text| {
-        let receipt = paste_to_stop_target(text, &target)?;
+        let receipt = paste_to_stop_target(text, &target, PasteMode::Comfort)?;
         if receipt.delivery == StopPasteDelivery::DeferredTargetChanged {
             anyhow::bail!("The text field changed. The transcript remains in Deferred Paste.");
         }
@@ -283,24 +284,34 @@ impl StopPasteTarget {
         }
     }
 
-    fn check_current(&self) -> StopTargetCheck {
+    fn check_current(&self, mode: PasteMode) -> StopTargetCheck {
         let current = Self::capture();
         #[cfg(target_os = "macos")]
         {
-            let mut check = compare_stop_targets(
+            let check = compare_stop_targets(
                 self.pid,
                 self.element.as_ref(),
                 current.pid,
                 current.element.as_ref(),
                 stop_target_identity::Identity::same_element,
             );
-            check.changed |= self.field != crate::os::hold_badge::FocusedInputField::Text
-                || current.field != crate::os::hold_badge::FocusedInputField::Text;
-            check
+            // The read-only Codescribe canvas is never a recipient. Its real
+            // editable Agent fields remain available for explicit insertion.
+            let mode = if self
+                .pid
+                .and_then(stop_target_identity::app_name)
+                .is_some_and(|name| crate::os::selection::is_codescribe_app(&name))
+            {
+                PasteMode::Safe
+            } else {
+                mode
+            };
+            check.with_input_capability(mode, self.field, current.field)
         }
         #[cfg(not(target_os = "macos"))]
         {
             compare_stop_targets::<()>(self.pid, None, current.pid, None, |_, _| true)
+                .with_input_capability(mode, self.field, current.field)
         }
     }
 }
@@ -310,6 +321,21 @@ struct StopTargetCheck {
     changed: bool,
     readable_at_stop: bool,
     readable_at_paste: bool,
+}
+
+impl StopTargetCheck {
+    fn with_input_capability(
+        mut self,
+        mode: PasteMode,
+        stopped: crate::os::hold_badge::FocusedInputField,
+        current: crate::os::hold_badge::FocusedInputField,
+    ) -> Self {
+        use crate::os::hold_badge::FocusedInputField::{Secure, Text};
+        self.changed |= stopped == Secure
+            || current == Secure
+            || (mode != PasteMode::Comfort && (stopped != Text || current != Text));
+        self
+    }
 }
 
 /// Posting requires positive identity at both observations. Unknown identity
@@ -433,25 +459,32 @@ mod stop_target_identity {
                     CFRelease(application.as_ptr());
                     return None;
                 }
-                let attribute = CFString::new("AXFocusedUIElement");
-                let mut element = std::ptr::null_mut();
-                let result = AXUIElementCopyAttributeValue(
-                    application.as_ptr(),
-                    attribute.as_concrete_TypeRef().cast_mut().cast(),
-                    &mut element,
-                );
+                // Some keyboard-driven hosts expose a window but no AX text
+                // input. Retain that concrete window for Comfort instead of
+                // treating the absence of an editable role as changed focus.
+                let identity = ["AXFocusedUIElement", "AXFocusedWindow"]
+                    .iter()
+                    .find_map(|name| {
+                        let attribute = CFString::new(name);
+                        let mut element = std::ptr::null_mut();
+                        let result = AXUIElementCopyAttributeValue(
+                            application.as_ptr(),
+                            attribute.as_concrete_TypeRef().cast_mut().cast(),
+                            &mut element,
+                        );
+                        let element = NonNull::new(element)?;
+                        let identity = Self { element };
+                        let mut element_pid = 0;
+                        (result == 0
+                            && AXUIElementGetPid(element.as_ptr(), &mut element_pid) == 0
+                            && element_pid == pid)
+                            .then_some(identity)
+                    });
                 CFRelease(application.as_ptr());
-                let element = NonNull::new(element)?;
-                let identity = Self { element };
-                let mut element_pid = 0;
-                if result != 0
-                    || AXUIElementGetPid(element.as_ptr(), &mut element_pid) != 0
-                    || element_pid != pid
-                    || frontmost_pid() != Some(pid)
-                {
+                if frontmost_pid() != Some(pid) {
                     return None;
                 }
-                Some(identity)
+                identity
             }
         }
 
@@ -515,11 +548,13 @@ fn write_stop_paste(
     Ok((receipt, Some(epoch)))
 }
 
-/// Request paste only while the same positively identified editable input has
-/// focus. Missing capability or identity leaves the clipboard untouched.
+/// Request paste only while the same positively identified recipient has
+/// focus. Safe also requires editable AX input; Comfort accepts window-only
+/// hosts. Secure input and missing identity always leave the clipboard untouched.
 pub(crate) fn paste_to_stop_target(
     text: &str,
     target: &StopPasteTarget,
+    mode: PasteMode,
 ) -> Result<StopPasteReceipt> {
     let snapshot = ClipboardSnapshot::capture()?;
     let mut written_epoch = None;
@@ -530,7 +565,7 @@ pub(crate) fn paste_to_stop_target(
             written_epoch = Some(epoch);
             Ok(epoch)
         },
-        || target.check_current(),
+        || target.check_current(mode),
         simulate_cmd_v,
         |receipt| {
             warn!(
@@ -1151,6 +1186,77 @@ mod tests {
         assert!(outcome.target_readable_at_paste);
         assert_eq!(epoch, Some(19));
         assert_eq!(key_posts.get(), 1);
+    }
+
+    #[test]
+    fn comfort_accepts_same_window_identity_while_safe_requires_text_capability() {
+        use crate::os::hold_badge::FocusedInputField::{NotText, Secure, Text, Unobserved};
+        use std::cell::{Cell, RefCell};
+
+        for mode in [PasteMode::Safe, PasteMode::Comfort] {
+            for field in [Text, NotText, Unobserved, Secure] {
+                let clipboard = RefCell::new(String::from("clipboard owned by user"));
+                let inserted = RefCell::new(String::new());
+                let key_posts = Cell::new(0);
+                let payload = "Iwo Iwo Iwo Iwo Iwo";
+                let (receipt, epoch) = write_stop_paste(
+                    payload,
+                    |text| {
+                        *clipboard.borrow_mut() = text.to_owned();
+                        Ok(19)
+                    },
+                    || {
+                        compare_stop_targets(Some(17), Some(&1), Some(17), Some(&1), |a, b| a == b)
+                            .with_input_capability(mode, field, field)
+                    },
+                    || {
+                        *inserted.borrow_mut() = clipboard.borrow().clone();
+                        key_posts.set(key_posts.get() + 1);
+                        Ok(())
+                    },
+                    |_| {},
+                )
+                .expect("evaluate retained window");
+                let allowed = field != Secure && (mode == PasteMode::Comfort || field == Text);
+                assert_eq!(
+                    receipt.delivery == StopPasteDelivery::Pasted,
+                    allowed,
+                    "{mode:?} {field:?}"
+                );
+                assert_eq!(key_posts.get(), usize::from(allowed));
+                assert_eq!(epoch.is_some(), allowed);
+                if allowed {
+                    assert_eq!(*inserted.borrow(), payload);
+                    assert_eq!(inserted.borrow().split_whitespace().count(), 5);
+                } else {
+                    assert_eq!(*clipboard.borrow(), "clipboard owned by user");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn comfort_keeps_identity_and_password_rechecks_before_posting() {
+        use crate::os::hold_badge::FocusedInputField::{NotText, Secure};
+        for (current_pid, current_element, current_field) in [
+            (Some(28), Some(1), NotText),
+            (Some(17), Some(2), NotText),
+            (Some(17), None, NotText),
+            (Some(17), Some(1), Secure),
+        ] {
+            let check = compare_stop_targets(
+                Some(17),
+                Some(&1),
+                current_pid,
+                current_element.as_ref(),
+                |a, b| a == b,
+            )
+            .with_input_capability(PasteMode::Comfort, NotText, current_field);
+            assert!(
+                check.changed,
+                "{current_pid:?} {current_element:?} {current_field:?}"
+            );
+        }
     }
 
     /// Round-trip plain text through set_clipboard / get_clipboard when available.
