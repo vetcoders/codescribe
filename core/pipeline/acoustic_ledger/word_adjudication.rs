@@ -43,7 +43,9 @@ use serde::{Deserialize, Serialize};
 /// observed word without granting boundary, trial or recovery completeness.
 /// v22: returned scope needs complete evidence for every held decoder word;
 /// one complete neighbour cannot settle a clipped word through its window.
-pub const WORD_POLICY: &str = "word-adjudication/v22";
+/// v23: an exact leading fence needs authenticated quiet PCM, like the trailing
+/// fence; capture origin alone still supplies no acoustic boundary evidence.
+pub const WORD_POLICY: &str = "word-adjudication/v23";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,11 +357,16 @@ impl AcousticLedger {
         let complete_words = words
             .iter()
             .filter(|pin| {
-                // No preceding PCM means an unknown onset, not a complete
-                // word. This does not remove the visible observed label.
                 let starts_inside_capture = pin
                     .decode_sample_start
-                    .is_some_and(|start| start < pin.sample_start);
+                    .zip(pin.decode_sample_end)
+                    .is_some_and(|(start, end)| {
+                        if observation.producer == ObservationProducer::Whisper {
+                            self.decode_word_onset_complete(owner, start, end, pin.sample_start)
+                        } else {
+                            start < pin.sample_start
+                        }
+                    });
                 starts_inside_capture
                     && pin.decode_sample_end.is_some_and(|end| {
                         if observation.producer == ObservationProducer::Whisper {
@@ -646,14 +653,22 @@ impl AcousticLedger {
         let acoustic_boundaries_complete = complete
             && decode.is_some_and(|(s, e)| {
                 pins.iter().all(|pin| {
-                    s < pin.sample_start
-                        && !self.decode_word_fence_incomplete(
+                    (if observation.producer == ObservationProducer::Whisper {
+                        self.decode_word_onset_complete(
                             &observation.occurrence,
                             s,
                             e,
                             pin.sample_start,
-                            pin.sample_end,
                         )
+                    } else {
+                        s < pin.sample_start
+                    }) && !self.decode_word_fence_incomplete(
+                        &observation.occurrence,
+                        s,
+                        e,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
                 })
             });
         WordHypothesis {
