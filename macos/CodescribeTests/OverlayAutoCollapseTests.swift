@@ -65,6 +65,149 @@ final class OverlayAutoCollapseTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  private func replySnapshot(
+    text: String = "Odpowiedź agenta", playback: String? = nil, acknowledged: Bool = false
+  ) throws -> OverlayChannelDeliverySnapshot {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "reading-agent",
+        "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+      ]))
+    let user = OverlayConversationMessage(
+      id: "capture:reading", kind: .user, text: "Opowiedz", order: 1,
+      emittedAt: "2026-10-11T00:00:00Z", owner: nil,
+      recipients: [
+        .init(
+          owner: owner, deliveryID: "reading-delivery", queued: true, accepted: true,
+          acknowledged: acknowledged)
+      ], deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "/fixture")
+    let reply = OverlayConversationMessage(
+      id: "reply:reading", kind: .reply, text: text, order: 2,
+      emittedAt: "2026-10-11T00:00:01Z", owner: owner, recipients: [], deliveryID: nil,
+      replyTo: "reading-delivery", unsolicited: false,
+      playback: playback.map {
+        .init(
+          replyID: "reading", ticket: "reading-ticket", state: $0, reason: nil,
+          spoken: $0 == "spoken", emittedAt: "2026-10-11T00:00:02Z")
+      }, busPath: "/fixture")
+    return .init(
+      deliveries: [],
+      conversations: [
+        .init(
+          id: owner.id, channel: "2", name: owner.name, owner: owner, messages: [user, reply])
+      ])
+  }
+
+  func testReplyPlaybackCancelsAnOlderCollapseAndWaitsUntilAudioEnds() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot())
+    let predecessor = try XCTUnwrap(clock.wakes.last)
+    clock.advance(by: 8)
+    state.applyConversationSnapshot(try replySnapshot(playback: "playing"))
+    XCTAssertTrue(predecessor.cancelled)
+    predecessor.run()
+    clock.advance(by: 90)
+    XCTAssertEqual(state.presentationMode, .expanded, "audio still owns visibility")
+    XCTAssertNil(state.autoCollapseDeadline)
+    XCTAssertEqual(clock.outstanding, 0)
+
+    state.applyConversationSnapshot(try replySnapshot(playback: "spoken"))
+    clock.advance(by: 9.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testReplyWaitingAndPlayingKeepOneHoldWithoutPollDeadlines() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.midi)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    let waiting = try replySnapshot(playback: "waiting")
+    state.applyConversationSnapshot(waiting)
+    clock.advance(by: 60)
+    state.applyConversationSnapshot(waiting)
+    state.applyConversationSnapshot(try replySnapshot(playback: "playing"))
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(clock.outstanding, 0)
+    state.applyConversationSnapshot(try replySnapshot(playback: "failed"))
+    clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .midi, "failure releases the audio hold too")
+  }
+
+  func testLongTextReplyGetsReadingTimeAndAcknowledgmentsCannotExtendIt() throws {
+    let (state, clock) = makeState()
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text))
+    clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .expanded, "90 words need more than ten seconds")
+    state.applyConversationSnapshot(try replySnapshot(text: text, acknowledged: true))
+    clock.advance(by: 19.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini, "ACK is not new text or reading activity")
+  }
+
+  func testLongSpokenReplyGetsAFullReadingIntervalAfterPlayback() throws {
+    let (state, clock) = makeState()
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text, playback: "playing"))
+    clock.advance(by: 120)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    state.applyConversationSnapshot(try replySnapshot(text: text, playback: "spoken"))
+    clock.advance(by: 29.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testPlaybackUpdatesRespectManualCompactAndExpandedChoices() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(playback: "waiting"))
+    state.setPresentationMode(.midi)
+    state.applyConversationSnapshot(try replySnapshot(playback: "playing"))
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .midi, "audio updates cannot reopen a manual fold")
+    state.setPresentationMode(.expanded)
+    state.applyConversationSnapshot(try replySnapshot(playback: "spoken"))
+    clock.advance(by: 120)
+    XCTAssertEqual(state.presentationMode, .expanded, "manual expansion remains pinned")
+  }
+
+  func testTerminalHideCannotDismissPlaybackOrItsLongReplyReadingInterval() throws {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state)
+    let oldHide = try XCTUnwrap(state.autoHideDeadline)
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text, playback: "playing"))
+    clock.advance(by: 120)
+    state.fireAutoHideNowForTests(armedDeadline: oldHide)
+    XCTAssertEqual(closes, 0)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    state.applyConversationSnapshot(try replySnapshot(text: text, playback: "spoken"))
+    clock.advance(by: 29.5)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 0)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
   /// One automatic take that ends sealed: the terminal outcome arms the usual
   /// 5 s auto-hide next to the 10 s automatic return.
   private func runTerminalTake(_ state: OverlayState, sessionId: String = "collapse-take") {
