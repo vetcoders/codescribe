@@ -59,6 +59,9 @@ use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
     CapturePathMeta, emit_capture_level_receipt,
 };
+use crate::audio::speech_input::{
+    SpeechInputArchive, SpeechInputFrame, SpeechInputPlan, SpeechInputStream,
+};
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
@@ -1133,7 +1136,7 @@ fn tail_patch_receipt_after_stop(
 
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
-    mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
+    chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
@@ -1160,6 +1163,14 @@ pub(crate) async fn apple_stream_transcription_session(
     // between them.
     let capture_energy = CaptureEnergyOwner::bind(session_id.clone(), capture_epoch);
     let mut capture_level = CaptureLevelAccumulator::bound_to(&capture_energy);
+    let input_plan = SpeechInputPlan::for_capture(
+        &runtime_settings,
+        capture_device_name.as_deref(),
+        sample_rate,
+    );
+    let input_enhanced = input_plan.is_enhanced();
+    let mut chunk_receiver = SpeechInputStream::open(chunk_receiver, input_plan, &session_id);
+    let input_archive = chunk_receiver.archive();
     // Hands-free silence is the ENGINE LIFECYCLE on this lane, not a chunker
     // knob: SFSpeech still owns phrase boundaries inside an utterance, but the
     // threshold decides when the engine rests (mic + Silero keep watching) and
@@ -1201,7 +1212,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // PCM → worker (None = EOF). Unbounded so the async select loop never
     // blocks on a full sync_channel while live Preview events wait to drain
     // (bounded sync_channel + blocking send would re-stall presentation).
-    let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
+    let (pcm_tx, pcm_rx) = std_mpsc::channel::<Result<Option<SpeechInputFrame>, String>>();
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
     let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
@@ -1333,6 +1344,8 @@ pub(crate) async fn apple_stream_transcription_session(
             worker_formatter_tx,
             AppleWorkerConfig {
                 local_execution: worker_execution,
+                input_enhanced,
+                input_archive,
                 sample_rate,
                 capture_device_name,
                 language: language.as_deref(),
@@ -1361,6 +1374,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // until EOF. The engine had letter-level partials; the overlay saw nothing
     // until the session ended. Product truth: presentation was missing, not STT.
     let mut audio_eof = false;
+    let mut input_eof = false;
     let mut worker_finished = false;
     let mut close_ack_pending = true;
     let mut apple_finish_pending = true;
@@ -1519,31 +1533,39 @@ pub(crate) async fn apple_stream_transcription_session(
             }
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
-                    Some(chunk) => {
+                    Some(Ok(frame)) => {
                         if let Some(receiver) = cloud_commit_rx.as_mut() {
                             while let Ok(sample) = receiver.try_recv() {
                                 let _late = layer1_lane.commit_through(sample);
                             }
                         }
-                        capture_level.push_samples(&chunk);
+                        capture_level.push_samples(frame.raw_samples());
+                        let chunk = &frame.samples;
                         // C1 fan-out: offer the frame to the Layer 1 lane
                         // before forwarding to the Apple worker. The offer
                         // returns immediately, always — a refiner that cannot
                         // keep up costs refinement frames, never capture, and
                         // sustained overflow degrades the lane instead of
                         // exerting backpressure here.
-                        layer1_lane.offer_pcm(&chunk);
-                        if pcm_tx.send(Some(chunk)).is_err() {
+                        layer1_lane.offer_pcm(chunk);
+                        if pcm_tx.send(Ok(Some(frame))).is_err() {
                             warn!("Apple live stream worker dropped PCM channel");
                             audio_eof = true;
                         }
                     }
+                    Some(Err(error)) => {
+                        // The worker closes with an explicit failure; preserve
+                        // the existing capture-drain and SessionFinalised path.
+                        let _ = pcm_tx.send(Err(error));
+                        audio_eof = true;
+                    }
                     None => {
+                        input_eof = true;
                         // Capture stopped — push the held tail, then signal EOF.
                         // `end` is the lane's close after the worker has admitted
                         // the commits this flush makes possible.
                         layer1_lane.flush_holdback();
-                        let _ = pcm_tx.send(None);
+                        let _ = pcm_tx.send(Ok(None));
                         audio_eof = true;
                     }
                 }
@@ -1707,7 +1729,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // This comes before the Layer 1 backlog on purpose: capture-sender safety
     // is the older, harder contract, and Whisper must never run while live
     // audio is still being drained.
-    if !audio_eof {
+    if !input_eof {
         while chunk_receiver.recv().await.is_some() {}
     }
 
@@ -1874,6 +1896,9 @@ struct AppleSealState {
     /// Raw capture PCM used to materialize exact planned ranges.
     audio: LiveAudioBuffer,
     terminal_pcm: Option<super::live_audio_buffer::OwnedTerminalPcm>,
+    /// Derived ASR values at the same raw capture indices; never energy proof.
+    recognizer_audio: Option<LiveAudioBuffer>,
+    recognizer_archive: SpeechInputArchive,
     /// End of the last Apple segment admitted to committed canvas. Unlike the
     /// PCM retention cursor, this advances even when Layer 1 audio lookup is
     /// unavailable: Apple segment time is the authority for text disjointness.
@@ -2295,6 +2320,25 @@ impl AppleSealState {
         }
     }
 
+    /// Decoder-only view. Acoustic qualification and fence measurements keep
+    /// using window_by_samples, whose raw authority is unchanged.
+    fn recognizer_window_by_samples(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
+        let Some(audio) = self.recognizer_audio.as_ref() else {
+            return self.window_by_samples(start, end);
+        };
+        if let Some(window) = self.recognizer_archive.window(start, end) {
+            return match window {
+                Ok(window) => Some(window),
+                Err(error) => {
+                    warn!(%error, start, end, "recognizer projection range unavailable");
+                    None
+                }
+            };
+        }
+        audio.window_by_samples(start, end)
+            .filter(|window| window.sample_start == start && window.sample_end == end)
+    }
+
     /// Resolve one full alignment-uncertainty interval inside the issued edge.
     /// Keep no waveform in the ledger or on individual Words.
     fn record_decode_fence_measurement(
@@ -2372,6 +2416,8 @@ impl AppleSealState {
             lexicon_entries_custom: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             terminal_pcm: None,
+            recognizer_audio: None,
+            recognizer_archive: SpeechInputArchive::default(),
             last_apple_segment_end: 0.0,
             unresolved_windows: 0,
             windows_admitted: 0,
@@ -3016,7 +3062,7 @@ impl AppleSealState {
                 continue;
             }
             let window = self
-                .window_by_samples(range.sample_start, range.sample_end)
+                .recognizer_window_by_samples(range.sample_start, range.sample_end)
                 .filter(|window| {
                     window.sample_start == range.sample_start
                         && window.sample_end == range.sample_end
@@ -5091,7 +5137,7 @@ impl AppleSealState {
             self.close_word_trial(&trial, "trial_budget_or_scope_refused");
             return;
         };
-        let Some(window) = self.window_by_samples(start, end) else {
+        let Some(window) = self.recognizer_window_by_samples(start, end) else {
             self.window_plan.account(&range);
             self.close_word_trial(&trial, "trial_pcm_unavailable");
             return;
@@ -7887,6 +7933,8 @@ fn drain_cloud_stop_finals(
 
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
+    input_enhanced: bool,
+    input_archive: SpeechInputArchive,
     capture_turn: CaptureTurnIntent,
     consultation: Option<LiveConsultationCapture>,
     local_execution: Arc<LocalExecutionOwner>,
@@ -7916,7 +7964,7 @@ struct AppleWorkerConfig<'a> {
 
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
 fn apple_stream_worker(
-    pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
+    pcm_rx: std_mpsc::Receiver<Result<Option<SpeechInputFrame>, String>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
@@ -7924,6 +7972,8 @@ fn apple_stream_worker(
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
+        input_enhanced,
+        input_archive,
         capture_turn,
         mut consultation,
         local_execution,
@@ -8003,6 +8053,10 @@ fn apple_stream_worker(
         ),
     };
     state.bind_capture_energy(capture_energy);
+    if input_enhanced {
+        state.recognizer_audio = Some(LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS));
+        state.recognizer_archive = input_archive;
+    }
     state.capture_turn = capture_turn;
     state.terminal_archive_pending = terminal_audio.is_some();
     state.formatter = formatter;
@@ -8065,8 +8119,10 @@ fn apple_stream_worker(
         // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(LIVE_WORKER_QUANTUM) {
-            Ok(Some(samples)) => {
-                samples_seen += samples.len() as u64;
+            Ok(Ok(Some(frame))) => {
+                let samples = &frame.samples;
+                let raw_samples = frame.raw_samples();
+                samples_seen += raw_samples.len() as u64;
                 // Retain before forwarding, on the same counter `audio_secs` is
                 // derived from, so the buffer and the seal clock cannot drift.
                 // This is worker-side on purpose: the async select loop stays
@@ -8076,7 +8132,10 @@ fn apple_stream_worker(
                 // Retention runs in every lifecycle state, including while the
                 // engine rests: it is what the pre-roll of the next epoch is cut
                 // from, and what Layer 1 windows still resolve against.
-                state.audio.push(&samples);
+                state.audio.push(raw_samples);
+                if let Some(audio) = state.recognizer_audio.as_mut() {
+                    audio.push(samples);
+                }
                 state.pump_capture_windows(&ev_tx);
                 // A final may have queued while recv_timeout waited for PCM.
                 // Admit it before advancing the capture-clock expiry boundary.
@@ -8092,7 +8151,7 @@ fn apple_stream_worker(
                 let silero_ingest = state
                     .fusion
                     .as_mut()
-                    .map(|fusion| fusion.ingest(&samples, samples_seen));
+                    .map(|fusion| fusion.ingest(raw_samples, samples_seen));
                 if let Some(ingest) = silero_ingest.as_ref() {
                     if let Some(owner) = consultation.as_mut()
                         && owner.observe(ingest, samples_seen).is_err()
@@ -8119,10 +8178,10 @@ fn apple_stream_worker(
                 }
                 let speech_live = silero_ingest.is_some_and(|ingest| ingest.speech_live);
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                match epoch.feed_pcm(&samples, samples_seen, speech_live) {
+                match epoch.feed_pcm(raw_samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
                         if let Some(session) = stream.as_mut() {
-                            session.write_pcm(&samples).inspect_err(|_| {
+                            session.write_pcm(samples).inspect_err(|_| {
                                 state.return_outstanding_cloud(&ev_tx);
                             })?;
                             let events = shift_events(
@@ -8141,7 +8200,7 @@ fn apple_stream_worker(
                         // off retention resolves to nothing, and basing the
                         // epoch on it would shift every timestamp in it earlier
                         // by the missing audio.
-                        let preroll = state.audio.window_by_samples(preroll_from, chunk_start);
+                        let preroll = state.recognizer_window_by_samples(preroll_from, chunk_start);
                         epoch_base_samples =
                             preroll.as_ref().map_or(chunk_start, |w| w.sample_start);
                         let preroll_samples =
@@ -8151,7 +8210,7 @@ fn apple_stream_worker(
                                 .write_pcm(&window.samples)
                                 .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         }
-                        session.write_pcm(&samples).inspect_err(|_| {
+                        session.write_pcm(samples).inspect_err(|_| {
                             state.return_outstanding_cloud(&ev_tx);
                         })?;
                         info!(
@@ -8194,7 +8253,11 @@ fn apple_stream_worker(
                     EpochDecision::Idle => {}
                 }
             }
-            Ok(None) => break, // EOF from async side
+            Ok(Ok(None)) => break, // EOF after the projection flushed its real tail
+            Ok(Err(error)) => {
+                state.return_outstanding_cloud(&ev_tx);
+                return Err(anyhow::anyhow!(error));
+            }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
                 if let Some(session) = stream.as_mut() {

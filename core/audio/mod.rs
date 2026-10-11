@@ -18,6 +18,8 @@ pub mod loader;
 pub mod playback;
 /// Microphone capture into in-memory PCM buffers.
 pub mod recorder;
+/// Capture-clock-preserving recognizer projection for quiet live microphones.
+pub(crate) mod speech_input;
 /// Continuous mic capture that yields frames without stopping the session.
 pub mod streaming_recorder;
 /// Deadline gate that keeps channel capture off the speaker while agent speech plays.
