@@ -9147,8 +9147,9 @@ mod tests {
                 .any(|slot| slot.producer == ObservationProducer::Apple)
         );
 
+        // Producer rank alone cannot authorize this edge-of-window change.
         assert!(
-            heard_slot(
+            !heard_slot(
                 &mut ledger,
                 ObservationProducer::Whisper,
                 &occurrence,
@@ -9157,6 +9158,20 @@ mod tests {
                 "whisper"
             )
             .grants_mutation()
+        );
+        assert_eq!(
+            ledger.slots_of(&occurrence).unwrap()[0].producer,
+            ObservationProducer::CloudLive
+        );
+        let contextual_whisper =
+            ledger.next_word_observation(ObservationProducer::Whisper, 10_000, &occurrence);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &contextual_whisper,
+                    &[WordPin::new(1_000, 5_000, "whisper").with_decode_window(0, 6_000)],
+                )
+                .grants_mutation()
         );
         let slots = ledger.slots_of(&occurrence).unwrap();
         assert_eq!(slots.len(), 1);
