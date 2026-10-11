@@ -45,7 +45,13 @@ use serde::{Deserialize, Serialize};
 /// one complete neighbour cannot settle a clipped word through its window.
 /// v23: an exact leading fence needs authenticated quiet PCM, like the trailing
 /// fence; capture origin alone still supplies no acoustic boundary evidence.
-pub const WORD_POLICY: &str = "word-adjudication/v23";
+/// v24: historical Whisper words retain their recorded acoustic completeness;
+/// a later decode fence cannot revoke or supply that evidence during regrouping.
+/// v25: shared trials and live unowned recovery use the same authenticated
+/// quiet onset as word admission, instead of rejecting every exact-left pin.
+/// v26: measured speech crossing the left fence keeps near-edge Whisper
+/// timestamps within one encoder frame from claiming a complete onset.
+pub const WORD_POLICY: &str = "word-adjudication/v26";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -651,26 +657,42 @@ impl AcousticLedger {
             && matches!(timing, "capture_word_pins" | "exact_sample_range")
             && decode.is_some_and(|(s, e)| s < e && s <= start && end <= e);
         let acoustic_boundaries_complete = complete
-            && decode.is_some_and(|(s, e)| {
-                pins.iter().all(|pin| {
-                    (if observation.producer == ObservationProducer::Whisper {
-                        self.decode_word_onset_complete(
+            && if input.is_none() && observation.producer == ObservationProducer::Whisper {
+                // Historical Whisper pins were projected onto their owner.
+                // Their original boundary verdict is indexed by that exact
+                // projection and observation, before another decode replaces
+                // fence energy. Missing evidence cannot borrow the new fence.
+                outputs.iter().all(|output| {
+                    self.complete_decoded_words
+                        .get(&output.observation)
+                        .is_some_and(|ranges| {
+                            ranges.contains(&(output.sample_start, output.sample_end))
+                        })
+                })
+            } else {
+                // Fresh producer pins use this decode's measured fence,
+                // including early Apple evidence before decode bounds are saved.
+                decode.is_some_and(|(s, e)| {
+                    pins.iter().all(|pin| {
+                        (if observation.producer == ObservationProducer::Whisper {
+                            self.decode_word_onset_complete(
+                                &observation.occurrence,
+                                s,
+                                e,
+                                pin.sample_start,
+                            )
+                        } else {
+                            s < pin.sample_start
+                        }) && !self.decode_word_fence_incomplete(
                             &observation.occurrence,
                             s,
                             e,
                             pin.sample_start,
+                            pin.sample_end,
                         )
-                    } else {
-                        s < pin.sample_start
-                    }) && !self.decode_word_fence_incomplete(
-                        &observation.occurrence,
-                        s,
-                        e,
-                        pin.sample_start,
-                        pin.sample_end,
-                    )
+                    })
                 })
-            });
+            };
         WordHypothesis {
             producer_request: input.and_then(|input| input.producer_request.clone()),
             observation: observation.clone(),
@@ -1620,7 +1642,12 @@ impl AcousticLedger {
                         .has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
                         || !ranges.iter().all(|range| {
                             range.same_capture(coverage)
-                                && range.sample_start > coverage.sample_start
+                                && self.decode_word_onset_complete(
+                                    range,
+                                    coverage.sample_start,
+                                    coverage.sample_end,
+                                    range.sample_start,
+                                )
                                 && range.sample_end <= coverage.sample_end
                                 && !self.decode_word_fence_incomplete(
                                     range,
