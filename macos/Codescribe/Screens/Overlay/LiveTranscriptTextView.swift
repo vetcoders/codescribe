@@ -226,7 +226,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.popoverPalette = OverlayAppearancePalette.resolve(appearance)
     let attributes = transcriptAttributes()
     textView.isEditable = isEditable
-    textView.setTranscriptActivity(showsActivityUnderline && !isEditable)
+    textView.setTranscriptActivity(
+      showsActivityUnderline && !coordinator.isEditing, subdued: !text.isEmpty)
     textView.allowsUndo = isEditable
     textView.typingAttributes = attributes
     textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
@@ -610,14 +611,20 @@ final class LiveTranscriptNativeTextView: NSTextView {
 
   /// One decorative view at the native insertion geometry. It never becomes
   /// a character, attributed-string attachment, selection or document revision.
-  func setTranscriptActivity(_ active: Bool) {
+  func setTranscriptActivity(_ active: Bool, subdued: Bool = false) {
     guard active else {
       activityUnderline?.removeFromSuperview()
       activityUnderline = nil
       return
     }
-    guard activityUnderline == nil else { return }
-    let underline = TranscriptActivityHostingView(rootView: TranscriptActivityUnderline())
+    if let underline = activityUnderline {
+      if underline.rootView.subdued != subdued {
+        underline.rootView = TranscriptActivityUnderline(subdued: subdued)
+      }
+      return
+    }
+    let underline = TranscriptActivityHostingView(
+      rootView: TranscriptActivityUnderline(subdued: subdued))
     underline.sizingOptions = []
     underline.isHidden = true
     addSubview(underline)
