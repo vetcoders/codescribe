@@ -4179,6 +4179,28 @@ def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> 
         return True
 
 
+def global_playback_muted(root: Path) -> bool:
+    """The playback owner's master switch covers current and future channels."""
+    try:
+        row = read_reply_json(root / "runtime" / "playback-mutes" / "global.json", 65536)
+        if (row.get("schema") != PLAYBACK_MUTE_SCHEMA or row.get("scope") != "all"
+                or type(row.get("muted")) is not bool):
+            return True
+        return row["muted"]
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
+def set_global_muted(args: argparse.Namespace) -> int:
+    row = {"schema": PLAYBACK_MUTE_SCHEMA, "scope": "all",
+           "muted": args.mute_all, "emitted_at": utc_now()}
+    atomic_json(args.bridge_home / "runtime" / "playback-mutes" / "global.json", row)
+    emit(row)
+    return 0
+
+
 def set_agent_muted(args: argparse.Namespace) -> int:
     bus = args.bus.expanduser().resolve(strict=False)
     lease_id = lease_identifier(args.provider, args.session)
@@ -4230,8 +4252,8 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
-        return self.automatic and agent_playback_muted(
-            self.root, self.reply["provider"], self.reply["provider_session_id"], self.bus)
+        return global_playback_muted(self.root) or (self.automatic and agent_playback_muted(
+            self.root, self.reply["provider"], self.reply["provider_session_id"], self.bus))
 
     def publish(self, state: str, *, error: str | None = None, reason: str | None = None) -> None:
         event = {"schema": AGENT_REPLY_PLAYBACK_SCHEMA, "kind": "agent_reply_playback",
@@ -6089,6 +6111,8 @@ def main() -> int:
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
+    mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
+    mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
     parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
@@ -6115,6 +6139,17 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.mute_all or args.unmute_all:
+        allowed = {"mute_all", "unmute_all", "bridge_home", "entrypoint"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items()
+               if key not in allowed):
+            parser.error("global mute requires only --mute-all/--unmute-all and --bridge-home")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return set_global_muted(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: global playback mute refused: {error}\n")
+            return 3
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
     if args.archive_agent is not None and (

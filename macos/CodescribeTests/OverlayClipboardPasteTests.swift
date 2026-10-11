@@ -61,6 +61,31 @@ final class OverlayClipboardPasteTests: XCTestCase {
   }
 
   @MainActor
+  func testBroadcastComposerExposesItsOwnAccessiblePromptWithoutChangingAgentDefault() throws {
+    for prompt in [String(localized: "Send to everyone"), String(localized: "Message the Agent")] {
+      let host = NSHostingView(
+        rootView: OverlayConversationComposer(
+          palette: .dark, draft: .constant(""), sending: false, onSubmit: {}, placeholder: prompt))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+      func editor(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView, text.isEditable { return text }
+        return view.subviews.lazy.compactMap { editor(in: $0) }.first
+      }
+      let text = try XCTUnwrap(editor(in: host))
+      XCTAssertEqual(text.accessibilityLabel(), prompt)
+      XCTAssertTrue(text.string.isEmpty, "placeholder must not enter the message payload")
+    }
+  }
+
+  @MainActor
   func testNativePasteInsertsPersistedPointerAndReturnSendsIt() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }

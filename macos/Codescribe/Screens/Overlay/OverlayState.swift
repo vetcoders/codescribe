@@ -1023,6 +1023,8 @@ final class OverlayState {
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
   @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
+  private(set) var globalPlaybackMuted: Bool?
+  private(set) var globalPlaybackPending = false
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
   private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
@@ -1131,6 +1133,7 @@ final class OverlayState {
 
   var channelPlaybackMuted: [String: Bool] {
     var result: [String: Bool] = [:]
+    result["0"] = globalPlaybackMuted
     for channel in channelHudStates.keys {
       if let identity = playbackIdentity(for: channel), let muted = playbackMutes[identity] {
         result[channel] = muted
@@ -1143,7 +1146,8 @@ final class OverlayState {
     Set(
       channelHudStates.keys.filter {
         playbackIdentity(for: $0).map { pendingPlaybackIdentities.contains($0) } ?? false
-      })
+      }
+    ).union(globalPlaybackPending ? ["0"] : [])
   }
 
   var pendingPlaybackOwners: Set<String> {
@@ -1157,10 +1161,14 @@ final class OverlayState {
   }
 
   func conversationPlaybackMuted(_ conversation: OverlayConversation) -> Bool? {
-    playbackIdentity(for: conversation).flatMap { playbackMutes[$0] }
+    if conversation.channel == "0" { return globalPlaybackMuted }
+    return playbackIdentity(for: conversation).flatMap { playbackMutes[$0] }
   }
 
   func canToggleConversationMicrophone(_ conversation: OverlayConversation) -> Bool {
+    if conversation.channel == "0" {
+      return !channelStatusUnavailable && channelHudStates["0"] != nil
+    }
     guard !channelStatusUnavailable, let owner = conversation.owner,
       !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
@@ -1186,13 +1194,40 @@ final class OverlayState {
   }
 
   func toggleConversationPlayback(_ conversation: OverlayConversation) async {
+    if conversation.channel == "0" {
+      await toggleGlobalPlayback()
+      return
+    }
     guard let identity = playbackIdentity(for: conversation) else { return }
     await togglePlayback(identity)
   }
 
   func toggleChannelPlayback(_ channel: String) async {
+    if channel == "0" {
+      await toggleGlobalPlayback()
+      return
+    }
     guard let identity = playbackIdentity(for: channel) else { return }
     await togglePlayback(identity)
+  }
+
+  private func toggleGlobalPlayback() async {
+    guard let muted = globalPlaybackMuted, !globalPlaybackPending else { return }
+    globalPlaybackPending = true
+    playbackPreferenceRevision &+= 1
+    defer {
+      globalPlaybackPending = false
+      playbackPreferenceRevision &+= 1
+    }
+    do {
+      try await RealAgentBridgeInstaller.setGlobalPlaybackMuted(!muted)
+      globalPlaybackMuted = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
+      playbackPreferenceError =
+        globalPlaybackMuted == nil
+        ? String(localized: "Playback status unavailable") : nil
+    } catch {
+      playbackPreferenceError = error.userFacingMessage
+    }
   }
 
   private func togglePlayback(_ identity: AgentPlaybackIdentity) async {
@@ -1234,10 +1269,12 @@ final class OverlayState {
     let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
+    let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
     channelPlaybackAgents = bound
+    if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
     playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }

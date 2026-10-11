@@ -3025,6 +3025,23 @@
         }
       }
     },
+    "All channels muted": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All channels muted"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wszystkie kanały wyciszone"
+          }
+        }
+      }
+    },
     "Allow": {
       "comment": "Tool permission level",
       "localizations": {
@@ -8297,6 +8314,23 @@
         }
       }
     },
+    "Global playback on": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Global playback on"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Globalne odtwarzanie włączone"
+          }
+        }
+      }
+    },
     "Go back to the saved list": {
       "localizations": {
         "pl": {
@@ -10451,6 +10485,23 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Wycisz odpowiedzi agenta"
+          }
+        }
+      }
+    },
+    "Mute replies on all channels": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mute replies on all channels"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wycisz odpowiedzi na wszystkich kanałach"
           }
         }
       }
@@ -14990,6 +15041,23 @@
         }
       }
     },
+    "Send to everyone": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to everyone"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wyślij do wszystkich"
+          }
+        }
+      }
+    },
     "Send transcript to Agent": {
       "localizations": {
         "pl": {
@@ -15734,6 +15802,23 @@
         }
       }
     },
+    "Speak to everyone (Control–0)": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speak to everyone (Control–0)"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mów do wszystkich (Control–0)"
+          }
+        }
+      }
+    },
     "Speaking": {
       "localizations": {
         "en": {
@@ -16289,6 +16374,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Zakończ dyktowanie do agenta"
+          }
+        }
+      }
+    },
+    "Stop speaking to everyone (Control–0)": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop speaking to everyone (Control–0)"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zakończ mówienie do wszystkich (Control–0)"
           }
         }
       }
@@ -18252,6 +18354,23 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Włącz odsłuch odpowiedzi agenta"
+          }
+        }
+      }
+    },
+    "Unmute replies on all channels": {
+      "comment": "Broadcast channel playback and input controls",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unmute replies on all channels"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Włącz odpowiedzi na wszystkich kanałach"
           }
         }
       }

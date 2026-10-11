@@ -350,6 +350,68 @@ class SayReplyTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 spoken.assert_not_called()
 
+    def global_mute(self, muted=True):
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(DEMUX.sys, "argv", [
+                "cs-bus", "--mute-all" if muted else "--unmute-all", "--bridge-home", str(self.home)]):
+            self.assertEqual(DEMUX.main(), 0)
+
+    def test_global_mute_covers_existing_future_and_other_bus_without_changing_individuals(self):
+        self.attach_lease("session-a", "filip")
+        self.attach_lease("session-b", "filip")
+        self.mute("session-a")
+        individual = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        original = individual.read_bytes()
+        self.global_mute()
+        self.attach_lease("future-session", "filip")
+        for session in ("session-a", "session-b", "future-session"):
+            _, _, spoken = self.say("--session", session)
+            spoken.assert_not_called()
+        _, reply, _ = self.say("--session", "session-b")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        for automatic in (True, False):
+            control = DEMUX.ReplyPlaybackControl(
+                args, self.bus.with_name("other-channel.jsonl"), reply,
+                "a" * 24 if automatic else "b" * 24, automatic=automatic)
+            try:
+                self.assertTrue(control.muted())
+                self.assertTrue(control.stopped())
+            finally:
+                control.close()
+        self.global_mute(False)
+        self.assertEqual(individual.read_bytes(), original)
+        _, _, spoken = self.say("--session", "session-b")
+        spoken.assert_called_once()
+        _, _, spoken = self.say("--session", "session-a")
+        spoken.assert_not_called()
+
+    def test_global_switch_is_observed_by_an_existing_player_and_invalid_receipt_refuses(self):
+        self.attach_lease("session-a", "filip")
+        _, reply, _ = self.say("--session", "session-a")
+        control = DEMUX.ReplyPlaybackControl(
+            DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply, "f" * 24)
+        try:
+            self.assertFalse(control.stopped())
+            self.global_mute()
+            self.assertTrue(control.stopped(), "master mute must stop a running player too")
+            path = self.home / "runtime/playback-mutes/global.json"
+            for row in ({"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": "false"},
+                        {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "single", "muted": False}):
+                path.write_text(json.dumps(row))
+                self.assertTrue(control.muted())
+            path.write_text("not-json")
+            self.assertTrue(control.muted())
+        finally:
+            control.close()
+
+    def test_global_mute_rejects_other_commands_before_any_write(self):
+        for flags in (["--version"], ["--provider", "codex", "--session", "s"],
+                      ["--send", "text", "--to", "0"], ["--read-pending"], ["--channel", "0"]):
+            with (self.subTest(flags=flags), self.assertRaises(SystemExit),
+                  contextlib.redirect_stderr(io.StringIO()),
+                  patch.object(DEMUX.sys, "argv", ["cs-bus", "--mute-all", "--bridge-home", str(self.home), *flags])):
+                DEMUX.main()
+        self.assertFalse((self.home / "runtime/playback-mutes/global.json").exists())
+
     def test_explicit_name_still_wins(self):
         self.attach_lease("session-a", "filip")
         code, reply, spoken = self.say("--session", "session-a", "--name", "roman")

@@ -10,6 +10,7 @@ struct OverlayConversationComposer: View {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var placeholder = String(localized: "Message the Agent")
   var clipboard: NSPasteboard = .general
   var saveImage: (Data) throws -> URL = { data in
     URL(fileURLWithPath: try savePastedImage(data: data))
@@ -32,7 +33,8 @@ struct OverlayConversationComposer: View {
     HStack(alignment: .bottom, spacing: 8) {
       ConversationMessageField(
         text: $draft, textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
-        sending: sending, onSubmit: onSubmit, onEditorActive: onEditorActive,
+        sending: sending, placeholder: placeholder, onSubmit: onSubmit,
+        onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
         clipboard: clipboard, saveImage: saveImage,
         onPasteError: { pasteError = $0 }
@@ -41,7 +43,7 @@ struct OverlayConversationComposer: View {
       .accessibilityIdentifier("overlay-conversation-composer")
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
-          Text("Message the Agent")
+          Text(verbatim: placeholder)
             .font(.system(size: 14 * textScale))
             .foregroundStyle(palette.mutedText.color)
             .padding(.top, 5)
@@ -70,6 +72,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   let textColor: NSColor
   let fontSize: CGFloat
   let sending: Bool
+  let placeholder: String
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
@@ -100,7 +103,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.isVerticallyResizable = true
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
-    editor.setAccessibilityLabel(String(localized: "Message the Agent"))
+    editor.setAccessibilityLabel(placeholder)
     scroll.documentView = editor
     return scroll
   }
@@ -117,6 +120,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     if (editor.typingAttributes[.font] as? NSFont) != font {
       editor.typingAttributes[.font] = font
     }
+    editor.setAccessibilityLabel(placeholder)
     editor.textColor = textColor
     editor.insertionPointColor = textColor
     editor.sending = sending

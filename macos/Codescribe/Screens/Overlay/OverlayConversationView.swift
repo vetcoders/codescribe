@@ -117,7 +117,9 @@ struct OverlayConversationView: View {
       if conversation.owner != nil || conversation.channel == "0" {
         OverlayConversationComposer(
           palette: palette, draft: $draft, sending: sending, onSubmit: submit,
-          onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity)
+          onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
+          placeholder: conversation.channel == "0"
+            ? String(localized: "Send to everyone") : String(localized: "Message the Agent"))
         if let sendError {
           Text(verbatim: sendError)
             .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
@@ -139,11 +141,12 @@ struct OverlayConversationView: View {
     navigationGlassContainer(
       HStack(spacing: 6) {
         Spacer(minLength: 0)
-        if conversation.owner != nil {
+        if conversation.owner != nil || conversation.channel == "0" {
           OverlayAgentAudioControls(
             open: microphoneOpen, muted: playbackMuted,
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback
+            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
+            broadcast: conversation.channel == "0"
           )
           .fixedSize()
         }

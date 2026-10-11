@@ -177,17 +177,33 @@ struct OverlayAgentAudioControls: View {
   let palette: OverlayAppearancePalette
   let onMicrophone: () -> Void
   let onPlayback: () -> Void
+  var broadcast = false
 
   private var microphoneLabel: String {
-    open ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")
+    if broadcast {
+      return open
+        ? String(localized: "Stop speaking to everyone (Control–0)")
+        : String(localized: "Speak to everyone (Control–0)")
+    }
+    return open ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")
   }
   private var playbackLabel: String {
     if muted == nil { return String(localized: "Playback status unavailable") }
+    if broadcast {
+      return muted == true
+        ? String(localized: "Unmute replies on all channels")
+        : String(localized: "Mute replies on all channels")
+    }
     return muted == true
       ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
   }
   private var playbackValue: String {
     if muted == nil { return String(localized: "Playback status unavailable") }
+    if broadcast {
+      return muted == true
+        ? String(localized: "All channels muted")
+        : String(localized: "Global playback on")
+    }
     return muted == true
       ? String(localized: "Automatic playback muted")
       : String(localized: "Automatic playback on")
@@ -396,7 +412,21 @@ struct OverlayChannelStatusView: View {
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
           onSelectConversation != nil
         {
-          conversationRow(broadcast, saved: false)
+          rowGlassContainer(
+            HStack(spacing: 6) {
+              conversationRow(broadcast, saved: false)
+              OverlayAgentAudioControls(
+                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                microphoneEnabled: !unavailable && hudStates["0"] != nil
+                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                palette: palette, onMicrophone: { onToggleChannel?(0) },
+                onPlayback: { onTogglePlayback?("0") }, broadcast: true
+              )
+              .fixedSize()
+              .accessibilityIdentifier("overlay-channel-toggle-0")
+            }
+          )
         }
         Divider()
         details
