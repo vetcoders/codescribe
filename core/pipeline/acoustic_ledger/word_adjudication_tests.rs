@@ -2209,3 +2209,117 @@ fn integrator_v29_three_apple_pins_still_allow_three_independent_corrections() {
     assert!(ledger.word_deletions().is_empty());
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn cloud_word_rejects_whisper_correction_below_context_floor() {
+    for decode in [(48_000, 192_000), (24_001, 168_001)] {
+        let (mut ledger, owner) = fixture();
+        let cloud = ObservationIdentity::new(ObservationProducer::CloudLive, 1, 1, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 144_000)],
+                )
+                .grants_mutation()
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(48_000, 64_000, "56").with_decode_window(decode.0, decode.1)],
+        );
+        assert_eq!(ledger.text_of(&owner), Some("1286"), "decode={decode:?}");
+        assert!(!receipt.grants_mutation(), "{receipt:?}");
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert!(ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.observation == whisper && alternative.reason == "outside_publication_band"
+        }));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_allows_whisper_correction_at_context_floor() {
+    for decode in [(24_000, 168_000), (0, 144_000)] {
+        let (mut ledger, owner) = fixture();
+        let cloud = ObservationIdentity::new(ObservationProducer::CloudLive, 1, 1, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 144_000)],
+                )
+                .grants_mutation()
+        );
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(48_000, 64_000, "56").with_decode_window(decode.0, decode.1)],
+        );
+        assert!(receipt.grants_mutation(), "decode={decode:?}: {receipt:?}");
+        assert_eq!(ledger.text_of(&owner), Some("56"));
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+        assert_eq!(ledger.slots_of(&owner).unwrap()[0].observation, whisper);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_requires_decode_bounds_only_for_label_change() {
+    for (label, expected) in [("56", "1286"), ("1286", "1286")] {
+        let (mut ledger, owner) = fixture();
+        offer(
+            &mut ledger,
+            &owner,
+            ObservationProducer::CloudLive,
+            1,
+            "1286",
+            Some((0, 144_000)),
+        );
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+        let receipt = ledger.admit_word_slots(&whisper, &[WordPin::new(48_000, 64_000, label)]);
+        assert_eq!(ledger.text_of(&owner), Some(expected));
+        if label == "56" {
+            assert!(!receipt.grants_mutation());
+            // Existing completeness checks may refuse missing bounds before
+            // the new context guard. Either route must retain the incumbent.
+        } else {
+            assert!(!ledger.slot_alternatives().iter().any(|alternative| {
+                alternative.observation == whisper
+                    && alternative.reason == "outside_publication_band"
+            }));
+        }
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_edge_refusal_preserves_finality() {
+    let (mut ledger, owner) = fixture();
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::CloudLive,
+        1,
+        "1286",
+        Some((0, 144_000)),
+    );
+    offer(
+        &mut ledger,
+        &owner,
+        ObservationProducer::Whisper,
+        2,
+        "56",
+        Some((48_000, 192_000)),
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286"));
+    assert!(!ledger.text_recovery_pending(&owner));
+    assert!(!ledger.has_word_conflicts());
+    for producer in [ObservationProducer::Apple, ObservationProducer::Whisper] {
+        ledger.note_frontier_return(&owner, producer);
+    }
+    assert!(ledger.seal(&owner).is_ok());
+    assert_eq!(ledger.text_of(&owner), Some("1286"));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
