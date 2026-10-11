@@ -608,11 +608,34 @@ impl SileroIngress {
             out.closed.push(id);
         }
         if let Some((start, end)) = open_range {
-            out.open =
-                Some(
-                    self.ledger
-                        .open_or_extend(&self.session, self.capture_epoch, start, end),
-                );
+            // A fresh recognizer epoch replays DEFAULT_LEFT_PAD_SECS of PCM.
+            // Its owner must retain that same onset context, including words
+            // before the chunker's narrower pad. Refreshes keep the original
+            // start; a forced split never pads back into the preceding owner.
+            let has_open_owner = self.ledger.utterances().iter().any(|owner| !owner.closed);
+            let start = if !reopens && !has_open_owner {
+                let left_pad = (DEFAULT_LEFT_PAD_SECS * self.sample_rate as f32)
+                    .round()
+                    .max(0.0) as u64;
+                let extra_pad = left_pad.saturating_sub(self.vad.pre_roll_raw() as u64);
+                let previous_end = self
+                    .ledger
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .find(|owner| owner.closed)
+                    .map(|owner| owner.range.sample_end)
+                    .unwrap_or(0);
+                start.saturating_sub(extra_pad).max(previous_end.min(start))
+            } else {
+                start
+            };
+            out.open = Some(self.ledger.open_or_extend(
+                &self.session,
+                self.capture_epoch,
+                start,
+                end,
+            ));
         }
         if closed_here
             && !reopens
