@@ -1,7 +1,8 @@
 # STT contract — capture, recognition, admission and formatting
 
-> Current source checkpoint: 2026-10-11, `04fc280c753a379ef33755dc84349a06310a3dc0`
-> (0.17.0/build 801). Start with [ENGINE_MAP.md](ENGINE_MAP.md) for the stage map,
+> Current source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
+> Engine sources match build 798; later UI and closed Junie changes are retained.
+> Start with [ENGINE_MAP.md](ENGINE_MAP.md) for the stage map,
 > source owners, mode differences, Stop sequence and dated acceptance limits.
 > [THE_ENGINE_CONTRACT.md](THE_ENGINE_CONTRACT.md) owns the product invariants;
 > this file describes runtime wiring. A source checkpoint is not native quality acceptance.
@@ -25,10 +26,10 @@
   Missing or rejected alignment remains phrase-grain evidence, never uniformly
   divided synthetic word timing.
 - The ledger owns PCM occurrence identity and mutation authority; the reducer
-  owns the document; Bus and Swift observe its committed projection. A later
-  partial decode cannot retire measured speech before its actual decode start
-  through the coarse partial-refinement path. The analogous suffix-loss test
-  is still failing; prefix protection is not a general quality repair.
+  owns the document; Bus and Swift observe its committed projection. The
+  `d64804be` coarse-prefix guard was withdrawn by `d983b328` after native
+  quality feedback: it is not current admission policy. Its prefix and suffix
+  loss probes remain documented evidence, not solved quality claims.
 - Explicit Stop retains the selected subscriber's **real PCM for 1.5 seconds**
   before EOF. Recognizer-final waiting and useful-refinement drain have separate
   budgets. This is not a fixed 1.5-second bound on complete delivery, nor proof

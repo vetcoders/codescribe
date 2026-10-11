@@ -1,7 +1,9 @@
 # Engine map
 
-Source checkpoint: **2026-10-11**, `04fc280c753a379ef33755dc84349a06310a3dc0`,
-0.17.0/build 801. This map names the runtime stages so a new contributor can
+Source checkpoint: **2026-10-11**, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
+Engine sources match build 798 after the engine-only withdrawal of `d64804be`;
+later UI, documentation and closed Junie changes are retained. This map names
+the runtime stages so a new contributor can
 locate a decision without reconstructing the development conversations.
 It describes source wiring; the [dated evidence](#dated-evidence-and-open-work)
 separates that from test, installation and native quality results.
@@ -142,6 +144,14 @@ a complete replay. See [TRANSCRIPT_BUS.md](TRANSCRIPT_BUS.md) and
 ## Dated evidence and open work
 
 This is a **2026-10-11 checkpoint**, not a moving completion badge.
+
+**Later source decision:** `d983b328` removes exactly the `d64804be` cut.
+The complete `core` and `app` Git trees match `2af7f808` (build 798).
+`b282dc14` adds exclusive drawer cursor-motion ownership before native text
+tracking. The restored engine's scoped `five_` run passes 33 tests; this is not
+a new native quality acceptance. Installation and cursor-test receipts are
+tracked separately in `lena-restore-798-engine`. The earlier prefix protection
+and gate results below are historical, not the restored engine's behavior.
 
 | Source/check                                             | Result and limit                                                                                                                                                                                                                                  |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
