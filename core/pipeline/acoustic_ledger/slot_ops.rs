@@ -1277,14 +1277,34 @@ impl AcousticLedger {
                     .count()
                     > 1
             });
-            // Source lineage may cross today's neighbour boundary. Within an
-            // explicitly reserved group, a bijection of current word centres
-            // proves that no current word was collapsed by that timing jitter.
-            // This only admits a geometric question; lexical confirmation is
-            // still required below before any label or partition can change.
-            let preserves_group_words = source_groups
+            // A completed word-grain decode covering every addressed source
+            // is a partition receipt. It does not turn word timestamp gaps into
+            // untranscribed speech or fabricate a speech-coverage receipt.
+            let window_refinement =
+                self.decoded_word_windows
+                    .get(observation)
+                    .is_some_and(|(start, end)| {
+                        sources.iter().all(|source| {
+                            *start <= source.sample_start && *end >= source.sample_end
+                        })
+                    })
+                    && outputs.iter().all(|word| {
+                        self.complete_decoded_words
+                            .get(observation)
+                            .is_some_and(|ranges| {
+                                ranges.contains(&(word.sample_start, word.sample_end))
+                            })
+                    });
+            // Source lineage may cross today's neighbour boundary. A complete
+            // decode can pose the first group question without a prior trial
+            // reservation when each complete held word's centre belongs to
+            // one distinct output. This proves multiplicity, not correctness;
+            // adjudication below still owns every changed label.
+            let preserves_group_words = (source_groups
                 .iter()
                 .any(|(sources, _)| *sources == source_indices)
+                || (window_refinement
+                    && sources.iter().all(|source| self.complete_word_slot(source))))
                 && sources.len() == outputs.len()
                 && sources.iter().all(|source| {
                     !self.coarse_word_source(source)
@@ -1310,24 +1330,6 @@ impl AcousticLedger {
                             .count()
                             == 1
                 });
-            // A completed word-grain decode covering every addressed source
-            // is a partition receipt. It does not turn word timestamp gaps into
-            // untranscribed speech or fabricate a speech-coverage receipt.
-            let window_refinement =
-                self.decoded_word_windows
-                    .get(observation)
-                    .is_some_and(|(start, end)| {
-                        sources.iter().all(|source| {
-                            *start <= source.sample_start && *end >= source.sample_end
-                        })
-                    })
-                    && outputs.iter().all(|word| {
-                        self.complete_decoded_words
-                            .get(observation)
-                            .is_some_and(|ranges| {
-                                ranges.contains(&(word.sample_start, word.sample_end))
-                            })
-                    });
             if sources.len() == 1
                 && outputs.len() == 1
                 && (ordinary_targets[*word_indices.first().unwrap()].is_some()

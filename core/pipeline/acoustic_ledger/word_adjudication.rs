@@ -37,7 +37,9 @@ use serde::{Deserialize, Serialize};
 /// capture origin shares the existing hypothesis boundary exception.
 /// v19: dictionary spelling retains the decoder's returned scope and rank,
 /// without creating a newer acoustic witness or a higher acoustic authority.
-pub const WORD_POLICY: &str = "word-adjudication/v19";
+/// v20: complete bijective word refinements can pose their first group
+/// question without a prior reservation; lexical adjudication still decides.
+pub const WORD_POLICY: &str = "word-adjudication/v20";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
