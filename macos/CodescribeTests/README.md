@@ -7,6 +7,18 @@ make test-swift                                    # whole suite
 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
 ```
 
+For the compact MCP/custom-provider review, run
+`VisualConsistencyContactSheetTests/testSettingsDensityPolishPreviews` with
+`-testLanguage en` and `-testLanguage pl` in separate invocations. Pass
+`TEST_RUNNER_CODESCRIBE_VISUAL_EVIDENCE_DIR` to a separate evidence directory
+for each language. The test renders production SwiftUI cards at the 664 pt
+Settings detail minimum and at 1040 pt, including long values, independent
+MCP states, both provider protocols, key presence, expanded technical rows,
+the key editor and a license-warning Settings page. All stores and callbacks
+are synthetic; the fixture does not edit the person's configuration or Keychain.
+These unordered-window bitmaps support layout review before the install build;
+they do not replace compositor screenshots or native functional acceptance.
+
 The target lives in the root `Makefile`; read its comment block before invoking
 `xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
