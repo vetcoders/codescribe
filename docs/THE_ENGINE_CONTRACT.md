@@ -1,5 +1,12 @@
 # THE ENGINE — quality-report contract
 
+> Runtime reconciliation: 2026-10-11, source `04fc280c` (0.17.0/build 801).
+> [ENGINE_MAP.md](ENGINE_MAP.md) maps source owners and dated acceptance limits;
+> [STT_CONTRACT.md](STT_CONTRACT.md) describes current routing. The cadence below
+> matches `ENGINE_CONTRACT.whisper_window` and `CaptureWindowPlan`: 9-second
+> windows on a 3-second capture-sample grid. This documentation update does not
+> certify native quality, remove open failures or change runtime policy.
+
 |                   |                                                                                                        |
 | ----------------- | ------------------------------------------------------------------------------------------------------ |
 | id                | `the-engine/v1`                                                                                        |
@@ -35,9 +42,9 @@ Apple → Whisper → Lexicon + Light+ → Responses formatter → human
 This is a band, not a queue of correctors. Ban is **per layer, per span**. The layer that already passed this span is out. The next one may enrich the **same** time window.
 
 - **Apple** draws now (thin, sharp pencil). Its text is a fast hypothesis pinned to PCM time, not a protected word floor.
-- **Whisper** enters the buffer on **~4 s observations with ~1 s overlap**, bounded by available speech evidence. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
+- **Whisper** enters the buffer on **9 s windows with a 3 s step** (6 s overlap for full windows), bounded by available speech evidence. EOF may offer a clipped final window. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
 - **Lexicon / Light+** are L2 and tune deterministically after Whisper settles. Light+ is currently wired on progressive seals and as the delivery floor.
-- **Responses formatter** is L3 (`previous_response_id`). It has a trash bucket: it may throw away approved verbal debris, but it may not rearrange the plate.
+- **Responses formatter** is L3 (`previous_response_id` on the applicable transport). Its selected sealed prompt governs lexical editing, repetition handling and restructuring. Word-count/order vetoes do not censor its output. Source-bound revision checks preserve attribution; formatted text does not mint, reorder or erase physical PCM occurrences.
 - **Human** may edit the delivered canvas immediately; after seal, the human remains the last revision authority.
 
 ### Exactly four machine layers
@@ -326,8 +333,8 @@ occurrence, but may not mint, merge, or erase physical speech.
 
 - Whisper exists in the automatic pipeline to repair live hypotheses.
 - Whisper does not exist merely for a manual rescue button.
-- Whisper observes approximately four seconds at a time.
-- Consecutive observations overlap approximately one second.
+- Whisper observes nine-second full windows on a three-second capture grid.
+- Consecutive full windows overlap six seconds; EOF may clip the last window.
 - The overlap carries linguistic context across boundaries.
 - The overlap must not duplicate canvas content.
 - Request/span identity resolves overlap replay.
@@ -340,15 +347,17 @@ occurrence, but may not mint, merge, or erase physical speech.
 - Whisper may not write into verified silence.
 - Whisper may not replace the complete session automatically.
 
-### Layer 1 window algorithm — ~4 s observation, ~1 s overlap
+### Layer 1 window algorithm — 9 s window, 3 s step
 
 The cadence is normative, not decorative. A window is a **contiguous slice of
 the capture PCM axis**, never a concatenation of non-adjacent fragments.
 
 1. **Mint the window.** Advance a cursor on the capture sample counter. A
-   window is `[cursor, cursor + 4 s)` clipped to admitted speech evidence; the
-   next window starts at `cursor + 3 s`, so consecutive windows share ~1 s.
-   Window identity is an `AcousticSpanIdentity` over exactly that range.
+   full window is `[cursor, cursor + 9 s)` once those samples exist; the next
+   starts at `cursor + 3 s`, so full windows share 6 s. EOF may offer a clipped
+   remainder, consumed once. `TailSampleRange` binds the exact session, epoch
+   and range; it is request geometry, not a second occurrence authority. The
+   executable mirror names `9s_windows_on_3s_capture_sample_grid_max_3_visits`.
 2. **Carry what you declare.** The PCM handed to the provider is the literal
    `[sample_start, sample_end)` slice. A payload whose sample count disagrees
    with its declared range is refused _before_ inference, with a named receipt
@@ -363,12 +372,13 @@ the capture PCM axis**, never a concatenation of non-adjacent fragments.
    degenerate zero-width result — the segment is marked `unanchored` and kept
    as read-only evidence. It is never dropped silently and never granted
    mutation rights.
-4. **Resolve the overlap by identity, not by text.** For the shared ~1 s, the
-   later window's observations whose identity range is already covered by an
-   admitted earlier identity are **replay** and are refused with
-   `replayed_range_identity`. Observations in the non-overlapping remainder are
-   new. Two lexically identical observations on two distinct ranges are two
-   observations; the overlap resolver may not compare their strings.
+4. **Resolve the overlap by identity, not by text.** Multiple decode windows
+   may provide independent evidence about the same physical slot. That evidence
+   does not create another occurrence merely because it arrived later.
+   Replayed observation identities are refused; a fresh, source-complete
+   observation may corroborate or correct an unsealed slot through ordinary
+   ledger admission. Two identical words on disjoint physical ranges remain
+   two occurrences; string equality may not collapse them.
 5. **Intentional repetition.** Repetition is decided on ranges only. N distinct
    ranges carrying the same text yield N delivered observations. A content
    match against a _new_ identity is a WARN receipt and the text still lands.
@@ -388,7 +398,9 @@ the capture PCM axis**, never a concatenation of non-adjacent fragments.
    identity and the target identity share `session` and `capture_epoch` and
    their ranges intersect. Change ratio and LCS may rank candidates inside that
    one authorized identity. They may not be the gate.
-10. **Close, deliver, then drain on stop.** Stop closes the last Apple window
+10. **Close, deliver, then drain on stop.** Explicit Stop first retains the
+    selected subscriber's real PCM for the fixed 1.5-second virtual pause;
+    automatic silence/handoff do not acquire that budget. Stop closes the last Apple window
     and admits its L0 text to the reducer before freezing and delivering the
     nonempty canvas. The remaining L1 and recovery work drains into later
     revisions. A close timeout uses terminal delivery instead of a partial paste;
