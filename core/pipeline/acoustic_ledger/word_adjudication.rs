@@ -23,7 +23,11 @@ use serde::{Deserialize, Serialize};
 /// partial observations cannot discard their witnesses or renew trial budgets.
 /// v12: all unresolved groups keep one scope; settled groups may separate
 /// into physical words while retaining producer identity and spent budgets.
-pub const WORD_POLICY: &str = "word-adjudication/v12";
+/// v13: incomplete Apple labels cannot veto complete independent Whisper
+/// agreement; complete Apple contradictions and negation disputes retain veto.
+/// v14: decode identity survives rolling witness eviction and component
+/// regrouping; replaying an old frame never restores its freshness.
+pub const WORD_POLICY: &str = "word-adjudication/v14";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +123,9 @@ struct WordAdjudication {
     incumbent: WordHypothesis,
     apple: Vec<WordHypothesis>,
     whisper: Vec<WordHypothesis>,
+    /// Identity only, retained until this owner's components close. Evicting
+    /// a lexical alternative must not make its PCM frame independent again.
+    seen_decodes: BTreeSet<(u64, u64)>,
     conflict: bool,
     attempted: bool,
     fresh_attempted: bool,
@@ -250,16 +257,18 @@ impl WordHypothesis {
 
 impl WordAdjudication {
     fn has_decode(&self, capture: &OccurrenceIdentity, decode: Option<(u64, u64)>) -> bool {
-        decode.is_some()
-            && self
-                .whisper
-                .iter()
-                .chain(std::iter::once(&self.incumbent))
-                .any(|hypothesis| {
-                    hypothesis.family() == ObservationProducer::Whisper
-                        && hypothesis.observation.occurrence.same_capture(capture)
-                        && hypothesis.decode == decode
-                })
+        decode.is_some_and(|decode| {
+            (self.owner.same_capture(capture) && self.seen_decodes.contains(&decode))
+                || self
+                    .whisper
+                    .iter()
+                    .chain(std::iter::once(&self.incumbent))
+                    .any(|hypothesis| {
+                        hypothesis.family() == ObservationProducer::Whisper
+                            && hypothesis.observation.occurrence.same_capture(capture)
+                            && hypothesis.decode == Some(decode)
+                    })
+        })
     }
 
     fn support(&self) -> Vec<WordHypothesis> {
@@ -289,9 +298,10 @@ impl WordAdjudication {
             }
             ObservationProducer::Whisper => {
                 // The same audio with a new request id is still one witness.
-                if hypothesis.decode.is_none() {
+                let Some(decode) = hypothesis.decode else {
                     return false;
-                }
+                };
+                let fresh = self.seen_decodes.insert(decode);
                 if let Some(prior) = self.whisper.iter_mut().find(|prior| {
                     prior.family() == ObservationProducer::Whisper
                         && prior.decode == hypothesis.decode
@@ -312,7 +322,7 @@ impl WordAdjudication {
                 if self.whisper.len() > 3 {
                     self.whisper.remove(0);
                 }
-                true
+                fresh
             }
             _ => false,
         }
@@ -715,6 +725,10 @@ impl AcousticLedger {
             incumbent,
             apple: Vec::new(),
             whisper: Vec::new(),
+            seen_decodes: members
+                .iter()
+                .flat_map(|member| member.seen_decodes.iter().copied())
+                .collect(),
             conflict: members.iter().any(|c| c.conflict),
             attempted: members.iter().any(|c| c.attempted),
             fresh_attempted: members.iter().any(|c| c.fresh_attempted),
@@ -1114,10 +1128,8 @@ impl AcousticLedger {
         let provisional_apple = provisional_apple && fresh;
         let repeated_label = label_equal(&candidate.surface, &compose_label(sources));
         let raw = candidate.original_text.as_deref();
-        let apple = component
-            .apple
-            .last()
-            .and_then(|h| h.original_text.as_deref());
+        let apple_hypothesis = component.apple.last();
+        let apple = apple_hypothesis.and_then(|h| h.original_text.as_deref());
         let whisper_support = component
             .support()
             .into_iter()
@@ -1134,10 +1146,20 @@ impl AcousticLedger {
             .map(|h| h.decode)
             .collect::<BTreeSet<_>>()
             .len();
+        // A label without complete source scope and acoustic boundaries is
+        // still retained evidence, but cannot permanently block two complete
+        // independent decoder frames. Negation disputes keep their existing
+        // cross-source requirement even when Apple's timing is incomplete.
+        let apple_veto = apple_hypothesis.is_some_and(|h| {
+            h.original_text
+                .as_deref()
+                .zip(raw)
+                .is_some_and(|(a, b)| !label_equal(a, b))
+                && ((h.complete && h.acoustic_boundaries_complete) || negation_disagrees)
+        });
         let agreement = raw.is_some()
             && ((apple.zip(raw).is_some_and(|(a, b)| label_equal(a, b)) && whisper_support > 0)
-                || (whisper_support >= 2
-                    && apple.is_none_or(|a| raw.is_some_and(|b| label_equal(a, b)))));
+                || (whisper_support >= 2 && !apple_veto));
         let confirmed_trial = trial_matches
             && fresh
             && complete
@@ -1354,6 +1376,7 @@ impl AcousticLedger {
                 incumbent: hypothesis.clone(),
                 apple: Vec::new(),
                 whisper: Vec::new(),
+                seen_decodes: BTreeSet::new(),
                 conflict: false,
                 attempted: false,
                 fresh_attempted: false,
