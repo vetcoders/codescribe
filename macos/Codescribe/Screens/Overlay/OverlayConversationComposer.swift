@@ -311,11 +311,11 @@ private struct ConversationMessageField: NSViewRepresentable {
   }
 }
 
-/// Only a bare clipboard image is converted; ordinary text keeps native paste behavior.
+/// An actual image payload wins over its optional filename/URL text representation.
 enum ConversationClipboardImage {
   @MainActor
   static func png(from pasteboard: NSPasteboard) throws -> Data? {
-    guard pasteboard.availableType(from: [.fileURL, .string]) == nil,
+    guard pasteboard.availableType(from: [.fileURL]) == nil,
       let type = pasteboard.availableType(from: [.png, .tiff])
     else { return nil }
     guard let bytes = pasteboard.data(forType: type),

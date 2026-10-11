@@ -127,7 +127,7 @@ struct MarkdownText: View {
     .environment(
       \.openURL,
       OpenURLAction { url in
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(ConversationLocalFileLinks.urlForOpening(url))
         return .handled
       })
   }
@@ -430,6 +430,7 @@ struct MarkdownText: View {
     }
     attr.font = baseFont
     attr.foregroundColor = baseColor
+    ConversationLocalFileLinks.annotate(&attr)
 
     var codeRanges: [Range<AttributedString.Index>] = []
     var linkRanges: [Range<AttributedString.Index>] = []

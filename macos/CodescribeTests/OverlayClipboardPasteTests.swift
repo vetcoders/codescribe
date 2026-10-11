@@ -45,7 +45,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
   }
 
   @MainActor
-  func testTextAndFinderFilesDoNotBecomeImageAttachments() throws {
+  func testImagePayloadWinsOverTextButFinderFilesKeepOriginalBytes() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
     let png = try XCTUnwrap(bitmap().representation(using: .png, properties: [:]))
@@ -53,7 +53,11 @@ final class OverlayClipboardPasteTests: XCTestCase {
       board.clearContents()
       board.setData(png, forType: .png)
       board.setString("file:///tmp/example.png", forType: type)
-      XCTAssertNil(try ConversationClipboardImage.png(from: board))
+      if type == .fileURL {
+        XCTAssertNil(try ConversationClipboardImage.png(from: board))
+      } else {
+        XCTAssertNotNil(try ConversationClipboardImage.png(from: board))
+      }
     }
     board.clearContents()
     board.setData(Data([1, 2, 3]), forType: .png)
@@ -220,6 +224,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
     defer { board.releaseGlobally() }
     board.setData(
       try XCTUnwrap(bitmap().representation(using: .png, properties: [:])), forType: .png)
+    board.setString("Copied image.png", forType: .string)
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
