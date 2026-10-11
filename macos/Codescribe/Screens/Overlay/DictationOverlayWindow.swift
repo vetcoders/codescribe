@@ -30,6 +30,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
   private var dragMoved = false
   private var resizeStart: (mouse: NSPoint, frame: NSRect, edge: OverlayResizeHit.Edge)?
+  private var requestedResizeSize: NSSize?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
@@ -145,7 +146,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     transitionTop = nil
     transitionRight = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
-    minSize = DictationOverlayWindow.collapsedSize
+    minSize = DictationOverlayWindow.minimumSize(for: presentationMode)
     contentMinSize = minSize
     if presentationMode != .mini { styleMask.insert(.resizable) }
     if let contentView { invalidateCursorRects(for: contentView) }
@@ -317,6 +318,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       return false
     }
     resizeStart = (point, frame, edge)
+    requestedResizeSize = frame.size
     onUserResize?()
     return true
   }
@@ -324,10 +326,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func updateUserResize(to point: NSPoint) -> Bool {
     guard let resizeStart else { return false }
-    var target = OverlayResizeHit.apply(
+    let requested = OverlayResizeHit.apply(
       edge: resizeStart.edge, start: resizeStart.frame,
       dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
-      minSize: minSize)
+      minSize: DictationOverlayWindow.collapsedSize)
+    // Track the fold intent independently of the painted frame. Expanded
+    // content cannot fit inside a strip while the gesture is still active.
+    requestedResizeSize = requested.size
+    let floor = DictationOverlayWindow.minimumSize(for: presentationMode)
+    var target = requested
+    target.size = NSSize(
+      width: max(requested.width, floor.width), height: max(requested.height, floor.height))
     // Morphology always pivots on the upper-right corner, regardless of
     // which edge the Founder grabs. Only a window drag moves the pin.
     target.origin = NSPoint(
@@ -340,9 +349,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func endUserResize() {
     guard let resizeStart else { return }
-    let changed = frame.size != resizeStart.frame.size
+    let requested = requestedResizeSize ?? frame.size
+    let changed = frame.size != resizeStart.frame.size || requested != resizeStart.frame.size
     if changed, pendingResizePresentation == nil, presentationMode == .expanded {
-      let mode = DictationOverlayWindow.presentationMode(forResizedSize: frame.size)
+      let mode = DictationOverlayWindow.presentationMode(forResizedSize: requested)
       // OverlayState remains the presentation authority. Its ordinary
       // callback queues the selected mode until this gesture ends.
       onResizePresentationSelected?(mode)
@@ -357,6 +367,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       miniFrame = nil
     }
     self.resizeStart = nil
+    requestedResizeSize = nil
     let pending = pendingResizePresentation
     pendingResizePresentation = nil
     if let pending {
@@ -368,6 +379,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Closing a panel must not flush a deferred show or revive its geometry.
   private func cancelUserResize() {
     resizeStart = nil
+    requestedResizeSize = nil
     pendingResizePresentation = nil
   }
 
@@ -557,6 +569,14 @@ enum DictationOverlayWindow {
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
 
+  static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {
+    switch mode {
+    case .mini: collapsedSize
+    case .midi: midiSize
+    case .expanded: minSize
+    }
+  }
+
   static func presentationMode(forResizedSize size: NSSize) -> OverlayPresentationMode {
     if size.height >= (collapsedHeight + minSize.height) / 2 { return .expanded }
     return size.width < (collapsedSize.width + midiSize.width) / 2 ? .mini : .midi
@@ -572,8 +592,8 @@ enum DictationOverlayWindow {
       origin: OverlayPlacement.clampOrigin(proposed.origin, size: size, in: visible), size: size)
   }
   /// Readability floor for settled regular content and programmatic content
-  /// sizing via `clamp(_:to:)`. Live edge gestures can cross below this floor
-  /// to select MIDI or MINI; the window applies the selected form on release.
+  /// sizing via `clamp(_:to:)`. A live edge gesture records fold intent below
+  /// this floor, but paints the current form at its floor until release.
   /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
   /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
   /// lines) without the old action-layer mass. Width floor (320) is unchanged.

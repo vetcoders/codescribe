@@ -98,7 +98,13 @@ struct OverlayConversationView: View {
             if presented, followsLatest { scrollToLatest(proxy) }
           }
           .onChange(of: geometry.size) { _, _ in
-            if isPresented, followsLatest { scrollToLatest(proxy) }
+            // Modern ScrollView owns size-change anchoring. A second scrollTo
+            // on every resize frame races its lazy row remeasurement.
+            if #available(macOS 15.0, *) {
+              return
+            } else if isPresented, followsLatest {
+              scrollToLatest(proxy)
+            }
           }
           .onChange(of: orderedMessages.last) { _, _ in
             if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
