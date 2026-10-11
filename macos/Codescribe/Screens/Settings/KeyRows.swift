@@ -430,6 +430,7 @@ struct KeyRow: View {
           enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           action: save
         )
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel("Save \(label)")
 
         SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
@@ -441,9 +442,11 @@ struct KeyRow: View {
                 .font(CSFont.ui(12, .semibold))
             }
           }
-          .frame(width: 26, height: 18)
+          .frame(minWidth: 26, minHeight: 18)
+          .fixedSize(horizontal: true, vertical: false)
           .foregroundStyle(Color.secondary)
         }
+        .fixedSize(horizontal: true, vertical: false)
         .help(isSet ? "Test this key" : "Save a key first to test it")
         .accessibilityLabel("Test \(label)")
 
