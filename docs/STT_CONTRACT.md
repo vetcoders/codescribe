@@ -52,7 +52,6 @@ label. Missing decode bounds grant no correction authority. Same-label evidence,
 first placement, and ManualHuman protection retain their existing admission
 paths; this rule creates no replay, sweep, or additional recovery debt.
 
-
 Stop's automatic Light+ pass may append terminal punctuation only. Earlier
 casing, commas and whitespace keep their existing bytes, including when the last
 owner spans a long take or its live shaping cache is incomplete. Explicit human
