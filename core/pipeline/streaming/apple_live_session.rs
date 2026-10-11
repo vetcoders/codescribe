@@ -3852,6 +3852,60 @@ impl AppleSealState {
                 match disposition {
                     SidePin::Replay => ledger.refuse_replayed_range(&observation, &text),
                     SidePin::Unanchored(reason) => {
+                        // An unrouted edge Word is not an accounted return.
+                        // Preserve its original decode/pin before ordinary
+                        // admission can retire the coarse source and seal it.
+                        // This is recovery debt, never word ownership or a
+                        // completeness receipt for the clipped hypothesis.
+                        let intersecting = open_members
+                            .iter()
+                            .filter(|owner| pin_intersects(&observation.occurrence, owner))
+                            .collect::<Vec<_>>();
+                        if word_grain
+                            && producer == LedgerObservationProducer::Whisper
+                            && text.split_whitespace().count() == 1
+                            && admit_sample_start < admit_sample_end
+                            && admit_sample_end.saturating_sub(admit_sample_start)
+                                <= u64::from(self.sample_rate) * 9
+                            && admit_sample_start <= observation.occurrence.sample_start
+                            && observation.occurrence.sample_end <= admit_sample_end
+                            && let [owner] = intersecting.as_slice()
+                            && ledger.is_qualified(owner)
+                            && !ledger.is_sealed(owner)
+                            && (!ledger.decode_word_onset_complete(
+                                owner,
+                                admit_sample_start,
+                                admit_sample_end,
+                                observation.occurrence.sample_start,
+                            ) || ledger.decode_word_fence_incomplete(
+                                owner,
+                                admit_sample_start,
+                                admit_sample_end,
+                                observation.occurrence.sample_start,
+                                observation.occurrence.sample_end,
+                            ))
+                            && self
+                                .capture_energy
+                                .voiced_hops_in(
+                                    &owner.session,
+                                    owner.capture_epoch,
+                                    observation.occurrence.sample_start.max(owner.sample_start),
+                                    observation.occurrence.sample_end.min(owner.sample_end),
+                                )
+                                .is_some_and(|hops| !hops.is_empty())
+                        {
+                            let mut recovery =
+                                ledger.next_word_observation(producer, request_id, owner);
+                            recovery.request = request_id;
+                            let mut pin = crate::pipeline::acoustic_ledger::WordPin::new(
+                                observation.occurrence.sample_start,
+                                observation.occurrence.sample_end,
+                                text.clone(),
+                            )
+                            .with_decode_window(admit_sample_start, admit_sample_end);
+                            pin.confidence = segments[index].confidence;
+                            ledger.retain_rejected_decode_word(&recovery, &pin);
+                        }
                         ledger.keep_visible_unanchored(&observation, &text, reason)
                     }
                     SidePin::NoVoicedHop => {
