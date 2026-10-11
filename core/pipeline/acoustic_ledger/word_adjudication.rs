@@ -53,7 +53,9 @@ use serde::{Deserialize, Serialize};
 /// timestamps within one encoder frame from claiming a complete onset.
 /// v27: an incomplete Apple negation context cannot block asking for the
 /// second live witness; returned evidence still needs full lexical adjudication.
-pub const WORD_POLICY: &str = "word-adjudication/v27";
+/// v28: a reserved coarse target admits contained trial pins to the ordinary
+/// partition proof; unreserved coarse neighbors remain protected.
+pub const WORD_POLICY: &str = "word-adjudication/v28";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1906,7 +1908,12 @@ impl AcousticLedger {
                 );
                 current.iter().any(|slot| {
                     !trial.targets.contains(&SlotTarget::from(slot))
-                        && self.word_slot_targets_pin(slot, &range)
+                        && (self.word_slot_targets_pin(slot, &range)
+                            || (self.coarse_word_source(slot)
+                                && range.is_anchored()
+                                && range.same_capture(&slot.observation.occurrence)
+                                && slot.sample_start < range.sample_end
+                                && range.sample_start < slot.sample_end))
                 })
             })
         {
@@ -1922,8 +1929,10 @@ impl AcousticLedger {
         words: &[WordPin],
         original: &[WordPin],
     ) -> MutationReceipt {
-        // Recognition context can retime an existing word, but can never
-        // create a target. The refusal below also protects every neighbor.
+        // A reserved coarse group can receive its measured child pins. It
+        // cannot pass the one-word matcher before ordinary admission has
+        // proved that partition. Keep every child inside the reserved group;
+        // context still cannot create targets or rewrite unreserved neighbors.
         let current = self.slots_of(&trial.owner).unwrap_or(&[]);
         let targets_pin = |word: &&WordPin| {
             let range = OccurrenceIdentity::new(
@@ -1934,7 +1943,12 @@ impl AcousticLedger {
             );
             current.iter().any(|slot| {
                 trial.targets.contains(&SlotTarget::from(slot))
-                    && self.word_slot_targets_pin(slot, &range)
+                    && (self.word_slot_targets_pin(slot, &range)
+                        || (self.coarse_word_source(slot)
+                            && range.is_anchored()
+                            && range.same_capture(&slot.observation.occurrence)
+                            && slot.sample_start <= range.sample_start
+                            && range.sample_end <= slot.sample_end))
             })
         };
         let pins = words
