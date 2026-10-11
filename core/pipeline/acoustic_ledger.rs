@@ -639,22 +639,43 @@ fn edge_token_duplicate(
         && ledger.pin_targets_source(held, word)
 }
 
+/// Two sample ranges are one PCM slot when the shorter range is mostly
+/// covered and either range contains the other's midpoint. A seam overlap
+/// between adjacent words is not identity. Text is not an input.
+///
+/// This is the only slot-identity predicate. Live Apple reduction calls it;
+/// it does not keep a second overlap formula. A reversed range is not a slot.
+pub(crate) fn pcm_ranges_share_slot(
+    left_start: u64,
+    left_end: u64,
+    right_start: u64,
+    right_end: u64,
+) -> bool {
+    let left_len = left_end.saturating_sub(left_start);
+    let right_len = right_end.saturating_sub(right_start);
+    let overlap = left_end
+        .min(right_end)
+        .saturating_sub(left_start.max(right_start));
+    let shorter = left_len.min(right_len);
+    if overlap < shorter / 2 + shorter % 2 {
+        return false;
+    }
+    let left_mid = left_start + left_len / 2;
+    let right_mid = right_start + right_len / 2;
+    (left_start <= right_mid && right_mid < left_end)
+        || (right_start <= left_mid && left_mid < right_end)
+}
+
 /// Two timed witnesses address one lexical slot when their PCM centres agree.
 /// Crossing ranges alone are insufficient: adjacent short words may overlap
 /// at a window seam while each midpoint still belongs to its own word.
 fn same_pcm_slot(left: &WordSlot, right: &WordSlot) -> bool {
-    let overlap = left
-        .sample_end
-        .min(right.sample_end)
-        .saturating_sub(left.sample_start.max(right.sample_start));
-    let shorter = (left.sample_end - left.sample_start).min(right.sample_end - right.sample_start);
-    if overlap < shorter / 2 + shorter % 2 {
-        return false;
-    }
-    let left_mid = left.sample_start + (left.sample_end - left.sample_start) / 2;
-    let right_mid = right.sample_start + (right.sample_end - right.sample_start) / 2;
-    (left.sample_start <= right_mid && right_mid < left.sample_end)
-        || (right.sample_start <= left_mid && left_mid < right.sample_end)
+    pcm_ranges_share_slot(
+        left.sample_start,
+        left.sample_end,
+        right.sample_start,
+        right.sample_end,
+    )
 }
 
 fn compose_label(slots: &[WordSlot]) -> String {
@@ -5880,6 +5901,15 @@ impl OccurrenceComposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_slot_identity_is_shared_midpoint_not_a_seam() {
+        assert!(pcm_ranges_share_slot(1_000, 2_000, 1_000, 2_000));
+        assert!(!pcm_ranges_share_slot(1_000, 2_000, 1_900, 3_000));
+        assert!(!pcm_ranges_share_slot(1_000, 2_000, 3_000, 4_000));
+        assert!(!pcm_ranges_share_slot(2_000, 1_000, 1_000, 2_000));
+        assert!(!pcm_ranges_share_slot(1_000, 1_000, 1_000, 1_000));
+    }
 
     #[test]
     fn window_owner_index_keeps_coarse_sealed_owners_and_half_open_bounds() {
