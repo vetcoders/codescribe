@@ -6898,7 +6898,7 @@ fn admit_retained_unowned_words(
         if segment.grain != TailSegmentGrain::Word
             || segment.text.split_whitespace().count() != 1
             || !decode.contains(&segment.range)
-            || !state
+            || state
                 .capture_energy
                 .voiced_hops_in(
                     &segment.range.session,
@@ -6906,7 +6906,7 @@ fn admit_retained_unowned_words(
                     segment.range.sample_start,
                     segment.range.sample_end,
                 )
-                .is_some_and(|hops| !hops.is_empty())
+                .is_none_or(|hops| hops.is_empty())
         {
             continue;
         }
