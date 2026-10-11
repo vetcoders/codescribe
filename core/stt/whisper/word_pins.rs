@@ -8,9 +8,10 @@
 //! across characters or tokens.
 //!
 //! Encoder frames are 20 ms (`SAMPLE_RATE / (HOP_LENGTH * 2) = 50`), the same
-//! clock as Whisper's timestamp tokens. DTW runs on the text tokens: the
-//! `sot` prefix, the `no_timestamps` row, and the closing end-of-text row are
-//! not word pins.
+//! clock as Whisper's timestamp tokens. After normalization over the full
+//! forced sequence, DTW keeps `no_timestamps` through the last text row.
+//! These predictive rows supply one boundary more than the text token count;
+//! the final jump closes the last word without assigning it trailing silence.
 
 /// Seconds per encoder frame after the stride-2 convolution.
 pub const ENCODER_FRAME_SECS: f32 = 0.02;
@@ -88,10 +89,10 @@ pub fn align_measured_words(
         return None;
     }
 
-    // Drop the sot prefix, the `no_timestamps` row that follows it, and the
-    // final eot row. DTW then runs on the text tokens alone, so a word boundary
-    // is the first encoder frame of the next word's tokens.
-    let row_start = sot_prefix_len + 1;
+    // Reference matrix[len(sot_sequence):-1]: the no_timestamps row predicts
+    // the first text token, and the last text row supplies the closing jump.
+    // Removing the first predictive row leaves no measured final boundary.
+    let row_start = sot_prefix_len;
     let row_end = token_rows - 1;
     if row_end <= row_start {
         tracing::info!(
@@ -104,7 +105,7 @@ pub fn align_measured_words(
     }
     let rows = row_end - row_start;
     let text_tokens: usize = word_token_counts.iter().sum();
-    if text_tokens != rows {
+    if rows - 1 != text_tokens {
         tracing::info!(
             reason = "token_count_mismatch",
             text_tokens,
@@ -116,9 +117,12 @@ pub fn align_measured_words(
 
     let mut weights = Vec::with_capacity(head_qk.len());
     for head in head_qk {
-        let mut matrix = vec![vec![0.0_f32; frame_count]; rows];
+        // Prefix and EOT participate in token-axis normalization before the
+        // DTW slice, just as in find_alignment. Slicing first changes the
+        // attention distribution and therefore every measured boundary.
+        let mut matrix = vec![vec![0.0_f32; frame_count]; token_rows];
         for (row, src) in matrix.iter_mut().enumerate() {
-            src.copy_from_slice(&head[row_start + row][..frame_count]);
+            src.copy_from_slice(&head[row][..frame_count]);
             softmax_in_place(src);
         }
         zscore_token_axis(&mut matrix);
@@ -129,7 +133,7 @@ pub fn align_measured_words(
     let mut mean = vec![vec![0.0_f32; frame_count]; rows];
     let scale = head_qk.len() as f32;
     for head in &weights {
-        for (row_index, row) in head.iter().enumerate() {
+        for (row_index, row) in head[row_start..row_end].iter().enumerate() {
             for (frame, value) in row.iter().enumerate() {
                 mean[row_index][frame] += value / scale;
             }
@@ -153,9 +157,6 @@ pub fn align_measured_words(
         );
         return None;
     }
-    let path_end =
-        time_indices.last().copied().unwrap_or(0).saturating_add(1) as f32 * ENCODER_FRAME_SECS;
-
     let mut boundaries = Vec::with_capacity(word_token_counts.len() + 1);
     boundaries.push(0usize);
     let mut cursor = 0usize;
@@ -185,11 +186,7 @@ pub fn align_measured_words(
     for (index, text) in word_texts.iter().enumerate() {
         let start = jump_times[boundaries[index]];
         let end_index = boundaries[index + 1];
-        let end = if end_index < jump_times.len() {
-            jump_times[end_index]
-        } else {
-            path_end
-        };
+        let end = jump_times[end_index];
         if end <= start {
             tracing::info!(
                 reason = "nonpositive_word_duration",
@@ -430,6 +427,10 @@ fn jump_times(text_indices: &[usize], time_indices: &[usize]) -> Vec<f32> {
 }
 
 #[cfg(test)]
+#[path = "word_pins_oracle_tests.rs"]
+mod oracle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -448,16 +449,17 @@ mod tests {
 
     /// Attention peaks, not token counts, place the boundary.
     ///
-    /// Two words: one token then five. A uniform token split would open the
-    /// second word at 1/6 of the frame axis. The alignment heads put that
-    /// word on the late blob, so the pin starts after the midpoint.
+    /// Two one-token words. The predictive attention jumps open the second
+    /// word before the midpoint, rather than at a uniform half-window split.
     #[test]
     fn alignment_follows_attention_peaks_not_a_uniform_split() {
         let frames = 40;
         // Two equal tokens. A uniform split would open the second word at
         // half the frame axis. Attention puts the first word on an early blob,
         // so the boundary follows that blob.
-        let heads = spike(4, frames, &[(0, 0), (1, 2), (2, 30)]);
+        // Separate the predictive peaks: the former row-1 peak at frame 2
+        // gives a zero-duration first word in the pinned OpenAI reference.
+        let heads = spike(4, frames, &[(0, 0), (1, 12), (2, 30)]);
         let words = align_measured_words(&heads, 0, &[1, 1], &["raz", "dwa"], frames)
             .expect("measured pins");
         assert_eq!(words.len(), 2);
