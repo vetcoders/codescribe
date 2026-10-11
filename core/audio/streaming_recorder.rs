@@ -29,9 +29,13 @@ use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Real capture retained after an explicit Stop gesture, before subscriber EOF.
+pub const STOP_CAPTURE_GRACE: Duration = Duration::from_millis(1500);
 
 /// How many turns one capture gesture owns.
 ///
@@ -620,6 +624,31 @@ impl StreamingRecorder {
         self.capture_subscribers
             .iter()
             .any(|(_, kind)| *kind != CaptureSubscriberKind::Take)
+    }
+
+    /// Keep this exact subscriber's real PCM flowing until the gesture's fixed
+    /// deadline. `None` selects the current take. The controller owns the stop
+    /// task and retains exclusive access until it releases this feed; neither a
+    /// cancelled waiter nor a repeated Stop can restart this budget.
+    ///
+    /// Automatic silence, handoff and cleanup do not call this. No synthetic
+    /// samples are added, and inactive or already released capture never waits.
+    pub async fn await_stop_pause(
+        &mut self,
+        subscriber: Option<CaptureSubscriberId>,
+        stopped_at: Instant,
+    ) {
+        let Some(id) = subscriber.or(self.take_subscriber) else {
+            return;
+        };
+        if !self.recorder.is_active()
+            || !self.capture_subscribers.iter().any(|(held, _)| *held == id)
+        {
+            return;
+        }
+        let deadline = tokio::time::Instant::from_std(stopped_at) + STOP_CAPTURE_GRACE;
+        info!(?id, "retaining live PCM for explicit Stop grace");
+        tokio::time::sleep_until(deadline).await;
     }
 
     /// Release the take's own subscription ahead of the stop tail.
