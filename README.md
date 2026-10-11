@@ -84,12 +84,15 @@ flowchart TB
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-### Junie plugin
+### Native Junie extension
 
-`cs-junie --name junie --channel 6 --project /path/to/repo` connects a persistent
-Junie ACP session to Codescribe. Messages start agent turns directly; idle time
-does not call the model, and no terminal-output wakeup is required. Add `--speak`
-to use the existing voice profile. Install with `make install-bus`.
+Install the helpers with `make install-bus`, add the bundled local marketplace
+with `/extensions marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
+then `/extensions install codescribe` and `/codescribe junie 6` in ordinary Junie.
+Native MCP waits bring
+messages into that same conversation; silence makes no model request. No IDE,
+separate ACP conversation or new executable is needed. In a running Junie, activate
+the extension with `/extensions install codescribe` before connecting.
 See [setup, permissions and recovery](docs/JUNIE_PLUGIN.md).
 
 ## OpenAI Provider

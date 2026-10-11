@@ -1,4 +1,83 @@
-# Junie plugin for Codescribe
+# Native Codescribe extension for Junie
+
+The native extension runs **inside the current Junie CLI conversation**. It uses
+Junie's normal extension, skill, hook and MCP mechanisms. No IDE, separate agent
+conversation, ACP process or additional executable command is required.
+
+## Install and connect
+
+```sh
+make install-bus
+```
+
+In ordinary Junie, register and install through its native extension manager:
+
+```text
+/extensions marketplace add ~/.codescribe/agent-bridge/runtime/plugins
+/extensions install codescribe
+/codescribe junie 6
+```
+
+Junie owns marketplace identity and caching. No private registry hash is
+reimplemented by Codescribe. Installation is hot-loadable and does not require
+an app or CLI restart. For an already registered local marketplace,
+`cs-bus --install-junie-extension` can enable Codescribe in Junie's user scope;
+it preserves unrelated configuration and refuses to invent a marketplace ID.
+
+The `SessionStart`/`UserPromptSubmit` hook supplies Junie's **real session_id**.
+The skill uses it with `codescribe_connect`; an occupied channel is refused, not
+taken over. Existing voice profiles, authentication and permission policy remain
+unchanged. Supply a voice only if you want to change it. Hook support is EAP;
+without a native hook receipt, obtain `/link` rather than inventing an identity.
+
+## How continuous listening works
+
+The extension's `codescribe_wait` MCP tool holds one ordinary tool call open
+while the mailbox is empty. It observes the existing Codescribe follower using
+the bus's event trigger; **silence makes no model request**. A fresh message
+returns one complete canonical envelope into the same Junie conversation. The
+agent reads it, explicitly ACKs its exact delivery ID, acts, replies and waits
+again. The wait does not ACK, launch another Junie, simulate terminal keys, or
+rely on background stdout notifications.
+
+Listening stays within the active task: the agent must rearm `codescribe_wait`
+instead of submitting the listening task between messages. Cancelling the tool
+lets a new typed prompt interrupt it; explicit stop cancels and detaches. This
+does **not** inject prompts into an unrelated idle session. Async hook context
+is not used as an idle wakeup, and the native Stop hook retry cap is not disabled.
+
+`codescribe_read`/`codescribe_ack` preserve read receipts. The MCP connection
+refuses an ACK for an ID it has not completely returned, foreign owners,
+truncated/oversized envelopes, parallel waits, and session identity changes.
+Distinct IDs remain distinct even when all five messages say “Iwo”. A canceled
+wait or a disconnected client leaves the durable mailbox untouched.
+
+For requested voice replies, `codescribe_reply` delegates to the same `cs-say`
+lane with the owned, read and acknowledged ID. It retains recording interlocks
+and reports `spoken`/`reason`; credentials are never changed to conceal a failed
+attempt. An uncertain or already attempted reply is not replayed automatically.
+Peer messages remain coordination, not new Founder authorization.
+
+## Verification
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_bus_mcp.py
+bash scripts/tests/agent-bridge-payload-test.sh
+```
+
+A fresh message after `codescribe_wait` becomes idle, an agent-issued ACK and an
+answer without a typed nudge establish native listening. A PID, cached extension
+or connect receipt alone remains `attached_unverified`. Microphone reception and
+successful speaker playback require separate acceptance evidence.
+
+## Separate headless ACP utility
+
+The previously shipped `cs-junie` is a separate headless ACP runner, **not this
+native extension**. It is not needed or started by the native connection. Its
+original delivery evidence is archived in `docs/proofs/junie-plugin-20261011.md`.
+The instructions below describe that optional runner only.
+
+### ACP runner
 
 `cs-junie` connects Codescribe's owned mailbox to a persistent Junie session
 through [ACP](https://agentclientprotocol.com/protocol/v1/initialization).
