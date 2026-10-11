@@ -4918,9 +4918,10 @@ impl RecordingController {
                 Some(projection_callback),
             )
             .with_apple_preview_observer(Arc::new(move |text| {
-                crate::os::hold_badge::update_transcript(cursor_token, text, false);
+                crate::os::hold_badge::update_transcript(cursor_token, text);
             }))
             .with_cursor_observer(Arc::new(move |projection| {
+                crate::os::hold_badge::update_warning_state(cursor_token, projection.degraded);
                 // The overlay retains the complete reducer projection; pointer
                 // paint follows raw Apple partials through its separate observer.
                 match serde_json::to_string(projection) {

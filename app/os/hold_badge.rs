@@ -514,21 +514,25 @@ mod imp {
     }
 
     /// Paint a supplied projection in-place; never show or resurrect a panel.
-    pub fn update_transcript(token: u64, text: &str, degraded: bool) {
+    pub fn update_transcript(token: u64, text: &str) {
         let text = super::preview_tail(text);
         let received_at = Instant::now();
         Queue::main().exec_async(move || {
             if !super::token_is_current(token, take_token()) {
                 return;
             }
-            let (panel, diameter, base_color) = {
+            let (panel, diameter, base_color, degraded) = {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(panel) = state.window else {
                     return;
                 };
-                state.degraded = degraded;
                 state.preview_updated_at = (!text.is_empty()).then_some(received_at);
-                (panel as Id, state.config.diameter, state.config.color)
+                (
+                    panel as Id,
+                    state.config.diameter,
+                    state.config.color,
+                    state.degraded,
+                )
             };
             unsafe {
                 let fresh = if super::preview_expired(Some(received_at), Instant::now()) {
@@ -538,6 +542,24 @@ mod imp {
                 };
                 paint_preview(panel, diameter, base_color, fresh, degraded);
             }
+        });
+    }
+
+    /// Integrity changes repaint only the dot, without refreshing the Apple label.
+    pub fn update_warning_state(token: u64, degraded: bool) {
+        Queue::main().exec_async(move || {
+            if !super::token_is_current(token, take_token()) {
+                return;
+            }
+            let (panel, base_color) = {
+                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(panel) = state.window else {
+                    return;
+                };
+                state.degraded = degraded;
+                (panel as Id, state.config.color)
+            };
+            unsafe { paint_warning_state(panel, base_color, degraded) };
         });
     }
 
@@ -574,7 +596,6 @@ mod imp {
             if count < 2 {
                 return;
             }
-            let dot: Id = msg_send![children, objectAtIndex: 0usize];
             let label: Id = msg_send![children, objectAtIndex: 1usize];
             let value = CFString::new(text);
             let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
@@ -603,6 +624,19 @@ mod imp {
             let panel_frame: CGRect = msg_send![panel, frame];
             let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
             let _: () = msg_send![panel, setFrameOrigin: origin];
+            paint_warning_state(panel, base_color, degraded);
+        }
+    }
+
+    unsafe fn paint_warning_state(panel: Id, base_color: (f64, f64, f64, f64), degraded: bool) {
+        unsafe {
+            let content: Id = msg_send![panel, contentView];
+            let children: Id = msg_send![content, subviews];
+            let count: usize = msg_send![children, count];
+            if count == 0 {
+                return;
+            }
+            let dot: Id = msg_send![children, objectAtIndex: 0usize];
             let color = if degraded {
                 (1.0, 0.62, 0.0, 1.0)
             } else {
@@ -1222,7 +1256,7 @@ mod imp {
 #[cfg(target_os = "macos")]
 pub use imp::{
     focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript,
+    show_hold_badge_with_config, take_token, update_transcript, update_warning_state,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1243,7 +1277,10 @@ mod stubs {
         0
     }
     /// Inert cursor projection outside macOS.
-    pub fn update_transcript(_token: u64, _text: &str, _degraded: bool) {}
+    pub fn update_transcript(_token: u64, _text: &str) {}
+
+    /// Inert integrity paint outside macOS.
+    pub fn update_warning_state(_token: u64, _degraded: bool) {}
 
     /// Focused-element text detection is macOS-only.
     pub fn focused_input_field() -> FocusedInputField {
@@ -1275,7 +1312,7 @@ mod stubs {
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript,
+    show_hold_badge_with_config, take_token, update_transcript, update_warning_state,
 };
 
 #[cfg(target_os = "macos")]

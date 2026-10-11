@@ -862,7 +862,7 @@ impl RecordingController {
                 }
                 let cursor_token = hold_badge::take_token();
                 let open_label = channel_open_label(digit);
-                hold_badge::update_transcript(cursor_token, &open_label, false);
+                hold_badge::update_transcript(cursor_token, &open_label);
                 let voice_clock = Arc::clone(&last_voice_at);
                 let heard_text = Arc::clone(&last_text);
                 let emitter = Arc::new(
@@ -875,9 +875,10 @@ impl RecordingController {
                         None,
                     )
                     .with_apple_preview_observer(Arc::new(move |text| {
-                        hold_badge::update_transcript(cursor_token, text, false);
+                        hold_badge::update_transcript(cursor_token, text);
                     }))
                     .with_cursor_observer(Arc::new(move |projection| {
+                        hold_badge::update_warning_state(cursor_token, projection.degraded);
                         if projection.text.trim().is_empty() {
                             return;
                         }
