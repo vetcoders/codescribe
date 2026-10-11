@@ -378,11 +378,43 @@ impl AcousticLedger {
     }
 
     pub(crate) fn complete_word_slot(&self, source: &WordSlot) -> bool {
-        self.word_pin_observations.contains(&source.observation)
-            && self
-                .complete_decoded_words
-                .get(&source.observation)
-                .is_some_and(|ranges| ranges.contains(&(source.sample_start, source.sample_end)))
+        let mut word = source;
+        let mut history_end = self.slot_operations.len();
+        loop {
+            if self.word_pin_observations.contains(&word.observation)
+                && self
+                    .complete_decoded_words
+                    .get(&word.observation)
+                    .is_some_and(|ranges| ranges.contains(&(word.sample_start, word.sample_end)))
+            {
+                return true;
+            }
+            if word.producer != ObservationProducer::Lexicon {
+                return false;
+            }
+            // A dictionary spelling change keeps the exact measured word.
+            // A merge, split, formatter or new geometry cannot borrow that
+            // completeness. Walk only earlier operations, even on bad history.
+            let Some((index, operation)) = self.slot_operations[..history_end]
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, operation)| {
+                    operation.kind == SlotOperationKind::Correct
+                        && operation.observation == word.observation
+                        && operation.sources.len() == 1
+                        && operation.outputs.as_slice() == std::slice::from_ref(word)
+                        && operation.sources[0].sample_start == word.sample_start
+                        && operation.sources[0].sample_end == word.sample_end
+                        && operation.sources[0].observation.occurrence
+                            == word.observation.occurrence
+                })
+            else {
+                return false;
+            };
+            history_end = index;
+            word = &operation.sources[0];
+        }
     }
 
     fn slot_descends_from(&self, pin: &WordSlot, source: &WordSlot) -> bool {
@@ -814,6 +846,8 @@ impl AcousticLedger {
                         && operation.outputs.iter().all(|output| {
                             held.iter().any(|pin| {
                                 self.word_pin_observations.contains(&pin.observation)
+                                    && (pin.producer == ObservationProducer::ManualHuman
+                                        || self.complete_word_slot(pin))
                                     && pin.text.split_whitespace().count() == 1
                                     && pin.producer.authority_rank()
                                         >= operation.observation.producer.authority_rank()
@@ -829,13 +863,6 @@ impl AcousticLedger {
                         });
                     return !returned || !children_held || held.contains(source);
                 }
-                // This alternative names the actual saved candidate itself,
-                // rather than a complete held source rejected by another pin.
-                let awaits_whole_word = self.slot_alternatives.iter().any(|alternative| {
-                    alternative.observation == source.observation
-                        && alternative.reason == "decode_window_clipped"
-                        && alternative.sources.contains(source)
-                });
                 let targets = held
                     .iter()
                     .filter(|pin| {
@@ -848,8 +875,9 @@ impl AcousticLedger {
                                 || (pin.producer == source.producer
                                     && pin.observation.generation > source.observation.generation))
                             && self.pin_targets_source(source, pin)
-                            && (!awaits_whole_word
-                                || pin.producer == ObservationProducer::ManualHuman
+                            // Recovery is about returned speech, regardless
+                            // of which admission guard retained the debt.
+                            && (pin.producer == ObservationProducer::ManualHuman
                                 || self.complete_word_slot(pin))
                             && rejected.iter().all(|other| {
                                 !self.pin_targets_source(other, pin)
