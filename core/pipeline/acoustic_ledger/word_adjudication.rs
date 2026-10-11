@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 /// may request a fresh live trial; requesting work grants no mutation rights.
 /// v16: an unmatched new Whisper Word must have a complete decode fence;
 /// an exact-edge pin needs measured quiet even without a closed Silero range.
-pub const WORD_POLICY: &str = "word-adjudication/v16";
+/// v17: an unmatched late Apple pin intersecting a complete Whisper Word
+/// needs a measured partition before it can add another occurrence.
+pub const WORD_POLICY: &str = "word-adjudication/v17";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
