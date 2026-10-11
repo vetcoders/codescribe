@@ -4002,6 +4002,27 @@ impl AppleSealState {
             self.window_plan_receipt(&job.request_identity.range, "returned");
             self.retain_word_decode(&payload);
             self.admit_completed_window(ev_tx, &payload, true);
+            // An observed Silero onset fixes the past before that onset.
+            // Recover complete Words in those older gaps now, without owning
+            // the open utterance that Silero may still extend or split.
+            let past_onset = self.fusion.as_ref().and_then(|fusion| {
+                fusion
+                    .ledger()
+                    .utterances()
+                    .last()
+                    .filter(|utterance| {
+                        utterance.range.session == self.session_id
+                            && utterance.range.capture_epoch == self.capture_epoch
+                    })
+                    .map(|utterance| utterance.range.sample_start)
+            });
+            if let Some(before) = past_onset
+                && admit_retained_unowned_words(self, ev_tx, &payload, Some(before))
+            {
+                // Retained windows supply existing witnesses before the
+                // admission horizon can close a newly qualified owner.
+                self.replay_completed_windows(ev_tx);
+            }
         } else {
             // A matched provider failure is not measured uncovered speech.
             // Debt already recorded by qualification or reconciliation stays.
@@ -6747,7 +6768,8 @@ fn admit_retained_unowned_words(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     payload: &TailProviderPayload,
-) {
+    live_before: Option<u64>,
+) -> bool {
     use crate::stt::tail_provider::{TailEvidenceSource, TailEvidenceStability, TailSegmentGrain};
 
     let decode = &payload.identity.range;
@@ -6761,8 +6783,9 @@ fn admit_retained_unowned_words(
         || decode.sample_end > state.audio.session_sample_end()
         || decode.sample_end.saturating_sub(decode.sample_start) > u64::from(state.sample_rate) * 9
     {
-        return;
+        return false;
     }
+    let mut qualified = false;
     for (index, segment) in payload.segments.iter().enumerate() {
         if segment.grain != TailSegmentGrain::Word
             || segment.text.split_whitespace().count() != 1
@@ -6789,9 +6812,41 @@ fn admit_retained_unowned_words(
             continue;
         }
         let owner = OccurrenceIdentity::from(&segment.range);
+        if let Some(before) = live_before {
+            if owner.sample_end > before
+                || (owner.sample_start == decode.sample_start && decode.sample_start != 0)
+                || state.fusion.as_ref().is_none_or(|fusion| {
+                    fusion.ledger().utterances().iter().any(|utterance| {
+                        range_overlaps_occurrence(&utterance.range, &owner)
+                    })
+                })
+            {
+                continue;
+            }
+            let speech = coverage_speech_evidence(state);
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.record_speech_evidence(&speech);
+            state.record_decode_fence_measurement(
+                &mut ledger,
+                Some((decode.sample_start, decode.sample_end)),
+            );
+            if ledger.decode_word_fence_incomplete(
+                &owner,
+                decode.sample_start,
+                decode.sample_end,
+                owner.sample_start,
+                owner.sample_end,
+            ) {
+                continue;
+            }
+        }
         if !qualify_owned_occurrence(state, &owner) {
             continue;
         }
+        qualified = true;
         {
             let mut ledger = state
                 .acoustic_ledger
@@ -6823,6 +6878,7 @@ fn admit_retained_unowned_words(
         // Leave Whisper open until all already-returned windows have had
         // their turn. Arrival order cannot seal the first spelling here.
     }
+    qualified
 }
 
 /// Reconcile completed planned returns and publish the remaining acoustic debt.
@@ -6841,7 +6897,7 @@ fn reconcile_terminal_coverage(
         .cloned()
         .collect::<Vec<_>>();
     for payload in &retained {
-        admit_retained_unowned_words(state, ev_tx, payload);
+        admit_retained_unowned_words(state, ev_tx, payload, None);
     }
     // These are retained results, not new model jobs. Newly qualified owners
     // now receive their original overlapping windows before frontier closure.
