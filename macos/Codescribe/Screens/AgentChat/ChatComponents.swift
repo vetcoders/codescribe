@@ -105,6 +105,7 @@ struct MarkdownText: View {
   var size: CGFloat = 14
   var bodyColor: Color = Color.primary
   var showsCaret: Bool = false
+  var showsUnderlineCaret: Bool = false
 
   /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
   /// block's base `size` drives EVERY element (headings, lists, code, tables,
@@ -208,10 +209,14 @@ struct MarkdownText: View {
       text, fontSize: fontSize,
       baseFont: baseFont, baseColor: baseColor)
     let content = Text(attr).lineSpacing(5)
-    if isLast, showsCaret {
+    if isLast, showsCaret || showsUnderlineCaret {
       HStack(alignment: .bottom, spacing: 2) {
         content.fixedSize(horizontal: false, vertical: true)
-        BlinkCaret()
+        if showsUnderlineCaret {
+          TranscriptActivityUnderline()
+        } else {
+          BlinkCaret()
+        }
       }
     } else {
       content

@@ -35,6 +35,12 @@ struct OverlayConversationView: View {
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
   private var followsLatest: Bool { scrollFollow.followingLive }
 
+  /// The newest receiving user turn owns the activity cue, independently of ACKs.
+  var activeCaptureMessageID: String? {
+    guard isPresented else { return nil }
+    return orderedMessages.last(where: { $0.kind == .user && $0.captureState == .receiving })?.id
+  }
+
   var body: some View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
@@ -356,8 +362,13 @@ struct OverlayConversationView: View {
           OversizedMessageBody(fullText: message.text) { head in
             MarkdownText(raw: head, size: 13, bodyColor: palette.primaryText.color)
           }
+          if message.id == activeCaptureMessageID {
+            TranscriptActivityUnderline()
+          }
         } else {
-          MarkdownText(raw: message.text, size: 13, bodyColor: palette.primaryText.color)
+          MarkdownText(
+            raw: message.text, size: 13, bodyColor: palette.primaryText.color,
+            showsUnderlineCaret: message.id == activeCaptureMessageID)
         }
       }
       .fixedSize(horizontal: false, vertical: true)
