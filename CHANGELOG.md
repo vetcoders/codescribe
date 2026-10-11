@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+No changes recorded yet.
+
+## [0.17.0] - 2026-10-11
+
+Source changes in preparation; validation and distribution have separate receipts.
+
 - Transcript versions now share linear Undo/Redo for editing, retranscription and formatting, including successful attempts with identical text. Accepted work after Undo discards Redo. The retained take saves versions and the selected cursor in its existing archive; a failed save is shown. History opens the selected take directly on the overlay canvas.
 - Settings follows Quick Settings and current model-loading state while open. The widget returns from an automatically expanded transcript to its previous mini/midi form after 10 seconds of inactivity. Agent diagnostics recognizes tested MCP identities, and mode-shortcut conflicts are explained before saving.
 - An active bus watch restores its owned follower after a disconnect while preserving the session and cursor; two consecutive empty disconnects suspend recovery until new delivery appears.
@@ -72,6 +78,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it is on; MINI remains the idle entry form.
 - Resize cursors are reused and no longer compete with a whole-window arrow
   cursor rectangle or native text tracking at the window edges.
+
+<!-- release-notes:0.17.0:start -->
+<!-- release-summary: generated -->
+
+### Added
+
+- restructure the Shortcuts tab around honest save semantics
+- About tab replaces User with readable diagnostics
+
+### Fixed
+
+- speak the chosen language in the restart row
+- let the formatting level picker size to its labels
+
+### Changed
+
+- l10n(settings): catalog entries for the restructured Shortcuts tab
+- l10n(settings): catalog for round 5 and a shorter Polish "Ask"
+
+### Documentation
+
+- record the gap between the Shortcuts picker and routed gestures
+- state the Max consultation self-heal contract
+
+Source history: 277 commits; [complete inventory](docs/releases/0.17.0-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.17.0 fc4b3eb2f8fd2d081c750495c77c16ecad9b0326 -->
+<!-- release-notes:0.17.0:end -->
 
 ## [0.16.1] - 2026-10-08
 

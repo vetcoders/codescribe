@@ -1,0 +1,1673 @@
+{
+  "version": "0.17.0",
+  "from_sha": "29836579ef87e453e50c8cd9d429cf580f4f79f7",
+  "to_sha": "fc4b3eb2f8fd2d081c750495c77c16ecad9b0326",
+  "scope": "Committed source history; not runtime or distribution acceptance.",
+  "commits": [
+    {
+      "sha": "11ba80c5575368050ee2b42739e73e399c840db7",
+      "date": "2026-10-08",
+      "subject": "feat(settings): restructure the Shortcuts tab around honest save semantics",
+      "squash_headings": []
+    },
+    {
+      "sha": "7e8ec7b709f56a024c783c17e874332285d2b51d",
+      "date": "2026-10-08",
+      "subject": "docs(hotkeys): record the gap between the Shortcuts picker and routed gestures",
+      "squash_headings": []
+    },
+    {
+      "sha": "edddae66feab7c75513895df98d55418f6b557c3",
+      "date": "2026-10-08",
+      "subject": "fix(settings): speak the chosen language in the restart row",
+      "squash_headings": []
+    },
+    {
+      "sha": "8d3c7c20b8b5b03ad6d45889b25850ca01adfbab",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): catalog entries for the restructured Shortcuts tab",
+      "squash_headings": []
+    },
+    {
+      "sha": "b3f2dc60d3a1e9dec8a2e8744a9be95e498a247a",
+      "date": "2026-10-08",
+      "subject": "fix(settings): let the formatting level picker size to its labels",
+      "squash_headings": []
+    },
+    {
+      "sha": "aad59f15521b32d31fa33f2712a029143857c756",
+      "date": "2026-10-08",
+      "subject": "fix(shortcuts): quieter notes, shorter gesture copy, plain Fn label",
+      "squash_headings": []
+    },
+    {
+      "sha": "917b86825fd9dd2a6f8a500205dfbfa4231734e7",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): catalog for round 5 and a shorter Polish \"Ask\"",
+      "squash_headings": []
+    },
+    {
+      "sha": "c765861942db2630ebddd1cd1481e9d165ba655c",
+      "date": "2026-10-08",
+      "subject": "fix(shortcuts): drop tooltips, keep two sentences per row",
+      "squash_headings": []
+    },
+    {
+      "sha": "365fed1368a23734bda9d3c05fae824da88451a3",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): drop the three tooltip strings from the catalog",
+      "squash_headings": []
+    },
+    {
+      "sha": "b0ec1a6ccc981973724cacb454293b459c422e8d",
+      "date": "2026-10-08",
+      "subject": "fix(shortcuts): give the Fn note a quiet field and a globe symbol",
+      "squash_headings": []
+    },
+    {
+      "sha": "d367fa6f8763c4719cf54f745dd1e96a8bee62f5",
+      "date": "2026-10-08",
+      "subject": "fix(settings): breathe between the auto-send label and its card",
+      "squash_headings": []
+    },
+    {
+      "sha": "fcc457966e6a81e5c4a6010ba9decf0a2e5fd309",
+      "date": "2026-10-08",
+      "subject": "fix(settings): show tool discovery in progress and stop splitting words in tool rows",
+      "squash_headings": []
+    },
+    {
+      "sha": "439b73ba3866f0b7993f78fe23ef9b32d887a033",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): translate the tool discovery progress row",
+      "squash_headings": []
+    },
+    {
+      "sha": "e96cb5033fba9bbb79ed4dcb6e564ecb3ce365d3",
+      "date": "2026-10-08",
+      "subject": "fix(settings): name tool rule sources plainly and fold the model caption into the row",
+      "squash_headings": []
+    },
+    {
+      "sha": "520e20d214d0f505181beb266140d2259a542c7a",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): translate tool rule sources and drop the retired keys",
+      "squash_headings": []
+    },
+    {
+      "sha": "7f52d545c2e8d9ed2c5fe774525e0bba0d717ee0",
+      "date": "2026-10-08",
+      "subject": "fix(shortcuts): keep the save receipt honest and visible",
+      "squash_headings": []
+    },
+    {
+      "sha": "9d6ff80338cc702c21cf53cd583626f5685cd637",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): the save receipt confirms persistence only",
+      "squash_headings": []
+    },
+    {
+      "sha": "5f18558ba236b2ee711286d37dadd7abd15cfda6",
+      "date": "2026-10-08",
+      "subject": "feat(settings): About tab replaces User with readable diagnostics",
+      "squash_headings": []
+    },
+    {
+      "sha": "14a3e2f1d448cf0b7407b3db90a0d7f0a0e50473",
+      "date": "2026-10-08",
+      "subject": "feat(settings): Dictionary shows corrections, stages and real learning",
+      "squash_headings": []
+    },
+    {
+      "sha": "c26b0d28d116cc5debd0954c9b87778668264c3f",
+      "date": "2026-10-08",
+      "subject": "l10n(settings): About and Dictionary catalog round",
+      "squash_headings": []
+    },
+    {
+      "sha": "78232369f5ead5a4deeb76b8daad9cb1c833f888",
+      "date": "2026-10-08",
+      "subject": "test(settings): About anchors, template chip store and Learn baseline",
+      "squash_headings": []
+    },
+    {
+      "sha": "e8027e568bbec63317adbcab46a6991ce3e3b6c8",
+      "date": "2026-10-08",
+      "subject": "Record exact 0.16.1 repair source inventory",
+      "squash_headings": []
+    },
+    {
+      "sha": "30316772812aba34fb611389c8410d242276d182",
+      "date": "2026-10-08",
+      "subject": "Restore three widget forms around the upper-right pin",
+      "squash_headings": []
+    },
+    {
+      "sha": "0beb8288be4dbed67ae89361f8bdab2c8e1d98ae",
+      "date": "2026-10-08",
+      "subject": "Make Settings Open widget reveal the panel without capture",
+      "squash_headings": []
+    },
+    {
+      "sha": "8755048306c08028c15f8948e1a877cac38a62ea",
+      "date": "2026-10-09",
+      "subject": "Show channel number in the conversation agent pill",
+      "squash_headings": []
+    },
+    {
+      "sha": "b8268039ce3c3e06238b18c50e98b3a4569ee481",
+      "date": "2026-10-09",
+      "subject": "merge Monika settings polish PR #159 into interactive branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "2022ac3bf6781d26f331ed85c46693252f408e88",
+      "date": "2026-10-09",
+      "subject": "guard paste recipients and restore Max startup and transcript history",
+      "squash_headings": []
+    },
+    {
+      "sha": "2618daa7da5b66ffd4c177c5c4bc0ddc6769002d",
+      "date": "2026-10-09",
+      "subject": "close Max startup races and keep guarded Insert actionable",
+      "squash_headings": []
+    },
+    {
+      "sha": "2273936e29caf55e3f59af00c657c608636ff308",
+      "date": "2026-10-09",
+      "subject": "recover compressed channel journals during startup",
+      "squash_headings": []
+    },
+    {
+      "sha": "46773e09d01c151813407e30358e74bf8a513b85",
+      "date": "2026-10-09",
+      "subject": "Add archive-scoped audio pairing and formatting seams",
+      "squash_headings": []
+    },
+    {
+      "sha": "6ef0b46075b5b5257642bdac420ea0880d0e84e9",
+      "date": "2026-10-09",
+      "subject": "Open history transcripts on the overlay canvas with source-bound actions",
+      "squash_headings": []
+    },
+    {
+      "sha": "30def1f7d29399e3ea65251f95e7cb3be5293793",
+      "date": "2026-10-09",
+      "subject": "fix(settings): Dictionary counts the corpus and pairs audio off the main thread",
+      "squash_headings": []
+    },
+    {
+      "sha": "190cf3ba03a616c6d30aac60f6fc55a4ff28e73d",
+      "date": "2026-10-09",
+      "subject": "formatter lanes honor provider accounts and Apple without cloud keys",
+      "squash_headings": []
+    },
+    {
+      "sha": "543b26fba8a6ac770ad4b5058281debb30fd5dfb",
+      "date": "2026-10-09",
+      "subject": "Max runs on the Agent lane with the Agent's exact configuration",
+      "squash_headings": []
+    },
+    {
+      "sha": "290381ea2b708189c602a9b0f517dc6365da74fb",
+      "date": "2026-10-09",
+      "subject": "live formatting consumes sealed text and never holds acoustic finality",
+      "squash_headings": []
+    },
+    {
+      "sha": "f7e34b65ebbf4c4e8c6f7bb3cabc9dfb94b5c5bf",
+      "date": "2026-10-09",
+      "subject": "Settings say Max needs the Agent and Apple serves Smart and Corrections",
+      "squash_headings": []
+    },
+    {
+      "sha": "063833ce23fbcca8a704acd5437a76280fbd2e19",
+      "date": "2026-10-09",
+      "subject": "fix(overlay): align disclosure icons with window movement",
+      "squash_headings": []
+    },
+    {
+      "sha": "58138a69786292e6aad530db1d0704a13d3097fb",
+      "date": "2026-10-09",
+      "subject": "Persist archived transcript revisions in the history owner",
+      "squash_headings": []
+    },
+    {
+      "sha": "8f4c64ba57647964988b1a818c98466c62281e71",
+      "date": "2026-10-09",
+      "subject": "Bind archive canvas actions to the archive revision chain",
+      "squash_headings": []
+    },
+    {
+      "sha": "c05b6eb6228f324f772bcae349ffbde961f2f3a7",
+      "date": "2026-10-09",
+      "subject": "Max takes the canonical Agent prompt and options",
+      "squash_headings": []
+    },
+    {
+      "sha": "ac8a2822063407b1e4ee05104dbebc1690ab426e",
+      "date": "2026-10-09",
+      "subject": "accepted text jobs outlive the acoustic session without holding Stop",
+      "squash_headings": []
+    },
+    {
+      "sha": "5923fb85d868fe3bdaef9d3e73c4c279e8a3b3e3",
+      "date": "2026-10-09",
+      "subject": "fix(settings): confirm MCP server removal and translate add failures",
+      "squash_headings": []
+    },
+    {
+      "sha": "8e2f76719532ef134710e0619ebf888dfc101d48",
+      "date": "2026-10-09",
+      "subject": "fix(settings): let the MCP store refuse what the form used to hide",
+      "squash_headings": []
+    },
+    {
+      "sha": "d6a617d85ab4e0691a1fdeb3787152c36b83bb43",
+      "date": "2026-10-09",
+      "subject": "chore: Clarify the daily install and dmg creation policy",
+      "squash_headings": []
+    },
+    {
+      "sha": "3c753d1f14894fda2ae7e345eb0944d4eb3aa44c",
+      "date": "2026-10-09",
+      "subject": "fix(overlay): restore close-dot hover growth",
+      "squash_headings": []
+    },
+    {
+      "sha": "89de0ad10bf78bc252b475748abffdd02b8ee6a0",
+      "date": "2026-10-09",
+      "subject": "test(ledger): admit Dragon word-loss counterexamples",
+      "squash_headings": []
+    },
+    {
+      "sha": "923fa11c91f724124157c4d70a15463763428c00",
+      "date": "2026-10-09",
+      "subject": "fix(settings): localize native tool names, transport copy and AX origins",
+      "squash_headings": []
+    },
+    {
+      "sha": "c243e47e8ad5ce7e16ae8e5cfd9460fcd8e76b00",
+      "date": "2026-10-09",
+      "subject": "fix(settings): render the lexicon card from its row and format the ledger",
+      "squash_headings": []
+    },
+    {
+      "sha": "f613209f8e75b13aaafd77854e92bfc6565f560b",
+      "date": "2026-10-09",
+      "subject": "Lease archive revision chains and send archives without live context",
+      "squash_headings": []
+    },
+    {
+      "sha": "ee5c8ce5a90c7fa71b807a5629f3140edebbf6f5",
+      "date": "2026-10-09",
+      "subject": "Keep archive retranscription provenance and route archive sends apart",
+      "squash_headings": []
+    },
+    {
+      "sha": "3073eb245900ec0288a64cb4e7cb95fd0443137c",
+      "date": "2026-10-09",
+      "subject": "fix(settings): say what the workspace list bounds, what readiness means and which schemes a lane takes",
+      "squash_headings": []
+    },
+    {
+      "sha": "96375083be4877cef7d9f2f222470f9489b2693e",
+      "date": "2026-10-09",
+      "subject": "Merge remote-tracking branch 'origin/fix/mcp-remove-confirm-and-form' into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "c7bffa10a5f96fbd3a4508f25595d2f6bc94917b",
+      "date": "2026-10-09",
+      "subject": "Merge branch 'fix/settings-copy-ax-audit' into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "8b9fa6f924ccfc1c53f286328550ebe574d54541",
+      "date": "2026-10-09",
+      "subject": "Merge commit 'ac8a2822063407b1e4ee05104dbebc1690ab426e' into feat/humanize-codescribe-assets",
+      "squash_headings": []
+    },
+    {
+      "sha": "c5b4639a7c1a1ae1e11e71df8aecfaf6f48cc946",
+      "date": "2026-10-09",
+      "subject": "chore(l10n): sync catalog comments after the integration merge",
+      "squash_headings": []
+    },
+    {
+      "sha": "f01558b99cb43fa13739c3dd33ed77ce77b730cc",
+      "date": "2026-10-09",
+      "subject": "fix(formatter): retain text jobs and reject replies after human edits",
+      "squash_headings": []
+    },
+    {
+      "sha": "dfaf4500f759241c01cb1ee2d7744c065ab5cc04",
+      "date": "2026-10-09",
+      "subject": "fix(l10n): carry the revised source comments into the catalog",
+      "squash_headings": []
+    },
+    {
+      "sha": "90fdece97a73f0cb78bc34fe610b2dcd66e22b5b",
+      "date": "2026-10-09",
+      "subject": "merge(history): reopen durable archived revisions on the overlay canvas",
+      "squash_headings": []
+    },
+    {
+      "sha": "6717043f8715ee2d734242fefcbd9055d33427fe",
+      "date": "2026-10-09",
+      "subject": "merge(settings): admit Monika MCP confirmation and localized form failures",
+      "squash_headings": []
+    },
+    {
+      "sha": "e8a6a268831dce38d65e8c55e5a974e66d7dd1db",
+      "date": "2026-10-09",
+      "subject": "merge(settings): admit current Monika dictionary follow-up",
+      "squash_headings": []
+    },
+    {
+      "sha": "a383d1123ba576321f33a250c830b63671e84ff4",
+      "date": "2026-10-09",
+      "subject": "merge(settings): admit Monika localization with truthful access and OAuth copy",
+      "squash_headings": []
+    },
+    {
+      "sha": "be9a1de987b136654be95dcfe283e4bd7c4d53d5",
+      "date": "2026-10-09",
+      "subject": "fix(bus): deliver full watch messages and withdraw queue copies before work",
+      "squash_headings": []
+    },
+    {
+      "sha": "d76f82156ea0a0699a2e79f98f58c31ef5ea065d",
+      "date": "2026-10-09",
+      "subject": "fix(agent): keep Max consultation on one owner across voice and window",
+      "squash_headings": []
+    },
+    {
+      "sha": "118548514886751d2381a7c8e4a96c76fe18284f",
+      "date": "2026-10-09",
+      "subject": "fix(agent): abandon an unfinished Max consultation turn",
+      "squash_headings": []
+    },
+    {
+      "sha": "c756130cb8b5ec933717face403b39db6716b217",
+      "date": "2026-10-09",
+      "subject": "docs(agent): state the Max consultation self-heal contract",
+      "squash_headings": []
+    },
+    {
+      "sha": "67092518895f583b66cbeafbe3561f8f6a037046",
+      "date": "2026-10-09",
+      "subject": "fix(agent): trim a clipped dropped-instruction preview",
+      "squash_headings": []
+    },
+    {
+      "sha": "ad5dc94a7935b1712493da46162e478f6a15ff3b",
+      "date": "2026-10-10",
+      "subject": "fix(mcp): identify operator MCP servers from evidence, share connection tests with Diagnostics",
+      "squash_headings": []
+    },
+    {
+      "sha": "fc65a4bd15859539868655aa288adf9c271cab1f",
+      "date": "2026-10-10",
+      "subject": "fix(mcp): report a newer connection test next to agent registration",
+      "squash_headings": []
+    },
+    {
+      "sha": "f986e3f840ac400c64ea9608b6a3d222d9e24753",
+      "date": "2026-10-10",
+      "subject": "fix(hotkeys): refuse mode/gesture cells the detector never routes",
+      "squash_headings": []
+    },
+    {
+      "sha": "57977b8c973f91f2b85a49a9b358c1010c3b411c",
+      "date": "2026-10-10",
+      "subject": "feat(overlay): return automatic transcript expansion to remembered mini/midi after 10 idle seconds",
+      "squash_headings": []
+    },
+    {
+      "sha": "db43d791437d88319a9f90922a6c25d016335eb1",
+      "date": "2026-10-10",
+      "subject": "fix(settings): keep open Settings and Quick Settings live on canonical truth",
+      "squash_headings": []
+    },
+    {
+      "sha": "a5f56126dd74b9bb2e96cef47dea6eb7ca725c14",
+      "date": "2026-10-10",
+      "subject": "fix(overlay): let the terminal hide wait for an automatic expansion's 10 s return",
+      "squash_headings": []
+    },
+    {
+      "sha": "0a7acff8b83b1a728b6de0ea9674e12056782945",
+      "date": "2026-10-10",
+      "subject": "feat(overlay): restore transcript versions control over reducer-backed history",
+      "squash_headings": []
+    },
+    {
+      "sha": "d9bcf2f4c1eb7092923e606492eded6504fcd82c",
+      "date": "2026-10-10",
+      "subject": "fix(bus): recover an unexpectedly lost follower on its own lease",
+      "squash_headings": []
+    },
+    {
+      "sha": "7d87511d8d4bb8a842b1427e06302a48340fed7d",
+      "date": "2026-10-10",
+      "subject": "merge(batch): admit MCP diagnostics, routed shortcuts and overlay idle return",
+      "squash_headings": []
+    },
+    {
+      "sha": "8cbc66756252303e3695f8d8c4b90b440f384856",
+      "date": "2026-10-10",
+      "subject": "merge(bus): admit same-lease follower recovery",
+      "squash_headings": []
+    },
+    {
+      "sha": "f61e365ffae1fc8a3ddc55405fae63a8b53a08d0",
+      "date": "2026-10-10",
+      "subject": "merge: fix/max-consultation-continuity into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "c280fbe7e01748f7c2d795401dfbc0033e69b1dc",
+      "date": "2026-10-10",
+      "subject": "fix(settings): wait out late Whisper loads and refresh the idle overlay policy",
+      "squash_headings": []
+    },
+    {
+      "sha": "ae6c67714032257ed016a41d03dbd19223c40477",
+      "date": "2026-10-10",
+      "subject": "fix(mcp): retain verified identity and count registered tools",
+      "squash_headings": []
+    },
+    {
+      "sha": "55343a9e7a8ea6171f23ce706f4eb00ce6d64cc9",
+      "date": "2026-10-10",
+      "subject": "merge(settings): admit canonical live projections",
+      "squash_headings": []
+    },
+    {
+      "sha": "eda051b4a0b27da9deed15ea2cedc626a7ac96f1",
+      "date": "2026-10-10",
+      "subject": "feat(transcript): linear undo/redo over accepted operations in the reducer",
+      "squash_headings": []
+    },
+    {
+      "sha": "9ea6e406d63113494ed8236d4fc43a20dbc5513a",
+      "date": "2026-10-10",
+      "subject": "feat(bridge): expose transcript versions and navigation over FFI",
+      "squash_headings": []
+    },
+    {
+      "sha": "db3ea591afb231b60f7124041f64294c12ddb99f",
+      "date": "2026-10-10",
+      "subject": "feat(overlay): Undo/Redo and versions picker on one Rust cursor",
+      "squash_headings": []
+    },
+    {
+      "sha": "5fc646525bd3afc2a25c89b966933be9c685772f",
+      "date": "2026-10-10",
+      "subject": "fix(settings): observe cold loads when reopening during a take",
+      "squash_headings": []
+    },
+    {
+      "sha": "725446879a8c83b30eb62122d9833542aaa62948",
+      "date": "2026-10-10",
+      "subject": "test(batch): verify live settings and regenerate MCP bindings",
+      "squash_headings": []
+    },
+    {
+      "sha": "1d90f4cb1d38ab1d9764c25d4c45a9f108f107ef",
+      "date": "2026-10-10",
+      "subject": "feat(history): admit live versions into the archive chain and read the selected step",
+      "squash_headings": []
+    },
+    {
+      "sha": "3263dfebb7acda3a6aff6566204ac9d1a1b2dfd2",
+      "date": "2026-10-10",
+      "subject": "fix(transcript): accepted format advances the revision CAS through the one corridor",
+      "squash_headings": []
+    },
+    {
+      "sha": "4df44e7a43025642b9521eaadc873ad113be5782",
+      "date": "2026-10-10",
+      "subject": "feat(controller): mirror the live document history into the take's archive chain",
+      "squash_headings": []
+    },
+    {
+      "sha": "e7bf14bc873d629c6d1257180b36be378a7ad9d1",
+      "date": "2026-10-10",
+      "subject": "fix(overlay): one pending guard for every entry point and no text dedup",
+      "squash_headings": []
+    },
+    {
+      "sha": "0e543bed31e1f9ee608d06e6b5264216d6ae7bd1",
+      "date": "2026-10-10",
+      "subject": "fix(controller): map the archived baseline once by position and surface a stopped mirror",
+      "squash_headings": []
+    },
+    {
+      "sha": "00a60bfa7545f6fcafbeeceb6202d2edfe33eab7",
+      "date": "2026-10-10",
+      "subject": "fix(controller): link refused takes and report unsaved versions on every receipt",
+      "squash_headings": []
+    },
+    {
+      "sha": "482c02d9fb980af03d29bdb33d64eb5748a18673",
+      "date": "2026-10-10",
+      "subject": "merge(transcripts): admit durable linear versions with shared undo and redo",
+      "squash_headings": []
+    },
+    {
+      "sha": "3e1349109d138e78861af451da465aa6623d4239",
+      "date": "2026-10-10",
+      "subject": "fix(onboarding): shorten setup copy after Founder walkthrough",
+      "squash_headings": []
+    },
+    {
+      "sha": "2031e68f5e1d71ac7921f8d4a0b11ba848cfb7d8",
+      "date": "2026-10-10",
+      "subject": "merge: fix/onboarding-copy-review into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "1ccb6b00a6716fc76beeb25290c85225c1a75777",
+      "date": "2026-10-10",
+      "subject": "fix(onboarding): align source comments with the catalog",
+      "squash_headings": []
+    },
+    {
+      "sha": "8388e3675d273d098017648d79bd132e1eda40a9",
+      "date": "2026-10-10",
+      "subject": "merge: onboarding comment alignment into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "67a30dcf04241077ac8608065b8d541aaf2c5754",
+      "date": "2026-10-10",
+      "subject": "fix(settings): regroup the Creator desk after the Founder's walkthrough",
+      "squash_headings": []
+    },
+    {
+      "sha": "3fe4ca6ead6dae2118ba96934f416137f0147761",
+      "date": "2026-10-10",
+      "subject": "merge: Creator desk regroup into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "8bdf64bb8df1d9b005f3943db50c2c41c4ef79b4",
+      "date": "2026-10-10",
+      "subject": "chore(l10n): drop the Creator keys the regroup no longer shows",
+      "squash_headings": []
+    },
+    {
+      "sha": "addff27ea37d91232b46f08d8fcc5eb29959e415",
+      "date": "2026-10-10",
+      "subject": "merge: Creator catalog trim into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "34526028e36ea799c1afca5238ca9c372bd33d95",
+      "date": "2026-10-10",
+      "subject": "fix(windows): minimise Settings and Agent only with a Dock icon",
+      "squash_headings": []
+    },
+    {
+      "sha": "3bcf1479b6166363e0caa1ca02965abb93b47f85",
+      "date": "2026-10-10",
+      "subject": "merge: accessory window minimise fix into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "f4c5ea5ee8c035d7724d4dc7cfe20abbcceb590b",
+      "date": "2026-10-10",
+      "subject": "test(windows): keep the DockPresence probe window owned by ARC",
+      "squash_headings": []
+    },
+    {
+      "sha": "ee85c528b16bbd25bfcff25becfff207559a61b6",
+      "date": "2026-10-10",
+      "subject": "merge: DockPresence test fix into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "3f1979e97978e52be52c21c0f7db0fb4d63c1ebd",
+      "date": "2026-10-10",
+      "subject": "fix(windows): never minimise the Settings and Agent windows",
+      "squash_headings": []
+    },
+    {
+      "sha": "6de915b33b740aea19a6a909d6d7e7145beb97b9",
+      "date": "2026-10-10",
+      "subject": "merge: never-minimise cut into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "50c36115df1e7e1bc81b76c88c6d65b644ee587e",
+      "date": "2026-10-10",
+      "subject": "fix(hotkeys): Option tap needs no typing in between",
+      "squash_headings": []
+    },
+    {
+      "sha": "9cab44adf323cb63fc9d713e1f32bf93b5cf56d7",
+      "date": "2026-10-10",
+      "subject": "merge: fix/option-tap-needs-no-typing into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "9bcc31bdb13cc038e144060b7f78e25b690badb0",
+      "date": "2026-10-10",
+      "subject": "fix(hotkeys): time Option taps by event timestamps",
+      "squash_headings": []
+    },
+    {
+      "sha": "d7034f02f89cd8eccf5df1ae91d2072ff3aea8af",
+      "date": "2026-10-10",
+      "subject": "merge: Option tap timing fix into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "8616da374c8412ac99d619155ad4594857b7f0ec",
+      "date": "2026-10-10",
+      "subject": "fix(settings): slim Audio to one microphone card and one readiness line",
+      "squash_headings": []
+    },
+    {
+      "sha": "b975ef99bbacefe554ebebc56cb1f1778f4932e3",
+      "date": "2026-10-10",
+      "subject": "chore(l10n): drop the 18 Audio strings the slim panel retired",
+      "squash_headings": []
+    },
+    {
+      "sha": "095d430450ff08135f7c3d43de6ecef3271251a2",
+      "date": "2026-10-10",
+      "subject": "fix: defer refused paste and skip redundant ACK reads",
+      "squash_headings": []
+    },
+    {
+      "sha": "a582cfbd4cdd8633ce449b78138e3ed14c1e947f",
+      "date": "2026-10-10",
+      "subject": "merge: slim Settings › Audio layout into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "2e6c11177346d6759bda67f9fc8ef99456c1001f",
+      "date": "2026-10-10",
+      "subject": "fix(settings): split About into everyday facts and on-demand detail",
+      "squash_headings": []
+    },
+    {
+      "sha": "de882ce72c626e44c85aaf95211166b0a2323f27",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): About catalog round for the split panel",
+      "squash_headings": []
+    },
+    {
+      "sha": "1712a144cb19b4f25606d089dbcaabb2918b4e4c",
+      "date": "2026-10-10",
+      "subject": "fix(settings): reorder Shortcuts into Shortcuts & control layout",
+      "squash_headings": []
+    },
+    {
+      "sha": "216907efb62ad3c304e596469ab34d213aa569ff",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): Shortcuts & control catalog round",
+      "squash_headings": []
+    },
+    {
+      "sha": "91b50ea2afec5a77f825943a74765055d8300d96",
+      "date": "2026-10-10",
+      "subject": "fix(agent): single header, quiet chrome, minimal empty state",
+      "squash_headings": []
+    },
+    {
+      "sha": "0c918966b01cd7ee8c419d4e64d15e3995f248ee",
+      "date": "2026-10-10",
+      "subject": "test(agent): widen layout-beat ceilings for loaded gate hosts",
+      "squash_headings": []
+    },
+    {
+      "sha": "9f444fa382d975ef237d3e4538f6d3dbf308d995",
+      "date": "2026-10-10",
+      "subject": "fix(agent): publish rail probe width straight from layout",
+      "squash_headings": []
+    },
+    {
+      "sha": "c436500a34324b53f91a3a14585df59a60d71bde",
+      "date": "2026-10-10",
+      "subject": "l10n(agent): empty-state catalog round",
+      "squash_headings": []
+    },
+    {
+      "sha": "1f170dc6c0a4a3a4af26c7c89f0a6e866a6d7012",
+      "date": "2026-10-10",
+      "subject": "fix: reserve mini for dragging and midi for horizontal resize",
+      "squash_headings": []
+    },
+    {
+      "sha": "949e8eebab30a455ca76355f47074edad74e4096",
+      "date": "2026-10-10",
+      "subject": "fix: notify completion-based agents of unread bus messages",
+      "squash_headings": []
+    },
+    {
+      "sha": "dcb95af25bc95aba09dc44944312a0fcd27a2242",
+      "date": "2026-10-10",
+      "subject": "fix: install shared agent skill and route group replies",
+      "squash_headings": []
+    },
+    {
+      "sha": "42c1ec1cd42bf90e2c5eb599e8ec5f08fdba5c3b",
+      "date": "2026-10-10",
+      "subject": "feat: compose text broadcasts on overlay channel zero",
+      "squash_headings": []
+    },
+    {
+      "sha": "d422a98cdeae16ace05c9168b213c79a4fdae339",
+      "date": "2026-10-10",
+      "subject": "fix(settings): scannable Cloud & privacy with details on demand",
+      "squash_headings": []
+    },
+    {
+      "sha": "e53ecd45541d962013e73c56df38e190fd07796a",
+      "date": "2026-10-10",
+      "subject": "docs(settings): Cloud & privacy guide and changelog for the lift",
+      "squash_headings": []
+    },
+    {
+      "sha": "fe17808c15a6eb0a83335857192b1988c63aea27",
+      "date": "2026-10-10",
+      "subject": "fix(settings): deep-link the cloud action through the .keys section",
+      "squash_headings": []
+    },
+    {
+      "sha": "ed2266c06e18f2ef15dde9a834272c278aaa1c7c",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): Cloud & privacy catalog round",
+      "squash_headings": []
+    },
+    {
+      "sha": "deb9e7ad6fff54d3ae2267d17d75b838fdcdeab0",
+      "date": "2026-10-10",
+      "subject": "merge: Settings and Agent polish rounds 1-3 into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "a3742c781ee9b35051f02aa1ef9a07db4feaa571",
+      "date": "2026-10-10",
+      "subject": "l10n(build): reconcile catalog after the polish merge",
+      "squash_headings": []
+    },
+    {
+      "sha": "a0b7ccfc9a28269795df292ca72c36ae6b69788b",
+      "date": "2026-10-10",
+      "subject": "fix: wait without deadline for completion-woken providers",
+      "squash_headings": []
+    },
+    {
+      "sha": "203674fd43b3ef4c988645daba7340cde8450627",
+      "date": "2026-10-10",
+      "subject": "fix: exit the watch quietly when its consumer closes the pipe",
+      "squash_headings": []
+    },
+    {
+      "sha": "30f7934f087be92a5a58a5712d4f134ecabea1ed",
+      "date": "2026-10-10",
+      "subject": "fix: copy bus messages and route native overlay selection copy",
+      "squash_headings": []
+    },
+    {
+      "sha": "8bb8c225b3e9346d01793ffc7cc8610ea7b6f022",
+      "date": "2026-10-10",
+      "subject": "feat: carry pasted-file pointers on typed bus messages",
+      "squash_headings": []
+    },
+    {
+      "sha": "fa29f5ccb8208e392cd72cce0d875af3eeafb969",
+      "date": "2026-10-10",
+      "subject": "feat: paste clipboard images as local bus file pointers",
+      "squash_headings": []
+    },
+    {
+      "sha": "3d8924e61acdca2438300ba3eac7e0bad23caad2",
+      "date": "2026-10-10",
+      "subject": "fix: keep fat leases out of the 500 ms heat loop",
+      "squash_headings": []
+    },
+    {
+      "sha": "4e7815981dbc14036513fb1ec863706c529fa7bb",
+      "date": "2026-10-10",
+      "subject": "fix: restore bus helper attachment control flow",
+      "squash_headings": []
+    },
+    {
+      "sha": "847a8d1db410cdffd401a7812c3347dce34716d5",
+      "date": "2026-10-10",
+      "subject": "polish(settings): compact the Creator desk",
+      "squash_headings": []
+    },
+    {
+      "sha": "6d48cd9d9fb8349c3d85d01ca8914c0698c3a47f",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): Creator round-4 catalog pass",
+      "squash_headings": []
+    },
+    {
+      "sha": "44d2142130bd436aa5f35e3b1676969fe915bf81",
+      "date": "2026-10-10",
+      "subject": "polish(settings): halve the Shortcuts & control copy",
+      "squash_headings": []
+    },
+    {
+      "sha": "9f047e6fe15d2505521a1c69628ca4ea0c0040a2",
+      "date": "2026-10-10",
+      "subject": "polish(settings): compact the microphone card",
+      "squash_headings": []
+    },
+    {
+      "sha": "ade1e92b168f356219adc387976ab993b1112f06",
+      "date": "2026-10-10",
+      "subject": "polish(settings): compact the Providers desk",
+      "squash_headings": []
+    },
+    {
+      "sha": "a436194eda217ae1a1f89e321f1aeb53169ac9fc",
+      "date": "2026-10-10",
+      "subject": "feat(dictionary): display recorded word pins in PCM slots",
+      "squash_headings": []
+    },
+    {
+      "sha": "ac67075a9d9709f03f0f8bc51f6ad767605de445",
+      "date": "2026-10-10",
+      "subject": "polish(settings): compact AI models and one Refresh standard",
+      "squash_headings": []
+    },
+    {
+      "sha": "7493b5ebfb28ee198158d239d4c97b299517fc33",
+      "date": "2026-10-10",
+      "subject": "fix(settings): keep refresh accessibility labels localizable",
+      "squash_headings": []
+    },
+    {
+      "sha": "a08ad9ff73f0c2b249e164367cb7a6e67f141846",
+      "date": "2026-10-10",
+      "subject": "test(settings): repin the Audio refresh to the shared chip",
+      "squash_headings": []
+    },
+    {
+      "sha": "7737b834f3af46b900eaf67a9cbc3dbd93652ae4",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): rounds 5-8 catalog pass",
+      "squash_headings": []
+    },
+    {
+      "sha": "5cf6385a05c4242303c3434eed053d2a22f0ab44",
+      "date": "2026-10-10",
+      "subject": "feat: finish repository labels for attached agents",
+      "squash_headings": []
+    },
+    {
+      "sha": "5773641d33c4bbe8a426e0d042779684d13f0a47",
+      "date": "2026-10-10",
+      "subject": "fix: hold expanded overlay throughout channel recording",
+      "squash_headings": []
+    },
+    {
+      "sha": "2627e20b07f011d7050cbeda1aa9db6424567cb7",
+      "date": "2026-10-10",
+      "subject": "polish(settings): one compact hierarchy for the Prompts desk",
+      "squash_headings": []
+    },
+    {
+      "sha": "563d752e31a119c1003708ab3630a9b22c86ceda",
+      "date": "2026-10-10",
+      "subject": "polish(settings): Workspace copy says what the gate really bounds",
+      "squash_headings": []
+    },
+    {
+      "sha": "2e69d6a3395b06a13b4ca8b1e9a445f582663cc1",
+      "date": "2026-10-10",
+      "subject": "merge: integrate remaining settings PR and synchronize localization",
+      "squash_headings": []
+    },
+    {
+      "sha": "1f6fd348d43f1bd7a768af446608148a8464bca6",
+      "date": "2026-10-10",
+      "subject": "fix(settings): confirm MCP server removal and translate add failures (#161)",
+      "squash_headings": [
+        "fix(settings): confirm MCP server removal and translate add failures",
+        "fix(settings): let the MCP store refuse what the form used to hide"
+      ]
+    },
+    {
+      "sha": "4ab95127314db7f07545660467f371b4edc6c0b5",
+      "date": "2026-10-10",
+      "subject": "polish(settings): Diagnostics reads state first, details on demand",
+      "squash_headings": []
+    },
+    {
+      "sha": "098b88ce1cbcf6cc3bd88d8acffc17e7dbe61770",
+      "date": "2026-10-10",
+      "subject": "polish(settings): Tools shows whole names in one column",
+      "squash_headings": []
+    },
+    {
+      "sha": "ca7f64e85a24cc059aaea9b88530f67583ea0edf",
+      "date": "2026-10-10",
+      "subject": "polish(settings): slim the Dictation Engine and Whisper tabs",
+      "squash_headings": []
+    },
+    {
+      "sha": "8c98bf896d0c0baeefc2cd1c53453beea89f3d06",
+      "date": "2026-10-10",
+      "subject": "polish(settings): one-sentence privacy details; one permission surface",
+      "squash_headings": []
+    },
+    {
+      "sha": "f48648cece2743eb443759be05ee854c426acba3",
+      "date": "2026-10-10",
+      "subject": "polish(settings): License proportions and a calm About",
+      "squash_headings": []
+    },
+    {
+      "sha": "c45f5bae938bc0515fe8245452bb099c4f268606",
+      "date": "2026-10-10",
+      "subject": "polish(settings): Dictionary shows corrections as Before -> After",
+      "squash_headings": []
+    },
+    {
+      "sha": "6a044aaa4324fbc2e7ea24119ea4b2504643ec6e",
+      "date": "2026-10-10",
+      "subject": "test(settings): repin the contract after rounds 9-16",
+      "squash_headings": []
+    },
+    {
+      "sha": "50a02f36fc4c2d17e4120526a7566c4d715ed19b",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): rounds 9-16 catalog pass",
+      "squash_headings": []
+    },
+    {
+      "sha": "c6e1c27067ebdafd0937e85ae324e538a2e9397a",
+      "date": "2026-10-10",
+      "subject": "l10n(settings): Founder approves the two qualified sentences",
+      "squash_headings": []
+    },
+    {
+      "sha": "5be1e494b898b97c833a2afaa840ade8a44a0f1f",
+      "date": "2026-10-10",
+      "subject": "polish(tray): compact expansions, stable history rows",
+      "squash_headings": []
+    },
+    {
+      "sha": "946e2a9d9bea5f97a85f836a50a534a0cc8014c3",
+      "date": "2026-10-10",
+      "subject": "l10n(tray): round 17 catalog pass",
+      "squash_headings": []
+    },
+    {
+      "sha": "ea75e828eeba95f69776e305b0b4ff12067b63f7",
+      "date": "2026-10-10",
+      "subject": "polish(agent): one header row, one menu, an unmistakable pin",
+      "squash_headings": []
+    },
+    {
+      "sha": "84cea395be9b733c09e3d1677229a94afba0781f",
+      "date": "2026-10-10",
+      "subject": "l10n(agent): round 18A catalog pass",
+      "squash_headings": []
+    },
+    {
+      "sha": "f8660f333a38ca1ab13879812097bb7b85e3ec1f",
+      "date": "2026-10-10",
+      "subject": "fix(agent): the yellow button hides the Agent window",
+      "squash_headings": []
+    },
+    {
+      "sha": "c9cb7da3e33d8c7fc70d862bdefe99d5999faba0",
+      "date": "2026-10-10",
+      "subject": "fix(agent): write the rail width cap where it is measured",
+      "squash_headings": []
+    },
+    {
+      "sha": "06d397e7cfb74b66349518cd033ee7e7936ce8d5",
+      "date": "2026-10-10",
+      "subject": "fix(live): PCM authority for word disputes, retire restated preview, bound Stop shaping",
+      "squash_headings": []
+    },
+    {
+      "sha": "23fed98518213ae2161adab27daba965bb3e8a27",
+      "date": "2026-10-10",
+      "subject": "revert: rail width cap coordinator (c9cb7da3)",
+      "squash_headings": []
+    },
+    {
+      "sha": "55584956b56dc894dc4c602175c990e1585dd683",
+      "date": "2026-10-10",
+      "subject": "merge: origin/main (#161) into build/atlas-ui-smoke",
+      "squash_headings": []
+    },
+    {
+      "sha": "4f30dced797bf4869a91ca26b5a5b5728fe3cbfc",
+      "date": "2026-10-10",
+      "subject": "chore(stt): report word alignment refusal causes",
+      "squash_headings": []
+    },
+    {
+      "sha": "1676edcba09bab5911230bc08cce87262879d6d2",
+      "date": "2026-10-10",
+      "subject": "test(l10n): sample plural variations on a live key",
+      "squash_headings": []
+    },
+    {
+      "sha": "64fe1e01b48a178c6df0bfdce106b8eda2e3d249",
+      "date": "2026-10-10",
+      "subject": "l10n: restore canonical catalog formatting",
+      "squash_headings": []
+    },
+    {
+      "sha": "7fe9bb4f520b2ec0b4ccb2cd74557a9689d7fdfa",
+      "date": "2026-10-10",
+      "subject": "merge(settings): admit complete PR159 About and localization",
+      "squash_headings": []
+    },
+    {
+      "sha": "af6734feb9fe7b6e9fc65c3e728bf58180240153",
+      "date": "2026-10-10",
+      "subject": "fix(dictionary): credit suggestions only for rules they added (PR #159 review)",
+      "squash_headings": []
+    },
+    {
+      "sha": "d0137e4a7f0fe50405e8b1429b30eb7900afe6e2",
+      "date": "2026-10-10",
+      "subject": "fix(stt): bound live lexical trials and preserve text at Stop",
+      "squash_headings": []
+    },
+    {
+      "sha": "3b137ee727545d345e63f87d9ce0d68ac5f3780f",
+      "date": "2026-10-10",
+      "subject": "fix(overlay): keep uncommitted evidence in the bounded chip",
+      "squash_headings": []
+    },
+    {
+      "sha": "bd6c8579b9575017fc449033922a14546198b257",
+      "date": "2026-10-11",
+      "subject": "fix(dictionary): corroborate fuzzy labels and gate overlay diagnostics",
+      "squash_headings": []
+    },
+    {
+      "sha": "674b6f94dbc244890d0b3a896bdfbfb82d7afc08",
+      "date": "2026-10-11",
+      "subject": "fix(overlay): keep agent capture expanded until stop",
+      "squash_headings": []
+    },
+    {
+      "sha": "cebf6e428cbc936c5e1c3580942cd076b99c7403",
+      "date": "2026-10-11",
+      "subject": "fix(stt): explain recovery debt behind coverage refusals",
+      "squash_headings": []
+    },
+    {
+      "sha": "2d3c04393d97edf69d566c1e627bbc7400a29623",
+      "date": "2026-10-11",
+      "subject": "perf(stt): qualify dictionary witnesses before fuzzy retrieval",
+      "squash_headings": []
+    },
+    {
+      "sha": "1e2d609b44b80e5915d81f348cda26a24a1e2188",
+      "date": "2026-10-11",
+      "subject": "merge(stt): admit corroborated dictionary with integrator fixtures",
+      "squash_headings": []
+    },
+    {
+      "sha": "b91fa2b0d004cd8498ba2e1a534dc5e6117818be",
+      "date": "2026-10-11",
+      "subject": "merge(stt): qualify witnesses before dictionary retrieval",
+      "squash_headings": []
+    },
+    {
+      "sha": "77c7afee991bc97c0bc34597c0868b2373bc7c55",
+      "date": "2026-10-11",
+      "subject": "merge(stt): admit recovery diagnostics with observer falsifiers",
+      "squash_headings": []
+    },
+    {
+      "sha": "1e824e1247db0c895b1b44c876bafd78620016ca",
+      "date": "2026-10-11",
+      "subject": "test(stt): bind dictionary contract harness to its admission gate",
+      "squash_headings": []
+    },
+    {
+      "sha": "8fbbfd766557caf495b3dfdcf44ab93c172dcb18",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require lexical evidence for word repartition",
+      "squash_headings": []
+    },
+    {
+      "sha": "f20724675abb3f30b2b971b723f909688b7cf487",
+      "date": "2026-10-11",
+      "subject": "test(stt): retain protected vocabulary in source contracts",
+      "squash_headings": []
+    },
+    {
+      "sha": "e2df752ab552b8787236ab7a3926a64844958fbd",
+      "date": "2026-10-11",
+      "subject": "merge(stt): require lexical proof for word repartition",
+      "squash_headings": []
+    },
+    {
+      "sha": "775a988a506591596ab651748502a02a9a09c401",
+      "date": "2026-10-11",
+      "subject": "fix(stt): preserve producer pass and pin scope in grouped witnesses",
+      "squash_headings": []
+    },
+    {
+      "sha": "a7c0859b017504817bfff167358c1eed31f0ae7b",
+      "date": "2026-10-11",
+      "subject": "fix(stt): keep exact word boundaries in context-only corrections",
+      "squash_headings": []
+    },
+    {
+      "sha": "213f8fe6590de4f53b2bbc394c96dcf90322ec2e",
+      "date": "2026-10-11",
+      "subject": "merge(stt): preserve producer identity in grouped word evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "b9631d0f8dbbf01f0c773dbc8a1bca0fb035bf9a",
+      "date": "2026-10-11",
+      "subject": "merge(stt): retain exact PCM partition during context-only corrections",
+      "squash_headings": []
+    },
+    {
+      "sha": "629e2d736d26dc59df1042880f6506fa32d9d66f",
+      "date": "2026-10-11",
+      "subject": "fix(stt): adjudicate negation changes during phrase refinement",
+      "squash_headings": []
+    },
+    {
+      "sha": "d76dc1fa653c7fa7c4b887432dd1413143ea7037",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require lexical evidence for word replacement",
+      "squash_headings": []
+    },
+    {
+      "sha": "86c4d57a8e2220f28a357612f818e5af0fb2e9d1",
+      "date": "2026-10-11",
+      "subject": "fix(ui): link Max preparation warning to recovery settings",
+      "squash_headings": []
+    },
+    {
+      "sha": "e7ba7e31391153a079d17f2b69bfc9b9d8b265e2",
+      "date": "2026-10-11",
+      "subject": "fix(stt): reserve bounded trial partitions before decoding",
+      "squash_headings": []
+    },
+    {
+      "sha": "6ddb9f5a2554d4e7bca2beee282678fe1fea9f74",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain unresolved trial scope for later evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "1bdebfb69ebc9c0a6c460fa817bcacf22f15e28e",
+      "date": "2026-10-11",
+      "subject": "fix(stt): preserve word evidence when settled groups separate",
+      "squash_headings": []
+    },
+    {
+      "sha": "d4b9e5c662ecbe12088243e4bc592a21a4ba9796",
+      "date": "2026-10-11",
+      "subject": "merge(stt): retain unresolved trial scope across ordinary evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "f38d4079a4cdcb0bcaef0ff599dd39058989a98a",
+      "date": "2026-10-11",
+      "subject": "merge(stt): preserve evidence when settled word groups separate",
+      "squash_headings": []
+    },
+    {
+      "sha": "f72628e705722cec29a9c02151677bce4e93df7e",
+      "date": "2026-10-11",
+      "subject": "fix(stt): scope Apple veto to complete lexical evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "7146b52fab0881ecbca08d64c629c550bc2e7c45",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain decode identity beyond rolling witnesses",
+      "squash_headings": []
+    },
+    {
+      "sha": "895423a569007f798ccadc3e8612c88f9c0aaa02",
+      "date": "2026-10-11",
+      "subject": "fix(stt): preserve source PCM in bounded Whisper windows",
+      "squash_headings": []
+    },
+    {
+      "sha": "65d219c1ba610e6bb3dcbb32fd61d8b105274c59",
+      "date": "2026-10-11",
+      "subject": "fix(ui): keep agent replies visible through playback and reading",
+      "squash_headings": []
+    },
+    {
+      "sha": "741a5ae69ec4ddba55f47dcf108e4dd7be5bcc74",
+      "date": "2026-10-11",
+      "subject": "fix(live): PCM authority for word disputes, retire restated preview, bound Stop shaping",
+      "squash_headings": []
+    },
+    {
+      "sha": "d1e51f7e8876e1f7da252371db049ecccaddbd42",
+      "date": "2026-10-11",
+      "subject": "chore(stt): report word alignment refusal causes",
+      "squash_headings": []
+    },
+    {
+      "sha": "8f1ac1346684a30d4592e99b9ee457cb03c8c700",
+      "date": "2026-10-11",
+      "subject": "fix(stt): bound live lexical trials and preserve text at Stop",
+      "squash_headings": []
+    },
+    {
+      "sha": "0ac75c9d0b2243ea476241b707f89a269f0eb370",
+      "date": "2026-10-11",
+      "subject": "fix(overlay): keep uncommitted evidence in the bounded chip",
+      "squash_headings": []
+    },
+    {
+      "sha": "13d7149991f92c5c85b4212a14b47c63c8043aa0",
+      "date": "2026-10-11",
+      "subject": "fix(overlay): keep agent capture expanded until stop",
+      "squash_headings": []
+    },
+    {
+      "sha": "018baa72c1e455e5cad2a0ea1228e542d56526bc",
+      "date": "2026-10-11",
+      "subject": "fix(dictionary): corroborate fuzzy labels and gate overlay diagnostics",
+      "squash_headings": []
+    },
+    {
+      "sha": "f58057198b412011b8fc7ad79511414db8496d33",
+      "date": "2026-10-11",
+      "subject": "perf(stt): qualify dictionary witnesses before fuzzy retrieval",
+      "squash_headings": []
+    },
+    {
+      "sha": "a748540913ffb3ca1d691282cb25f931fbcf7703",
+      "date": "2026-10-11",
+      "subject": "fix(stt): explain recovery debt behind coverage refusals",
+      "squash_headings": []
+    },
+    {
+      "sha": "09539ee4d9568297527caf75a3bd4808fe957fac",
+      "date": "2026-10-11",
+      "subject": "test(stt): bind dictionary contract harness to its admission gate",
+      "squash_headings": []
+    },
+    {
+      "sha": "6b73ac3563e45912ce5e8bedc23b4ab6dcbf7dc4",
+      "date": "2026-10-11",
+      "subject": "test(stt): retain protected vocabulary in source contracts",
+      "squash_headings": []
+    },
+    {
+      "sha": "3d724e5f3f47fc1ad2f6a8b1761c165de0d16159",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require lexical evidence for word repartition",
+      "squash_headings": []
+    },
+    {
+      "sha": "b7aa4bd190439ea0fc611da2dd85f1210ac080a9",
+      "date": "2026-10-11",
+      "subject": "fix(stt): preserve producer pass and pin scope in grouped witnesses",
+      "squash_headings": []
+    },
+    {
+      "sha": "1b0ced6b1f236b2f8ae1212318a126e1d29e32ae",
+      "date": "2026-10-11",
+      "subject": "fix(stt): keep exact word boundaries in context-only corrections",
+      "squash_headings": []
+    },
+    {
+      "sha": "42a6080ca260ce9278310920c5167e0344d06490",
+      "date": "2026-10-11",
+      "subject": "fix(ui): link Max preparation warning to recovery settings",
+      "squash_headings": []
+    },
+    {
+      "sha": "9cd7f4eb3c3d636acc6bb70b29a62a375c11bde5",
+      "date": "2026-10-11",
+      "subject": "fix(stt): adjudicate negation changes during phrase refinement",
+      "squash_headings": []
+    },
+    {
+      "sha": "def950b1ca9c7829da852cce40dca86711d992a1",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require lexical evidence for word replacement",
+      "squash_headings": []
+    },
+    {
+      "sha": "3809b295d18dbab75bcc21ccf1491bdbd596a1a3",
+      "date": "2026-10-11",
+      "subject": "fix(stt): reserve bounded trial partitions before decoding",
+      "squash_headings": []
+    },
+    {
+      "sha": "a8e00da3666be4a68ff5c01b7018b89280f6dda1",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain unresolved trial scope for later evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "3bab511e1c08a1aa47362bc69965e491bc6ddbc1",
+      "date": "2026-10-11",
+      "subject": "fix(stt): preserve word evidence when settled groups separate",
+      "squash_headings": []
+    },
+    {
+      "sha": "64d9194cd2041f490cdb2c694b2b7eebb3b54512",
+      "date": "2026-10-11",
+      "subject": "feat: finish repository labels for attached agents",
+      "squash_headings": []
+    },
+    {
+      "sha": "e4e0dd5589a423d865e549b7c7a9fd993397f2f4",
+      "date": "2026-10-11",
+      "subject": "fix: hold expanded overlay throughout channel recording",
+      "squash_headings": []
+    },
+    {
+      "sha": "ed684d400456c925052ca4ccec6907f7a944f540",
+      "date": "2026-10-11",
+      "subject": "merge: retain Dragon integration and div0 UI changes",
+      "squash_headings": []
+    },
+    {
+      "sha": "d909ea64ebcb9b7e4b3f9ac27bd6dcebc522b348",
+      "date": "2026-10-11",
+      "subject": "merge(stt): admit v13 v14 and original PCM chain",
+      "squash_headings": []
+    },
+    {
+      "sha": "7ad876babed9c6e03045e479247229b4652a8809",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain recognizer onset context in PCM ownership",
+      "squash_headings": []
+    },
+    {
+      "sha": "df2112901265ba364fc225112a626963d76ddb3c",
+      "date": "2026-10-11",
+      "subject": "fix(stt): request live evidence for first incomplete Apple disputes",
+      "squash_headings": []
+    },
+    {
+      "sha": "d22c3c62364edf5443eb2913aa65edad04af8146",
+      "date": "2026-10-11",
+      "subject": "fix(ui): open Max settings from its warning",
+      "squash_headings": []
+    },
+    {
+      "sha": "b18e91ea2215d6c899eb6e74bd1e891d8a514abc",
+      "date": "2026-10-11",
+      "subject": "merge(stt): admit onset ownership and first live trial",
+      "squash_headings": []
+    },
+    {
+      "sha": "9b23ce939c1e513a470435cb17e4e1674ab715e6",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require heard dictionary forms for fuzzy admission",
+      "squash_headings": []
+    },
+    {
+      "sha": "217c56fc06e6d71179bcefbdd2ebc9f22a31513a",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain incomplete first words as decode evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "622e73bd8acdaeb028f9f5d5b38e7992ac773369",
+      "date": "2026-10-11",
+      "subject": "test(stt): cover onset ownership and live witness requests",
+      "squash_headings": []
+    },
+    {
+      "sha": "172b19276c3aa810461e1d11fc3adcdc3d86ecf1",
+      "date": "2026-10-11",
+      "subject": "fix: restore Comfort and Deferred Paste for terminals",
+      "squash_headings": []
+    },
+    {
+      "sha": "f006857a7874a2180d459e38b5ab93bc2a124ff7",
+      "date": "2026-10-11",
+      "subject": "Restore build639 engine for bounded release rescue",
+      "squash_headings": []
+    },
+    {
+      "sha": "19ece0d277f5392352cce91eef228a5923bea035",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain unmatched late Apple overlaps as evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "5613a887e04a31f1036f1e9111dde67f75094755",
+      "date": "2026-10-11",
+      "subject": "fix(stt): recover unowned words from retained measured windows",
+      "squash_headings": []
+    },
+    {
+      "sha": "5dadfd521fc3da0d1bc7ae1a16f2b46568c0df1a",
+      "date": "2026-10-11",
+      "subject": "merge: prepare forward engine with current UI and Comfort",
+      "squash_headings": []
+    },
+    {
+      "sha": "ffb980ebaede61f4ddc9d8324788b30f9be0374a",
+      "date": "2026-10-11",
+      "subject": "fix(stt): link refused pin diagnostics to measured choices",
+      "squash_headings": []
+    },
+    {
+      "sha": "e4948ee647118429db2b03713cfb3cffe288e20c",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require complete word evidence to settle recovery",
+      "squash_headings": []
+    },
+    {
+      "sha": "abbf3ee9005f970f3108dcc4caf18f1c5bb3cd65",
+      "date": "2026-10-11",
+      "subject": "fix(stt): retain decoder authority through dictionary spelling",
+      "squash_headings": []
+    },
+    {
+      "sha": "197e54f60c08523775b0d73941316be07e8c7478",
+      "date": "2026-10-11",
+      "subject": "fix(stt): admit complete unowned words in settled live gaps",
+      "squash_headings": []
+    },
+    {
+      "sha": "97cf8b7c11ab002e733f4102bfdb7042376a13ab",
+      "date": "2026-10-11",
+      "subject": "fix(stt): admit first complete bijective word group to adjudication",
+      "squash_headings": []
+    },
+    {
+      "sha": "1611690cf3b335129ffa76da3bb9a2008ce7ad20",
+      "date": "2026-10-11",
+      "subject": "merge(settings): admit complete Monika PR159 with current delivery",
+      "squash_headings": []
+    },
+    {
+      "sha": "e0f144450a100f4a6959227149cadaed0ca6d236",
+      "date": "2026-10-11",
+      "subject": "merge(rc): combine forward engine through v20 with Monika PR159",
+      "squash_headings": []
+    },
+    {
+      "sha": "2d1cd33d0b68d78f8d6404aceb624f83167c074f",
+      "date": "2026-10-11",
+      "subject": "test(stt): falsify forward word groups and dictionary lineage for RC",
+      "squash_headings": []
+    },
+    {
+      "sha": "040d92f5c5114edcc9d9ded39f85fe0cb15d35fe",
+      "date": "2026-10-11",
+      "subject": "fix(stt): keep voiced capture origin unresolved",
+      "squash_headings": []
+    },
+    {
+      "sha": "a0875a537d3698b99e2eb06af809aed10ffec64e",
+      "date": "2026-10-11",
+      "subject": "fix(stt): require each held word to settle returned scope",
+      "squash_headings": []
+    },
+    {
+      "sha": "6cf64d2f67d726f63e4c052c6fb706d4d7491fbd",
+      "date": "2026-10-11",
+      "subject": "merge Lena origin-safety cuts into forward+Monika RC",
+      "squash_headings": []
+    },
+    {
+      "sha": "9c3e79ead3e92a0403856f251a88429371f412d1",
+      "date": "2026-10-11",
+      "subject": "test: authenticate both PCM edges in recovery fixtures",
+      "squash_headings": []
+    },
+    {
+      "sha": "ced4f3f6d3b811de3ff5f8363e2e88cff27b0757",
+      "date": "2026-10-11",
+      "subject": "fix(stt): prove capture onset with authenticated quiet PCM",
+      "squash_headings": []
+    },
+    {
+      "sha": "a8898bbf57674177868262ad09ede1ea348da29c",
+      "date": "2026-10-11",
+      "subject": "merge: finish forward+Monika RC with authenticated PCM edges",
+      "squash_headings": []
+    },
+    {
+      "sha": "150160241b1d595134cfd5af7f1e41b937655273",
+      "date": "2026-10-11",
+      "subject": "fix: retain historical Whisper word boundary evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "0f09fff44b68759af6bd4a02965a277d034af62a",
+      "date": "2026-10-11",
+      "subject": "fix: honor measured quiet onsets in live recovery and trials",
+      "squash_headings": []
+    },
+    {
+      "sha": "23449118a960d29130493dcc9ce9abe75a8c16eb",
+      "date": "2026-10-11",
+      "subject": "Add broadcast microphone and global reply mute",
+      "squash_headings": []
+    },
+    {
+      "sha": "39f6cecb6abdbe1755411dd51cf22049aade7d7a",
+      "date": "2026-10-11",
+      "subject": "fix: account for measured near-left Whisper cuts",
+      "squash_headings": []
+    },
+    {
+      "sha": "608fff5080f368c32365242f214eab66b45a3db5",
+      "date": "2026-10-11",
+      "subject": "Keep the composer caret visible and clarify widget and paste labels",
+      "squash_headings": []
+    },
+    {
+      "sha": "05de1f6bc80ce255a765ceee5b985aa00183a36b",
+      "date": "2026-10-11",
+      "subject": "Merge Lena v24 through v26 into forward plus Monika candidate",
+      "squash_headings": []
+    },
+    {
+      "sha": "e84a27b78c1a443a10a61e256d1cd8a8529ac44a",
+      "date": "2026-10-11",
+      "subject": "Verify retained boundaries quiet trials and near-left cuts on captured PCM",
+      "squash_headings": []
+    },
+    {
+      "sha": "aca0b1627ca45c3b0460636de2b708ee0191ae56",
+      "date": "2026-10-11",
+      "subject": "fix: allow bounded live evidence for negation disputes",
+      "squash_headings": []
+    },
+    {
+      "sha": "f5443294940afc6589ec140b3d82b510a2a7f673",
+      "date": "2026-10-11",
+      "subject": "Merge latest Lena negation trial cut before installation",
+      "squash_headings": []
+    },
+    {
+      "sha": "9a5868c96955eae1472d3b379c77ffa68424abc1",
+      "date": "2026-10-11",
+      "subject": "Record v27 negation trial debt and align onset fixtures",
+      "squash_headings": []
+    },
+    {
+      "sha": "24b6353b5f3af59ec55d5cd6e32c6e1fbe95dc71",
+      "date": "2026-10-11",
+      "subject": "fix: admit bounded trial answers for reserved coarse groups",
+      "squash_headings": []
+    },
+    {
+      "sha": "a81e22fd4dea89eb2f3a7d13a86e17b587353baf",
+      "date": "2026-10-11",
+      "subject": "Merge Lena v28 coarse trial return for immediate install",
+      "squash_headings": []
+    },
+    {
+      "sha": "97dc7b2d2000865ae15e93494a095584aac82fd4",
+      "date": "2026-10-11",
+      "subject": "fix: preserve measured Apple word pins during resegmentation",
+      "squash_headings": []
+    },
+    {
+      "sha": "1a62dd0cd550b7ee54a2b940dffb2b2de846ff56",
+      "date": "2026-10-11",
+      "subject": "Grow overlay composer before scrolling and distinguish Voice Lab",
+      "squash_headings": []
+    },
+    {
+      "sha": "beee9e76796bfd5c990ebac9e7a2b754e50db631",
+      "date": "2026-10-11",
+      "subject": "Merge Lena v29 word-pin conservation into forward and Monika",
+      "squash_headings": []
+    },
+    {
+      "sha": "8da090b96043a472d9ac69849e9d124952c44712",
+      "date": "2026-10-11",
+      "subject": "test(stt): cover coarse targets and independent Apple pins",
+      "squash_headings": []
+    },
+    {
+      "sha": "a2e2bdad6b6e71f0093550afd0ff7da3a6252743",
+      "date": "2026-10-11",
+      "subject": "attach pasted files and long text as local pointers",
+      "squash_headings": []
+    },
+    {
+      "sha": "8d05c055c472ddf5bf6cc8d447767edde3ecde1f",
+      "date": "2026-10-11",
+      "subject": "fix: retain unrouted decoder-edge word recovery debt",
+      "squash_headings": []
+    },
+    {
+      "sha": "1b0cdb1e7e9985bfbab8fa47062600736136ab68",
+      "date": "2026-10-11",
+      "subject": "feat: compare preserved native takes with ElevenLabs",
+      "squash_headings": []
+    },
+    {
+      "sha": "8e223e210b6cb728461cf308cbca915e4084e2eb",
+      "date": "2026-10-11",
+      "subject": "Merge commit '8d05c055c472ddf5bf6cc8d447767edde3ecde1f' into fix/lena-forward-live",
+      "squash_headings": []
+    },
+    {
+      "sha": "fc4b3eb2f8fd2d081c750495c77c16ecad9b0326",
+      "date": "2026-10-11",
+      "subject": "test: retain rejected edge pins without granting finality",
+      "squash_headings": []
+    }
+  ]
+}
