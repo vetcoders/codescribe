@@ -1187,3 +1187,27 @@ Credential creation, custom plugin registration and the eventual persistent
 channel subscription are separate user-approved setup actions. Add and verify
 MCP 2.0 webhook delivery only after the same chat can complete this text ping;
 do not claim `listening_verified` from this local probe.
+
+### Disposable synthetic launcher — runtime acceptance pending
+
+`python3 -B scripts/mcp-synthetic-ping.py --timeout 15` creates its own private
+random temporary directory and one synthetic `Miksa, ping` delivery. No CLI
+argument can select a production path, session or channel. It runs one MCP text
+exchange, reads back `pong` through the installed canonical publisher, stops its
+owned process group on timeout and cleans only its own fixture. The maximum
+requested exchange timeout is 30 seconds. No autostart or persistent listener.
+
+The child receives a minimal environment with HOME/TMPDIR inside the fixture.
+Synthetic mode requires provider `fixture`, a matching owner marker, exact
+bridge/bus paths and no symlink escapes. It disables native queue settlement.
+The launcher requires macOS sandbox-exec with default-deny rules, read access to
+code/runtime, writes confined to the fixture and two permitted executables.
+It has no unsandboxed mode. These rules are not a cloud user authentication layer.
+
+The protected runtime exchange currently **fails before MCP initialization on
+Silver**: Python exits with SIGABRT under the restricted profile. The fixture is
+cleaned and no broader retry occurs. Tests prove the Python-level boundaries,
+queue exclusion and cleanup/timeout control logic; they do not prove successful
+OS-sandbox acceptance. Do not use this launcher as a working cloud endpoint or
+claim an OS isolation acceptance result until the protected ping passes. The
+earlier unprotected temporary-mailbox test is separate evidence.

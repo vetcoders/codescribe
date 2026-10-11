@@ -2683,7 +2683,7 @@ def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
     return receipt["queue_disposition"] in ("removed", "not_pending")
 
 
-def acknowledge_delivery(args: argparse.Namespace) -> int:
+def acknowledge_delivery(args: argparse.Namespace, *, settle_native_queue: bool = True) -> int:
     """Record receipt of one or more deliveries, all or nothing.
 
     Every id is checked before any marker is written: one unknown id refuses
@@ -2750,7 +2750,8 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
                                 if payload.get("delivery_id") == delivery_id), state["bus"])},
         )
     for delivery_id in delivery_ids:
-        withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
+        withdrawn = (withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
+                     if settle_native_queue else False)
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
               "native_queue_settled": withdrawn})
     return 0

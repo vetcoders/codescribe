@@ -48,13 +48,31 @@ TOOLS = [
 
 
 class Mailbox:
-    def __init__(self, provider, session, bridge_home, bus):
+    def __init__(self, provider, session, bridge_home, bus, fixture_root=None):
         self.args = argparse.Namespace(
             provider=provider.casefold(), session=session, bridge_home=bridge_home.resolve(),
             bus=bus.resolve(), bus_overridden=True, read_limit=2, read_bytes=LIMIT // 2,
             voice=None, speed=None, tts_vendor=None)
         self.lease = DEMUX.lease_identifier(self.args.provider, session)
         self.read_ids = set()
+        self.fixture_root = fixture_root.resolve(strict=True) if fixture_root else None
+        self.guard_fixture()
+
+    def guard_fixture(self):
+        """Constrain synthetic mode before I/O; the launcher also applies an OS sandbox."""
+        if self.fixture_root is None:
+            return
+        root = self.fixture_root
+        if (self.args.bridge_home != root or self.args.bus != root / "bus.jsonl"
+                or self.args.provider != "fixture"):
+            raise ValueError("synthetic mailbox paths or provider changed")
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                raise ValueError("synthetic mailbox contains a path escape")
+        marker = DEMUX.read_reply_json(root / "fixture.json")
+        if (marker.get("schema") != "codescribe.synthetic-probe.v1"
+                or marker.get("session") != self.args.session or marker.get("lease_id") != self.lease):
+            raise ValueError("synthetic owner marker does not match")
 
     def capture(self, operation):
         output = io.StringIO()
@@ -63,6 +81,7 @@ class Mailbox:
         return json.loads(output.getvalue())
 
     def call(self, name, arguments):
+        self.guard_fixture()
         definition = next((row for row in TOOLS if row["name"] == name), None)
         if not definition or not isinstance(arguments, dict):
             raise ValueError("unknown tool or invalid arguments")
@@ -80,7 +99,8 @@ class Mailbox:
             raise ValueError("request must be fully read in this connection")
         if name == "ack":
             self.args.ack = [identity]
-            return self.capture(DEMUX.acknowledge_delivery)
+            return self.capture(lambda args: DEMUX.acknowledge_delivery(
+                args, settle_native_queue=self.fixture_root is None))
         text = arguments["text"]
         if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 65536:
             raise ValueError("reply must contain 1–65536 UTF-8 bytes")
@@ -157,8 +177,10 @@ def main():
     parser.add_argument("--session", required=True)
     parser.add_argument("--bridge-home", required=True, type=Path)
     parser.add_argument("--bus", required=True, type=Path)
+    parser.add_argument("--fixture-root", type=Path,
+                        help="synthetic mode: fixed fixture paths, marker and no native queue settlement")
     args = parser.parse_args()
-    mailbox = Mailbox(args.provider, args.session, args.bridge_home, args.bus)
+    mailbox = Mailbox(args.provider, args.session, args.bridge_home, args.bus, args.fixture_root)
     while True:
         line = sys.stdin.buffer.readline(LIMIT + 1)
         if not line:
