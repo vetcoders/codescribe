@@ -2323,3 +2323,106 @@ fn cloud_word_edge_refusal_preserves_finality() {
     assert_eq!(ledger.text_of(&owner), Some("1286"));
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn cloud_word_context_guard_covers_incomplete_incumbent_resegmentation() {
+    for (decode, accepted) in [((24_001, 168_001), false), ((24_000, 168_000), true)] {
+        let (mut ledger, owner) = fixture();
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 192_000)],
+                )
+                .grants_mutation()
+        );
+        assert!(!ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[0]));
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(48_000, 64_000, "56").with_decode_window(decode.0, decode.1)],
+        );
+        assert_eq!(
+            receipt.grants_mutation(),
+            accepted,
+            "decode={decode:?}: {receipt:?}"
+        );
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(if accepted { "56" } else { "1286" })
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_guard_leaves_coarse_phrase_partition_to_its_owner() {
+    let (mut ledger, owner) = fixture();
+    let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+    assert!(
+        ledger
+            .admit_word_slots(
+                &cloud,
+                &[WordPin::new(48_000, 80_000, "old phrase").with_decode_window(0, 144_000)],
+            )
+            .grants_mutation()
+    );
+    assert!(ledger.coarse_word_source(&ledger.slots_of(&owner).unwrap()[0]));
+    let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+    let receipt = ledger.admit_word_slots(
+        &whisper,
+        &[
+            WordPin::new(48_000, 64_000, "new").with_decode_window(44_000, 188_000),
+            WordPin::new(64_000, 80_000, "phrase").with_decode_window(44_000, 188_000),
+        ],
+    );
+    assert!(
+        receipt.grants_mutation(),
+        "coarse refinement must retain its existing authority: {receipt:?}"
+    );
+    assert_eq!(ledger.text_of(&owner), Some("new phrase"));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    assert!(!ledger.slot_alternatives().iter().any(|alternative| {
+        alternative.observation == whisper && alternative.reason == "outside_publication_band"
+    }));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cloud_word_context_refusal_does_not_discard_an_unrelated_batch_word() {
+    let (mut ledger, owner) = fixture();
+    let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+    assert!(
+        ledger
+            .admit_word_slots(
+                &cloud,
+                &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 144_000)],
+            )
+            .grants_mutation()
+    );
+    let incumbent = ledger.slots_of(&owner).unwrap()[0].clone();
+    let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+    let receipt = ledger.admit_word_slots(
+        &whisper,
+        &[
+            WordPin::new(48_000, 64_000, "56").with_decode_window(44_000, 188_000),
+            WordPin::new(96_000, 112_000, "dalej").with_decode_window(44_000, 188_000),
+        ],
+    );
+    assert!(
+        receipt.grants_mutation(),
+        "the independent word must still be admitted: {receipt:?}"
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286 dalej"));
+    assert!(ledger.slots_of(&owner).unwrap().contains(&incumbent));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    assert!(ledger.slot_alternatives().iter().any(|alternative| {
+        alternative.observation == whisper
+            && alternative.candidate == "56"
+            && alternative.reason == "outside_publication_band"
+    }));
+    assert!(!ledger.text_recovery_pending(&owner));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
