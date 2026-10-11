@@ -1281,6 +1281,49 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  func testLicenseVerificationFailureCannotProjectHealthySettings() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .unavailable)
+    XCTAssertEqual(health.level, .degraded)
+    XCTAssertEqual(health.message, "License verification unavailable")
+    XCTAssertEqual(health.targetSection, .license)
+  }
+
+  func testPendingLicenseCheckDoesNotClaimReadiness() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .loading)
+    XCTAssertEqual(health.level, .unknown)
+    XCTAssertEqual(health.message, "Checking license…")
+    XCTAssertEqual(health.targetSection, .license)
+  }
+
+  func testAvailableLicenseReadDoesNotRequirePaidEntitlementForBasicReadiness() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .available)
+    XCTAssertEqual(health.level, .healthy)
+    XCTAssertNil(health.targetSection)
+  }
+
+  func testKnownCaptureFailuresKeepPriorityOverLicenseReadState() {
+    for licenseState in [
+      LicenseService.ReadState.available, .loading, .unavailable,
+    ] {
+      let speechFailure = healthState(
+        stt: false, recording: true, keys: .available, agent: true, formatting: true,
+        licenseReadState: licenseState)
+      XCTAssertEqual(speechFailure.level, .offline)
+      XCTAssertEqual(speechFailure.targetSection, .engine)
+      let recordingFailure = healthState(
+        stt: true, recording: false, keys: .available, agent: true, formatting: true,
+        licenseReadState: licenseState)
+      XCTAssertEqual(recordingFailure.level, .offline)
+      XCTAssertEqual(recordingFailure.targetSection, .audio)
+    }
+  }
+
   func testReadinessRequiresEnabledFormattingButDoesNotRequireDisabledLane() {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false)
