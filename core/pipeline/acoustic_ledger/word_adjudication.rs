@@ -55,7 +55,9 @@ use serde::{Deserialize, Serialize};
 /// second live witness; returned evidence still needs full lexical adjudication.
 /// v28: a reserved coarse target admits contained trial pins to the ordinary
 /// partition proof; unreserved coarse neighbors remain protected.
-pub const WORD_POLICY: &str = "word-adjudication/v28";
+/// v29: word-pin multiplicity survives resegmentation even when the source
+/// has no decoder-fence completeness receipt.
+pub const WORD_POLICY: &str = "word-adjudication/v29";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
