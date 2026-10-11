@@ -34,6 +34,12 @@ upper-right anchor.
 separate from starting a recording. Selecting a conversation also does not start
 capture or change the destination of a recording already in progress.
 
+While ordinary dictation is recording, a small orange underline blinks at the
+native text tail, including on an empty canvas before the first words arrive.
+It is decorative: it changes no transcript bytes, selection, copy or delivery.
+It disappears when capture stops or editing starts; Reduce Motion keeps it
+steady. This activity cue does not accelerate or change speech recognition.
+
 ## Speak to a channel
 
 Open the channel menu and use the microphone control next to a bound agent, or
