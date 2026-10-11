@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 /// an exact-edge pin needs measured quiet even without a closed Silero range.
 /// v17: an unmatched late Apple pin intersecting a complete Whisper Word
 /// needs a measured partition before it can add another occurrence.
-pub const WORD_POLICY: &str = "word-adjudication/v17";
+/// v18: recovery requires complete held decoder words; a Whisper word at
+/// capture origin shares the existing hypothesis boundary exception.
+pub const WORD_POLICY: &str = "word-adjudication/v18";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,8 +347,15 @@ impl AcousticLedger {
         let complete_words = words
             .iter()
             .filter(|pin| {
-                pin.decode_sample_start
-                    .is_some_and(|start| start < pin.sample_start)
+                let starts_inside_capture = pin.decode_sample_start.is_some_and(|start| {
+                    start < pin.sample_start
+                        // Capture origin has no earlier PCM to request. A
+                        // later window edge does not get this exception.
+                        || (observation.producer == ObservationProducer::Whisper
+                            && start == 0
+                            && pin.sample_start == 0)
+                });
+                starts_inside_capture
                     && pin.decode_sample_end.is_some_and(|end| {
                         if observation.producer == ObservationProducer::Whisper {
                             pin.sample_end <= end

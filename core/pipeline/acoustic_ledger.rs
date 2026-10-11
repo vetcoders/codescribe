@@ -985,16 +985,18 @@ impl AcousticLedger {
         // already held by a stronger source. Account for exact source ranges,
         // including a merge's gaps; an unrelated protected neighbour is not
         // authority over the entire offered pin.
+        let holds_speech = |source: &WordSlot| {
+            source.producer == ObservationProducer::ManualHuman
+                || (self.complete_word_slot(source)
+                    && (source.producer.authority_rank() > observation.producer.authority_rank()
+                        || (source.producer == observation.producer
+                            && source.observation.generation >= observation.generation)))
+        };
         let mut protected = self
             .slots_of(owner)
             .unwrap_or(&[])
             .iter()
-            .filter(|source| {
-                source.producer == ObservationProducer::ManualHuman
-                    || source.producer.authority_rank() > observation.producer.authority_rank()
-                    || (source.producer == observation.producer
-                        && source.observation.generation >= observation.generation)
-            })
+            .filter(|source| holds_speech(source))
             .flat_map(|source| self.slot_source_ranges(source))
             .filter(|range| range.same_capture(owner))
             .collect::<Vec<_>>();
@@ -1009,12 +1011,7 @@ impl AcousticLedger {
             .slots_of(owner)
             .unwrap_or(&[])
             .iter()
-            .filter(|source| {
-                source.producer == ObservationProducer::ManualHuman
-                    || source.producer.authority_rank() > observation.producer.authority_rank()
-                    || (source.producer == observation.producer
-                        && source.observation.generation >= observation.generation)
-            })
+            .filter(|source| holds_speech(source))
             .any(|source| {
                 self.word_pin_observations.contains(&source.observation)
                     && source.text.split_whitespace().count() == 1
