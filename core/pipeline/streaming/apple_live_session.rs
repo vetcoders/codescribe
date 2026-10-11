@@ -2299,28 +2299,42 @@ impl AppleSealState {
         decode_window: Option<(u64, u64)>,
     ) {
         let resolution = u64::from(self.sample_rate).div_ceil(50).saturating_add(1);
-        let edge = decode_window.and_then(|(start, end)| {
-            let edge_start = end.checked_sub(resolution)?;
-            (edge_start >= start)
-                .then(|| self.window_by_samples(edge_start, end))
-                .flatten()
-                .filter(|window| window.sample_start == edge_start && window.sample_end == end)
-        });
-        let range = edge.as_ref().map(|window| {
-            OccurrenceIdentity::new(
-                &self.session_id,
-                self.capture_epoch,
-                window.sample_start,
-                window.sample_end,
-            )
+        let read_edge = |start, end| {
+            self.window_by_samples(start, end)
+                .filter(|window| window.sample_start == start && window.sample_end == end)
+        };
+        let edges = decode_window
+            .map(|(start, end)| {
+                [
+                    start
+                        .checked_add(resolution)
+                        .filter(|edge_end| *edge_end <= end)
+                        .and_then(|edge_end| read_edge(start, edge_end)),
+                    end.checked_sub(resolution)
+                        .filter(|edge_start| *edge_start >= start)
+                        .and_then(|edge_start| read_edge(edge_start, end)),
+                ]
+            })
+            .unwrap_or([None, None]);
+        let ranges = edges.each_ref().map(|edge| {
+            edge.as_ref().map(|window| {
+                OccurrenceIdentity::new(
+                    &self.session_id,
+                    self.capture_epoch,
+                    window.sample_start,
+                    window.sample_end,
+                )
+            })
         });
         ledger.record_decode_fence_energy(
             &self.capture_energy,
             self.audio.session_sample_end(),
-            range
-                .as_ref()
-                .zip(edge.as_ref())
-                .map(|(range, window)| (range, window.samples.as_slice())),
+            std::array::from_fn(|index| {
+                ranges[index]
+                    .as_ref()
+                    .zip(edges[index].as_ref())
+                    .map(|(range, window)| (range, window.samples.as_slice()))
+            }),
         );
     }
 

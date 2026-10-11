@@ -264,7 +264,7 @@ fn measured_ledger_at_rate(
             .is_qualified()
     );
     ledger.record_speech_evidence(&speech);
-    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, None);
+    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
     ledger
 }
 
@@ -969,7 +969,7 @@ fn incomplete_decoder_fence_does_not_spend_a_later_complete_trial() {
         owner.capture_epoch,
         16_000,
     ));
-    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, None);
+    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
 
     let clipped = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 16_000, 64_000);
     assert!(ledger.decode_word_fence_incomplete(&owner, 16_000, 64_000, 48_000, 64_000));
