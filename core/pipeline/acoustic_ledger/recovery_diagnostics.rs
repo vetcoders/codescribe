@@ -46,6 +46,7 @@ pub struct CoverageDiagnostics {
 
 impl AcousticLedger {
     fn recovery_pin_diagnostic(&self, pin: &WordSlot) -> RecoveryPinDiagnostic {
+        let owner = &pin.observation.occurrence;
         RecoveryPinDiagnostic {
             observation: pin.observation.clone(),
             sample_start: pin.sample_start,
@@ -58,6 +59,25 @@ impl AcousticLedger {
                 .iter()
                 .filter(|alternative| alternative.sources.contains(pin))
                 .map(|alternative| alternative.reason.to_string())
+                // Alternatives name the held sources. A refused candidate
+                // can be absent from that list; its measured choice still
+                // records the refusal without granting it slot authority.
+                .chain(
+                    self.word_adjudication
+                        .choices
+                        .iter()
+                        .filter(|choice| {
+                            !choice.accepted
+                                && choice.observation == pin.observation
+                                && choice.candidate.pins.iter().any(|candidate| {
+                                    candidate.sample_start.max(owner.sample_start)
+                                        == pin.sample_start
+                                        && candidate.sample_end.min(owner.sample_end)
+                                            == pin.sample_end
+                                })
+                        })
+                        .map(|choice| choice.reason.clone()),
+                )
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect(),
