@@ -393,7 +393,11 @@ fn first_live_word_trial_requires_raw_banded_complete_evidence_against_incomplet
         let before = ledger.slots_of(&owner).unwrap().to_vec();
         let trial =
             ledger.next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000);
-        assert_eq!(trial.is_some(), case == "eligible", "{case}");
+        assert_eq!(
+            trial.is_some(),
+            matches!(case, "eligible" | "negation"),
+            "{case}"
+        );
         assert_eq!(
             ledger.slots_of(&owner).unwrap(),
             before,
@@ -1820,5 +1824,96 @@ fn integrator_v25_shared_trial_distinguishes_quiet_and_voiced_exact_left() {
         );
         assert_eq!(ledger.text_of(&owner), Some("56"));
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn integrator_v27_negation_dispute_collects_only_fresh_lexical_evidence() {
+    for (held, candidate) in [
+        ("nie robią teraz", ["nie", "lepią", "teraz"]),
+        ("już testuj teraz", ["nie", "testuj", "teraz"]),
+        ("nie testuj teraz", ["już", "testuj", "teraz"]),
+        ("nie testuj już", ["już", "testuj", "nie"]),
+    ] {
+        for answer in ["repeat", "unrelated", "fresh"] {
+            let owner = OccurrenceIdentity::new(
+                format!("live-negation-{held}-{answer}"),
+                1,
+                48_000,
+                88_000,
+            );
+            let mut pcm = vec![0.0; 192_000];
+            for start in [48_000, 64_000, 80_000] {
+                pcm[start..start + 8_000].fill(0.2);
+            }
+            let mut ledger = measured_ledger(&owner, &pcm);
+            ledger.schedule_frontier(
+                owner.clone(),
+                [ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 1, owner.clone());
+            assert!(ledger.admit(&apple, held).grants_mutation());
+            let pins = |words: [&str; 3], start, end| {
+                words
+                    .into_iter()
+                    .zip([48_000, 64_000, 80_000])
+                    .map(|(text, sample)| {
+                        WordPin::new(sample, sample + 8_000, text).with_decode_window(start, end)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let first = ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, owner.clone());
+            ledger.admit_word_slots(&first, &pins(candidate, 0, 160_000));
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(held),
+                "one complete witness cannot revise negation"
+            );
+            let before = ledger.slots_of(&owner).unwrap().to_vec();
+            let trial = ledger
+                .next_word_trial_before_horizon(false, None, Some((48_000, 0..192_000)), 96_000)
+                .expect("the negation dispute can collect its independent bounded witness");
+            assert_eq!(
+                ledger.slots_of(&owner).unwrap(),
+                before,
+                "dispatch supplies no mutation right"
+            );
+            let returned =
+                ObservationIdentity::new(ObservationProducer::Whisper, 3, 3, owner.clone());
+            let mut words = candidate;
+            if answer == "unrelated" {
+                words[1] = "obce";
+            }
+            let decode = if answer == "repeat" {
+                (0, 160_000)
+            } else {
+                (16_000, 144_000)
+            };
+            let returned_pins = pins(words, decode.0, decode.1);
+            let receipt =
+                ledger.admit_word_trial(&trial, &returned, &returned_pins, &returned_pins);
+            assert_eq!(
+                receipt.grants_mutation(),
+                answer == "fresh",
+                "{held}/{answer}: {:?}",
+                ledger.word_choices().last()
+            );
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if answer == "fresh" {
+                    candidate.join(" ")
+                } else {
+                    held.to_owned()
+                })
+                .as_deref()
+            );
+            assert!(
+                ledger
+                    .next_word_trial_before_horizon(false, None, Some((48_000, 0..192_000)), 96_000)
+                    .is_none(),
+                "returned attempts do not renew the native budget"
+            );
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
     }
 }

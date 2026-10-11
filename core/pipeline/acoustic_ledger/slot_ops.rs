@@ -5436,7 +5436,8 @@ mod slot_ops_tests {
 
     #[test]
     fn explicit_split_needs_child_boundaries_otherwise_text_has_group_accuracy() {
-        let mut ledger = measured_pinned(&[WordPin::new(100, 2_000, "naprawdę")]);
+        // Split semantics need complete children beyond the 20ms+1 onset frame.
+        let mut ledger = measured_pinned(&[WordPin::new(400, 2_000, "naprawdę")]);
         let target = SlotTarget::from(&ledger.slots_of(&owner()).unwrap()[0]);
         let next = observation(ObservationProducer::Whisper, 1);
         assert_eq!(
@@ -5444,7 +5445,7 @@ mod slot_ops_tests {
             Err(SlotOperationRefusal::InvalidEvidence)
         );
         let children = [
-            WordPin::new(100, 1_000, "na").with_decode_window(0, 16_000),
+            WordPin::new(400, 1_000, "na").with_decode_window(0, 16_000),
             WordPin::new(1_000, 2_000, "prawdę").with_decode_window(0, 16_000),
         ];
         let next = observation(ObservationProducer::Whisper, 2);
@@ -5472,15 +5473,15 @@ mod slot_ops_tests {
         assert_eq!(ledger.text_of(&owner()), Some("na prawdę"));
         assert_eq!(
             ledger.slot_source_ranges(&ledger.slots_of(&owner()).unwrap()[0]),
-            vec![OccurrenceIdentity::new("slot-test", 1, 100, 1_000)]
+            vec![OccurrenceIdentity::new("slot-test", 1, 400, 1_000)]
         );
 
-        let mut group = measured_pinned(&[WordPin::new(100, 2_000, "naprawdę")]);
+        let mut group = measured_pinned(&[WordPin::new(400, 2_000, "naprawdę")]);
         let mut next = next;
         corroborate_candidate(
             &mut group,
             &mut next,
-            &[WordPin::new(100, 2_000, "na prawdę").with_decode_window(0, 16_000)],
+            &[WordPin::new(400, 2_000, "na prawdę").with_decode_window(0, 16_000)],
             (0, 20_000),
         );
         assert_eq!(group.slots_of(&owner()).unwrap().len(), 1);
