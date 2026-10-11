@@ -48,9 +48,16 @@ the same deadline. Context quality ranks acoustic context, not lexical certainty
 A direct Whisper correction of a disagreeing CloudLive word is outside the
 Apple/Whisper adjudication pair, so it must independently meet the same measured
 decode-context floor before Whisper's higher producer rank may replace the
-label. Missing decode bounds grant no correction authority. Same-label evidence,
-first placement, and ManualHuman protection retain their existing admission
-paths; this rule creates no replay, sweep, or additional recovery debt.
+label. The direct word-grain check runs before resegmentation as well as
+ordinary admission, including incomplete incumbents; coarse phrase partitions
+retain their own existing authority. Missing decode bounds grant no direct word
+correction authority. Same-label evidence, first placement, and ManualHuman
+protection retain their existing admission paths; this rule creates no replay,
+sweep, or additional recovery debt.
+
+Independent measured word pins cannot be contracted by repeated ASR agreement.
+Their identities and source ranges survive rejected many-to-one candidates;
+legal one-to-one corrections and coarse phrase refinement remain available.
 
 Stop's automatic Light+ pass may append terminal punctuation only. Earlier
 casing, commas and whitespace keep their existing bytes, including when the last

@@ -1594,6 +1594,46 @@ impl AcousticLedger {
                 false
             });
         }
+        // Resegmentation runs before ordinary per-word correction and may consume a
+        // one-to-one window refinement. Enforce the CloudLive -> Whisper
+        // context boundary here so an incomplete exact source cannot bypass
+        // the direct-correction guard by entering that earlier path.
+        if observation.producer == ObservationProducer::Whisper {
+            incoming.retain(|word| {
+                let direct_sources = slots
+                    .iter()
+                    .filter(|source| {
+                        source.producer == ObservationProducer::CloudLive
+                            && !self.coarse_word_source(source)
+                            && ((source.sample_start == word.sample_start
+                                && source.sample_end == word.sample_end)
+                                || self.pin_targets_source(source, word))
+                    })
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let [source] = direct_sources.as_slice() else {
+                    return true;
+                };
+                if word_adjudication::label_equal(&source.text, &word.text)
+                    || self.whisper_has_correction_context(
+                        observation,
+                        word.sample_start,
+                        word.sample_end,
+                    )
+                {
+                    return true;
+                }
+                self.retain_slot_alternative(
+                    observation,
+                    &word.text,
+                    vec![source.clone()],
+                    "outside_publication_band",
+                );
+                self.record_word_slot_refusal(observation, word, false);
+                false
+            });
+        }
         let (mut resegments, proposed_coverages) =
             self.resegment_word_slots(observation, &mut slots, &mut incoming);
         let mut removed = resegments
@@ -1750,30 +1790,6 @@ impl AcousticLedger {
             }
             if let Some(&index) = conflicts.first() {
                 let source = &prior[index];
-                // CloudLive and Whisper do not form an acoustic adjudication
-                // pair, so their direct correction must enforce the same
-                // context floor explicitly. Missing decode bounds prove no
-                // quality. Same-label evidence continues through the ordinary
-                // path, and ManualHuman protection remains above this branch.
-                if local_choice.is_none()
-                    && source.producer == ObservationProducer::CloudLive
-                    && word.producer == ObservationProducer::Whisper
-                    && !word_adjudication::label_equal(&source.text, &word.text)
-                    && !self.whisper_has_correction_context(
-                        observation,
-                        word.sample_start,
-                        word.sample_end,
-                    )
-                {
-                    self.retain_slot_alternative(
-                        observation,
-                        &word.text,
-                        vec![source.clone()],
-                        "outside_publication_band",
-                    );
-                    self.record_word_slot_refusal(observation, &word, false);
-                    continue;
-                }
                 if word.producer != ObservationProducer::ManualHuman
                     && ordinary_target != Some(index)
                 {
