@@ -6828,7 +6828,6 @@ fn admit_retained_unowned_words(
         let owner = OccurrenceIdentity::from(&segment.range);
         if let Some(before) = live_before {
             if owner.sample_end > before
-                || (owner.sample_start == decode.sample_start && decode.sample_start != 0)
                 || state.fusion.as_ref().is_none_or(|fusion| {
                     fusion
                         .ledger()
@@ -6849,13 +6848,24 @@ fn admit_retained_unowned_words(
                 &mut ledger,
                 Some((decode.sample_start, decode.sample_end)),
             );
-            if ledger.decode_word_fence_incomplete(
-                &owner,
-                decode.sample_start,
-                decode.sample_end,
-                owner.sample_start,
-                owner.sample_end,
-            ) {
+            // A non-origin left edge needs the same authenticated quiet
+            // onset as admission. Keep origin visibility separate: an unknown
+            // capture onset still cannot become a complete acoustic witness.
+            if (owner.sample_start != 0
+                && !ledger.decode_word_onset_complete(
+                    &owner,
+                    decode.sample_start,
+                    decode.sample_end,
+                    owner.sample_start,
+                ))
+                || ledger.decode_word_fence_incomplete(
+                    &owner,
+                    decode.sample_start,
+                    decode.sample_end,
+                    owner.sample_start,
+                    owner.sample_end,
+                )
+            {
                 continue;
             }
         }
