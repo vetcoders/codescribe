@@ -290,6 +290,25 @@ impl FuzzyLexicon {
         Self { custom, protected }
     }
 
+    /// A heard canonical or registered alias can corroborate a spelling.
+    /// Fuzzy proximity alone is retrieval, even when several independent
+    /// decodes repeat the same unregistered source word.
+    pub(super) fn registered_candidate(&self, text: &str) -> Option<String> {
+        let key = retrieval_key(text);
+        let length = key.chars().count();
+        let canonicals = self
+            .custom
+            .nearby(length)
+            .chain(RETRIEVAL.nearby(length))
+            .filter(|term| term.key == key)
+            .map(|term| term.canonical.as_str())
+            .collect::<HashSet<_>>();
+        if canonicals.len() != 1 {
+            return None;
+        }
+        canonicals.into_iter().next().map(str::to_string)
+    }
+
     /// At most two edits, <=30% of a spelling, and a unique canonical winner.
     /// Aliases of one canonical do not compete with each other. A tied runner
     /// up is refused before any phonetic/context preference can conceal it.
