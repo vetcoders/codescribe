@@ -154,17 +154,22 @@ struct ProviderAccessStatusSlot: View {
 /// restyle (Founder brief, round 7, 2026-10-10).
 struct ProvidersSectionHeader<Action: View>: View {
   let text: String
+  let emphasized: Bool
   @ViewBuilder var action: () -> Action
 
-  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+  init(
+    _ text: String, emphasized: Bool = false,
+    @ViewBuilder action: @escaping () -> Action
+  ) {
     self.text = text
+    self.emphasized = emphasized
     self.action = action
   }
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text(text)
-        .font(CSFont.ui(13, .semibold))
+        .font(CSFont.ui(emphasized ? 15 : 13, emphasized ? .bold : .semibold))
         .foregroundStyle(Color.primary)
         .accessibilityAddTraits(.isHeader)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -176,7 +181,7 @@ struct ProvidersSectionHeader<Action: View>: View {
 
 extension ProvidersSectionHeader where Action == EmptyView {
   init(_ text: String) {
-    self.init(text, action: { EmptyView() })
+    self.init(text, emphasized: false, action: { EmptyView() })
   }
 }
 
@@ -226,6 +231,17 @@ struct ProviderCard: View {
   var onEdit: (() -> Void)?
 
   @State private var confirmRemove = false
+  @State private var showingAdvanced = false
+
+  init(
+    model: SettingsViewModel, provider: CsProviderOption,
+    onEdit: (() -> Void)? = nil, initiallyShowingAdvanced: Bool = false
+  ) {
+    self.model = model
+    self.provider = provider
+    self.onEdit = onEdit
+    _showingAdvanced = State(initialValue: initiallyShowingAdvanced)
+  }
 
   private var isCustom: Bool { provider.kind == "custom" }
   /// Vendors that ship an OAuth flow, or still hold tokens from one.
@@ -239,33 +255,17 @@ struct ProviderCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
-      HStack(spacing: 10) {
-        Text(provider.displayName)
-          .font(CSFont.ui(14.5, .bold))
-          .foregroundStyle(Color.primary)
-        Text(wireLabel)
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(Color.secondary)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 3)
-          .background(Capsule().fill(Color.primary.opacity(0.1)))
-          .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
-          .accessibilityLabel("\(wireLabel) wire")
-        Spacer(minLength: 0)
-        if isCustom {
-          SettingsChipButton("Edit", tint: Color.secondary) { onEdit?() }
-            .accessibilityLabel("Edit custom provider \(provider.displayName)")
-          SettingsChipButton("Remove", tint: CSColor.terracotta) { confirmRemove = true }
-            .accessibilityLabel("Remove custom provider \(provider.displayName)")
-        }
-      }
       if isCustom {
-        endpointRow
+        customProviderHeader
+        Divider().padding(.vertical, 2)
+      } else {
+        vendorProviderHeader
       }
       // Custom hosts are key-optional: an absent key there is neutral, not an error.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
-        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true)
+        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true,
+        presentation: isCustom ? .customProvider(endpoint: provider.endpoint) : .standard)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
@@ -283,7 +283,7 @@ struct ProviderCard: View {
           onSignOut: { model.signOutAccount(providerId: provider.id) }
         )
       }
-      DisclosureGroup("Advanced") {
+      DisclosureGroup(isExpanded: $showingAdvanced) {
         VStack(alignment: .leading, spacing: 8) {
           if !isCustom {
             endpointRow
@@ -297,6 +297,8 @@ struct ProviderCard: View {
           }
         }
         .padding(.top, 6)
+      } label: {
+        Text("Advanced")
       }
       .font(CSFont.ui(11.5))
       .foregroundStyle(Color.secondary)
@@ -325,6 +327,50 @@ struct ProviderCard: View {
     }
   }
 
+  private var vendorProviderHeader: some View {
+    HStack(spacing: 10) {
+      Text(provider.displayName)
+        .font(CSFont.ui(14.5, .bold))
+        .foregroundStyle(Color.primary)
+      wireBadge
+      Spacer(minLength: 0)
+    }
+  }
+
+  private var customProviderHeader: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Text(provider.displayName)
+        .font(CSFont.ui(14, .semibold))
+        .foregroundStyle(Color.primary)
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
+      wireBadge
+      Spacer(minLength: 10)
+      HStack(spacing: 8) {
+        SettingsChipButton("Edit", tint: Color.secondary) { onEdit?() }
+          .accessibilityLabel("Edit custom provider \(provider.displayName)")
+        SettingsChipButton(action: { confirmRemove = true }) {
+          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracotta)
+            .frame(width: 10, height: 18)
+        }
+        .accessibilityLabel("Remove custom provider \(provider.displayName)")
+      }
+      .fixedSize(horizontal: true, vertical: false)
+    }
+  }
+
+  private var wireBadge: some View {
+    Text(wireLabel)
+      .font(CSFont.mono(10, .semibold))
+      .foregroundStyle(Color.secondary)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(Capsule().fill(Color.primary.opacity(0.1)))
+      .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+      .accessibilityLabel("\(wireLabel) wire")
+      .fixedSize(horizontal: true, vertical: false)
+  }
+
   private var endpointRow: some View {
     SettingsDetailRow(title: String(localized: "Endpoint"), value: provider.endpoint)
       .accessibilityLabel("endpoint \(provider.endpoint)")
@@ -343,7 +389,7 @@ struct CustomProvidersSection: View {
       // The heading, the wire pills on the cards and the add sheet already say
       // what belongs here; the old explainer sentence is gone (Founder brief,
       // round 7, 2026-10-10).
-      ProvidersSectionHeader(String(localized: "Custom providers")) {
+      ProvidersSectionHeader(String(localized: "Custom providers"), emphasized: true) {
         Button(action: onAdd) {
           Label("Add provider", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))

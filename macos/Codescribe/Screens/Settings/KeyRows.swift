@@ -242,6 +242,11 @@ struct SettingsDetailRow: View {
 
 // MARK: - Key row (secret, write-only)
 
+enum KeyRowPresentation {
+  case standard
+  case customProvider(endpoint: String)
+}
+
 /// One Keychain account on one line: presence dot, label, state (`Set` /
 /// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
 /// paste-to-replace secure field, Save, Test, Clear. The account name is not
@@ -256,6 +261,9 @@ struct KeyRow: View {
   /// presence dot and state text carry the colour — so the host card stays one
   /// card, not a card in a card (Founder brief, round 7, 2026-10-10).
   var embedded: Bool = false
+  /// Custom providers place their visible endpoint beside this row's existing
+  /// presence summary. The editor and all mutations remain owned here.
+  var presentation: KeyRowPresentation = .standard
   let probeResult: CsApiKeyProbeResult?
   let probePending: Bool
   var mutationPending = false
@@ -275,80 +283,36 @@ struct KeyRow: View {
     isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
   }
 
+  init(
+    account: String, label: String, isSet: Bool, optional: Bool = false,
+    embedded: Bool = false, presentation: KeyRowPresentation = .standard,
+    probeResult: CsApiKeyProbeResult?, probePending: Bool,
+    mutationPending: Bool = false, initiallyEditing: Bool = false,
+    onSave: @escaping (String) async throws -> Void,
+    onClear: @escaping () async throws -> Void, onTest: @escaping () -> Void
+  ) {
+    self.account = account
+    self.label = label
+    self.isSet = isSet
+    self.optional = optional
+    self.embedded = embedded
+    self.presentation = presentation
+    self.probeResult = probeResult
+    self.probePending = probePending
+    self.mutationPending = mutationPending
+    self.onSave = onSave
+    self.onClear = onClear
+    self.onTest = onTest
+    _editing = State(initialValue: initiallyEditing)
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text(label)
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(Color.primary)
-        Spacer(minLength: 0)
-        if let probeResult {
-          KeyProbeChip(result: probeResult)
-        }
-        Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : accent)
-        SettingsChipButton(
-          isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
-        ) {
-          editing.toggle()
-          isFocused = editing
-        }
-        .accessibilityIdentifier("key-row-edit")
-      }
-
-      if editing {
-        HStack(spacing: 8) {
-          SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
-            .settingsInputChrome(isFocused: isFocused)
-            .focused($isFocused)
-            .onSubmit(save)
-            .accessibilityLabel("\(label) secret")
-
-          SettingsSaveButton(
-            enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            action: save
-          )
-          .accessibilityLabel("Save \(label)")
-
-          SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
-            Group {
-              if probePending {
-                ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
-              } else {
-                Text("Test", comment: "Button label: run a connection test")
-                  .font(CSFont.ui(12, .semibold))
-              }
-            }
-            .frame(width: 26, height: 18)
-            .foregroundStyle(Color.secondary)
-          }
-          .help(isSet ? "Test this key" : "Save a key first to test it")
-          .accessibilityLabel("Test \(label)")
-
-          SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
-            CSIconView(
-              icon: .delete, size: 12, weight: .semibold,
-              color: isSet ? CSColor.terracotta : Color.secondary
-            )
-            .frame(width: 10, height: 18)
-          }
-          .help("Remove this key from the Keychain")
-          .accessibilityLabel("Clear \(label)")
-        }
-      }
-      if operationPending {
-        HStack {
-          ProgressView().controlSize(.small)
-          Text("Updating provider access…").font(CSFont.ui(11.5))
-        }
-      }
-      if let operationError {
-        Text(operationError)
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.danger)
-          .textSelection(.enabled)
+    Group {
+      switch presentation {
+      case .standard:
+        standardContent
+      case .customProvider(let endpoint):
+        customProviderContent(endpoint: endpoint)
       }
     }
     // Presence-tinted card: green when set, red (required) / grey (optional)
@@ -363,6 +327,152 @@ struct KeyRow: View {
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(embedded ? 0 : 0.18), lineWidth: 1)
     )
+  }
+
+  private var standardContent: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      standardSummary
+
+      editingAndStatus
+    }
+  }
+
+  private func customProviderContent(endpoint: String) -> some View {
+    VStack(alignment: .leading, spacing: 9) {
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .center, spacing: 12) {
+          customProviderEndpoint(endpoint)
+            .frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
+          compactSummary
+            .fixedSize(horizontal: true, vertical: false)
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+          customProviderEndpoint(endpoint)
+          compactSummary
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+      }
+
+      editingAndStatus
+    }
+  }
+
+  private var standardSummary: some View {
+    HStack(spacing: 10) {
+      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      Text(label)
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(Color.primary)
+      Spacer(minLength: 0)
+      if let probeResult {
+        KeyProbeChip(result: probeResult)
+      }
+      presenceState
+      editButton
+    }
+  }
+
+  private var compactSummary: some View {
+    HStack(spacing: 8) {
+      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      Text(label)
+        .font(CSFont.ui(11.5, .semibold))
+        .foregroundStyle(Color.primary)
+      if let probeResult {
+        KeyProbeChip(result: probeResult)
+      }
+      presenceState
+      editButton
+    }
+  }
+
+  private var presenceState: some View {
+    Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
+      .font(CSFont.mono(10, .semibold))
+      .foregroundStyle(isSet ? CSColor.oliveLight : accent)
+  }
+
+  private var editButton: some View {
+    SettingsChipButton(
+      isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
+    ) {
+      editing.toggle()
+      isFocused = editing
+    }
+    .accessibilityIdentifier("key-row-edit")
+  }
+
+  private func customProviderEndpoint(_ endpoint: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text("API address")
+        .font(CSFont.ui(11, .medium))
+        .foregroundStyle(Color.secondary)
+      Text(verbatim: endpoint)
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(Color.primary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .layoutPriority(1)
+  }
+
+  @ViewBuilder private var editingAndStatus: some View {
+    if editing {
+      HStack(spacing: 8) {
+        SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
+          .settingsInputChrome(isFocused: isFocused)
+          .focused($isFocused)
+          .onSubmit(save)
+          .accessibilityLabel("\(label) secret")
+
+        SettingsSaveButton(
+          enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          action: save
+        )
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel("Save \(label)")
+
+        SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
+          Group {
+            if probePending {
+              ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
+            } else {
+              Text("Test", comment: "Button label: run a connection test")
+                .font(CSFont.ui(12, .semibold))
+            }
+          }
+          .frame(minWidth: 26, minHeight: 18)
+          .fixedSize(horizontal: true, vertical: false)
+          .foregroundStyle(Color.secondary)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .help(isSet ? "Test this key" : "Save a key first to test it")
+        .accessibilityLabel("Test \(label)")
+
+        SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
+          CSIconView(
+            icon: .delete, size: 12, weight: .semibold,
+            color: isSet ? CSColor.terracotta : Color.secondary
+          )
+          .frame(width: 10, height: 18)
+        }
+        .help("Remove this key from the Keychain")
+        .accessibilityLabel("Clear \(label)")
+      }
+    }
+    if operationPending {
+      HStack {
+        ProgressView().controlSize(.small)
+        Text("Updating provider access…").font(CSFont.ui(11.5))
+      }
+    }
+    if let operationError {
+      Text(operationError)
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(CSColor.danger)
+        .textSelection(.enabled)
+    }
   }
 
   private func save() {
@@ -398,13 +508,16 @@ extension KeyRow {
   /// Row wired to the view-model's save / clear / test for one account.
   init(
     model: SettingsViewModel, account: String, label: String, isSet: Bool,
-    optional: Bool = false, embedded: Bool = false
+    optional: Bool = false, embedded: Bool = false,
+    presentation: KeyRowPresentation = .standard, initiallyEditing: Bool = false
   ) {
     self.init(
       account: account, label: label, isSet: isSet, optional: optional, embedded: embedded,
+      presentation: presentation,
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
       mutationPending: model.providerMutationPending,
+      initiallyEditing: initiallyEditing,
       onSave: { try await model.saveKey(account: account, secret: $0) },
       onClear: { try await model.clearKey(account: account) },
       onTest: { model.testKey(account: account) })

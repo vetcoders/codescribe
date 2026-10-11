@@ -1254,6 +1254,7 @@ struct VoiceLabPanel: View {
         .font(CSFont.mono(11.5, .medium))
         .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
+      // Keep the arrow plain; the canonical text separates its AX label and stored value.
       Text(verbatim: "→")
         .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
@@ -1263,6 +1264,7 @@ struct VoiceLabPanel: View {
         .textSelection(.enabled)
         .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.localizedOrigin)")
         .accessibilityIdentifier("dictionary-lexicon-summary")
+        .accessibilityValue(row.canonical)
       Spacer(minLength: 0)
       if sharedRuleOrigin == nil {
         Text(row.localizedOrigin)

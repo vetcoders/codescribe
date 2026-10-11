@@ -118,10 +118,18 @@ The Rust release build fails when this variable is missing, malformed, or has
 the checked-in development-key fingerprint. Generating and provisioning the
 production keypair is an operator-owned release action.
 
-This variable is for distribution builds, not `make install-app`. Local source
-installs use the optimized `local-release` profile and the checked-in
-development verifier; a UUID or other random identifier is not a substitute
-for the Ed25519 public key.
+Local source installs use the optimized `local-release` profile.
+`make install-app` reads the configured `license-public.hex` from the private
+settings pack and explicitly passes it as this build variable. When invoking
+`make app PROFILE=local-release` directly for use with existing licenses, pass
+the public key paired with their signer as well: that profile can otherwise
+embed the checked-in development verifier. Signing and notarization do not
+select or validate the license verifier.
+
+Swift license fixtures deliberately require the development verifier; follow
+[the Swift test instructions](../macos/CodescribeTests/README.md) when switching
+between app and fixture builds. A UUID or other random identifier is not a
+substitute for the Ed25519 public key.
 
 ## 8. `SPARKLE_ED_PUBLIC_KEY` (repository variable)
 

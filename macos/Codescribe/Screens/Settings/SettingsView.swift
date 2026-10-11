@@ -216,7 +216,7 @@ struct SettingsView: View {
 /// Runtime-truth footer pinned under the sidebar. It is the one part of the old
 /// hand-drawn rail that carried information rather than chrome: a live health
 /// line that deep-links to the section owning the problem.
-private struct SettingsHealthFooter: View {
+struct SettingsHealthFooter: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {

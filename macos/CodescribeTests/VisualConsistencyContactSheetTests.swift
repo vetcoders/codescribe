@@ -88,6 +88,154 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
     )
   }
 
+  func testSettingsDensityPolishPreviews() async throws {
+    let run = SheetRun()
+    let directory = try run.prepareDirectory()
+    let longName =
+      "Research and engineering desktop tools with the complete server name retained "
+      + String(repeating: "UnbrokenServerToken", count: 4)
+    let longEndpoint =
+      "https://example.invalid/teams/research-and-engineering/providers/custom/messages/"
+      + String(repeating: "unbrokenEndpointToken", count: 8) + "/v1/messages"
+    let providers: [CsProviderOption] = [
+      .row(
+        id: "custom:buddy", kind: "custom", name: "Buddy", wire: "responses",
+        endpoint: "http://127.0.0.1:8000/v1/responses", account: "FIXTURE_BUDDY", keySet: true),
+      .row(
+        id: "custom:long", kind: "custom",
+        name: "Research provider with a complete name that must wrap rather than disappear",
+        wire: "messages", endpoint: longEndpoint, account: "FIXTURE_LONG", keySet: false),
+    ]
+    let store = MockProviderStore()
+    store.custom = providers
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(providerStore: store),
+      permissionProbe: MockPermissionProbe(.allGranted),
+      licenseService: .preview,
+      runtimeLlmLaneProvider: { store.runtimeLane($0) })
+    model.refreshProviderAccess()
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertEqual(model.customProviders.count, providers.count)
+
+    for (sizeName, width) in [
+      ("floor", SettingsView.detailMinWidth), ("wide", CGFloat(1040)),
+    ] {
+      let mcpCards = VStack(alignment: .leading, spacing: 7) {
+        SettingsPageHeader(String(localized: "MCP servers"))
+        MCPServerRow(
+          server: densityServer("desktop-commander", enabled: true),
+          pending: false, result: nil, permissionLevel: nil,
+          onToggle: {}, onTest: {}, onRemove: {})
+        MCPServerRow(
+          server: densityServer("Disabled server with a previous successful test", enabled: false),
+          pending: false,
+          result: CsMcpTestResult(
+            ok: true, toolCount: 7, serverName: "fixture", serverVersion: "1.0",
+            protocolVersion: "2025-06-18", error: ""),
+          permissionLevel: nil, onToggle: {}, onTest: {}, onRemove: {})
+        MCPServerRow(
+          server: densityServer(longName, enabled: true),
+          pending: true, result: nil, permissionLevel: nil,
+          onToggle: {}, onTest: {}, onRemove: {})
+        MCPServerRow(
+          server: densityServer("Server with a failed handshake", enabled: true),
+          pending: false,
+          result: CsMcpTestResult(
+            ok: false, toolCount: 0, serverName: "", serverVersion: "",
+            protocolVersion: "", error: "Synthetic connection failure"),
+          permissionLevel: "ask", onToggle: {}, onTest: {}, onRemove: {})
+        MCPServerRow(
+          server: densityServer("loctree-mcp", enabled: true),
+          pending: false, result: nil, permissionLevel: nil,
+          onToggle: {}, onTest: {}, onRemove: {})
+      }
+      .padding(CSSpace.xl)
+      run.takeDensity(
+        id: "mcp-collapsed-\(sizeName)", size: CGSize(width: width, height: 620),
+        root: mcpCards)
+
+      run.takeDensity(
+        id: "custom-providers-\(sizeName)", size: CGSize(width: width, height: 620),
+        root: CustomProvidersSection(model: model, onAdd: {}, onEdit: { _ in })
+          .padding(CSSpace.xl))
+
+      run.takeDensity(
+        id: "mcp-expanded-\(sizeName)", size: CGSize(width: width, height: 560),
+        root: MCPServerRow(
+          server: densityServer("desktop-commander", enabled: true),
+          pending: false,
+          result: CsMcpTestResult(
+            ok: true, toolCount: 7, serverName: "fixture", serverVersion: "1.0",
+            protocolVersion: String(repeating: "unbrokenProtocolToken", count: 6),
+            error: ""),
+          permissionLevel: "ask", initiallyShowingDetails: true,
+          onToggle: {}, onTest: {}, onRemove: {})
+          .padding(CSSpace.xl))
+
+      run.takeDensity(
+        id: "mcp-failure-expanded-\(sizeName)", size: CGSize(width: width, height: 420),
+        root: MCPServerRow(
+          server: densityServer("Failed handshake", enabled: true), pending: false,
+          result: CsMcpTestResult(
+            ok: false, toolCount: 0, serverName: "", serverVersion: "",
+            protocolVersion: "",
+            error: "Synthetic connection failure; the diagnostic remains visible."),
+          permissionLevel: nil, initiallyShowingDetails: true,
+          onToggle: {}, onTest: {}, onRemove: {})
+          .padding(CSSpace.xl))
+
+      run.takeDensity(
+        id: "custom-expanded-\(sizeName)", size: CGSize(width: width, height: 310),
+        root: ProviderCard(
+          model: model, provider: providers[1], onEdit: {},
+          initiallyShowingAdvanced: true)
+          .padding(CSSpace.xl))
+
+      run.takeDensity(
+        id: "key-editor-\(sizeName)", size: CGSize(width: width, height: 230),
+        root: KeyRow(
+          account: "FIXTURE_KEY", label: String(localized: "API key"), isSet: true,
+          optional: true, embedded: true,
+          presentation: .customProvider(endpoint: providers[0].endpoint),
+          probeResult: nil, probePending: false, initiallyEditing: true,
+          onSave: { _ in }, onClear: {}, onTest: {})
+          .padding(CSSpace.xl))
+    }
+
+    let failedLicense = LicenseService(
+      keychain: DensityLicenseStore(), autoload: true,
+      statusBridge: { key, _, _ in
+        guard key != nil else { return .unlicensed }
+        throw CsError.License(msg: "license signature verification failed")
+      })
+    await awaitCondition { !failedLicense.isBusy }
+    let licenseModel = isolatedSettingsModel(licenseService: failedLicense)
+    licenseModel.section = .license
+    XCTAssertEqual(licenseModel.settingsHealth.level, .degraded)
+    XCTAssertEqual(licenseModel.settingsHealth.targetSection, .license)
+    run.takeDensity(
+      id: "license-warning-floor", size: settingsFloor,
+      // Compose the production panel and footer without SettingsView.onAppear,
+      // which deliberately starts a new license read when its window opens.
+      root: HStack(spacing: 0) {
+        VStack {
+          Spacer()
+          SettingsHealthFooter(model: licenseModel)
+        }
+        .frame(width: 216)
+        Divider()
+        ScrollView {
+          LicensePanel(model: licenseModel)
+            .padding(CSSpace.xl)
+        }
+        .frame(minWidth: SettingsView.detailMinWidth)
+      })
+
+    try run.writeArtifacts(to: directory)
+    print("SETTINGS_DENSITY_PREVIEWS \(directory.url.path)")
+    XCTAssertTrue(run.failures.isEmpty, run.failures.joined(separator: "\n"))
+  }
+
   func testContactSheetPreservesCellAspect() throws {
     let wide = try solidPNG(
       width: 400, height: 100, color: NSColor(srgbRed: 0.92, green: 0.08, blue: 0.08, alpha: 1))
@@ -339,6 +487,13 @@ private final class SheetRun {
     )
   }
 
+  func takeDensity<V: View>(id: String, size: CGSize, root: V) {
+    take(
+      id: id, surface: "settings", state: "density", sizeName: id,
+      scheme: .dark, size: size,
+      root: root.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+  }
+
   #if DEBUG
     func takeTray(
       stateName: String,
@@ -554,6 +709,12 @@ private final class SheetRun {
         }
         let sliceEnd = min(layoutDeadline, Date().addingTimeInterval(layoutPulse))
         RunLoop.main.run(mode: .default, before: sliceEnd)
+      }
+      if state == "density" {
+        // A mounted button is not evidence that queued mock-store/SwiftUI
+        // updates have completed. Settle the actual production view before capture.
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.15))
+        host.layoutSubtreeIfNeeded()
       }
       if surface == "tray" {
         let fitted = host.fittingSize
@@ -1222,7 +1383,7 @@ private func resolveEvidenceDirectory() -> EvidenceDirectory {
 }
 
 @MainActor
-private func isolatedSettingsModel() -> SettingsViewModel {
+private func isolatedSettingsModel(licenseService: LicenseService = .preview) -> SettingsViewModel {
   // A non-nil engine makes SettingsView.onAppear call whisperModelStatus().
   // Init already seeds the sample snapshot, so the fixture leaves the engine nil.
   let model = SettingsViewModel(
@@ -1231,7 +1392,7 @@ private func isolatedSettingsModel() -> SettingsViewModel {
     agentStatus: MockAgentStatusEngine(),
     mcpAdmin: MockMCPAdminEngine(),
     hotkeys: MockHotkeysEngine(),
-    licenseService: .preview,
+    licenseService: licenseService,
     runtimeLlmLaneProvider: { lane in
       CsRuntimeLlmLane(
         lane: lane,
@@ -1253,6 +1414,22 @@ private func isolatedSettingsModel() -> SettingsViewModel {
   model.reloadMcpServers()
   model.loadHotkeys()
   return model
+}
+
+private func densityServer(_ name: String, enabled: Bool) -> CsMcpServer {
+  CsMcpServer(
+    name: name, command: "fixture-mcp", args: ["--offline"], envKeys: ["FIXTURE_ENV"],
+    enabled: enabled, transport: "stdio", endpoint: "", authRef: "")
+}
+
+private struct DensityLicenseStore: LicenseKeychainStoring {
+  func load() throws -> Data? {
+    try JSONSerialization.data(withJSONObject: [
+      "key": "synthetic-signed-license", "lastOnlineValidation": 1_775_304_000,
+    ])
+  }
+  func save(_: Data) throws {}
+  func delete() throws {}
 }
 
 private struct OfflineAgentBridge: AgentBridgeInstalling {

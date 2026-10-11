@@ -563,14 +563,15 @@ struct SettingsHealthState: Equatable {
 /// beat unknown inputs so the footer never hides a concrete problem behind a
 /// muted "unknown" state. Every message is one sentence-case line that names
 /// the area, never the cause: the owning panel explains. An undetermined state
-/// has no message, except the recording check, which says it is running.
+/// has no message, except recording and license checks, which say they are running.
 func healthState(
   stt: Bool?,
   recording: Bool?,
   keys: SettingsKeyState,
   agent: Bool?,
   formatting: Bool? = nil,
-  formattingRequired: Bool = true
+  formattingRequired: Bool = true,
+  licenseReadState: LicenseService.ReadState = .available
 ) -> SettingsHealthState {
   if stt == false {
     return SettingsHealthState(
@@ -590,6 +591,16 @@ func healthState(
         comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
+    )
+  }
+  if licenseReadState == .unavailable {
+    return SettingsHealthState(
+      level: .degraded,
+      message: String(
+        localized: "License verification unavailable",
+        comment: "Settings health footer, sentence case"
+      ),
+      targetSection: .license
     )
   }
   if keys == .missing {
@@ -621,17 +632,31 @@ func healthState(
     )
   }
   if stt == nil || recording == nil || keys == .unknown || agent == nil
+    || licenseReadState == .loading
     || (formattingRequired && formatting == nil)
   {
+    let pendingMessage: String?
+    let pendingSection: SettingsSection?
+    if recording == nil {
+      pendingMessage = String(
+        localized: "Checking recording…",
+        comment: "Settings health footer, sentence case"
+      )
+      pendingSection = .audio
+    } else if licenseReadState == .loading {
+      pendingMessage = String(
+        localized: "Checking license…",
+        comment: "Settings health footer, sentence case"
+      )
+      pendingSection = .license
+    } else {
+      pendingMessage = nil
+      pendingSection = nil
+    }
     return SettingsHealthState(
       level: .unknown,
-      message: recording == nil
-        ? String(
-          localized: "Checking recording…",
-          comment: "Settings health footer, sentence case"
-        )
-        : nil,
-      targetSection: recording == nil ? .audio : nil
+      message: pendingMessage,
+      targetSection: pendingSection
     )
   }
   return SettingsHealthState(
@@ -2244,7 +2269,8 @@ final class SettingsViewModel: ObservableObject {
         ? agentReadiness.ready && llmLane(.assistive).runtime.available : nil,
       formatting: providerAccessResolved && providerAccessError == nil
         ? llmLane(.formatting).runtime.available : nil,
-      formattingRequired: cloudFormattingRequired
+      formattingRequired: cloudFormattingRequired,
+      licenseReadState: licenseReadState
     )
   }
 
