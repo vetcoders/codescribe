@@ -89,8 +89,9 @@ See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](d
 Install the helpers with `make install-bus`, add the bundled local marketplace
 with `/extensions marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
 then `/extensions install codescribe` and `/codescribe junie 6` in ordinary Junie.
-Native MCP waits bring
-messages into that same conversation; silence makes no model request. No IDE,
+Native MCP waits bring messages into that same conversation. Junie release
+26.10.5 limits each wait to three minutes; indefinite idle wakeup is not yet
+established. No IDE,
 separate ACP conversation or new executable is needed. In a running Junie, activate
 the extension with `/extensions install codescribe` before connecting.
 See [setup, permissions and recovery](docs/JUNIE_PLUGIN.md).
