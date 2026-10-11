@@ -49,7 +49,9 @@ use serde::{Deserialize, Serialize};
 /// a later decode fence cannot revoke or supply that evidence during regrouping.
 /// v25: shared trials and live unowned recovery use the same authenticated
 /// quiet onset as word admission, instead of rejecting every exact-left pin.
-pub const WORD_POLICY: &str = "word-adjudication/v25";
+/// v26: measured speech crossing the left fence keeps near-edge Whisper
+/// timestamps within one encoder frame from claiming a complete onset.
+pub const WORD_POLICY: &str = "word-adjudication/v26";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
