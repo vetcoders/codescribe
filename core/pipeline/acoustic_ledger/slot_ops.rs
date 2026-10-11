@@ -492,9 +492,30 @@ impl AcousticLedger {
         if start >= end || word_start < start || word_start >= end {
             return false;
         }
-        if word_start > start {
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            .div_ceil(50)
+            .saturating_add(1);
+        if word_start - start > resolution {
             return true;
         }
+        if word_start > start {
+            // Mirror the trailing fence's alignment uncertainty. A timestamp
+            // just inside this frame cannot prove an onset when measured speech
+            // crosses its left edge and reaches the returned Word.
+            let window = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
+            let Some(speech) = self.measured_speech_for(&window) else {
+                return true;
+            };
+            let crosses = speech
+                .ranges()
+                .iter()
+                .any(|range| range.sample_start <= start && range.sample_end > word_start);
+            if !crosses {
+                return true;
+            }
+        }
+        // Exact-left and measured near-left cuts both need actual quiet PCM.
+        // Missing closed Silero ranges never certify an exact-edge onset.
         let Some(energy) = &self.decode_fence_energy else {
             return false;
         };
@@ -506,9 +527,6 @@ impl AcousticLedger {
         {
             return false;
         }
-        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
-            .div_ceil(50)
-            .saturating_add(1);
         start.checked_add(resolution).is_some_and(|edge_end| {
             edge_end <= end && self.decode_fence_is_quiet(owner, start, edge_end)
         })
