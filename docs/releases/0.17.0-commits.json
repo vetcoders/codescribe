@@ -1,7 +1,7 @@
 {
   "version": "0.17.0",
   "from_sha": "29836579ef87e453e50c8cd9d429cf580f4f79f7",
-  "to_sha": "fc4b3eb2f8fd2d081c750495c77c16ecad9b0326",
+  "to_sha": "96a98319c4010f8a1df714af2c60a49eb2fce9db",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1667,6 +1667,66 @@
       "sha": "fc4b3eb2f8fd2d081c750495c77c16ecad9b0326",
       "date": "2026-10-11",
       "subject": "test: retain rejected edge pins without granting finality",
+      "squash_headings": []
+    },
+    {
+      "sha": "b92be43227ec1054ee729e7f8735cc0a35f4be0b",
+      "date": "2026-10-11",
+      "subject": "chore: bump source version to 0.17.0",
+      "squash_headings": []
+    },
+    {
+      "sha": "d46e042ebfad4e4414f1ed37075baa202a7a7a63",
+      "date": "2026-10-11",
+      "subject": "fix: distinguish Apple partial revisions from timed phrase restarts",
+      "squash_headings": []
+    },
+    {
+      "sha": "8a60d8557834c1813a332868c72df6dedd9f08d0",
+      "date": "2026-10-11",
+      "subject": "feat: retain verified comparison evidence for Voice Lab",
+      "squash_headings": []
+    },
+    {
+      "sha": "1be46f66ed0f95b928b7a8e3561e374d676343f0",
+      "date": "2026-10-11",
+      "subject": "fix: measure final Whisper word boundary from predictive attention",
+      "squash_headings": []
+    },
+    {
+      "sha": "5c273d42264acc4be9a28d86e76a0a780994809e",
+      "date": "2026-10-11",
+      "subject": "fix: let sealed prompts govern formatter edits",
+      "squash_headings": []
+    },
+    {
+      "sha": "ffc46be4729da3324193e554f65120849508c6ab",
+      "date": "2026-10-11",
+      "subject": "test: receive measured Whisper tail boundaries with reference oracles",
+      "squash_headings": []
+    },
+    {
+      "sha": "b2304f25a162868338db5493749668c698c47da9",
+      "date": "2026-10-11",
+      "subject": "test: receive prompt governed formatting and isolate clipboard fixtures",
+      "squash_headings": []
+    },
+    {
+      "sha": "f77543157d93fcfe616a9995a9285f8b6f0473cb",
+      "date": "2026-10-11",
+      "subject": "fix: retain real capture for bounded explicit Stop grace",
+      "squash_headings": []
+    },
+    {
+      "sha": "ceec58b58194552378d69a3f17b56d4828846ac1",
+      "date": "2026-10-11",
+      "subject": "test: receive timed Apple partial revisions through live seams",
+      "squash_headings": []
+    },
+    {
+      "sha": "96a98319c4010f8a1df714af2c60a49eb2fce9db",
+      "date": "2026-10-11",
+      "subject": "test: receive explicit Stop grace and cancelled channel close",
       "squash_headings": []
     }
   ]
