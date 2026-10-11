@@ -1481,19 +1481,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         let segments: [BridgeSegment]
     }
 
-    /// Store the current hypothesis; returns the previous one when SFSpeech
-    /// restarted its phrase (measured on a 150s Polish fixture: 13 restarts,
-    /// ONE `isFinal`). Callers that ignore the return value keep the old
-    /// behaviour — the phrase is still folded into `snapshotPayload`.
+    /// Store the current hypothesis. A measured shared onset identifies a
+    /// revision of the open phrase, not a second phrase to append as final.
+    /// Disjoint restarts still retain the prior phrase in `snapshotPayload`
+    /// and return it to the streaming caller.
     @discardableResult
     fileprivate func storePartial(text: String, segments: [BridgeSegment]) -> FrozenPhrase? {
         lock.lock()
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Retain every prior hypothesis that the next hypothesis does not
-        // contain in full. Restart thresholds classify the transition for
-        // telemetry only; they never authorize overwriting speech.
+        // Retain a prior hypothesis across a phrase restart, but do not mint
+        // a final from a recognizer correction over the same measured onset.
+        // Text containment alone cannot distinguish those two transitions.
         //
         // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
         // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
@@ -1502,11 +1502,15 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // so a post-stressor collapse to the next sentence's short opener
         // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
         // vanished from committed raw while native dictation kept them.
-        // A same-phrase rewind is retained too: without a second retained copy,
-        // overwriting it would still discard the rewound suffix.
+        // When onset timing is unavailable, retain the existing conservative
+        // restart handling; do not invent a physical correspondence from text.
         if !partialText.isEmpty {
             let prev = partialText
-            if let reason = Self.phraseRetentionReason(prev: prev, next: t) {
+            let reason = Self.partialsAreDisjoint(previous: partialSegments, next: segments)
+                ? "disjoint_pcm_restart" : Self.phraseRetentionReason(prev: prev, next: t)
+            if let reason,
+                !Self.partialsShareOnset(previous: partialSegments, next: segments)
+            {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
@@ -1524,14 +1528,60 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         return frozen
     }
 
-    /// Pure freeze decision — kept in lockstep with
-    /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
+    /// Text-only restart candidate. The caller must also apply the measured
+    /// onset veto, mirrored by `apple_partials_share_onset` in Rust.
     fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
         phraseRetentionReason(prev: prev, next: next) != nil
     }
 
-    /// Returns a telemetry classification only when the prior hypothesis must
-    /// be retained. Text safety depends solely on forward containment.
+    /// The first segment of both partials refers to the same open onset only
+    /// when its finite, positive-duration intervals strictly overlap. Do not
+    /// skip an invalid first segment and borrow a later word as onset proof.
+    fileprivate static func partialsShareOnset(
+        previous: [BridgeSegment], next: [BridgeSegment]
+    ) -> Bool {
+        guard let previous = previous.first, let next = next.first else { return false }
+        // Rust receives f32 timestamps. Compare the same precision here so
+        // rounding cannot turn a touching boundary into overlap on one side.
+        let previousStart = Float(previous.startTs)
+        let previousEnd = Float(previous.endTs)
+        let nextStart = Float(next.startTs)
+        let nextEnd = Float(next.endTs)
+        guard !previous.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            previousStart.isFinite, previousEnd.isFinite,
+            nextStart.isFinite, nextEnd.isFinite,
+            previousStart >= 0, nextStart >= 0,
+            previousEnd > previousStart, nextEnd > nextStart
+        else { return false }
+        return previousStart < nextEnd && nextStart < previousEnd
+    }
+
+    /// A later measured phrase must retain the prior one even when the words
+    /// are identical. Every previous segment needs timing before claiming its
+    /// whole range ended; a valid prefix alone cannot prove disjointness.
+    fileprivate static func partialsAreDisjoint(
+        previous: [BridgeSegment], next: [BridgeSegment]
+    ) -> Bool {
+        guard let next = next.first else { return false }
+        let nextStart = Float(next.startTs)
+        let nextEnd = Float(next.endTs)
+        guard !next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            nextStart.isFinite, nextEnd.isFinite,
+            nextStart >= 0, nextEnd > nextStart,
+            !previous.isEmpty
+        else { return false }
+        return previous.allSatisfy { segment in
+            let start = Float(segment.startTs)
+            let end = Float(segment.endTs)
+            return !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && start.isFinite && end.isFinite && start >= 0 && end > start
+                && end <= nextStart
+        }
+    }
+
+    /// Classify a text-only retention candidate; measured onset decides whether
+    /// it is instead a revision of the still-open phrase.
     private static func phraseRetentionReason(prev: String, next: String) -> String? {
         let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1583,6 +1633,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
 /// mirror test, so fixture drift cannot make the two languages look aligned.
 private func runPhraseRestartVectorSelfTest() -> Int32 {
     guard runFileResultSelfTest() == 0 else { return 1 }
+    guard runPartialRevisionAccumulatorSelfTest() == 0 else { return 1 }
     let source = URL(fileURLWithPath: #filePath)
     let root = source
         .deletingLastPathComponent()
@@ -1641,6 +1692,50 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
         fputs("phrase_restart_self_test fixture_error=\(error)\n", stderr)
         return 2
     }
+}
+
+/// Synthetic recognizer events; no microphone, model or Speech request.
+private func runPartialRevisionAccumulatorSelfTest() -> Int32 {
+    func segment(_ text: String, _ start: Double, _ end: Double) -> BridgeSegment {
+        BridgeSegment(text: text, startTs: start, endTs: end)
+    }
+    func expect(_ condition: Bool, _ label: String) -> Bool {
+        if !condition { fputs("partial_revision_self_test FAIL \(label)\n", stderr) }
+        return condition
+    }
+    for revised in ["Iwo poprawiony plan", "Iwo"] {
+        let acc = SfSpeechPhraseAccumulator(timeOffset: 0)
+        acc.storePartial(text: "Iwo stary plan", segments: [segment("Iwo", 0, 0.5)])
+        guard expect(acc.storePartial(text: revised, segments: [segment("Iwo", 0, 0.5)]) == nil, "same onset"),
+            expect(acc.snapshotPayload()?.text == revised, "superseded text gone") else { return 1 }
+    }
+    let repeats = SfSpeechPhraseAccumulator(timeOffset: 0)
+    for index in 0..<5 {
+        let frozen = repeats.storePartial(text: "Iwo", segments: [segment("Iwo", Double(index), Double(index) + 0.5)])
+        guard expect((frozen != nil) == (index > 0), "disjoint occurrence \(index)") else { return 1 }
+    }
+    guard expect(repeats.snapshotPayload()?.text == "Iwo Iwo Iwo Iwo Iwo", "five synthetic occurrences") else { return 1 }
+    let previous = [segment("Iwo", 0, 0.5)]
+    for bad in [segment("Iwo", 0, 0), segment("Iwo", .nan, 0.5), segment("Iwo", -0.1, 0.5), segment("", 0, 0.5)] {
+        let invalidFirst = [bad, segment("Iwo", 1, 2)]
+        guard expect(!SfSpeechPhraseAccumulator.partialsShareOnset(previous: previous, next: invalidFirst), "invalid first onset"),
+            expect(!SfSpeechPhraseAccumulator.partialsAreDisjoint(previous: previous, next: invalidFirst), "invalid first disjoint"),
+            expect(!SfSpeechPhraseAccumulator.partialsAreDisjoint(previous: previous + [bad], next: [segment("Iwo", 3, 4)]), "invalid prior tail") else { return 1 }
+    }
+    // Compare the f32 clock actually transported to Rust.
+    guard expect(SfSpeechPhraseAccumulator.partialsAreDisjoint(previous: [segment("Iwo", 0, 1.00000004)], next: [segment("Iwo", 1.00000005, 2)]), "Float touching"),
+        expect(!SfSpeechPhraseAccumulator.partialsShareOnset(previous: [segment("Iwo", 0, 1.00000004)], next: [segment("Iwo", 1.00000005, 2)]), "Float no overlap") else { return 1 }
+    let finalized = SfSpeechPhraseAccumulator(timeOffset: 0)
+    finalized.storePartial(text: "Iwo", segments: previous)
+    finalized.commitFinal(text: "Iwo", segments: previous)
+    guard expect(finalized.storePartial(text: "Iwo", segments: [segment("Iwo", 1, 1.5)]) == nil, "no double freeze"),
+        expect(finalized.snapshotPayload()?.text == "Iwo Iwo", "two final/partial occurrences") else { return 1 }
+    let empty = SfSpeechPhraseAccumulator(timeOffset: 0)
+    empty.storePartial(text: "Iwo", segments: previous)
+    guard expect(empty.storePartial(text: "", segments: [])?.text == "Iwo", "empty collapse retains prior"),
+        expect(empty.snapshotPayload()?.text == "Iwo", "empty collapse snapshot") else { return 1 }
+    fputs("partial_revision_self_test PASS cases=14 five_occurrences=synthetic\n", stderr)
+    return 0
 }
 
 /// Validate recognition coordinates and reported processing, not speech recall.
