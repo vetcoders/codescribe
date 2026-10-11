@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 /// partial observations cannot discard their witnesses or renew trial budgets.
 /// v12: all unresolved groups keep one scope; settled groups may separate
 /// into physical words while retaining producer identity and spent budgets.
-pub const WORD_POLICY: &str = "word-adjudication/v12";
+/// v13: incomplete Apple labels cannot veto complete independent Whisper
+/// agreement; complete Apple contradictions and negation disputes retain veto.
+pub const WORD_POLICY: &str = "word-adjudication/v13";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1109,10 +1111,8 @@ impl AcousticLedger {
         let provisional_apple = provisional_apple && fresh;
         let repeated_label = label_equal(&candidate.surface, &compose_label(sources));
         let raw = candidate.original_text.as_deref();
-        let apple = component
-            .apple
-            .last()
-            .and_then(|h| h.original_text.as_deref());
+        let apple_hypothesis = component.apple.last();
+        let apple = apple_hypothesis.and_then(|h| h.original_text.as_deref());
         let whisper_support = component
             .support()
             .into_iter()
@@ -1129,10 +1129,20 @@ impl AcousticLedger {
             .map(|h| h.decode)
             .collect::<BTreeSet<_>>()
             .len();
+        // A label without complete source scope and acoustic boundaries is
+        // still retained evidence, but cannot permanently block two complete
+        // independent decoder frames. Negation disputes keep their existing
+        // cross-source requirement even when Apple's timing is incomplete.
+        let apple_veto = apple_hypothesis.is_some_and(|h| {
+            h.original_text
+                .as_deref()
+                .zip(raw)
+                .is_some_and(|(a, b)| !label_equal(a, b))
+                && ((h.complete && h.acoustic_boundaries_complete) || negation_disagrees)
+        });
         let agreement = raw.is_some()
             && ((apple.zip(raw).is_some_and(|(a, b)| label_equal(a, b)) && whisper_support > 0)
-                || (whisper_support >= 2
-                    && apple.is_none_or(|a| raw.is_some_and(|b| label_equal(a, b)))));
+                || (whisper_support >= 2 && !apple_veto));
         let confirmed_trial = trial_matches
             && fresh
             && complete
