@@ -114,6 +114,16 @@ include `stopped`, `not_running`, `unverified_retained`, `did_not_exit`,
 `undrained_retained` and `undrained_stopped`. The last state means the reader
 exited but unread source remains; routing is still retained.
 
+`undrained_retained` is recoverable without force. The previous reader's saved
+cursor is behind the bus extent (for example it died mid-take, observed live
+2026-10-11 with a channel-1 lease). Do not kill a reader, edit bindings or delete
+lease files. Read `leases/<previous lease_id>.json`: when `previous.follower_pid`
+is null, start exactly its `process_identity.command` in the background
+(`nohup sh -c "$COMMAND" >/dev/null 2>&1 &`); the resumed reader continues from
+its own cursor. Then repeat the same `--attach --takeover`. The guard measures
+the extent itself, stops the drained reader and starts yours; `--status` of the
+previous provider/session shows its cursor moving meanwhile.
+
 The new channel entry is assigned only after the new reader is verified ready.
 Log, spawn, pidfile or readiness failures keep the old binding; the old reader
 may already be stopped and is not automatically restarted. If an atomic binding
