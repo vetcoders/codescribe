@@ -630,12 +630,11 @@ impl SileroIngress {
             } else {
                 start
             };
-            out.open = Some(self.ledger.open_or_extend(
-                &self.session,
-                self.capture_epoch,
-                start,
-                end,
-            ));
+            out.open =
+                Some(
+                    self.ledger
+                        .open_or_extend(&self.session, self.capture_epoch, start, end),
+                );
         }
         if closed_here
             && !reopens
@@ -804,6 +803,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn recognizer_onset_context_keeps_refresh_split_and_pause_ownership_disjoint() {
+        let mut ingress = SileroIngress::new(48_000, "onset-owner", 1);
+        ingress.observe(Some((104_448, 200_000)), false, 200_000);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+        assert_eq!(
+            ingress.ledger().utterance_covering(96_000).map(|u| u.id),
+            Some(1),
+            "retained recognizer onset PCM has an owner"
+        );
+        ingress.observe(Some((104_448, 411_648)), false, 411_648);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+
+        let split =
+            ingress.observe_with_closed_end(Some((240_000, 411_648)), true, Some(240_000), 411_648);
+        assert_eq!(split.closed, vec![1]);
+        assert_eq!(split.open, Some(2));
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 240_000);
+        assert_eq!(ingress.ledger().utterances()[1].range.sample_start, 240_000);
+        ingress.observe_with_closed_end(None, true, Some(411_648), 420_000);
+        ingress.observe(Some((425_000, 440_000)), false, 440_000);
+        assert_eq!(ingress.ledger().utterances()[2].range.sample_start, 420_000);
+        for pair in ingress.ledger().utterances().windows(2) {
+            assert!(pair[0].range.sample_end <= pair[1].range.sample_start);
+        }
+
+        let mut beginning = SileroIngress::new(48_000, "onset-zero", 1);
+        beginning.observe(Some((1_000, 8_000)), false, 8_000);
+        assert_eq!(beginning.ledger().utterances()[0].range.sample_start, 0);
+    }
+
+    #[test]
+    fn onset_padding_keeps_five_scripted_pcm_bursts_as_five_word_owners() {
+        let mut ingress = SileroIngress::new(16_000, "five-onsets", 1);
+        ingress.vad = SpeechSession::new_utterance_with_silence(16_000, 0.20);
+        let mut cursor = 0;
+        let mut words = Vec::new();
+        for _ in 0..5 {
+            let onset = cursor;
+            words.push(word("Iwo", onset + 4 * 512, onset + 8 * 512));
+            for _ in 0..20 {
+                ingress.push_scripted_speech_prob_for_test(0.9);
+                cursor += 512;
+                ingress.ingest(&[0.2; 512], cursor);
+            }
+            for _ in 0..30 {
+                ingress.push_scripted_speech_prob_for_test(0.01);
+                cursor += 512;
+                ingress.ingest(&[0.0; 512], cursor);
+            }
+        }
+        let owners = ingress.ledger().utterances();
+        assert_eq!(owners.len(), 5);
+        assert!(owners.iter().all(|owner| owner.closed));
+        for pair in owners.windows(2) {
+            assert!(pair[0].range.sample_end <= pair[1].range.sample_start);
+        }
+        let (assigned, leftovers) = slice_apple_words(ingress.ledger(), &words);
+        assert!(leftovers.is_empty());
+        assert_eq!(assigned.len(), 5);
+        for (index, (id, pins)) in assigned.iter().enumerate() {
+            assert_eq!(*id, index as u64 + 1);
+            assert_eq!(pins.len(), 1);
+            assert_eq!(pins[0].text, "Iwo");
+            assert_eq!(pins[0].sample_start, words[index].sample_start);
+            assert_eq!(pins[0].sample_end, words[index].sample_end);
+        }
+        assert_eq!(ingress.acoustic_speech_evidence().ranges().len(), 5);
+    }
+
     /// A pause close is not a retroactive split: the chunker's padded end sits
     /// ~64 ms past the last voiced frame, while the close is only observed after
     /// the closing silence. The utterance keeps that trailing extent, so an
@@ -929,7 +998,9 @@ mod tests {
         assert_eq!(ledger.utterances()[0].range.sample_start, 0);
         assert_eq!(ledger.utterances()[0].range.sample_end, 24_000);
         assert!(ledger.utterances()[0].closed);
-        assert_eq!(ledger.utterances()[1].range.sample_start, second_start);
+        // Ownership covers the recognizer's 400 ms onset context. The chunker
+        // already supplied 64 ms, leaving 336 ms (5,376 samples) to retain.
+        assert_eq!(ledger.utterances()[1].range.sample_start, 42_624);
         assert!(!ledger.utterances()[1].closed);
         assert!(
             ledger.utterances()[1].range.sample_start - ledger.utterances()[0].range.sample_end
@@ -1332,7 +1403,9 @@ mod tests {
         let obs = ingress.observe(Some((16_000, 32_000)), true, 32_000);
         assert_eq!(obs.closed, vec![1]);
         assert_eq!(ingress.ledger().utterances().len(), 1);
-        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 16_000);
+        // Acoustic evidence above stays exact; ownership retains the extra
+        // 336 ms recognizer context before this chunker's padded start.
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 10_624);
         assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 32_000);
     }
 
