@@ -4391,6 +4391,7 @@ impl AppleSealState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(label) = ledger.text_of(owner)
             && let Some(pending) = self.pending_events.get_mut(&id)
+            && pending.occurrence == *owner
         {
             pending.layer1_baseline = label.to_string();
         }
@@ -6739,6 +6740,91 @@ fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIde
         && occurrence.sample_start < range.sample_end
 }
 
+// Returned Word clocks can precede the first VAD owner or fall in an owner
+// gap. Keep the same ledger qualification and measured-word admission paths;
+// a decoder label alone cannot own PCM or rewrite an existing occurrence.
+fn admit_retained_unowned_words(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    payload: &TailProviderPayload,
+) {
+    use crate::stt::tail_provider::{TailEvidenceSource, TailEvidenceStability, TailSegmentGrain};
+
+    let decode = &payload.identity.range;
+    if payload.validate().is_err()
+        || payload.evidence.source != TailEvidenceSource::Whisper
+        || payload.evidence.stability != TailEvidenceStability::Final
+        || payload.evidence.timing_quality
+            != crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+        || decode.session != state.session_id
+        || decode.capture_epoch != state.capture_epoch
+        || decode.sample_end > state.audio.session_sample_end()
+        || decode.sample_end.saturating_sub(decode.sample_start) > u64::from(state.sample_rate) * 9
+    {
+        return;
+    }
+    for (index, segment) in payload.segments.iter().enumerate() {
+        if segment.grain != TailSegmentGrain::Word
+            || segment.text.split_whitespace().count() != 1
+            || !decode.contains(&segment.range)
+            || !state
+                .capture_energy
+                .voiced_hops_in(
+                    &segment.range.session,
+                    segment.range.capture_epoch,
+                    segment.range.sample_start,
+                    segment.range.sample_end,
+                )
+                .is_some_and(|hops| !hops.is_empty())
+        {
+            continue;
+        }
+        let already_owned = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .qualified_occurrences()
+            .any(|owner| range_overlaps_occurrence(&segment.range, owner));
+        if already_owned {
+            continue;
+        }
+        let owner = OccurrenceIdentity::from(&segment.range);
+        if !qualify_owned_occurrence(state, &owner) {
+            continue;
+        }
+        {
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.bind_word_provider(payload);
+            ledger.schedule_frontier(owner.clone(), vec![LedgerObservationProducer::Whisper]);
+        }
+        let pin = RoutedPin {
+            index,
+            pin: owner.clone(),
+            text: segment.text.trim().to_string(),
+            confidence: segment.confidence,
+        };
+        state.admit_routed_words_with_decode_window(
+            ev_tx,
+            0,
+            &owner,
+            (
+                payload.identity.request_id,
+                Some((decode.sample_start, decode.sample_end)),
+            ),
+            RoutedWords {
+                pins: std::slice::from_ref(&pin),
+                neighbours: &[],
+            },
+            LedgerObservationProducer::Whisper,
+        );
+        // Leave Whisper open until all already-returned windows have had
+        // their turn. Arrival order cannot seal the first spelling here.
+    }
+}
+
 /// Reconcile completed planned returns and publish the remaining acoustic debt.
 /// This terminal path has no authority to construct or execute another request.
 fn reconcile_terminal_coverage(
@@ -6754,6 +6840,12 @@ fn reconcile_terminal_coverage(
         .iter()
         .cloned()
         .collect::<Vec<_>>();
+    for payload in &retained {
+        admit_retained_unowned_words(state, ev_tx, payload);
+    }
+    // These are retained results, not new model jobs. Newly qualified owners
+    // now receive their original overlapping windows before frontier closure.
+    state.replay_completed_windows(ev_tx);
     for payload in retained {
         let uncovered = {
             let ledger = state
