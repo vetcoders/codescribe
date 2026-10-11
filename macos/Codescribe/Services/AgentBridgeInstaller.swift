@@ -1258,7 +1258,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "cs-say", "cs-junie"].filter { name in
+    ["cs-bus", "cs-say", "cs-junie", "bus-mcp.py"].filter { name in
       manifest.files.contains { $0.path == "bin/" + name }
     }
   }
@@ -1319,6 +1319,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = commandURL(name)
       // cs-bus receives the complete verified helper, so neither entrypoint
       // depends on the replaceable runtime/bin payload after publication.
+      let mode = name.hasSuffix(".py") ? 0o644 : 0o755
       let source = runtimeDirectory.appendingPathComponent(
         name == "cs-bus" ? manifest.helper : "bin/" + name)
       let script = try String(contentsOf: source, encoding: .utf8)
@@ -1337,7 +1338,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == nil,
         (try? Data(contentsOf: destination)) == data
       {
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        try fileManager.setAttributes([.posixPermissions: mode], ofItemAtPath: destination.path)
         continue
       }
       try fileManager.createDirectory(
@@ -1346,7 +1347,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         .appendingPathComponent(".\(name).stage-\(transactionID)")
       defer { try? fileManager.removeItem(at: stage) }
       try data.write(to: stage)
-      try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stage.path)
+      try fileManager.setAttributes([.posixPermissions: mode], ofItemAtPath: stage.path)
       try replace(
         destination: destination, with: stage, transactionID: transactionID, records: &records)
     }

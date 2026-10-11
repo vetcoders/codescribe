@@ -56,7 +56,7 @@ if publisher is not None and (
     raise SystemExit("canonical publisher must be an ordinary executable artifact")
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
-entrypoints = [helper_source, *(repo / "scripts" / name for name in ("cs-bus", "cs-say", "cs-junie"))]
+entrypoints = [helper_source, *(repo / "scripts" / name for name in ("cs-bus", "cs-say", "cs-junie", "bus-mcp.py"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (
@@ -66,7 +66,10 @@ if (
     or repo.is_relative_to(destination)
 ):
     raise SystemExit(f"refusing unsafe agent bridge destination: {destination}")
-source_paths = [skill_source, *entrypoints, *skill_source.rglob("*")]
+plugin_source = repo / "plugins"
+if not (plugin_source / ".claude-plugin/marketplace.json").is_file():
+    raise SystemExit("native extension source is incomplete")
+source_paths = [skill_source, *entrypoints, *skill_source.rglob("*"), plugin_source, *plugin_source.rglob("*")]
 source_symlinks = [path for path in source_paths if path.is_symlink()]
 if source_symlinks:
     raise SystemExit(
@@ -90,6 +93,7 @@ shutil.copytree(
     ignore=shutil.ignore_patterns(".DS_Store"),
 )
 (stage / "bin").mkdir(mode=0o755)
+shutil.copytree(plugin_source, stage / "plugins", ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
 for source in entrypoints:
     target = stage / "bin" / source.name
     shutil.copy2(source, target)
