@@ -154,6 +154,24 @@ class ComparisonTests(unittest.TestCase):
                 MODULE.compare(native, remote, self.out, scorer_path)
         self.assertFalse(self.out.exists())
 
+    def testVoiceLabPackRetainsReferenceTextsAlignmentsAndDeliveryObservation(self):
+        native, remote, scorer_path, scorer = self.paired_fixture()
+        confirmation = native / "10/DELIVERY-FOUNDER-CONFIRMATION.json"
+        confirmation.write_text('{"external_paste":"FOUNDER_CONFIRMED"}')
+        with patch.object(MODULE.runpy, "run_path", return_value=scorer):
+            result = MODULE.compare(native, remote, self.out, scorer_path)
+        row = result["takes"][1]
+        self.assertEqual(MODULE.sha(self.out / row["reference_file"]), row["reference_sha256"])
+        self.assertEqual(row["input_sha256"], MODULE.sha(self.wav))
+        for arm in row["arms"]:
+            self.assertEqual(MODULE.sha(self.out / arm["text_file"]), arm["text_sha256"])
+            self.assertEqual(MODULE.sha(self.out / arm["alignment_file"]), arm["alignment_sha256"])
+        arm = row["arms"][0]
+        self.assertEqual(arm["external_paste_delivery"], "NOT_PROVEN")
+        evidence = arm["evidence_files"][0]
+        self.assertEqual((self.out / evidence["path"]).read_bytes(), confirmation.read_bytes())
+        self.assertEqual(evidence["sha256"], MODULE.sha(confirmation))
+
     def testEditedProviderTranscriptIsNotAcceptedAsRawOutput(self):
         native, remote, scorer_path, scorer = self.paired_fixture()
         (remote / "10/transcript.txt").write_text("prettier edited output\n")

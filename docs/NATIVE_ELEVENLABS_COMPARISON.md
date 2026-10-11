@@ -72,6 +72,15 @@ external delivery status remain distinct from cloud text. Saved engine words or
 reducer text alone do not prove visible or external delivery. A report over old
 takes is not fresh native acceptance of today's installed build.
 
+Voice Lab discovers closed `RESULTS.json` comparisons in its Reports workspace.
+The comparison directory retains reference and per-arm text, ordered alignments,
+SHA256 bindings, source generation and optional stage/UI/delivery observations.
+The viewer validates these files on each open; it neither recomputes WER nor
+uploads audio. A separate Founder-confirmed paste observation supplements the
+original receipt without rewriting its original `NOT_PROVEN` status. Generate a
+new comparison directory for each later generation; refreshing Reports discovers
+it without a manual HTML export.
+
 Offline verification (fake credentials and HTTP responses only):
 
 ```sh

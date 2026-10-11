@@ -162,25 +162,52 @@ def compare(native_run, eleven_run, out, scorer_path, prior_runs=()):
                 raise ValueError(f"Clip {cid}: native arm input/reference mismatch")
             native_receipt = json.loads((source / "receipt.json").read_text())
             text = (source / "transcript.txt").read_text()
+            evidence = {}
+            for filename in ("STAGE-SUMMARY.json", "ERROR-RANGES.json", "UI.json",
+                             "DELIVERY-FOUNDER-CONFIRMATION.json"):
+                if (source / filename).is_file():
+                    evidence[filename] = source / filename
             arms.append(dict(name="native" if index == 0 else f"prior_{index}", text=text,
                              terminal=native_receipt["terminal"],
                              external_paste_delivery=native_receipt.get("external_paste_delivery", "NOT_PROVEN"),
+                             generation=native_receipt.get("installed_generation"),
+                             session=native_receipt.get("session"),
+                             capture=native_receipt.get("capture"),
+                             source_path=str(source), evidence_sources=evidence,
                              receipt_sha256=sha(source / "receipt.json")))
         arms.append(dict(name="elevenlabs", text=(remote / "transcript.txt").read_text(),
                          request=request, receipt=receipt, seal="NOT_APPLICABLE", delivery="NOT_APPLICABLE"))
-        prepared.append((cid, reference, arms))
+        prepared.append((clip, reference, arms))
     out.mkdir(parents=True, mode=0o700, exist_ok=False)
     rows = []
-    for cid, reference, arms in prepared:
+    for clip, reference, arms in prepared:
+        cid = clip["id"]
         directory = out / cid
         directory.mkdir()
-        row = dict(clip=cid, has_human_reference=reference is not None, arms=[])
+        row = dict(clip=cid, label=clip.get("label", cid), input_sha256=clip["sha256"],
+                   has_human_reference=reference is not None, arms=[])
+        if reference is not None:
+            reference_file = directory / "reference.txt"
+            reference_file.write_text(reference)
+            row.update(reference_file=reference_file.relative_to(out).as_posix(),
+                       reference_sha256=sha(reference_file))
         for arm in arms:
             name, text = arm["name"], arm.pop("text")
-            (directory / f"{name}.txt").write_text(text)
+            text_file = directory / f"{name}.txt"
+            text_file.write_text(text)
             score, alignment = score_text(scorer, reference, text) if reference is not None else (None, None)
-            write_json(directory / f"{name}-alignment.json", alignment)
-            row["arms"].append(dict(**arm, score=score))
+            alignment_file = directory / f"{name}-alignment.json"
+            write_json(alignment_file, alignment)
+            evidence_files = []
+            for filename, source in arm.pop("evidence_sources", {}).items():
+                target = directory / f"{name}-{filename}"
+                shutil.copyfile(source, target)
+                evidence_files.append(dict(kind=filename, path=target.relative_to(out).as_posix(),
+                                           sha256=sha(target)))
+            row["arms"].append(dict(**arm, score=score,
+                                    text_file=text_file.relative_to(out).as_posix(), text_sha256=sha(text_file),
+                                    alignment_file=alignment_file.relative_to(out).as_posix(),
+                                    alignment_sha256=sha(alignment_file), evidence_files=evidence_files))
         rows.append(row)
     totals = {}
     for group in ("corpus", "without_clip10", "clip10"):
@@ -194,6 +221,7 @@ def compare(native_run, eleven_run, out, scorer_path, prior_runs=()):
             total["WER"] = total["errors"] / total["reference_tokens"] if total["reference_tokens"] else None
             totals[group][name] = total
     result = dict(schema="codescribe.native-elevenlabs-comparison.v1", native_runs=input_manifests,
+                  cloud_run=dict(path=str(eleven_run)),
                   scorer=dict(path=str(scorer_path), sha256=sha(scorer_path)),
                   cloud_is_ground_truth=False, fresh_native_acceptance=False,
                   complete_fixed_corpus=clip_ids == [f"{i:02d}" for i in range(1, 11)],
