@@ -2839,11 +2839,12 @@ fn cloud_word_context_partition_refusal_keeps_the_unrelated_first_pin() {
     let decode = (33_000, 177_000);
     assert!(context_quality(39_000, 55_000, decode) < BAND_RIGHTS_FLOOR);
     assert_eq!(context_quality(57_000, 73_000, decode), BAND_RIGHTS_FLOOR);
+    assert!(context_quality(96_000, 112_000, decode) > BAND_RIGHTS_FLOOR);
     let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
     let receipt = ledger.admit_word_slots(
         &whisper,
         &[
-            WordPin::new(96_000, 112_000, "dalej").with_decode_window(48_000, 192_000),
+            WordPin::new(96_000, 112_000, "dalej").with_decode_window(decode.0, decode.1),
             WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
             WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
         ],
@@ -2925,5 +2926,71 @@ fn cloud_word_same_label_overlap_component_keeps_low_context_evidence() {
         }));
         assert!(!ledger.text_recovery_pending(&owner));
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_gates_mixed_producer_overlap_components() {
+    for (neighbor, text) in [
+        (ObservationProducer::Apple, "dalej"),
+        (ObservationProducer::Whisper, "dalej"),
+        (ObservationProducer::CloudLive, "dalej teraz"),
+        (ObservationProducer::Apple, "dalej teraz"),
+    ] {
+        for (decode, accepted) in [((15_000, 159_000), true), ((33_000, 225_000), false)] {
+            let owner = OccurrenceIdentity::new("cloud-mixed-producer-context", 1, 0, 160_000);
+            let mut pcm = vec![0.0; 240_000];
+            pcm[50_000..54_000].fill(0.2);
+            pcm[58_000..63_000].fill(0.2);
+            pcm[68_000..72_000].fill(0.2);
+            let mut ledger = measured_ledger(&owner, &pcm);
+            for (producer, request, start, end, text) in [
+                (ObservationProducer::CloudLive, 1, 48_000, 64_000, "1286"),
+                (neighbor, 2, 66_000, 82_000, text),
+            ] {
+                let source = ledger.next_word_observation(producer, request, &owner);
+                assert!(
+                    ledger
+                        .admit_word_slots(
+                            &source,
+                            &[WordPin::new(start, end, text).with_decode_window(start, 240_000)],
+                        )
+                        .grants_mutation()
+                );
+            }
+            let before = ledger.slots_of(&owner).unwrap().to_vec();
+            assert_eq!(before.len(), 2);
+            assert!(!ledger.coarse_word_source(&before[0]));
+            assert_eq!(before[1].producer, neighbor);
+            let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 3, &owner);
+            let receipt = ledger.admit_word_slots(
+                &whisper,
+                &[
+                    WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
+                    WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
+                ],
+            );
+            assert_eq!(
+                receipt.grants_mutation(),
+                accepted,
+                "decode={decode:?}: {receipt:?}"
+            );
+            let expected = if accepted {
+                "pięć sześć".to_owned()
+            } else {
+                format!("1286 {text}")
+            };
+            assert_eq!(ledger.text_of(&owner), Some(expected.as_str()));
+            if !accepted {
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+                assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.observation == whisper
+                        && alternative.candidate == "pięć sześć"
+                        && alternative.reason == "outside_publication_band"
+                }));
+            }
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
     }
 }

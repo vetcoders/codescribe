@@ -52,8 +52,11 @@ label. The direct word-grain check runs before resegmentation as well as
 ordinary admission, including incomplete incumbents; coarse phrase partitions
 retain their own existing authority. Context quality uses the decoder's original
 word span before owner clipping; a smaller projected slot cannot improve it.
-Resolved CloudLive word components enforce the same floor for every original
-output when labels or word multiplicity change, including overlap-only jitter.
+Resolved components containing a CloudLive word enforce the same floor for every
+original output when labels or word multiplicity change, including overlap-only
+jitter and mixed-producer partitions. Wholly coarse components retain their own
+refinement authority; source authority remains a prerequisite to this context
+check.
 The component refuses the entire proposed partition if any output lacks context.
 Missing decode bounds grant no direct word
 correction authority. Same-label evidence, first placement, and ManualHuman
