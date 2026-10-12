@@ -118,12 +118,13 @@ extension View {
 struct CSFocusOutline: View {
   var isFocused: Bool
   var cornerRadius: CGFloat
+  var color: Color = CSColor.chromeAccent
   @Environment(\.displayScale) private var displayScale
 
   var body: some View {
     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .strokeBorder(
-        CSColor.chromeAccent.opacity(isFocused ? 1 : 0),
+        color.opacity(isFocused ? 1 : 0),
         lineWidth: 1 / max(displayScale, 1)
       )
       .allowsHitTesting(false)
