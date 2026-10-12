@@ -2638,32 +2638,95 @@ def native_submission_id(receipt: dict[str, Any]) -> str | None:
 
 
 def delete_native_queue_submission(root: Path, session: str, submission: str) -> bool:
-    """Use the installed Rust transport and the running provider's own socket."""
+    """Withdraw from the same local Codex queue used by `codex queue`."""
+    import select
     import shutil
     import subprocess
+    import uuid
 
+    for identity in (session, submission):
+        if str(uuid.UUID(identity)) != identity:
+            raise ValueError("invalid native queue identity")
     executable = shutil.which("codex")
     if not executable:
         raise ValueError("native provider unavailable")
-    version = subprocess.run([executable, "app-server", "daemon", "version"],
-                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
-    if version.returncode != 0 or len(version.stdout) > 65536:
-        raise ValueError("native provider status unavailable")
-    status = json.loads(version.stdout)
-    socket_path = status.get("socketPath")
-    if status.get("status") != "running" or not isinstance(socket_path, str) or not Path(socket_path).is_absolute():
-        raise ValueError("running native provider socket unavailable")
-    result = subprocess.run(
-        [reply_publisher_command(root), "bus", "withdraw-queued-message", "--socket", socket_path,
-         "--thread", session, "--submission", submission],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=12,
+    process = subprocess.Popen(
+        [executable, "app-server", "--listen", "stdio://"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, bufsize=0,
     )
-    if result.returncode != 0 or len(result.stdout) > 65536:
-        raise ValueError("native queue withdrawal unavailable")
-    value = json.loads(result.stdout)
-    if not isinstance(value, dict) or type(value.get("deleted")) is not bool:
-        raise ValueError("invalid native queue withdrawal receipt")
-    return value["deleted"]
+    deadline = time.monotonic() + 10
+    buffer = b""
+    received_bytes = 0
+
+    def send(value: dict[str, Any]) -> None:
+        process.stdin.write((json.dumps(value) + "\n").encode())
+        process.stdin.flush()
+
+    def request(number: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal buffer, received_bytes
+        send({"id": number, "method": method, "params": params})
+        while time.monotonic() < deadline:
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if len(line) > 65536:
+                    raise ValueError("native queue response exceeds byte limit")
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    raise ValueError("invalid native queue response")
+                if type(value.get("id")) is not int or value["id"] != number:
+                    continue
+                error = value.get("error")
+                if error is not None:
+                    detail = json.dumps(error, ensure_ascii=False)[:500]
+                    raise ValueError(f"native queue {method} refused: {detail}")
+                result = value.get("result")
+                if not isinstance(result, dict):
+                    raise ValueError(f"invalid native queue {method} receipt")
+                return result
+            remaining = max(0, deadline - time.monotonic())
+            if not select.select([process.stdout], [], [], remaining)[0]:
+                break
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                raise ValueError(f"native queue provider closed before {method} receipt")
+            received_bytes += len(chunk)
+            if received_bytes > 65536:
+                raise ValueError("native queue response exceeds byte limit")
+            buffer += chunk
+            if len(buffer) > 65536:
+                raise ValueError("native queue response exceeds byte limit")
+        raise ValueError(f"native queue {method} timed out")
+
+    try:
+        request(1, "initialize", {
+            "clientInfo": {"name": "codescribe_queue_receipt", "version": "1.0"},
+            "capabilities": {"experimentalApi": True},
+        })
+        send({"method": "initialized"})
+        value = request(2, "thread/queue/delete", {
+            "threadId": session, "queuedSubmissionId": submission,
+        })
+        if type(value.get("deleted")) is not bool:
+            raise ValueError("invalid native queue withdrawal receipt")
+        return value["deleted"]
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        try:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1)
+        finally:
+            process.stdout.close()
 
 
 def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
@@ -2722,8 +2785,9 @@ def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
         deleted = delete_native_queue_submission(root, expected["provider_session_id"], submission)
         receipt.update(queue_disposition="removed" if deleted else "not_pending",
                        withdrawal_completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
-    except (OSError, ValueError, subprocess.SubprocessError):
-        receipt["withdrawal_reason"] = "provider withdrawal unavailable; retry retained"
+        receipt.pop("withdrawal_reason", None)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        receipt["withdrawal_reason"] = f"{type(error).__name__}: {error}"[:1000]
     atomic_json(path, receipt)
     return receipt["queue_disposition"] in ("removed", "not_pending")
 
