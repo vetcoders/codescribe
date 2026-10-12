@@ -281,6 +281,12 @@ struct OverlayChannelStatusView: View {
   var archivedOwners: Set<OverlayConversationOwner> = []
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
+  var searchModel: OverlayConversationSearchModel?
+  @State private var internalSearchModel = OverlayConversationSearchModel()
+
+  var activeSearchModel: OverlayConversationSearchModel {
+    searchModel ?? internalSearchModel
+  }
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
@@ -292,7 +298,8 @@ struct OverlayChannelStatusView: View {
     pendingToggleChannels: Set<String> = [],
     conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
     unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil,
-    onShowMonitor: (() -> Void)? = nil
+    onShowMonitor: (() -> Void)? = nil,
+    searchModel: OverlayConversationSearchModel? = nil
   ) {
     self.channels = channels
     self.unavailable = unavailable
@@ -308,6 +315,7 @@ struct OverlayChannelStatusView: View {
     self.unreadCounts = unreadCounts
     self.onSelectConversation = onSelectConversation
     self.onShowMonitor = onShowMonitor
+    self.searchModel = searchModel
   }
 
   static func toggleDigit(for channel: String) -> UInt8? {
@@ -458,9 +466,15 @@ struct OverlayChannelStatusView: View {
     }
   }
 
-  var savedConversations: [OverlayConversation] {
+  var rawSavedConversations: [OverlayConversation] {
     let current = Set(currentConversations.map(\.id))
     return conversations.filter { !current.contains($0.id) }
+  }
+
+  var savedConversations: [OverlayConversation] {
+    activeSearchModel.filterAndSort(rawSavedConversations) { [self] conversation in
+      self.lastActivityDate(in: conversation)
+    }
   }
 
   func conversation(for channel: OverlayChannelDelivery) -> OverlayConversation? {
@@ -647,20 +661,35 @@ struct OverlayChannelStatusView: View {
   private func savedConversationDetail(
     _ conversation: OverlayConversation, owner: OverlayConversationOwner
   ) -> String {
-    guard let stamp = conversation.messages.last?.emittedAt else { return owner.provider }
-    let parser = ISO8601DateFormatter()
-    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let date = parser.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
-    guard let date else { return owner.provider }
+    guard let date = lastActivityDate(in: conversation) else { return owner.provider }
     return "\(owner.provider) · \(date.formatted(date: .abbreviated, time: .shortened))"
+  }
+
+  private func lastActivityDate(in conversation: OverlayConversation) -> Date? {
+    // Messages are in history order. Parse once per row, outside the sort
+    // comparator; an unloaded archive has no verified message date yet.
+    if let date = conversation.messages.reversed().lazy.compactMap({
+      MessageTimestamp.date(fromISO8601: $0.emittedAt)
+    }).first {
+      return date
+    }
+    return activeSearchModel.backendLastActivityDates[conversation.id]
+  }
+
+  var showsConnectionHint: Bool {
+    channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
   }
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 2) {
-      if channels.isEmpty && currentConversations.isEmpty {
-        Text("No agents connected")
-          .foregroundStyle(palette.mutedText.color)
-          .padding(.vertical, 12)
+      if showsConnectionHint {
+        Text(
+          "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
+        )
+        .foregroundStyle(palette.mutedText.color)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.vertical, 12)
+        .accessibilityIdentifier("overlay-agent-connection-hint")
       }
       ForEach(channels) { channel in
         channelRow(channel)
@@ -675,12 +704,10 @@ struct OverlayChannelStatusView: View {
         ) { conversation in
           conversationRow(conversation, saved: false)
         }
-        if !savedConversations.isEmpty {
+        if !rawSavedConversations.isEmpty {
           Divider().padding(.vertical, 4)
           DisclosureGroup("Saved conversations") {
-            ForEach(savedConversations) { conversation in
-              conversationRow(conversation, saved: true)
-            }
+            savedConversationsContent
           }
         }
       }
@@ -711,6 +738,104 @@ struct OverlayChannelStatusView: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  @ViewBuilder
+  private var savedConversationsContent: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        HStack(spacing: 5) {
+          Image(systemName: "magnifyingglass")
+            .font(.system(size: 11 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+          TextField(
+            "Search conversations…",
+            text: Binding(
+              get: { activeSearchModel.query },
+              set: { activeSearchModel.query = $0 }
+            )
+          )
+          .textFieldStyle(.plain)
+          .font(.system(size: 11 * textScale))
+          .foregroundStyle(palette.primaryText.color)
+          .accessibilityIdentifier("overlay-saved-conversations-search-field")
+
+          if activeSearchModel.isLoading {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityIdentifier("overlay-saved-conversations-search-loading")
+          } else if !activeSearchModel.query.isEmpty {
+            Button {
+              activeSearchModel.clear()
+            } label: {
+              Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 11 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Clear search"))
+            .accessibilityIdentifier("overlay-saved-conversations-search-clear")
+          }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(palette.mutedText.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+        Menu {
+          Picker(
+            "Sort order",
+            selection: Binding(
+              get: { activeSearchModel.sortOrder },
+              set: { activeSearchModel.sortOrder = $0 }
+            )
+          ) {
+            ForEach(OverlayConversationSortOrder.allCases, id: \.self) { order in
+              Text(order.title).tag(order)
+            }
+          }
+        } label: {
+          Image(systemName: "line.3.horizontal.decrease.circle")
+            .font(.system(size: 12 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityIdentifier("overlay-saved-conversations-sort-menu")
+      }
+      .padding(.vertical, 2)
+
+      if let error = activeSearchModel.effectiveSearchError {
+        Text("Search failed")
+          .font(.system(size: 10 * textScale, weight: .medium))
+          .foregroundStyle(palette.errorStatus.color)
+          .help(error)
+          .accessibilityIdentifier("overlay-saved-conversations-search-error")
+      } else if activeSearchModel.isEffectivePartial {
+        HStack(spacing: 4) {
+          Image(systemName: "exclamationmark.triangle")
+            .font(.system(size: 10 * textScale))
+          Text("Partial results")
+            .font(.system(size: 10 * textScale))
+        }
+        .foregroundStyle(palette.processingStatus.color)
+        .accessibilityIdentifier("overlay-saved-conversations-search-partial")
+      }
+
+      if activeSearchModel.hasExhaustiveNoMatch(in: savedConversations) {
+        Text("No matching conversations")
+          .font(.system(size: 11 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .padding(.vertical, 4)
+          .accessibilityIdentifier("overlay-saved-conversations-empty-matches")
+      } else {
+        ForEach(savedConversations) { conversation in
+          conversationRow(conversation, saved: true)
+        }
+      }
+    }
+    .task(id: rawSavedConversations.map(\.id)) {
+      await activeSearchModel.loadArchiveMetadata()
+    }
   }
 
   private func shortStatus(for channel: OverlayChannelDelivery) -> String {

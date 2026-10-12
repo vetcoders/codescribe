@@ -44,6 +44,8 @@ data  CsAudioInputSnapshot.devices
 data  CsAudioInputSnapshot.configuredDevice
 data  CsAudioInputSnapshot.runtimeDevice
 prose CsBindingOption.label
+data  CsBusConversationSearchResult.conversationId
+data  CsBusConversationSearchResult.lastActivity
 prose CsCapabilityRow.op
 prose CsCapabilityRow.tier
 prose CsCapabilityRow.provider

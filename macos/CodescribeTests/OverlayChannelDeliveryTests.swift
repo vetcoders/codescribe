@@ -998,6 +998,40 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(calls, [1, 3], "both directions use the same per-digit toggle intent")
   }
 
+  func testSavedConversationsShowNewestMessageFirstWithUnknownDatesLast() {
+    func conversation(_ id: String, dates: [String]) -> OverlayConversation {
+      OverlayConversation(
+        id: id, channel: "1", name: id, owner: nil,
+        messages: dates.enumerated().map { index, stamp in
+          .init(
+            id: "\(id)-\(index)", kind: .reply, text: "Retained reply", order: UInt64(index),
+            emittedAt: stamp, owner: nil, recipients: [], deliveryID: nil, replyTo: nil,
+            unsolicited: true, playback: nil, busPath: "")
+        })
+    }
+    let old = conversation("old", dates: ["2026-10-05T15:26:00Z"])
+    let newest = conversation(
+      "newest", dates: ["2026-10-01T08:00:00Z", "2026-10-12T10:00:00.250Z", "invalid"])
+    let offset = conversation("offset", dates: ["2026-10-12T12:00:00+02:00"])
+    let tieB = conversation("tie-b", dates: ["2026-10-07T21:19:00Z"])
+    let tieA = conversation("tie-a", dates: ["2026-10-07T21:19:00Z"])
+    var unloaded = conversation("unloaded", dates: [])
+    unloaded.historyLoaded = false
+    let invalid = conversation("invalid", dates: ["not-a-date"])
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: newest.messages)
+    let input = [old, unloaded, tieB, invalid, newest, broadcast, offset, tieA]
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false, conversations: input)
+
+    XCTAssertEqual(
+      view.savedConversations.map(\.id),
+      [newest.id, offset.id, tieA.id, tieB.id, old.id, invalid.id, unloaded.id])
+    XCTAssertEqual(view.currentConversations.map(\.id), [broadcast.id])
+    XCTAssertEqual(view.conversations, input, "Sorting is a passive presentation projection")
+    XCTAssertFalse(unloaded.historyLoaded, "Sorting must not load archives or invent their dates")
+  }
+
   func testMonitorSeparatesCurrentOwnerFromSameNamedSavedConversation() throws {
     func conversation(session: String, lease: String) throws -> OverlayConversation {
       let owner = try XCTUnwrap(
@@ -1776,6 +1810,758 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(first.first?.isOpen, true)
     let bytes = await reader.consumedBytes
     XCTAssertLessThanOrEqual(bytes, OverlayChannelDeliveryReader.tailWindow)
+  }
+
+  // MARK: - Saved Conversation Search & Sorting Tests
+
+  func testSavedConversationSearchNarrowsLiveAndSortsNewestOldestName() async throws {
+    func makeConversation(
+      name: String, provider: String, session: String, lease: String, dates: [String]
+    ) -> OverlayConversation {
+      let owner = OverlayConversationOwner(row: [
+        "provider": provider,
+        "provider_session_id": session,
+        "lease_id": lease,
+        "channel": "1",
+        "name": name,
+      ])!
+      return OverlayConversation(
+        id: owner.id, channel: "1", name: name, owner: owner,
+        messages: dates.enumerated().map { index, stamp in
+          .init(
+            id: "\(name)-\(index)", kind: .reply, text: "Message \(name)", order: UInt64(index),
+            emittedAt: stamp, owner: owner, recipients: [], deliveryID: nil, replyTo: nil,
+            unsolicited: true, playback: nil, busPath: ""
+          )
+        }
+      )
+    }
+
+    let alpha = makeConversation(
+      name: "Alpha Project", provider: "claude", session: "sess-1",
+      lease: String(repeating: "a", count: 32), dates: ["2026-10-01T10:00:00Z"])
+    let beta = makeConversation(
+      name: "Beta Architecture", provider: "codex", session: "sess-2",
+      lease: String(repeating: "b", count: 32), dates: ["2026-10-10T12:00:00Z"])
+    let gamma = makeConversation(
+      name: "Gamma Research", provider: "gemini", session: "sess-3",
+      lease: String(repeating: "c", count: 32), dates: ["2026-10-05T08:00:00Z"])
+
+    struct MockClient: OverlayConversationSearchClient {
+      let results: [OverlayConversationSearchResult]
+      func search(rootPath: String, query: String) async throws -> OverlayConversationSearchResponse
+      {
+        OverlayConversationSearchResponse(results: results, complete: true, errorCount: 0)
+      }
+    }
+
+    let client = MockClient(results: [
+      OverlayConversationSearchResult(
+        conversationID: alpha.id, lastActivity: "2026-10-01T10:00:00Z"),
+      OverlayConversationSearchResult(
+        conversationID: beta.id, lastActivity: "2026-10-10T12:00:00Z"),
+    ])
+
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [alpha, beta, gamma], searchModel: searchModel
+    )
+
+    // 1. Initial state (empty query): sort defaults to newest.
+    XCTAssertEqual(view.savedConversations.map(\.id), [beta.id, gamma.id, alpha.id])
+    XCTAssertEqual(searchModel.sortOrder, .newest)
+
+    // 2. Sort by oldest:
+    searchModel.sortOrder = .oldest
+    XCTAssertEqual(view.savedConversations.map(\.id), [alpha.id, gamma.id, beta.id])
+
+    // 3. Sort by name:
+    searchModel.sortOrder = .name
+    XCTAssertEqual(view.savedConversations.map(\.id), [alpha.id, beta.id, gamma.id])
+
+    // 4. Perform search query narrowing live:
+    await searchModel.searchImmediately(query: "Project")
+    // Intersects exact saved owner IDs, narrowing to alpha and beta:
+    searchModel.sortOrder = .newest
+    XCTAssertEqual(view.savedConversations.map(\.id), [beta.id, alpha.id])
+
+    searchModel.sortOrder = .oldest
+    XCTAssertEqual(view.savedConversations.map(\.id), [alpha.id, beta.id])
+
+    searchModel.sortOrder = .name
+    XCTAssertEqual(view.savedConversations.map(\.id), [alpha.id, beta.id])
+  }
+
+  actor ControlledConversationSearchClient: OverlayConversationSearchClient {
+    private var continuations:
+      [String: [CheckedContinuation<OverlayConversationSearchResponse, any Error>]] = [:]
+    private var cannedResponses: [String: Result<OverlayConversationSearchResponse, any Error>] =
+      [:]
+    private(set) var callLog: [String] = []
+
+    func setResponse(for query: String, response: OverlayConversationSearchResponse) {
+      cannedResponses[query] = .success(response)
+    }
+
+    func setError(for query: String, error: any Error) {
+      cannedResponses[query] = .failure(error)
+    }
+
+    func search(rootPath: String, query: String) async throws -> OverlayConversationSearchResponse {
+      callLog.append(query)
+      if let canned = cannedResponses[query] {
+        switch canned {
+        case .success(let resp): return resp
+        case .failure(let err): throw err
+        }
+      }
+      return try await withCheckedThrowingContinuation { continuation in
+        continuations[query, default: []].append(continuation)
+      }
+    }
+
+    func hasPendingCall(for query: String) -> Bool {
+      !(continuations[query]?.isEmpty ?? true)
+    }
+
+    func resumeFirst(for query: String, returning response: OverlayConversationSearchResponse) {
+      if var list = continuations[query], !list.isEmpty {
+        let cont = list.removeFirst()
+        continuations[query] = list
+        cont.resume(returning: response)
+      }
+    }
+
+    func resumeFirst(for query: String, throwing error: any Error) {
+      if var list = continuations[query], !list.isEmpty {
+        let cont = list.removeFirst()
+        continuations[query] = list
+        cont.resume(throwing: error)
+      }
+    }
+
+    func resumeLast(for query: String, returning response: OverlayConversationSearchResponse) {
+      if var list = continuations[query], !list.isEmpty {
+        let cont = list.removeLast()
+        continuations[query] = list
+        cont.resume(returning: response)
+      }
+    }
+
+    func queryCount(_ query: String) -> Int {
+      callLog.filter { $0 == query }.count
+    }
+  }
+
+  func testSavedConversationSearchStaleCompletionIsDiscarded() async throws {
+    let convA = OverlayConversation(
+      id: "prov\0s1\0" + String(repeating: "1", count: 32), channel: "1", name: "Alpha", owner: nil,
+      messages: [])
+    let convB = OverlayConversation(
+      id: "prov\0s2\0" + String(repeating: "2", count: 32), channel: "1", name: "Beta", owner: nil,
+      messages: [])
+
+    let client = ControlledConversationSearchClient()
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [convA, convB], searchModel: searchModel
+    )
+
+    // Trigger slow search query first:
+    let slowTask = Task { @MainActor in
+      await searchModel.searchImmediately(query: "slow")
+    }
+    while await !client.hasPendingCall(for: "slow") {
+      await Task.yield()
+    }
+
+    // Trigger fast search query immediately afterwards:
+    await client.setResponse(
+      for: "fast",
+      response: OverlayConversationSearchResponse(
+        results: [OverlayConversationSearchResult(conversationID: convB.id)],
+        complete: true, errorCount: 0
+      )
+    )
+    await searchModel.searchImmediately(query: "fast")
+    XCTAssertEqual(view.savedConversations.map(\.id), [convB.id])
+
+    // Now resume the slow query (which is stale):
+    await client.resumeFirst(
+      for: "slow",
+      returning: OverlayConversationSearchResponse(
+        results: [OverlayConversationSearchResult(conversationID: convA.id)],
+        complete: true, errorCount: 0
+      )
+    )
+    _ = await slowTask.value
+
+    // Stale result for "slow" MUST be discarded; only latest "fast" completion paints:
+    XCTAssertEqual(
+      view.savedConversations.map(\.id), [convB.id],
+      "Stale query completion must not overwrite latest query")
+    XCTAssertEqual(searchModel.query, "fast")
+  }
+
+  func testSavedConversationSearchClearingRestoresListPreservingSelection() async throws {
+    let leaseA = String(repeating: "a", count: 32)
+    let leaseB = String(repeating: "b", count: 32)
+    let ownerA = OverlayConversationOwner(row: [
+      "provider": "codex", "provider_session_id": "sA", "lease_id": leaseA, "channel": "1",
+      "name": "A",
+    ])!
+    let ownerB = OverlayConversationOwner(row: [
+      "provider": "codex", "provider_session_id": "sB", "lease_id": leaseB, "channel": "2",
+      "name": "B",
+    ])!
+    let convA = OverlayConversation(
+      id: ownerA.id, channel: "1", name: "A", owner: ownerA, messages: [])
+    let convB = OverlayConversation(
+      id: ownerB.id, channel: "2", name: "B", owner: ownerB, messages: [])
+
+    struct SingleMatchClient: OverlayConversationSearchClient {
+      let matchID: String
+      func search(rootPath: String, query: String) async throws -> OverlayConversationSearchResponse
+      {
+        OverlayConversationSearchResponse(
+          results: [OverlayConversationSearchResult(conversationID: matchID)],
+          complete: true, errorCount: 0
+        )
+      }
+    }
+
+    let searchModel = OverlayConversationSearchModel(
+      client: SingleMatchClient(matchID: convB.id), debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [convA, convB], selectedConversationID: convA.id,
+      searchModel: searchModel
+    )
+
+    XCTAssertEqual(view.selectedConversationID, convA.id)
+    await searchModel.searchImmediately(query: "B")
+    XCTAssertEqual(view.savedConversations.map(\.id), [convB.id])
+    XCTAssertEqual(
+      view.selectedConversationID, convA.id, "Searching does not auto-open or change selection")
+
+    // Clear search
+    searchModel.clear()
+    XCTAssertEqual(searchModel.query, "")
+    XCTAssertEqual(
+      Set(view.savedConversations.map(\.id)), Set([convA.id, convB.id]),
+      "Clearing restores full list")
+    XCTAssertEqual(
+      view.selectedConversationID, convA.id, "Clearing restores list without changing selection")
+  }
+
+  func testSavedConversationSearchTransitionsThroughPendingErrorPartialZeroAndCompleteZero()
+    async throws
+  {
+    let convA = OverlayConversation(
+      id: "prov\0s1\0" + String(repeating: "1", count: 32), channel: "1", name: "Alpha", owner: nil,
+      messages: [])
+    let convB = OverlayConversation(
+      id: "prov\0s2\0" + String(repeating: "2", count: 32), channel: "1", name: "Beta", owner: nil,
+      messages: [])
+
+    let client = ControlledConversationSearchClient()
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [convA, convB], searchModel: searchModel
+    )
+
+    // Initial state: empty query, full list rendered, no empty notice
+    XCTAssertEqual(view.savedConversations.map(\.id), [convA.id, convB.id])
+    XCTAssertFalse(searchModel.hasExhaustiveNoMatch(in: view.savedConversations))
+
+    // Transition 1: Pending (loading)
+    let pendingTask = Task { @MainActor in
+      await searchModel.searchImmediately(query: "probe")
+    }
+    while await !client.hasPendingCall(for: "probe") {
+      await Task.yield()
+    }
+    XCTAssertTrue(searchModel.isLoading)
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertFalse(searchModel.isPartial)
+    XCTAssertFalse(
+      searchModel.hasExhaustiveNoMatch(in: view.savedConversations),
+      "Pending/loading state must NEVER report exhaustive no-match"
+    )
+
+    // Transition 2: Thrown error
+    await client.resumeFirst(for: "probe", throwing: CocoaError(.fileReadCorruptFile))
+    _ = await pendingTask.value
+    XCTAssertFalse(searchModel.isLoading)
+    XCTAssertNotNil(searchModel.searchError)
+    XCTAssertNotNil(searchModel.effectiveSearchError)
+    XCTAssertFalse(searchModel.isPartial)
+    XCTAssertTrue(view.savedConversations.isEmpty)
+    XCTAssertFalse(
+      searchModel.hasExhaustiveNoMatch(in: view.savedConversations),
+      "Thrown error state must NEVER report exhaustive no-match"
+    )
+
+    // Transition 3: Partial zero (incomplete query returning 0 matches)
+    let partialTask = Task { @MainActor in
+      await searchModel.searchImmediately(query: "partial-zero")
+    }
+    while await !client.hasPendingCall(for: "partial-zero") {
+      await Task.yield()
+    }
+    await client.resumeFirst(
+      for: "partial-zero",
+      returning: OverlayConversationSearchResponse(results: [], complete: false, errorCount: 1)
+    )
+    _ = await partialTask.value
+    XCTAssertFalse(searchModel.isLoading)
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertTrue(searchModel.isPartial)
+    XCTAssertTrue(searchModel.isEffectivePartial)
+    XCTAssertTrue(view.savedConversations.isEmpty)
+    XCTAssertFalse(
+      searchModel.hasExhaustiveNoMatch(in: view.savedConversations),
+      "Partial zero-hit results must NEVER report exhaustive no-match"
+    )
+
+    // Transition 4: Complete zero (exhaustive zero-hit result)
+    let completeTask = Task { @MainActor in
+      await searchModel.searchImmediately(query: "complete-zero")
+    }
+    while await !client.hasPendingCall(for: "complete-zero") {
+      await Task.yield()
+    }
+    await client.resumeFirst(
+      for: "complete-zero",
+      returning: OverlayConversationSearchResponse(results: [], complete: true, errorCount: 0)
+    )
+    _ = await completeTask.value
+    XCTAssertFalse(searchModel.isLoading)
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertFalse(searchModel.isPartial)
+    XCTAssertFalse(searchModel.isEffectivePartial)
+    XCTAssertTrue(view.savedConversations.isEmpty)
+    XCTAssertTrue(
+      searchModel.hasExhaustiveNoMatch(in: view.savedConversations),
+      "Successful complete query with zero hits reports definitive no-match"
+    )
+    XCTAssertTrue(searchModel.isExhaustiveZeroMatch)
+
+    // Transition 5: Clear restores list immediately
+    searchModel.clear()
+    XCTAssertEqual(searchModel.query, "")
+    XCTAssertFalse(searchModel.isLoading)
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertFalse(searchModel.isPartial)
+    XCTAssertEqual(view.savedConversations.map(\.id), [convA.id, convB.id])
+    XCTAssertFalse(searchModel.hasExhaustiveNoMatch(in: view.savedConversations))
+  }
+
+  func testSavedConversationSearchRetainsVerifiedPartialHits() async throws {
+    let convA = OverlayConversation(
+      id: "prov\0s1\0" + String(repeating: "1", count: 32), channel: "1", name: "Alpha", owner: nil,
+      messages: [])
+    let convB = OverlayConversation(
+      id: "prov\0s2\0" + String(repeating: "2", count: 32), channel: "1", name: "Beta", owner: nil,
+      messages: [])
+
+    let client = ControlledConversationSearchClient()
+    await client.setResponse(
+      for: "alpha",
+      response: OverlayConversationSearchResponse(
+        results: [OverlayConversationSearchResult(conversationID: convA.id)],
+        complete: false,
+        errorCount: 2
+      )
+    )
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [convA, convB], searchModel: searchModel
+    )
+
+    await searchModel.searchImmediately(query: "alpha")
+    XCTAssertTrue(searchModel.isPartial)
+    XCTAssertTrue(searchModel.isEffectivePartial)
+    XCTAssertEqual(searchModel.errorCount, 2)
+    XCTAssertEqual(
+      view.savedConversations.map(\.id), [convA.id],
+      "Verified partial hits must be retained and rendered"
+    )
+    XCTAssertFalse(
+      searchModel.hasExhaustiveNoMatch(in: view.savedConversations),
+      "Partial results with hits must not show empty matches"
+    )
+  }
+
+  func testSavedConversationSearchMetadataSurfacesPartialAndErrorStatus() async throws {
+    let convA = OverlayConversation(
+      id: "prov\0s1\0" + String(repeating: "1", count: 32), channel: "1", name: "Alpha", owner: nil,
+      messages: [])
+    let convB = OverlayConversation(
+      id: "prov\0s2\0" + String(repeating: "2", count: 32), channel: "1", name: "Beta", owner: nil,
+      messages: [])
+
+    let client = ControlledConversationSearchClient()
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [convA, convB], searchModel: searchModel
+    )
+
+    // 1. Incomplete / partial metadata response
+    await client.setResponse(
+      for: "",
+      response: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: convA.id,
+            lastActivity: "2026-10-10T12:00:00Z"
+          )
+        ],
+        complete: false,
+        errorCount: 2
+      )
+    )
+    await searchModel.loadArchiveMetadata()
+
+    XCTAssertTrue(searchModel.isMetadataPartial)
+    XCTAssertEqual(searchModel.metadataErrorCount, 2)
+    XCTAssertNil(searchModel.metadataError)
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertFalse(searchModel.isPartial)
+    // When query is empty, effective partial surfaces metadata partial status:
+    XCTAssertTrue(searchModel.isEffectivePartial)
+    XCTAssertNil(searchModel.effectiveSearchError)
+    XCTAssertNil(
+      searchModel.matchedConversationIDs,
+      "Metadata load must never clobber active query filter"
+    )
+    XCTAssertEqual(view.savedConversations.count, 2)
+    XCTAssertFalse(searchModel.hasExhaustiveNoMatch(in: view.savedConversations))
+
+    // 2. Failed metadata response (thrown error)
+    await client.setError(for: "", error: CocoaError(.fileReadNoSuchFile))
+    await searchModel.loadArchiveMetadata()
+
+    XCTAssertFalse(searchModel.isMetadataPartial)
+    XCTAssertNotNil(searchModel.metadataError)
+    XCTAssertNil(searchModel.searchError)
+    // When query is empty, effective error surfaces metadata error:
+    XCTAssertNotNil(searchModel.effectiveSearchError)
+    XCTAssertFalse(searchModel.isEffectivePartial)
+    XCTAssertNil(
+      searchModel.matchedConversationIDs,
+      "Metadata error must never empty saved conversations list"
+    )
+    XCTAssertEqual(view.savedConversations.count, 2)
+    XCTAssertFalse(searchModel.hasExhaustiveNoMatch(in: view.savedConversations))
+
+    // 3. Active query takes precedence over background metadata status
+    await client.setResponse(
+      for: "beta",
+      response: OverlayConversationSearchResponse(
+        results: [OverlayConversationSearchResult(conversationID: convB.id)],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    await searchModel.searchImmediately(query: "beta")
+    XCTAssertNil(searchModel.searchError)
+    XCTAssertFalse(searchModel.isPartial)
+    // Active query is complete and error-free: effective status reflects active query:
+    XCTAssertNil(searchModel.effectiveSearchError)
+    XCTAssertFalse(searchModel.isEffectivePartial)
+    XCTAssertEqual(view.savedConversations.map(\.id), [convB.id])
+
+    // 4. Clear search restores full list immediately without losing selection
+    searchModel.clear()
+    XCTAssertEqual(searchModel.query, "")
+    XCTAssertNil(searchModel.matchedConversationIDs)
+    XCTAssertEqual(view.savedConversations.count, 2)
+  }
+
+  func testSavedConversationSearchStaleMetadataCompletionIsDiscarded() async throws {
+    let conv = OverlayConversation(
+      id: "prov\0s1\0" + String(repeating: "1", count: 32), channel: "1", name: "Alpha", owner: nil,
+      messages: [])
+
+    let client = ControlledConversationSearchClient()
+    let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+
+    // Trigger metadata load 1 (slow)
+    let task1 = Task { @MainActor in
+      await searchModel.loadArchiveMetadata()
+    }
+    while await !client.hasPendingCall(for: "") {
+      await Task.yield()
+    }
+
+    // Trigger metadata load 2 (fast/newer)
+    let task2 = Task { @MainActor in
+      await searchModel.loadArchiveMetadata()
+    }
+    while await client.queryCount("") < 2 {
+      await Task.yield()
+    }
+
+    // Resume load 2 with newer date (Oct 25)
+    await client.resumeLast(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: conv.id,
+            lastActivity: "2026-10-25T12:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await task2.value
+    let dateAfterTask2 = searchModel.backendLastActivityDates[conv.id]
+    XCTAssertNotNil(dateAfterTask2)
+
+    // Now resume load 1 (stale) with older date (Oct 01)
+    await client.resumeFirst(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: conv.id,
+            lastActivity: "2026-10-01T12:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await task1.value
+
+    // Date from newer load 2 must NOT be overwritten by stale load 1:
+    XCTAssertEqual(
+      searchModel.backendLastActivityDates[conv.id], dateAfterTask2,
+      "Stale metadata completion must not overwrite date cache from newer metadata load"
+    )
+  }
+
+  func testOlderMetadataCannotOverwriteDateFromNewerSearchSnapshot() async throws {
+    let client = ControlledConversationSearchClient()
+    let model = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+
+    // 1. Metadata search starts first (snapshot sequence 1)
+    let metadataTask = Task { @MainActor in
+      await model.loadArchiveMetadata()
+    }
+    while await !client.hasPendingCall(for: "") {
+      await Task.yield()
+    }
+
+    // 2. Query search starts second (snapshot sequence 2)
+    let searchTask = Task { @MainActor in
+      await model.searchImmediately(query: "needle")
+    }
+    while await !client.hasPendingCall(for: "needle") {
+      await Task.yield()
+    }
+
+    // 3. Complete newer query search first with Oct 12 date
+    await client.resumeFirst(
+      for: "needle",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-12T08:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await searchTask.value
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-12T08:00:00Z")
+    )
+    XCTAssertEqual(model.matchedConversationIDs, Set(["owner"]))
+
+    // 4. Complete older metadata search second with Oct 01 for "owner" and Oct 05 for "nonmatching"
+    await client.resumeFirst(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-01T08:00:00Z"
+          ),
+          OverlayConversationSearchResult(
+            conversationID: "nonmatching",
+            lastActivity: "2026-10-05T08:00:00Z"
+          ),
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await metadataTask.value
+
+    // Older metadata must NOT overwrite date for "owner" from newer search snapshot:
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-12T08:00:00Z"),
+      "An older background snapshot must not replace a newer query's verified activity date"
+    )
+    // Nonmatching owner from metadata snapshot MUST be preserved:
+    XCTAssertEqual(
+      model.backendLastActivityDates["nonmatching"],
+      MessageTimestamp.date(fromISO8601: "2026-10-05T08:00:00Z"),
+      "Nonmatching owners from background metadata must be preserved"
+    )
+    // Active query filter remains intact:
+    XCTAssertEqual(model.matchedConversationIDs, Set(["owner"]))
+
+    // 5. Subsequent newer metadata search (snapshot sequence 3) CAN update the date earlier
+    let newerMetadataTask = Task { @MainActor in
+      await model.loadArchiveMetadata()
+    }
+    while await !client.hasPendingCall(for: "") {
+      await Task.yield()
+    }
+    await client.resumeFirst(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-08T08:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await newerMetadataTask.value
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-08T08:00:00Z"),
+      "A newer authoritative metadata snapshot may update date earlier"
+    )
+  }
+
+  func testSavedConversationSearchUnloadedHistoriesUseBackendDatesForSorting() async throws {
+    func makeConv(id: String, name: String, dates: [String], loaded: Bool) -> OverlayConversation {
+      var conv = OverlayConversation(
+        id: id, channel: "1", name: name, owner: nil,
+        messages: dates.enumerated().map { index, stamp in
+          .init(
+            id: "\(id)-\(index)", kind: .reply, text: "Text", order: UInt64(index),
+            emittedAt: stamp, owner: nil, recipients: [], deliveryID: nil, replyTo: nil,
+            unsolicited: true, playback: nil, busPath: ""
+          )
+        }
+      )
+      conv.historyLoaded = loaded
+      return conv
+    }
+
+    let loadedOld = makeConv(
+      id: "loaded-old", name: "Loaded Old", dates: ["2026-10-02T10:00:00Z"], loaded: true)
+    let loadedNew = makeConv(
+      id: "loaded-new", name: "Loaded New", dates: ["2026-10-12T10:00:00Z"], loaded: true)
+    let unloadedArchive = makeConv(
+      id: "unloaded-archive", name: "Unloaded Archive", dates: [], loaded: false)
+
+    struct DateProvidingClient: OverlayConversationSearchClient {
+      func search(rootPath: String, query: String) async throws -> OverlayConversationSearchResponse
+      {
+        OverlayConversationSearchResponse(
+          results: [
+            OverlayConversationSearchResult(
+              conversationID: "loaded-old", lastActivity: "2026-10-02T10:00:00Z"),
+            OverlayConversationSearchResult(
+              conversationID: "unloaded-archive", lastActivity: "2026-10-08T15:00:00Z"),
+            OverlayConversationSearchResult(
+              conversationID: "loaded-new", lastActivity: "2026-10-12T10:00:00Z"),
+          ],
+          complete: true, errorCount: 0
+        )
+      }
+    }
+
+    let searchModel = OverlayConversationSearchModel(
+      client: DateProvidingClient(), debounceDuration: .zero)
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [loadedOld, unloadedArchive, loadedNew], searchModel: searchModel
+    )
+
+    // Before search response: unloaded archive has no date, so it sorts last:
+    XCTAssertEqual(
+      view.savedConversations.map(\.id), [loadedNew.id, loadedOld.id, unloadedArchive.id])
+
+    // After search provides verified backend last_activity date:
+    await searchModel.searchImmediately(query: "test")
+    // Now unloaded archive (Oct 08) sorts between Oct 12 and Oct 02!
+    XCTAssertEqual(
+      view.savedConversations.map(\.id),
+      [loadedNew.id, unloadedArchive.id, loadedOld.id],
+      "Source response dates fix ordering of unloaded histories"
+    )
+  }
+
+  func testSavedConversationSearchExactOwnerNavigationWithoutMutatingComposer() {
+    let lease = "0123456789abcdef0123456789abcdef"
+    let owner = OverlayConversationOwner(row: [
+      "provider": "codex", "provider_session_id": "ses-live", "lease_id": lease,
+      "channel": "4", "name": "Astra",
+    ])!
+    let conv = OverlayConversation(
+      id: owner.id, channel: "4", name: "Astra", owner: owner, messages: [])
+
+    var selectedID: String? = nil
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [conv],
+      onSelectConversation: { selectedID = $0 }
+    )
+
+    view.onSelectConversation?(conv.id)
+    XCTAssertEqual(selectedID, owner.id)
+    XCTAssertEqual(selectedID, "codex\0ses-live\0\(lease)")
+  }
+
+  func testSavedConversationSearchLocalizationCatalogsContainAllKeysInEnAndPl() {
+    let keys = [
+      "Search conversations…",
+      "Newest first",
+      "Oldest first",
+      "By name",
+      "Sort order",
+      "No matching conversations",
+      "Search failed",
+      "Partial results",
+      "Clear search",
+      "Searching…",
+    ]
+    let bundle = Bundle.main
+    if let polishPath = bundle.path(forResource: "pl", ofType: "lproj"),
+      let polishBundle = Bundle(path: polishPath)
+    {
+      for key in keys {
+        let localized = polishBundle.localizedString(forKey: key, value: nil, table: nil)
+        XCTAssertNotEqual(localized, key, "Key '\(key)' should be translated into Polish")
+        XCTAssertFalse(localized.isEmpty)
+      }
+    }
+    for key in keys {
+      let localized = bundle.localizedString(forKey: key, value: nil, table: nil)
+      XCTAssertFalse(localized.isEmpty)
+    }
   }
 
   private struct Fixture {

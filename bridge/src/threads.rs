@@ -330,6 +330,22 @@ impl CsArchivedDocument {
     }
 }
 
+/// One saved bus conversation. `conversation_id` is provider, session, and
+/// lease joined by NUL. `last_activity` is RFC3339 or empty when no date is known.
+#[derive(uniffi::Record)]
+pub struct CsBusConversationSearchResult {
+    pub conversation_id: String,
+    pub last_activity: String,
+}
+
+/// Read-only bus archive search. `complete` is false when coverage is partial.
+#[derive(uniffi::Record)]
+pub struct CsBusConversationSearchResponse {
+    pub results: Vec<CsBusConversationSearchResult>,
+    pub complete: bool,
+    pub error_count: u32,
+}
+
 /// Thin handle to the codescribe thread store + transcript history.
 ///
 /// Stateless: every call constructs a fresh `ThreadStore` / `ThreadIndex` over
@@ -372,6 +388,36 @@ impl CodescribeThreads {
             .into_iter()
             .map(CsThreadSummary::from)
             .collect())
+    }
+
+    /// Read-only search of released bus archives under `root_path`.
+    ///
+    /// Wraps `conversation_search::search_bus_conversations`. History files are
+    /// not acknowledged or rewritten. `complete` is false when a source failed.
+    pub fn search_bus_conversations(
+        &self,
+        root_path: String,
+        query: String,
+    ) -> Result<CsBusConversationSearchResponse, CsError> {
+        let found = codescribe_core::agent::conversation_search::search_bus_conversations(
+            std::path::Path::new(&root_path),
+            &query,
+        )
+        .map_err(|error| CsError::Recording {
+            msg: format!("{error:#}"),
+        })?;
+        Ok(CsBusConversationSearchResponse {
+            results: found
+                .results
+                .into_iter()
+                .map(|hit| CsBusConversationSearchResult {
+                    conversation_id: hit.conversation_id,
+                    last_activity: hit.last_activity,
+                })
+                .collect(),
+            complete: found.complete,
+            error_count: found.error_count,
+        })
     }
 
     /// Load a full thread by id. Wraps `ThreadStore::load_thread`
