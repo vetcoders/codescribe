@@ -249,7 +249,10 @@ mod tests {
         }
 
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
-            assert_eq!(dir, std::path::PathBuf::from(custom));
+            // config_dir() canonicalizes an existing override (macOS mounts
+            // the temp root under /private/var), so compare the same shape.
+            let custom = std::path::PathBuf::from(custom);
+            assert_eq!(dir, custom.canonicalize().unwrap_or(custom));
         } else {
             assert_eq!(dir, crate::test_isolation::test_process_config_root());
             let home = crate::test_isolation::account_home().expect("account home");
