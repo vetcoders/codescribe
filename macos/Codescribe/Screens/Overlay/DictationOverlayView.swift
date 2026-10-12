@@ -57,6 +57,7 @@ struct OverlayRecordingControls: View {
   let onIntent: (OverlayIntent) -> Void
   let onPreviewToggle: () -> Void
   var showsRecordingButton = true
+  var showsPreviewButton = true
   var onShowDictation: (() -> Void)?
   var onPresentationSelect: ((OverlayPresentationMode) -> Void)?
 
@@ -125,7 +126,7 @@ struct OverlayRecordingControls: View {
   var body: some View {
     HStack(spacing: compact ? 4 : 7) {
       if showsRecordingButton { recordingButton }
-      previewButton
+      if showsPreviewButton { previewButton }
     }
     .fixedSize()
     .accessibilityElement(children: .contain)
@@ -202,14 +203,14 @@ struct OverlayRecordingControls: View {
   }
 
   private var recordingGlyph: some View {
-    OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
+    OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint, adoptsHeaderHover: false)
   }
 
   private var previewButton: some View {
     Button(action: togglePreview) {
       Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(palette.mutedText.color)
+        .modifier(OverlayHeaderHoverForeground(resting: palette.mutedText.color))
         .frame(width: Self.controlDiameter, height: Self.controlDiameter)
         .contentShape(Circle())
         .overlay {
@@ -832,8 +833,7 @@ struct DictationOverlayView: View {
         Button(action: state.showTranscription) {
           OverlayMicrophoneGlyph(
             character: OverlayHeaderGlyph.transcription,
-            tint: showsDiagnostics && state.compactProjection?.degraded == true
-              ? palette.processingStatus.color : palette.mutedText.color)
+            tint: palette.mutedText.color)
         }
         .buttonStyle(.plain)
         .csFocusOutline()
@@ -846,7 +846,7 @@ struct DictationOverlayView: View {
         .accessibilityIdentifier("overlay-transcription-preview")
         if let error = state.expansionPreferenceError {
           OverlayMicrophoneGlyph(
-            symbol: "exclamationmark.triangle.fill", tint: palette.processingStatus.color
+            symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
           )
           .help(error)
           .accessibilityLabel(error)
