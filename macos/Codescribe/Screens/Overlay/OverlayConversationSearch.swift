@@ -109,6 +109,8 @@ final class OverlayConversationSearchModel {
   private var searchGeneration: UInt64 = 0
   private var searchTask: Task<Void, Never>? = nil
   private var metadataGeneration: UInt64 = 0
+  private var nextSnapshotSequence: UInt64 = 0
+  private var backendLastActivityRevisions: [String: UInt64] = [:]
 
   init(
     client: any OverlayConversationSearchClient = LiveOverlayConversationSearchClient(),
@@ -184,11 +186,31 @@ final class OverlayConversationSearchModel {
     await executeSearch(query: query, generation: generation)
   }
 
+  /// Records a verified activity date for a conversation owner if this snapshot's monotonic sequence
+  /// is greater than or equal to any previously recorded revision. Authoritative newer revisions
+  /// may move an activity date earlier or later; older snapshots never overwrite newer ones.
+  private func recordActivityDate(
+    _ dateString: String,
+    for conversationID: String,
+    sequence: UInt64
+  ) {
+    guard !dateString.isEmpty, let date = MessageTimestamp.date(fromISO8601: dateString) else {
+      return
+    }
+    let currentRevision = backendLastActivityRevisions[conversationID] ?? 0
+    if sequence >= currentRevision {
+      backendLastActivityRevisions[conversationID] = sequence
+      backendLastActivityDates[conversationID] = date
+    }
+  }
+
   /// Background empty-query load to populate true last activity dates for all verified archives
   /// without clobbering active query filters or racing user search.
   func loadArchiveMetadata() async {
     metadataGeneration &+= 1
     let generation = metadataGeneration
+    nextSnapshotSequence &+= 1
+    let sequence = nextSnapshotSequence
     isMetadataLoading = true
     metadataError = nil
     isMetadataPartial = false
@@ -205,11 +227,7 @@ final class OverlayConversationSearchModel {
       metadataErrorCount = response.errorCount
 
       for res in response.results {
-        if !res.lastActivity.isEmpty,
-          let date = MessageTimestamp.date(fromISO8601: res.lastActivity)
-        {
-          backendLastActivityDates[res.conversationID] = date
-        }
+        recordActivityDate(res.lastActivity, for: res.conversationID, sequence: sequence)
       }
     } catch {
       guard !Task.isCancelled, generation == metadataGeneration else {
@@ -255,6 +273,8 @@ final class OverlayConversationSearchModel {
 
   private func executeSearch(query: String, generation: UInt64) async {
     guard generation == searchGeneration else { return }
+    nextSnapshotSequence &+= 1
+    let sequence = nextSnapshotSequence
     do {
       let response = try await client.search(rootPath: rootPath, query: query)
       guard generation == searchGeneration else {
@@ -267,11 +287,7 @@ final class OverlayConversationSearchModel {
       errorCount = response.errorCount
       matchedConversationIDs = Set(response.results.map(\.conversationID))
       for res in response.results {
-        if !res.lastActivity.isEmpty,
-          let date = MessageTimestamp.date(fromISO8601: res.lastActivity)
-        {
-          backendLastActivityDates[res.conversationID] = date
-        }
+        recordActivityDate(res.lastActivity, for: res.conversationID, sequence: sequence)
       }
     } catch {
       guard generation == searchGeneration else { return }

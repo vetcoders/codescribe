@@ -2349,6 +2349,110 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     )
   }
 
+  func testOlderMetadataCannotOverwriteDateFromNewerSearchSnapshot() async throws {
+    let client = ControlledConversationSearchClient()
+    let model = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
+
+    // 1. Metadata search starts first (snapshot sequence 1)
+    let metadataTask = Task { @MainActor in
+      await model.loadArchiveMetadata()
+    }
+    while await !client.hasPendingCall(for: "") {
+      await Task.yield()
+    }
+
+    // 2. Query search starts second (snapshot sequence 2)
+    let searchTask = Task { @MainActor in
+      await model.searchImmediately(query: "needle")
+    }
+    while await !client.hasPendingCall(for: "needle") {
+      await Task.yield()
+    }
+
+    // 3. Complete newer query search first with Oct 12 date
+    await client.resumeFirst(
+      for: "needle",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-12T08:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await searchTask.value
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-12T08:00:00Z")
+    )
+    XCTAssertEqual(model.matchedConversationIDs, Set(["owner"]))
+
+    // 4. Complete older metadata search second with Oct 01 for "owner" and Oct 05 for "nonmatching"
+    await client.resumeFirst(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-01T08:00:00Z"
+          ),
+          OverlayConversationSearchResult(
+            conversationID: "nonmatching",
+            lastActivity: "2026-10-05T08:00:00Z"
+          ),
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await metadataTask.value
+
+    // Older metadata must NOT overwrite date for "owner" from newer search snapshot:
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-12T08:00:00Z"),
+      "An older background snapshot must not replace a newer query's verified activity date"
+    )
+    // Nonmatching owner from metadata snapshot MUST be preserved:
+    XCTAssertEqual(
+      model.backendLastActivityDates["nonmatching"],
+      MessageTimestamp.date(fromISO8601: "2026-10-05T08:00:00Z"),
+      "Nonmatching owners from background metadata must be preserved"
+    )
+    // Active query filter remains intact:
+    XCTAssertEqual(model.matchedConversationIDs, Set(["owner"]))
+
+    // 5. Subsequent newer metadata search (snapshot sequence 3) CAN update the date earlier
+    let newerMetadataTask = Task { @MainActor in
+      await model.loadArchiveMetadata()
+    }
+    while await !client.hasPendingCall(for: "") {
+      await Task.yield()
+    }
+    await client.resumeFirst(
+      for: "",
+      returning: OverlayConversationSearchResponse(
+        results: [
+          OverlayConversationSearchResult(
+            conversationID: "owner",
+            lastActivity: "2026-10-08T08:00:00Z"
+          )
+        ],
+        complete: true,
+        errorCount: 0
+      )
+    )
+    _ = await newerMetadataTask.value
+    XCTAssertEqual(
+      model.backendLastActivityDates["owner"],
+      MessageTimestamp.date(fromISO8601: "2026-10-08T08:00:00Z"),
+      "A newer authoritative metadata snapshot may update date earlier"
+    )
+  }
+
   func testSavedConversationSearchUnloadedHistoriesUseBackendDatesForSorting() async throws {
     func makeConv(id: String, name: String, dates: [String], loaded: Bool) -> OverlayConversation {
       var conv = OverlayConversation(
