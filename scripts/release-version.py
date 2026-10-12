@@ -319,7 +319,9 @@ def run(args):
                 readme = readme_path.read_text()
                 expected[readme_path] = readme.encode()
                 readme = readme.replace(f"badge/version-{current}-", f"badge/version-{target}-")
-                readme = readme.replace(f"current source version is `{current}`", f"current source version is `{target}`")
+                # README's release-status line reads "source is at `X`"; the
+                # badge above it is the other copy of the version.
+                readme = readme.replace(f"source is at `{current}`", f"source is at `{target}`")
                 changes[readme_path] = readme.encode()
         if args.command == "bump":
             lock_path = root / "Cargo.lock"

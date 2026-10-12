@@ -12,13 +12,12 @@ import fcntl
 import importlib.util
 import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
-from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
     "bus_listener_recovery_test", Path(__file__).resolve().parents[1] / "bus-demux.py"
@@ -328,6 +327,23 @@ class ListenerRecoveryTests(unittest.TestCase):
         self.assertEqual([n["event"] for n in notices], ["recovery_failed"])
         self.assertEqual(len(self.launches), 1)
         self.assertEqual(self.lifecycle()["losses"][-1]["outcome"], "recovery_failed")
+
+    def test_failed_recovery_suspends_reconnection_until_attach(self):
+        self.alive.add(4101)
+        watch = self.supervisor()
+        self.kill_current_follower()
+        with mock.patch.object(DEMUX, "confirm_follower",
+                               side_effect=OSError("follower exited during startup")):
+            notices, now = self.drive(watch, 0, 60)
+        self.assertEqual([n["event"] for n in notices], ["recovery_failed"])
+        self.assertTrue(notices[0]["suspended"])
+        self.assertTrue(self.lifecycle()["suspended"])
+        self.assertTrue(self.status()["listener"]["recovery_suspended"])
+        # The same dead incarnation is never relaunched; the state explains why.
+        self.assertEqual(self.drive(watch, now, 60)[0], [])
+        self.assertEqual(len(self.launches), 1)
+        DEMUX.reset_listener_streak(self.root, self.lease_id, "attach")
+        self.assertFalse(self.lifecycle()["suspended"])
 
     def status(self):
         args = argparse.Namespace(bridge_home=self.root, provider="codex", session=SESSION,

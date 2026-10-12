@@ -78,7 +78,7 @@ architekturze aplikacji).
 - Traktuj instalację jako wymagany odbiór dla Foundera przy każdym większym cucie.
 - Po pomyślnej instalacji poinformuj o jej ukończeniu - odtwórz `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`
 lub przekaż słownie przez `cs-say`.
-- Nie restartuj aplikacji samodzielnie, chyba, że
+- Nie restartuj aplikacji samodzielnie, chyba że
 zostaniesz o to poproszony w wątku lub na kanale `cs-bus`.
 - Targetem dmg jest `make release-standard` (notaryzowany slim DMG). Buduj go na każdą prośbę
 Foundera, po sprawdzeniu, czy wszystkie istotne cuty są zintegrowane. Traktuj integrację przed buildem

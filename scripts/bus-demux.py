@@ -4811,8 +4811,14 @@ def launch_follower(root: Path, command: list[str]) -> Any:
     with contextlib.ExitStack() as outputs:
         handles = []
         for path in (log_path, log_path.with_suffix(".errors.log")):
+            # os.open keeps the 0o600 creation atomic; the descriptor is owned
+            # by the handle from fdopen on, and closed here if fdopen refuses.
             descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+            try:
+                handle = outputs.enter_context(os.fdopen(descriptor, "ab"))
+            except Exception:
+                os.close(descriptor)
+                raise
             os.fchmod(handle.fileno(), 0o600)
             handles.append(handle)
         return subprocess.Popen(command, stdin=subprocess.DEVNULL,
@@ -4929,11 +4935,17 @@ def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
             if child is not None and child.poll() is None:
                 child.terminate()
             outcome = {"event": "recovery_failed", "reason": str(error)}
+        # A launch that never confirmed is not retried for this loss, so
+        # reconnection is off until an explicit attach; the state says so
+        # instead of leaving the watch silently idle behind a false "active".
+        suspended = outcome["event"] == "recovery_failed"
         with listener_lifecycle(root, lease_id) as state:
             for item in state["losses"]:
                 if item.get("incarnation") == incarnation:
                     item["outcome"] = outcome["event"]
-        return {**report, **outcome, "suspended": False}
+            if suspended:
+                state["suspended"] = True
+        return {**report, **outcome, "suspended": suspended}
 
 
 def submit_lifecycle_notice(root: Path, notice: dict[str, Any]) -> str:
@@ -6020,7 +6032,11 @@ def watch_command(args: argparse.Namespace) -> int:
         # exit-on-bell wakeup). Leave quietly instead of a traceback, and keep
         # the interpreter from retrying the flush at shutdown.
         with contextlib.suppress(OSError):
-            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            sink = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(sink, sys.stdout.fileno())
+            finally:
+                os.close(sink)
         return 0
     finally:
         trigger.close()

@@ -79,7 +79,7 @@ flowchart TB
 > it, behind an explicit audio-egress consent, and full-file Retranscribe is
 > its own deliberate action.
 
-> **Release status:** source is at `0.16.0`; the latest published DMG is
+> **Release status:** source is at `0.17.0`; the latest published DMG is
 > [`v0.15.2`](https://github.com/vetcoders/codescribe/releases).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
