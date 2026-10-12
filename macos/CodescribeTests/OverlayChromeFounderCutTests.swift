@@ -404,7 +404,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(state.expandedByDefault)
     XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
 
-    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayPlacementMenu.swift")
+    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayHeaderMenu.swift")
     XCTAssertTrue(menu.contains("Show transcript by default"))
     XCTAssertTrue(menu.contains("overlay-expanded-by-default"))
     XCTAssertTrue(menu.contains("state.setExpandedByDefault($0)"))
@@ -1136,13 +1136,80 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("overlay-header-inert-drag-region"))
   }
 
-  func testAnchorMenuShowsPersistedPinWithoutOpeningIt() throws {
-    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayPlacementMenu.swift")
-    XCTAssertTrue(menu.contains("\"Keep visible between takes\""))
-    XCTAssertTrue(menu.contains("state.setKeepVisibleBetweenTakes($0)"))
-    XCTAssertTrue(menu.contains("if state.keepVisibleBetweenTakes {"))
-    XCTAssertTrue(menu.contains("Image(systemName: \"pin.fill\")"))
-    XCTAssertTrue(menu.contains("overlay-keep-visible-between-takes"))
+  /// The header keeps one explicit Pin / Unpin where the position button sat;
+  /// placement moved behind the header's secondary click.
+  func testHeaderPinIsAnExplicitToggleAndPlacementLivesInTheHeaderMenu() throws {
+    let header = try headerSource(try overlaySource())
+    XCTAssertTrue(header.contains("OverlayPinButton(state: state, palette: palette)"))
+    XCTAssertFalse(header.contains("OverlayPlacementMenu"))
+    XCTAssertTrue(
+      try overlaySource().contains(".contextMenu { OverlayHeaderMenu(state: state) }"),
+      "one secondary-click menu serves every header form")
+
+    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayHeaderMenu.swift")
+    XCTAssertTrue(menu.contains("state.setKeepVisibleBetweenTakes(!pinned)"))
+    XCTAssertTrue(
+      menu.contains(
+        "symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin"))
+    XCTAssertTrue(menu.contains(".accessibilityAddTraits(.isToggle)"))
+    XCTAssertTrue(menu.contains("state.selectPlacementAnchor(anchor)"))
+    XCTAssertTrue(menu.contains("state.selectFreeMotion()"))
+    XCTAssertFalse(
+      menu.contains("Menu {"), "no header button opens the placement menu any more")
+  }
+
+  /// The header's content controls are one Dingbats character each, in the
+  /// family of the roster's ❖, and every macOS font cascade can paint them.
+  func testHeaderGlyphsAreTextMarksThatSystemFontsCover() throws {
+    XCTAssertEqual(OverlayHeaderGlyph.agents, "\u{2726}")
+    XCTAssertEqual(OverlayHeaderGlyph.transcription, "\u{270D}\u{FE0E}")
+    let base = NSFont.systemFont(ofSize: 11) as CTFont
+    for glyph in [OverlayHeaderGlyph.agents, OverlayHeaderGlyph.transcription] {
+      let scalar = try XCTUnwrap(glyph.unicodeScalars.first)
+      let font = CTFontCreateForString(
+        base, String(scalar) as CFString, CFRange(location: 0, length: 1))
+      var characters = Array(String(scalar).utf16)
+      var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+      XCTAssertTrue(
+        CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
+        "\(glyph) must not paint as a missing-glyph box")
+      let menuImage = OverlayHeaderGlyph.menuImage(glyph)
+      XCTAssertTrue(menuImage.isTemplate)
+      XCTAssertGreaterThan(menuImage.size.width, 0)
+    }
+    let header = try headerSource(try overlaySource())
+    XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
+    let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
+    XCTAssertTrue(roster.contains("OverlayMicrophoneGlyph(character: OverlayHeaderGlyph.agents"))
+    XCTAssertFalse(roster.contains("sidebar.right"))
+  }
+
+  /// A secondary click on a passive header point resolves the header menu:
+  /// the drag region under it hands the click up to the SwiftUI host.
+  func testHeaderSecondaryClickOffersPinAndPlacement() throws {
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.expanded)
+    try withPanel(state: state) { panel, root in
+      let point = NSPoint(x: 150, y: root.bounds.maxY - 22)
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .rightMouseDown, location: root.convert(point, to: nil),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: panel.windowNumber, context: nil, eventNumber: 9_100,
+          clickCount: 1, pressure: 1))
+      var view = root.hitTest(point)
+      var menu: NSMenu?
+      while let current = view, menu == nil {
+        menu = current.menu(for: event)
+        view = current.superview
+      }
+      let resolved = try XCTUnwrap(menu, "no context menu resolved at the passive header")
+      resolved.delegate?.menuNeedsUpdate?(resolved)
+      let titles = resolved.items.map(\.title)
+      for title in ["Agents", "Transcription", "Pin", "Free motion", "Show transcript by default"] {
+        XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
+      }
+    }
   }
 
   func testPhasePillIsGone() throws {

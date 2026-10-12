@@ -12,24 +12,40 @@ struct OverlayMiniTooltip: ViewModifier {
       content
         .onHover { hovered = $0 }
       if hovered && enabled {
-        // A caption stays one line; a sentence-long warning wraps at the
-        // layout's width cap instead of running past the panel edge.
-        Text(title)
-          .font(CSFont.ui(10, .medium))
-          .foregroundStyle(palette.primaryText.color)
-          .lineLimit(4)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 4)
-          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: CSRadius.chip))
-          .overlay {
-            RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(palette.border.color)
-          }
+        OverlayTooltipChip(title: title, palette: palette)
           .allowsHitTesting(false)
-          .accessibilityHidden(true)
       }
     }
     .zIndex(hovered && enabled ? 1 : 0)
+  }
+}
+
+/// The action pill's hint: one caption, or a warning sentence that wraps at
+/// the layout's width cap instead of running past the panel edge. The header's
+/// floating hint paints the same chip over the system tooltip material
+/// (`filled: false`).
+struct OverlayTooltipChip: View {
+  let title: String
+  let palette: OverlayAppearancePalette
+  var filled = true
+
+  var body: some View {
+    Text(title)
+      .font(CSFont.ui(10, .medium))
+      .foregroundStyle(palette.primaryText.color)
+      .lineLimit(4)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 4)
+      .background {
+        if filled {
+          RoundedRectangle(cornerRadius: CSRadius.chip).fill(.regularMaterial)
+        }
+      }
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(palette.border.color)
+      }
+      .accessibilityHidden(true)
   }
 }
 

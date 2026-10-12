@@ -3029,7 +3029,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.keepVisibleBetweenTakes)
   }
 
-  func testUnpinRestoresFiveSecondCountdown() throws {
+  /// Unpinning a held, finished take starts the pin's own three-second
+  /// release (it used to fall back to the five-second countdown).
+  func testUnpinStartsThePinReleaseInsteadOfTheFiveSecondCountdown() throws {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
     let state = OverlayState(nowProvider: { clock.now })
@@ -3039,7 +3041,8 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingStarted()
     projectSessionText("sealed", sessionId: "unpin-take", sequence: 1, to: state, terminal: true)
     state.setKeepVisibleBetweenTakes(false)
-    XCTAssertEqual(try XCTUnwrap(state.autoHideDeadline), clock.now + 5)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.pinReleaseDelaySeconds)
   }
 
   func testInjectedClockFiresFiveSecondsAfterFinalization() {
@@ -4737,7 +4740,8 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(
       overlaySource.contains("overlay-auto-paste"),
       "paste mode lives in Settings and the tray, not in the overlay header")
-    XCTAssertTrue(overlaySource.contains("OverlayPlacementMenu"))
+    XCTAssertTrue(overlaySource.contains(".contextMenu { OverlayHeaderMenu(state: state) }"))
+    XCTAssertFalse(overlaySource.contains("OverlayPlacementMenu"))
     XCTAssertFalse(overlaySource.contains("private var placementMenu"))
     XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
     XCTAssertTrue(overlaySource.contains("OverlayIntentRail"))
@@ -5766,6 +5770,187 @@ final class OverlayStateTests: XCTestCase {
     clock.now += OverlayState.autoHideDelaySeconds + 1
     state.fireAutoHideNowForTests(armedDeadline: 0)
     XCTAssertEqual(closes, 0)
+  }
+
+  // MARK: Pin release — Unpin lets a resting overlay go, never at the click
+
+  func testUnpinLetsTheRestingOverlayGoAfterTheGraceDespiteTheClickHover() throws {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    state.engine = OverlayStateTestEngine()
+    var closes = 0
+    var releases = 0
+    state.onClose = { closes += 1 }
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertNil(state.autoHideDeadline, "the pin holds the resting overlay")
+
+    // The Unpin click itself puts the pointer on the header.
+    state.setPointerHovering(true)
+    clock.now = 50
+    state.setKeepVisibleBetweenTakes(false)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), 50 + OverlayState.pinReleaseDelaySeconds)
+
+    clock.now = 50 + OverlayState.pinReleaseDelaySeconds - 0.1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 0, "the panel stays for the grace after the click")
+    clock.now = 50 + OverlayState.pinReleaseDelaySeconds
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 1, "the pointer resting where it clicked does not hold it")
+    XCTAssertEqual(closes, 0, "the release fades through its own seam, not the abrupt close")
+    XCTAssertFalse(state.keepVisibleBetweenTakes)
+  }
+
+  func testPinAgainDuringTheGraceKeepsTheOverlay() {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    state.engine = OverlayStateTestEngine()
+    var closes = 0
+    var releases = 0
+    state.onClose = { closes += 1 }
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+
+    clock.now = 10
+    state.setKeepVisibleBetweenTakes(false)
+    clock.now = 11
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertNil(state.autoHideDeadline)
+
+    clock.now = 100
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertEqual(releases, 0)
+    XCTAssertEqual(closes, 0)
+  }
+
+  func testPointerEntryPausesTheReleaseAndLeavingGivesAFreshGrace() throws {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    state.engine = OverlayStateTestEngine()
+    var releases = 0
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+
+    clock.now = 10
+    state.setKeepVisibleBetweenTakes(false)
+    clock.now = 12
+    state.setPointerHovering(true)
+    XCTAssertNil(state.autoHideDeadline, "a pointer coming back pauses the release")
+    clock.now = 100
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 0)
+
+    state.setPointerHovering(false)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), 100 + OverlayState.pinReleaseDelaySeconds,
+      "leaving restarts the release's own grace, not the five-second countdown")
+    clock.now = 100 + OverlayState.pinReleaseDelaySeconds
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 1)
+  }
+
+  func testAnUncommittedDraftHoldsTheReleaseUntilItIsResolved() throws {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    state.engine = OverlayStateTestEngine()
+    var releases = 0
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Draft the user has not committed")
+    state.endTranscriptEdit()
+    XCTAssertTrue(state.isRevisionDraftDirty)
+
+    clock.now = 10
+    state.setKeepVisibleBetweenTakes(false)
+    XCTAssertNil(state.autoHideDeadline, "a take under review is never released under the user")
+
+    clock.now = 20
+    state.discardRevisionDraft()
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), 20 + OverlayState.pinReleaseDelaySeconds)
+    clock.now = 20 + OverlayState.pinReleaseDelaySeconds
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 1)
+  }
+
+  func testANewTakeEndsTheReleaseArmedForItsPredecessor() throws {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    state.engine = OverlayStateTestEngine()
+    var closes = 0
+    var releases = 0
+    state.onClose = { closes += 1 }
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+    clock.now = 10
+    state.setKeepVisibleBetweenTakes(false)
+    // Without a settings engine the successor opens in its current form, so
+    // its hide does not wait for an automatic expansion's return.
+    state.engine = nil
+
+    clock.now = 11
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("second take", to: state, terminal: true, sessionId: "pin-release-successor")
+    state.finishControllerRecording()
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), 11 + OverlayState.autoHideDelaySeconds,
+      "the successor's terminal gets the ordinary countdown")
+    clock.now = 11 + OverlayState.autoHideDelaySeconds
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+    XCTAssertEqual(releases, 0)
+  }
+
+  func testPinReleaseFadesTheRestingPanelAndAPinBeforeTheFadeEndsKeepsIt() throws {
+    let state = OverlayState()
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    var outs = 0
+    var durations: [TimeInterval] = []
+    var pendingFade: (@MainActor @Sendable () -> Void)?
+    let controller = OverlayController(
+      state: state, engine: nil,
+      overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelOut: { shown in
+        shown.orderOut(nil)
+        outs += 1
+      },
+      runFade: { faded, duration, completed in
+        durations.append(duration)
+        faded.alphaValue = 0
+        pendingFade = completed
+      })
+    defer { panel.orderOut(nil) }
+    // The controller's init attaches its own (nil) engine; pin afterwards.
+    state.engine = OverlayStateTestEngine()
+    controller.show()
+    XCTAssertTrue(panel.isVisible)
+    state.setKeepVisibleBetweenTakes(true)
+    state.setKeepVisibleBetweenTakes(false)
+
+    // The controller wired the release seam the deadline calls.
+    let release = try XCTUnwrap(state.onPinReleased)
+    release()
+    XCTAssertEqual(durations, [OverlayController.pinReleaseFadeSeconds])
+    state.setKeepVisibleBetweenTakes(true)
+    try XCTUnwrap(pendingFade)()
+    XCTAssertEqual(outs, 0, "a Pin before the fade completes keeps the panel")
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertEqual(panel.alphaValue, 1)
+
+    state.setKeepVisibleBetweenTakes(false)
+    release()
+    try XCTUnwrap(pendingFade)()
+    XCTAssertEqual(outs, 1)
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertEqual(panel.alphaValue, 1, "a reused panel is never left invisible")
+    withExtendedLifetime(controller) {}
   }
 
   func testEnabledDictationStaysVisibleThroughCaptureAndSilence() {

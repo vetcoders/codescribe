@@ -25,6 +25,8 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
+  /// Opens the Agents drawer from the name pill, for All as for one agent.
+  var onShowAgents: (() -> Void)? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -169,7 +171,24 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private var conversationNamePill: some View {
-    let label = VStack(alignment: .leading, spacing: 1) {
+    if let onShowAgents {
+      // Interactive glass is the system's own hover and press feedback.
+      Button(action: onShowAgents) { namePillLabel }
+        .buttonStyle(.plain)
+        .csFocusOutline()
+        .accessibilityHint("Opens the Agents sidebar")
+        .accessibilityIdentifier("overlay-conversation-name")
+        .modifier(OverlayNamePillGlass(interactive: true))
+    } else {
+      namePillLabel
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("overlay-conversation-name")
+        .modifier(OverlayNamePillGlass(interactive: false))
+    }
+  }
+
+  private var namePillLabel: some View {
+    VStack(alignment: .leading, spacing: 1) {
       if conversation.channel == "0" {
         Text("0 · All")
       } else {
@@ -198,15 +217,8 @@ struct OverlayConversationView: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
     .frame(minHeight: 28)
+    .contentShape(Capsule())
     .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isHeader)
-    .accessibilityIdentifier("overlay-conversation-name")
-
-    if #available(macOS 26.0, *) {
-      label.glassEffect(.regular, in: Capsule())
-    } else {
-      label.background(.regularMaterial, in: Capsule())
-    }
   }
 
   @ViewBuilder
@@ -460,5 +472,19 @@ struct OverlayConversationView: View {
       return matches.first { $0.id == occurrenceID }
     }
     return matches.count == 1 ? matches[0] : nil
+  }
+}
+
+/// The name pill's capsule of glass; interactive when the pill is a button.
+private struct OverlayNamePillGlass: ViewModifier {
+  let interactive: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+    } else {
+      content.background(.regularMaterial, in: Capsule())
+    }
   }
 }

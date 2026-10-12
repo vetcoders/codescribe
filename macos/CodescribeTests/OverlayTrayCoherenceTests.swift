@@ -49,11 +49,12 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     }
   }
 
-  /// Both header diagnostic icons (acoustic warning, preference-save error)
-  /// tint from the same appearance-aware caution token.
+  /// Both header diagnostic icons (the transcription mark when the live
+  /// transcript is behind, preference-save error) tint from the same
+  /// appearance-aware caution token.
   func testHeaderDiagnosticsTintFromPaletteCaution() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
-    let acoustic = try XCTUnwrap(view.range(of: "waveform.badge.magnifyingglass"))
+    let acoustic = try XCTUnwrap(view.range(of: "character: OverlayHeaderGlyph.transcription"))
     let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
     for anchor in [acoustic, preference] {
       let window = String(view[anchor.lowerBound...].prefix(200))

@@ -179,7 +179,11 @@ struct OverlayRecordingControls: View {
     .opacity(recordingDisabled ? 0.45 : 1)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: recordingSymbol)
     .csFocusOutline()
-    .help(recordingLabel + (recordingLight.map { ". " + $0.tooltip } ?? ""))
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: recordingLabel + (recordingLight.map { ". " + $0.tooltip } ?? ""),
+        accent: recordingDisabled ? nil : .state, palette: palette)
+    )
     .accessibilityLabel(recordingLabel)
     .accessibilityValue(recordingStatusValue)
     .accessibilityIdentifier(recordingIdentifier)
@@ -230,7 +234,10 @@ struct OverlayRecordingControls: View {
     }
     .buttonStyle(.plain)
     .csFocusOutline()
-    .help(previewAccessibilityLabel)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: previewAccessibilityLabel, accent: .state, palette: palette)
+    )
     .accessibilityLabel(previewAccessibilityLabel)
     .accessibilityIdentifier("overlay-live-preview-toggle")
     .background {
@@ -425,6 +432,7 @@ struct DictationOverlayView: View {
               onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
               playbackError: state.playbackPreferenceError,
               agentDescriptor: state.conversationAgentDescriptor(conversation),
+              onShowAgents: { state.showAgentMonitor() },
               onComposerEditorActive: { state.noteComposerEditorActive($0) },
               onComposerTypingActivity: { state.noteComposerTypingActivity() }
             )
@@ -689,6 +697,9 @@ struct DictationOverlayView: View {
     // Keep the explicit drag region above the passive glass background.
     // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
+    // Placement, the take-start preference and the panel routes live behind a
+    // secondary click anywhere on the header, drag region included, in every form.
+    .contextMenu { OverlayHeaderMenu(state: state) }
     .modifier(OverlayControlGlass())
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
@@ -729,10 +740,6 @@ struct DictationOverlayView: View {
     }
     .frame(height: 26)
     .accessibilityIdentifier("overlay-mini-widget")
-    .contextMenu {
-      Button("Agents", systemImage: "sidebar.right") { state.showAgentMonitor() }
-      Button("Transcription", systemImage: "text.alignleft", action: state.showTranscription)
-    }
   }
 
   private var closeButton: some View {
@@ -756,7 +763,10 @@ struct DictationOverlayView: View {
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
     .focusable(false)
-    .help(OverlayIntent.close.helpText)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
+    )
     .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
     .accessibilityIdentifier("overlay-brand-close-dot")
   }
@@ -821,13 +831,16 @@ struct DictationOverlayView: View {
       HStack(spacing: compact ? 4 : 8) {
         Button(action: state.showTranscription) {
           OverlayMicrophoneGlyph(
-            symbol: "waveform.badge.magnifyingglass",
+            character: OverlayHeaderGlyph.transcription,
             tint: showsDiagnostics && state.compactProjection?.degraded == true
               ? palette.processingStatus.color : palette.mutedText.color)
         }
         .buttonStyle(.plain)
         .csFocusOutline()
-        .help(transcriptPreviewHelp)
+        .modifier(
+          OverlayHeaderControlChrome(
+            title: transcriptPreviewHelp, accent: .transcription, palette: palette)
+        )
         .accessibilityLabel("Show transcription")
         .accessibilityValue(transcriptPreviewHelp)
         .accessibilityIdentifier("overlay-transcription-preview")
@@ -840,7 +853,7 @@ struct DictationOverlayView: View {
           .accessibilityIdentifier("overlay-preference-save-error")
         }
         channelStatusView
-        OverlayPlacementMenu(state: state, palette: palette)
+        OverlayPinButton(state: state, palette: palette)
         recordingControls(compact: compact)
       }
       .fixedSize()

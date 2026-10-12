@@ -29,6 +29,7 @@ final class OverlayAppearanceTests: XCTestCase {
         ("error", palette.errorStatus),
         ("uncertainWord", palette.uncertainWord),
         ("lexiconMarker", palette.lexiconMarker),
+        ("agentAccent", palette.agentAccent),
       ] {
         assertContrast(token, on: palette, minimum: 4.5, role: role)
       }

@@ -4356,16 +4356,6 @@
         }
       }
     },
-    "Choose a screen anchor or allow free dragging" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz stałą pozycję na ekranie albo pozwól na swobodne przeciąganie"
-          }
-        }
-      }
-    },
     "Choose how to start Codescribe's modes and how to control recording." : {
       "localizations" : {
         "pl" : {
@@ -8257,16 +8247,6 @@
         }
       }
     },
-    "Keep the overlay open after a take until you close it" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozostaw nakładkę otwartą po nagraniu, dopóki jej nie zamkniesz"
-          }
-        }
-      }
-    },
     "Keep visible between takes" : {
       "localizations" : {
         "pl" : {
@@ -11001,6 +10981,16 @@
         }
       }
     },
+    "Opens the Agents sidebar" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera panel agentów"
+          }
+        }
+      }
+    },
     "Opens the Lab desk, which owns the committing switch" : {
       "localizations" : {
         "pl" : {
@@ -11432,13 +11422,35 @@
         }
       }
     },
-    "Pinned, %@" : {
-      "comment" : "VoiceOver value; the placeholder is a screen anchor or “Free motion”",
+    "Pin" : {
+      "comment" : "Overlay header menu: keep the overlay visible between takes",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przypięte: %@"
+            "value" : "Przypnij"
+          }
+        }
+      }
+    },
+    "Pin to keep the overlay visible between takes" : {
+      "comment" : "Tooltip on the overlay pin while the overlay leaves after each take",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przypnij, aby nakładka pozostała widoczna między nagraniami"
+          }
+        }
+      }
+    },
+    "Pinned: stays visible between takes. Click to unpin." : {
+      "comment" : "Tooltip on the overlay pin while it keeps the overlay between takes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przypięte: pozostaje widoczne między nagraniami. Kliknij, aby odpiąć."
           }
         }
       }
@@ -11533,16 +11545,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Polski"
-          }
-        }
-      }
-    },
-    "Position overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozycja nakładki"
           }
         }
       }
@@ -17101,6 +17103,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włącz odpowiedzi na wszystkich kanałach"
+          }
+        }
+      }
+    },
+    "Unpin" : {
+      "comment" : "Overlay header menu: stop keeping the overlay between takes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odepnij"
           }
         }
       }
