@@ -891,9 +891,9 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   /// Keep representative passive header points draggable while routing the
-  /// placement menu's real hit point through its control path.
+  /// Pin button's real hit point through its control path.
   @MainActor
-  func testPassiveHeaderRegionsDragAndPlacementMenuRetainsClick() throws {
+  func testPassiveHeaderRegionsDragAndPinButtonRetainsClick() throws {
     let state = OverlayState.previewListening()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -930,22 +930,23 @@ final class OverlayResizeHitTests: XCTestCase {
       )
     }
 
-    // The placement Menu's measured non-drag hit span at the 470 pt test width
-    // is x = 371…394.75 (third control from the right, after the preview
-    // toggle and Stop). Stop became a 22 pt circle like the chevron (Founder,
-    // 2026-09-29: "ten stop jest olbrzymi"), so the menu moved from maxX −
+    // The Pin button took the placement Menu's slot: third control from the
+    // right, after the preview toggle and Stop, x = 371…394.75 at the 470 pt
+    // test width. Stop became a 22 pt circle like the chevron (Founder,
+    // 2026-09-29: "ten stop jest olbrzymi"), so the slot moved from maxX −
     // 122.25 and the waveform kept the width the word "Stop" used to take.
     // Its focus/key view must receive a click, not window drag.
     let placementMenuPoint = NSPoint(x: root.bounds.maxX - 87.125, y: y)
     let placementMenuHit = try XCTUnwrap(root.hitTest(placementMenuPoint))
     XCTAssertTrue(
       hitChain(from: placementMenuHit).contains("NSHostingView"),
-      "Position overlay is handled inside the SwiftUI host"
+      "Pin is handled inside the SwiftUI host"
     )
     XCTAssertFalse(
       panel.isWindowDragHit(at: placementMenuPoint),
-      "Position overlay is a clickable control inside the header"
+      "Pin is a clickable control inside the header"
     )
+    XCTAssertNil(state.expansionPreferenceError)
     let panelFrameBeforeMenuClick = panel.frame
     let anchorBeforeMenuClick = state.placementAnchor
     let freeMotionBeforeMenuClick = state.freeMotion
@@ -972,6 +973,9 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame, panelFrameBeforeMenuClick)
     XCTAssertEqual(state.placementAnchor, anchorBeforeMenuClick)
     XCTAssertEqual(state.freeMotion, freeMotionBeforeMenuClick)
+    // The preview state has no engine to persist the pin, so the click that
+    // reached the Pin action surfaces the save refusal.
+    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
 
     XCTAssertFalse(
       panel.isWindowDragHit(at: NSPoint(x: root.bounds.maxX - 27, y: y)),

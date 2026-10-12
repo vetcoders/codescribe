@@ -4740,7 +4740,8 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(
       overlaySource.contains("overlay-auto-paste"),
       "paste mode lives in Settings and the tray, not in the overlay header")
-    XCTAssertTrue(overlaySource.contains("OverlayPlacementMenu"))
+    XCTAssertTrue(overlaySource.contains(".contextMenu { OverlayHeaderMenu(state: state) }"))
+    XCTAssertFalse(overlaySource.contains("OverlayPlacementMenu"))
     XCTAssertFalse(overlaySource.contains("private var placementMenu"))
     XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
     XCTAssertTrue(overlaySource.contains("OverlayIntentRail"))
