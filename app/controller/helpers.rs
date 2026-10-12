@@ -11,7 +11,9 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
-use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
+use crate::os::hold_badge::{
+    BadgeMode, HoldBadgeConfig, hide_hold_badge, show_hold_badge_with_config,
+};
 use crate::os::tray_status;
 use anyhow::{Context, Result};
 #[cfg(test)]
@@ -49,6 +51,28 @@ pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
             mode,
             f64::from(persisted_size),
         ));
+    }
+}
+
+/// Drop a transient recording badge through the hold-badge lifecycle and
+/// return a refused or failed start to an idle tray.
+///
+/// A live take owns `Listening` and `Thinking`. Settlement does not hide that
+/// badge or rewrite that status. `Error` and `Starting` left behind by a start
+/// that never became a recording return to `Idle`. The refusal explanation
+/// stays on the presentation event; this function does not clear it.
+/// Visibility is the badge panel itself. There is no second published flag.
+pub fn settle_failed_start_chrome() {
+    let status = tray_status::current_tray_status();
+    if matches!(status, tray_status::TrayStatus::Listening | tray_status::TrayStatus::Thinking) {
+        return;
+    }
+    hide_hold_badge();
+    if matches!(
+        status,
+        tray_status::TrayStatus::Error | tray_status::TrayStatus::Starting
+    ) {
+        tray_status::update_tray_status(tray_status::TrayStatus::Idle);
     }
 }
 

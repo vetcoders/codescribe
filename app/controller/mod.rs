@@ -56,7 +56,7 @@ pub(crate) use delivery_route::{
 };
 pub use helpers::{
     is_assistive_session, publish_recording_indicator, set_assistive_session,
-    set_assistive_target_thread,
+    set_assistive_target_thread, settle_failed_start_chrome,
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
@@ -1895,6 +1895,14 @@ pub struct RecordingController {
     live_archive: Arc<std::sync::Mutex<Option<live_archive::LiveArchiveMirror>>>,
     #[cfg(test)]
     settlement_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<CaptureSettlementStage>>>,
+    /// Instance-owned stand-in for the live acoustic admission probe.
+    ///
+    /// `None` keeps the historical unit-test default: start does not touch TCC.
+    /// `Some(Ok(()))` continues as a granted admission without a live probe.
+    /// `Some(Err(blocker))` takes the same warning-or-refusal match as production.
+    /// This is not a process-global hook.
+    #[cfg(test)]
+    test_start_admission: std::sync::Mutex<Option<Result<(), admission::AdmissionBlocker>>>,
 
     /// Where the stop path sent this take's committed document.
     ///
@@ -2181,6 +2189,8 @@ impl RecordingController {
             live_archive: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             settlement_observer: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            test_start_admission: std::sync::Mutex::new(None),
             delivery_disposition: Arc::new(RwLock::new(TranscriptDelivery::Unattempted)),
             delivery_tagger: Arc::default(),
             composer_delivery_payload: Arc::new(RwLock::new(None)),
@@ -3250,21 +3260,63 @@ impl RecordingController {
             })
     }
 
-    /// Surface a refused start as typed presentation truth and flag the tray.
-    /// The refusal happened before any microphone opened, so it deliberately
-    /// does not invent a transcript projection or acoustic receipt.
+    /// Surface a refused start as typed presentation truth and settle transient
+    /// recording chrome. The refusal happened before any microphone opened, so
+    /// it deliberately does not invent a transcript projection or acoustic receipt.
     fn broadcast_admission_refusal(
         event_broadcast: &broadcast::Sender<IpcEvent>,
         session_id: Option<String>,
         blocker: &admission::AdmissionBlocker,
     ) {
-        crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Error);
         let status = PresentationStatusProjection::admission_refused(
             session_id,
             blocker.code(),
             format!("{} — {}", blocker.explanation(), blocker.action()),
         );
         Self::broadcast_presentation_status(event_broadcast, &status);
+        // The explanation is the presentation above. Tray Error used to stick:
+        // a refused start never leaves Idle, so the hotkey bridge sees no
+        // StateChange and never restores Idle. Settle the transient chrome.
+        // A live Listening/Thinking take is left alone.
+        settle_failed_start_chrome();
+    }
+
+    /// Read the instance test seam. Production always returns `None` and the
+    /// caller runs the live probe. Under `cfg(test)`, `None` means "do not
+    /// touch TCC", which is the historical default for existing controller tests.
+    fn installed_start_admission(&self) -> Option<Result<(), admission::AdmissionBlocker>> {
+        #[cfg(test)]
+        {
+            return self
+                .test_start_admission
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
+    }
+
+    /// Install one admission verdict for this controller. The next toggle or
+    /// hold start uses it instead of the live TCC probe. Call
+    /// [`Self::clear_test_start_admission`] to restore the skip default.
+    #[cfg(test)]
+    pub fn install_test_start_admission(&self, verdict: Result<(), admission::AdmissionBlocker>) {
+        *self
+            .test_start_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(verdict);
+    }
+
+    /// Restore the unit-test default: start does not call the live admission probe.
+    #[cfg(test)]
+    pub fn clear_test_start_admission(&self) {
+        *self
+            .test_start_admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 
     fn broadcast_capture_transcription_warning(
@@ -4686,7 +4738,7 @@ impl RecordingController {
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
         set_assistive_session(false);
-        crate::os::hold_badge::hide_hold_badge();
+        settle_failed_start_chrome();
     }
 
     /// Unwind session state after a start that never produced a recording, so a
@@ -4698,6 +4750,7 @@ impl RecordingController {
         self.reset_session_fields(TranscriptSessionEndReason::StartFailed)
             .await;
         set_assistive_session(false);
+        settle_failed_start_chrome();
     }
 
     /// Unwind session state after a recording that completed. Telemetry is kept
@@ -6102,16 +6155,6 @@ impl RecordingController {
 
             let hold_mode = *hold_mode.read().await;
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
-            // Cursor-following recording badge (config-gated): red for hold dictation,
-            // purple for assistive/agent. Works headless — no overlay needed.
-            publish_recording_indicator(
-                if is_assistive {
-                    BadgeMode::Assistive
-                } else {
-                    BadgeMode::Hold
-                },
-                config.hold_indicator,
-            );
             let overlay_enabled = apply_runtime_transcription_profile(
                 &config,
                 runtime_settings.user_settings(),
@@ -6121,19 +6164,33 @@ impl RecordingController {
             // Speech readiness never owns audio admission. The live session
             // starts behind capture; its failure cannot erase the requested take.
             // Only microphone/device blockers below refuse the physical capture.
-            if !cfg!(test) {
-                // `.clone()` (not `Arc::clone`) on purpose: C15D counts one
-                // recorder binding per start body; this is the same Arc.
-                let admission_settings = runtime_settings.clone();
-                let verdict = tokio::task::spawn_blocking(move || {
-                    admission::evaluate_live_admission_arc(&admission_settings)
-                })
-                .await
-                .unwrap_or_else(|join| {
-                    Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
-                        reason: format!("admission probe panicked: {join}"),
-                    })
-                });
+            // The cursor badge is published after this verdict, so a refusal
+            // never leaves a recording indicator up.
+            let admission_verdict = match controller.installed_start_admission() {
+                Some(Ok(())) => {
+                    info!("acoustic admission granted for hold start (instance test seam)");
+                    None
+                }
+                Some(Err(blocker)) => Some(Err(blocker)),
+                None if cfg!(test) => None,
+                None => {
+                    // `.clone()` (not `Arc::clone`) on purpose: C15D counts one
+                    // recorder binding per start body; this is the same Arc.
+                    let admission_settings = runtime_settings.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            admission::evaluate_live_admission_arc(&admission_settings)
+                        })
+                        .await
+                        .unwrap_or_else(|join| {
+                            Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
+                                reason: format!("admission probe panicked: {join}"),
+                            })
+                        }),
+                    )
+                }
+            };
+            if let Some(verdict) = admission_verdict {
                 match verdict {
                     Ok(grant) => info!(
                         device = %grant.device_name,
@@ -6167,6 +6224,17 @@ impl RecordingController {
                     }
                 }
             }
+
+            // Cursor-following recording badge (config-gated): red for hold dictation,
+            // purple for assistive/agent. Works headless — no overlay needed.
+            publish_recording_indicator(
+                if is_assistive {
+                    BadgeMode::Assistive
+                } else {
+                    BadgeMode::Hold
+                },
+                config.hold_indicator,
+            );
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
@@ -6412,16 +6480,6 @@ impl RecordingController {
 
         info!("Starting toggle recording (session={})", new_session_id);
 
-        // Cursor-following recording badge (config-gated): pulsing red for toggle /
-        // hands-off, purple for assistive/agent.
-        publish_recording_indicator(
-            if is_assistive {
-                BadgeMode::Assistive
-            } else {
-                BadgeMode::Toggle
-            },
-            config.hold_indicator,
-        );
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
@@ -6435,8 +6493,18 @@ impl RecordingController {
         // Speech readiness never owns audio admission. Recognition starts
         // downstream of capture, with no Speech permission wait on this path.
         // Calibration/seal readiness is a warning; capture failures still refuse.
-        if !cfg!(test) {
-            match self.admission_readiness().await {
+        // The cursor badge is published after this verdict.
+        let admission_verdict = match self.installed_start_admission() {
+            Some(Ok(())) => {
+                info!("acoustic admission granted for toggle start (instance test seam)");
+                None
+            }
+            Some(Err(blocker)) => Some(Err(blocker)),
+            None if cfg!(test) => None,
+            None => Some(self.admission_readiness().await),
+        };
+        if let Some(verdict) = admission_verdict {
+            match verdict {
                 Ok(grant) => info!(
                     device = %grant.device_name,
                     sample_rate = grant.sample_rate,
@@ -6465,6 +6533,17 @@ impl RecordingController {
                 }
             }
         }
+
+        // Cursor-following recording badge (config-gated): pulsing red for toggle /
+        // hands-off, purple for assistive/agent.
+        publish_recording_indicator(
+            if is_assistive {
+                BadgeMode::Assistive
+            } else {
+                BadgeMode::Toggle
+            },
+            config.hold_indicator,
+        );
 
         // Start the recorder
         let mut recorder_guard = self.recorder.lock().await;
