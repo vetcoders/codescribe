@@ -283,12 +283,56 @@
         }
       }
     },
+    "%@ will be saved in %@. The download finishes in the background." : {
+      "comment" : "Download confirmation: first placeholder is the approximate size, second is a directory path",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ zostanie zapisane w %@. Pobieranie dokończy się w tle."
+          }
+        }
+      }
+    },
     "%@ wire" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Typ API: %@"
+          }
+        }
+      }
+    },
+    "%@ · %@ / %@ MB" : {
+      "comment" : "Download progress: file name, megabytes received, megabytes expected",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@ / %@ MB"
+          }
+        }
+      }
+    },
+    "%@ · %@ / %@ MB · %@ MB/s · about %@" : {
+      "comment" : "Download progress: file name, megabytes received, megabytes expected, megabytes per second, time left",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@ / %@ MB · %@ MB/s · ok. %@"
+          }
+        }
+      }
+    },
+    "%@ · %@ MB" : {
+      "comment" : "Download progress without a known total: file name, then megabytes received",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@ MB"
           }
         }
       }
@@ -3800,6 +3844,17 @@
         }
       }
     },
+    "Cancel download" : {
+      "comment" : "Stop the running Whisper model transfer",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anuluj pobieranie"
+          }
+        }
+      }
+    },
     "Cancel queued message" : {
       "localizations" : {
         "pl" : {
@@ -6166,13 +6221,13 @@
         }
       }
     },
-    "Default location: ~/.codescribe/models" : {
-      "comment" : "Default model storage folder; keep ~/.codescribe/models verbatim",
+    "Default location: %@" : {
+      "comment" : "Default model storage folder; the placeholder is a directory path",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Domyślne miejsce: ~/.codescribe/models"
+            "state" : "translated",
+            "value" : "Domyślne miejsce: %@"
           }
         }
       }
@@ -6645,6 +6700,17 @@
         }
       }
     },
+    "Download the Whisper model?" : {
+      "comment" : "Confirmation before a multi-gigabyte transfer starts",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobrać model Whisper?"
+          }
+        }
+      }
+    },
     "Download the dedicated Whisper model to transcribe entirely on your computer, without configuring cloud providers." : {
       "comment" : "Explain the benefit of the local transcription model",
       "localizations" : {
@@ -6663,6 +6729,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pobieranie…"
+          }
+        }
+      }
+    },
+    "Downloading… %@" : {
+      "comment" : "Model row status while the transfer runs; the placeholder is a percentage",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobieranie… %@"
           }
         }
       }
@@ -15203,6 +15280,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatrzymywanie odpowiedzi"
+          }
+        }
+      }
+    },
+    "Stopping the download…" : {
+      "comment" : "Whisper download is being cancelled",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatrzymywanie pobierania…"
           }
         }
       }
