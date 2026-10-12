@@ -151,6 +151,50 @@ enum ComposerTurnPhase: Equatable {
   case cancelling
 }
 
+/// Header projection for the selected Agent thread. It follows the latest
+/// observed lifecycle event (reasoning, tool, answer, approval, stop, terminal).
+/// It is not a second agent, and it does not read message prose.
+enum AgentHeaderActivity: Equatable {
+  case idle
+  case thinking
+  case answering
+  case usingTools(running: Int)
+  case awaitingApproval(count: Int)
+  case stopping
+  case failed
+
+  /// Existing catalog strings. Idle draws no pill.
+  var statusLabel: String? {
+    switch self {
+    case .idle:
+      return nil
+    case .thinking:
+      return String(localized: "Thinking", comment: "Turn status")
+    case .answering:
+      return String(localized: "Streaming", comment: "Turn status")
+    case .usingTools:
+      return String(localized: "tool", comment: "Tool activity row: a tool call is running")
+    case .awaitingApproval:
+      return String(localized: "Permission required")
+    case .stopping:
+      return String(localized: "Stopping", comment: "Turn status")
+    case .failed:
+      return String(localized: "failed", comment: "Tool activity row: tool call failed")
+    }
+  }
+}
+
+private enum AgentHeaderLexical {
+  case thinking
+  case answering
+  case failed
+}
+
+private struct AgentHeaderSlot {
+  var lexical: AgentHeaderLexical = .thinking
+  var runningCallIDs: [String] = []
+}
+
 /// The single composer-originated turn owned by the Swift UI. The local thread
 /// id targets the bubble/task; the backend id is the exact Rust cancellation
 /// key. `id` prevents a draining cancelled task from clearing a newer send.
@@ -1250,6 +1294,10 @@ final class AgentChatStore: ObservableObject {
   /// Exactly one composer send may own the composer-side cancellation path.
   @Published private(set) var activeComposerTurn: ActiveComposerTurn?
 
+  /// Per-thread header projection. Latest lifecycle event wins; running tool
+  /// call ids keep a concurrent count. Message text is never consulted.
+  @Published private var headerSlots: [UUID: AgentHeaderSlot] = [:]
+
   /// Active voice-assistive turn being streamed from the core runtime (hotkey /
   /// hands-off), NOT the composer. `nil` when no voice reply is in flight. The
   /// core owns the provider call + disk persistence for this turn; the store
@@ -1462,13 +1510,15 @@ final class AgentChatStore: ObservableObject {
   var usesRealThreadSearch: Bool { threadsProvider != nil }
 
   /// True while the current thread's latest assistant turn is in its pre-reply
-  /// "thinking…" state. Drives the header status pill (Idle → Thinking).
+  /// "thinking…" state. The message caret reads this. The header reads
+  /// `selectedHeaderActivity`, because this flag stays sticky across later phases.
   var isThinking: Bool {
     currentThread?.messages.last { $0.role == .assistant }?.isThinking ?? false
   }
 
   /// True while the current thread's latest assistant turn is revealing tokens.
-  /// Drives the header status pill (Thinking → Streaming).
+  /// The message caret reads this. The header does not: a later reasoning or
+  /// tool event must be able to replace an "answering" label.
   var isStreaming: Bool {
     currentThread?.messages.last { $0.role == .assistant }?.isStreaming ?? false
   }
@@ -1487,6 +1537,27 @@ final class AgentChatStore: ObservableObject {
   }
 
   var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
+
+  /// What the integrated header should say for the thread the user is looking at.
+  /// Another thread's stream, tool, or approval does not leak into this value.
+  var selectedHeaderActivity: AgentHeaderActivity {
+    guard let threadID = selectedThreadID else { return .idle }
+    if isCancelling { return .stopping }
+    if voiceTurnThreadID == threadID, voiceTurnPhase == .cancelling {
+      return .stopping
+    }
+    let approvals = currentToolApprovals.count
+    if approvals > 0 { return .awaitingApproval(count: approvals) }
+    guard let slot = headerSlots[threadID] else { return .idle }
+    if !slot.runningCallIDs.isEmpty {
+      return .usingTools(running: slot.runningCallIDs.count)
+    }
+    switch slot.lexical {
+    case .thinking: return .thinking
+    case .answering: return .answering
+    case .failed: return .failed
+    }
+  }
 
   /// A Max turn belongs to its retained owner, not the cancellable composer
   /// registry. Do not advertise cancellation while tool effects may continue.
@@ -1692,9 +1763,11 @@ final class AgentChatStore: ObservableObject {
   func openMaxConsultation(backendID: String) -> Bool {
     if !threadSearchQuery.isEmpty { searchThreads("") }
     refreshThreads()
-    guard let thread = threads.first(where: {
-      $0.backendId == backendID && $0.isMaxConsultation
-    }) else { return false }
+    guard
+      let thread = threads.first(where: {
+        $0.backendId == backendID && $0.isMaxConsultation
+      })
+    else { return false }
     select(thread.id)
     requestComposerFocus()
     return true
@@ -2060,6 +2133,7 @@ final class AgentChatStore: ObservableObject {
       assistantMessageID: assistantID,
       phase: .thinking
     )
+    beginHeaderActivity(in: threadID)
     if userTurnIndex == 0, !text.isEmpty, engine != nil {
       prepareFirstTurnTitle(for: threadID, backendThreadID: backendId)
     }
@@ -2107,46 +2181,50 @@ final class AgentChatStore: ObservableObject {
             attachmentPaths: attachmentPaths)
         } else {
           finalText = try await engine.streamReply(
-          text,
-          threadId: backendId,
-          attachmentPaths: attachmentPaths,
-          onDelta: { [self] delta in
-            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-              return
-            }
-            setComposerPhase(.streaming, for: turnID)
-            update(assistantID, in: threadID) {
-              $0.isThinking = false
-              $0.isStreaming = true
-              if $0.reasonedSeconds == nil {
-                $0.reasonedSeconds = Date().timeIntervalSince(start)
+            text,
+            threadId: backendId,
+            attachmentPaths: attachmentPaths,
+            onDelta: { [self] delta in
+              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+                return
               }
-              $0.text += delta
+              setComposerPhase(.streaming, for: turnID)
+              noteHeaderLexical(.answering, in: threadID)
+              update(assistantID, in: threadID) {
+                $0.isThinking = false
+                $0.isStreaming = true
+                if $0.reasonedSeconds == nil {
+                  $0.reasonedSeconds = Date().timeIntervalSince(start)
+                }
+                $0.text += delta
+              }
+            },
+            onReasoning: { [self] delta in
+              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+                return
+              }
+              noteHeaderLexical(.thinking, in: threadID)
+              appendReasoning(delta, to: assistantID, in: threadID)
+            },
+            onToolExecuting: { [self] name, id in
+              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+                return
+              }
+              noteHeaderToolStarted(callID: id, in: threadID)
+              recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
+            },
+            onToolResult: { [self] name, id, isError, reason in
+              pendingToolApprovals.removeAll {
+                $0.threadID == backendId && $0.callID == id
+              }
+              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+                return
+              }
+              noteHeaderToolSettled(callID: id, in: threadID)
+              recordToolResult(
+                name: name, callID: id, isError: isError, reason: reason,
+                before: assistantID, in: threadID)
             }
-          },
-          onReasoning: { [self] delta in
-            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-              return
-            }
-            appendReasoning(delta, to: assistantID, in: threadID)
-          },
-          onToolExecuting: { [self] name, id in
-            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-              return
-            }
-            recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
-          },
-          onToolResult: { [self] name, id, isError, reason in
-            pendingToolApprovals.removeAll {
-              $0.threadID == backendId && $0.callID == id
-            }
-            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-              return
-            }
-            recordToolResult(
-              name: name, callID: id, isError: isError, reason: reason,
-              before: assistantID, in: threadID)
-          }
           )
         }
         settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
@@ -2164,12 +2242,14 @@ final class AgentChatStore: ObservableObject {
           if $0.text.isEmpty { $0.text = finalText }
           $0.timestamp = self.now()
         }
+        endHeaderActivity(in: threadID, failed: false)
         refreshThreads(selectingBackendId: backendId)
       } catch {
         if Task.isCancelled { return }
         finish(
           assistantID, in: threadID,
-          text: String(localized: "Something went wrong: \(error.userFacingMessage)"))
+          text: String(localized: "Something went wrong: \(error.userFacingMessage)"),
+          failed: true)
       }
     }
     inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
@@ -2496,6 +2576,7 @@ final class AgentChatStore: ObservableObject {
     voiceTurnStartedAt = Date()
     voiceTurnPhase = .thinking
     append(assistant, to: threadID)
+    beginHeaderActivity(in: threadID)
     if isFirstExchange {
       launchVoiceFirstTurnTitle(userTurn.text, for: threadID, backendThreadID: backendId)
     }
@@ -2507,6 +2588,7 @@ final class AgentChatStore: ObservableObject {
       let threadID = voiceTurnThreadID, let id = voiceAssistantID
     else { return }
     voiceTurnPhase = .streaming
+    noteHeaderLexical(.answering, in: threadID)
     update(id, in: threadID) {
       $0.isThinking = false
       $0.isStreaming = true
@@ -2523,6 +2605,7 @@ final class AgentChatStore: ObservableObject {
       let threadID = voiceTurnThreadID, let id = voiceAssistantID
     else { return }
     voiceTurnPhase = .streaming
+    noteHeaderLexical(.thinking, in: threadID)
     appendReasoning(delta, to: id, in: threadID)
   }
 
@@ -2533,6 +2616,7 @@ final class AgentChatStore: ObservableObject {
       let threadID = voiceTurnThreadID, let id = voiceAssistantID
     else { return }
     voiceTurnPhase = .streaming
+    noteHeaderLexical(.answering, in: threadID)
     update(id, in: threadID) { if $0.text.isEmpty { $0.text = text } }
   }
 
@@ -2543,6 +2627,7 @@ final class AgentChatStore: ObservableObject {
       let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID
     else { return }
     voiceTurnPhase = .streaming
+    noteHeaderToolStarted(callID: callID, in: threadID)
     recordToolStarted(name: name, callID: callID, before: assistantID, in: threadID)
   }
 
@@ -2553,6 +2638,7 @@ final class AgentChatStore: ObservableObject {
       let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID
     else { return }
     voiceTurnPhase = .streaming
+    noteHeaderToolSettled(callID: callID, in: threadID)
     recordToolResult(
       name: name, callID: callID, isError: isError, reason: reason, before: assistantID,
       in: threadID)
@@ -2573,6 +2659,7 @@ final class AgentChatStore: ObservableObject {
       $0.isStreaming = false
       $0.timestamp = self.now()
     }
+    endHeaderActivity(in: threadID, failed: false)
     let backendId = threads.first(where: { $0.id == threadID })?.backendId
     if let backendId {
       settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
@@ -2595,6 +2682,7 @@ final class AgentChatStore: ObservableObject {
       $0.text += ($0.text.isEmpty ? "" : "\n") + "[error] " + message
       $0.timestamp = self.now()
     }
+    endHeaderActivity(in: threadID, failed: true)
     // A failed turn persisted nothing; settling lets the coordinator try a
     // queued title once, fail against the missing thread, and restore the
     // fallback title instead of leaving the queue open forever.
@@ -2622,6 +2710,7 @@ final class AgentChatStore: ObservableObject {
       if $0.text.isEmpty { $0.text = "Stopped" }
       $0.timestamp = self.now()
     }
+    endHeaderActivity(in: threadID, failed: false)
     // Mirror the composer's cancel path (its defer settles too): the core
     // did not persist this turn, so a late generated title fails to persist
     // and the fallback title survives.
@@ -2640,6 +2729,7 @@ final class AgentChatStore: ObservableObject {
       role: .assistant, timestamp: Date(), text: "", isThinking: true)
     let id = demo.id
     append(demo, to: threadID)
+    beginHeaderActivity(in: threadID)
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 1_600_000_000)
       startStream(
@@ -2655,6 +2745,7 @@ final class AgentChatStore: ObservableObject {
 
   private func startStream(_ id: UUID, in threadID: UUID, fullText: String, reasoned: Double) {
     revealTask?.cancel()
+    noteHeaderLexical(.answering, in: threadID)
     update(id, in: threadID) {
       $0.isThinking = false
       $0.isStreaming = true
@@ -2674,10 +2765,11 @@ final class AgentChatStore: ObservableObject {
         $0.isStreaming = false
         $0.timestamp = self.now()
       }
+      endHeaderActivity(in: threadID, failed: false)
     }
   }
 
-  private func finish(_ id: UUID, in threadID: UUID, text: String) {
+  private func finish(_ id: UUID, in threadID: UUID, text: String, failed: Bool = false) {
     finishPendingTools(before: id, in: threadID)
     update(id, in: threadID) {
       $0.isThinking = false
@@ -2685,6 +2777,7 @@ final class AgentChatStore: ObservableObject {
       $0.text = text
       $0.timestamp = self.now()
     }
+    endHeaderActivity(in: threadID, failed: failed)
   }
 
   private func acceptsComposerEvent(_ turnID: UUID, assistantID: UUID, in threadID: UUID) -> Bool {
@@ -2733,6 +2826,7 @@ final class AgentChatStore: ObservableObject {
       inFlightSends[turn.threadID] = nil
     }
     activeComposerTurn = nil
+    endHeaderActivity(in: turn.threadID, failed: false)
     // A user Stop consumed its own turn but not the queue: FIFO continues.
     dispatchNextQueuedTurnIfIdle()
   }
@@ -3081,6 +3175,43 @@ final class AgentChatStore: ObservableObject {
       changed = true
     }
     if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
+  }
+
+  private func beginHeaderActivity(in threadID: UUID) {
+    headerSlots[threadID] = AgentHeaderSlot()
+  }
+
+  private func noteHeaderLexical(_ lexical: AgentHeaderLexical, in threadID: UUID) {
+    var slot = headerSlots[threadID] ?? AgentHeaderSlot()
+    slot.lexical = lexical
+    headerSlots[threadID] = slot
+  }
+
+  private func noteHeaderToolStarted(callID: String, in threadID: UUID) {
+    var slot = headerSlots[threadID] ?? AgentHeaderSlot()
+    let key = callID.isEmpty ? "anon-\(UUID().uuidString)" : callID
+    if !slot.runningCallIDs.contains(key) {
+      slot.runningCallIDs.append(key)
+    }
+    headerSlots[threadID] = slot
+  }
+
+  private func noteHeaderToolSettled(callID: String, in threadID: UUID) {
+    guard var slot = headerSlots[threadID] else { return }
+    if callID.isEmpty {
+      if !slot.runningCallIDs.isEmpty { slot.runningCallIDs.removeLast() }
+    } else {
+      slot.runningCallIDs.removeAll { $0 == callID }
+    }
+    headerSlots[threadID] = slot
+  }
+
+  private func endHeaderActivity(in threadID: UUID, failed: Bool) {
+    if failed {
+      headerSlots[threadID] = AgentHeaderSlot(lexical: .failed, runningCallIDs: [])
+    } else {
+      headerSlots[threadID] = nil
+    }
   }
 
   private func appendReasoning(_ delta: String, to assistantID: UUID, in threadID: UUID) {

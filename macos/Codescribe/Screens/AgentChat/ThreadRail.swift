@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Thread list content; the native split controller owns sidebar collapse and width.
@@ -13,9 +14,17 @@ struct ThreadRail: View {
   /// Nil while focus sits in the search field, the rename field, a row's
   /// favorite button or outside the rail.
   @FocusState private var focusedThreadID: UUID?
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
 
   var body: some View {
     expandedRail
+      .background {
+        AgentSidebarMaterial(
+          reduceTransparency: reduceTransparency,
+          increaseContrast: contrast == .increased
+        )
+      }
       .onPreferenceChange(ThreadRailWidthPreference.self, perform: onContentWidthChanged)
       .onChange(of: search) { _, newValue in
         store.searchThreads(newValue)
@@ -30,14 +39,6 @@ struct ThreadRail: View {
 
   private var expandedRail: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 9) {
-        Wordmark(size: 13)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 12)
-      .padding(.top, 10)
-      .padding(.bottom, 8)
-
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass")
           .foregroundStyle(CSColor.textTertiary)
@@ -57,6 +58,7 @@ struct ThreadRail: View {
         CSFocusOutline(isFocused: searchFocused, cornerRadius: 6)
       }
       .padding(.horizontal, 12)
+      .padding(.top, 10)
       .padding(.bottom, 8)
 
       if let error = store.threadSearchError {
@@ -264,9 +266,11 @@ private struct ThreadRow: View {
   let onCancelRename: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
+  @Environment(\.colorSchemeContrast) private var contrast
 
   private var isRowFocused: Bool { focus.wrappedValue == thread.id }
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
+  private var increaseContrast: Bool { contrast == .increased }
 
   var body: some View {
     rowContent(measuring: false)
@@ -296,10 +300,19 @@ private struct ThreadRow: View {
       // Two-line rail rows stay list-dense. 11pt of vertical padding plus the
       // title and meta was reading as a stack of cards.
       .padding(.vertical, 7)
-      .background(isActive ? CSColor.chromeAccent.opacity(0.12) : .clear)
+      .background(
+        isActive
+          ? Color(nsColor: .selectedContentBackgroundColor)
+            .opacity(AgentSidebarSelection.fillOpacity(increaseContrast: increaseContrast))
+          : Color.clear
+      )
       .overlay(
         RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
+          .strokeBorder(
+            isActive ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear,
+            lineWidth: isActive
+              ? AgentSidebarSelection.strokeWidth(increaseContrast: increaseContrast) : 0
+          )
       )
       .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
       .focusable()
@@ -414,7 +427,7 @@ private struct ThreadRow: View {
           .lineLimit(1)
           .fixedSize(horizontal: true, vertical: false)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textTertiary)
+          .foregroundStyle(isActive ? Color.secondary : CSColor.textTertiary)
       }
     }
   }
@@ -422,7 +435,7 @@ private struct ThreadRow: View {
   private var titleLabel: some View {
     Text(ThreadRowTitle.displayTitle(for: thread))
       .font(CSFont.ui(13, isActive ? .semibold : .medium))
-      .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
+      .foregroundStyle(isActive ? Color.primary : Color.secondary)
       .lineLimit(1)
   }
 
@@ -666,5 +679,46 @@ enum ThreadRailMeta {
     case ..<1_000_000: String(format: "%.1fk tok", Double(tokens) / 1_000)
     default: String(format: "%.1fM tok", Double(tokens) / 1_000_000)
     }
+  }
+}
+
+/// Selected-row emphasis. Increase Contrast is strictly stronger than the
+/// default so a row stays readable on the system selection color.
+enum AgentSidebarSelection {
+  static func fillOpacity(increaseContrast: Bool) -> CGFloat {
+    increaseContrast ? 1 : 0.85
+  }
+
+  static func strokeWidth(increaseContrast: Bool) -> CGFloat {
+    increaseContrast ? 2 : 1
+  }
+}
+
+/// System sidebar glass. Reduce Transparency falls back to an opaque
+/// content background that still sits inside the window.
+private struct AgentSidebarMaterial: NSViewRepresentable {
+  var reduceTransparency: Bool
+  var increaseContrast: Bool
+
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    apply(to: view)
+    return view
+  }
+
+  func updateNSView(_ view: NSVisualEffectView, context: Context) {
+    apply(to: view)
+  }
+
+  private func apply(to view: NSVisualEffectView) {
+    if reduceTransparency {
+      view.material = .contentBackground
+      view.blendingMode = .withinWindow
+    } else {
+      view.material = .sidebar
+      view.blendingMode = .behindWindow
+    }
+    view.state = .followsWindowActiveState
+    view.isEmphasized = increaseContrast
   }
 }

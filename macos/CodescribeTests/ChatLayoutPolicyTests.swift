@@ -118,8 +118,8 @@ final class ChatLayoutPolicyTests: XCTestCase {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
     }
-    // The titlebar carries only the app identity; the model reads in the
-    // chrome beside the thread title (Founder brief 2026-10-10).
+    // The title string stays "Agent" and is hidden. The model reads beside
+    // the thread title in the integrated toolbar.
     pumpUntil(ceiling: 1.0) {
       find(host.view) != nil && window.title == "Agent"
     }
