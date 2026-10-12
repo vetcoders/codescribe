@@ -2592,7 +2592,7 @@
       }
     },
     "Agent" : {
-      "comment" : "Agent window title\nSettings section\nTitle of the agent chat window",
+      "comment" : "Agent window title\nSettings section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
