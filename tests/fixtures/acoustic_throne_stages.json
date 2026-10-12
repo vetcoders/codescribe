@@ -802,10 +802,10 @@
                 "debug_assert_eq!(settings_digest, runtime_settings.digest().as_str())",
                 "runtime_settings.energy_calibration_for_capture(device, sample_rate)",
                 "SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch)",
-                "samples_seen += samples.len() as u64",
-                "state.audio.push(&samples)",
+                "samples_seen += raw_samples.len() as u64",
+                "state.audio.push(raw_samples)",
                 "state.pump_capture_windows(&ev_tx);",
-                "fusion.ingest(&samples, samples_seen)",
+                "fusion.ingest(raw_samples, samples_seen)",
                 "emit_stream_events(events, &ev_tx, &mut state, audio_secs)",
                 "state.capture_stopping = true;",
                 "state.pump_capture_windows(&ev_tx);",
@@ -888,7 +888,7 @@
               "required_code": [
                 ".window_plan",
                 ".next_due(self.audio.session_sample_end(), self.capture_stopping)",
-                ".window_by_samples(range.sample_start, range.sample_end)",
+                ".recognizer_window_by_samples(range.sample_start, range.sample_end)",
                 "window.sample_start == range.sample_start",
                 "&& window.sample_end == range.sample_end",
                 "&& window.samples.len() as u64 == range.sample_end - range.sample_start",
@@ -1251,9 +1251,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "window_by_samples",
+              "callee": "recognizer_window_by_samples",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "window_by_samples",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "recognizer_window_by_samples",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
