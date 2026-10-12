@@ -101,6 +101,7 @@ enum AgentWindowChrome {
     String(localized: "Agent", comment: "Agent window title")
   }
 
+  @MainActor
   static func apply(_ window: NSWindow) {
     window.title = title()
     window.titleVisibility = .hidden

@@ -454,6 +454,7 @@ struct NativeThreadSearchField: NSViewRepresentable {
     return CGSize(width: width, height: max(22, size.height))
   }
 
+  @MainActor
   final class Coordinator: NSObject, NSSearchFieldDelegate {
     var parent: NativeThreadSearchField
 

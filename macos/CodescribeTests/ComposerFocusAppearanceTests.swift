@@ -24,8 +24,10 @@ final class ComposerFocusAppearanceTests: XCTestCase {
 
     let window = TestWindow(frame: host.frame)
     let otherField = NSTextField(frame: NSRect(x: 0, y: 0, width: 50, height: 20))
-    window.contentView = host
-    host.addSubview(otherField)
+    let container = NSView(frame: host.frame)
+    container.addSubview(host)
+    container.addSubview(otherField)
+    window.contentView = container
     window.orderFrontRegardless()
     defer { window.close() }
 
@@ -107,8 +109,10 @@ final class ComposerFocusAppearanceTests: XCTestCase {
 
     let window = TestWindow(frame: host.frame)
     let otherField = NSTextField(frame: NSRect(x: 0, y: 0, width: 50, height: 20))
-    window.contentView = host
-    host.addSubview(otherField)
+    let container = NSView(frame: host.frame)
+    container.addSubview(host)
+    container.addSubview(otherField)
+    window.contentView = container
     window.orderFrontRegardless()
     defer { window.close() }
 

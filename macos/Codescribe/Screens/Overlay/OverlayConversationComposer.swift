@@ -294,7 +294,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       }
     }
 
-    deinit {
+    isolated deinit {
       clearWindowObservers()
     }
 
@@ -318,27 +318,33 @@ private struct ConversationMessageField: NSViewRepresentable {
         object: window,
         queue: .main
       ) { [weak self] _ in
-        guard let self else { return }
-        self.isWindowKey = true
-        self.notifyFocusChange()
+        MainActor.assumeIsolated {
+          guard let self else { return }
+          self.isWindowKey = true
+          self.notifyFocusChange()
+        }
       }
       let resignKey = center.addObserver(
         forName: NSWindow.didResignKeyNotification,
         object: window,
         queue: .main
       ) { [weak self] _ in
-        guard let self else { return }
-        self.isWindowKey = false
-        self.notifyFocusChange()
+        MainActor.assumeIsolated {
+          guard let self else { return }
+          self.isWindowKey = false
+          self.notifyFocusChange()
+        }
       }
       let willClose = center.addObserver(
         forName: NSWindow.willCloseNotification,
         object: window,
         queue: .main
       ) { [weak self] _ in
-        guard let self else { return }
-        self.isWindowKey = false
-        self.notifyFocusChange()
+        MainActor.assumeIsolated {
+          guard let self else { return }
+          self.isWindowKey = false
+          self.notifyFocusChange()
+        }
       }
       windowObservers = [becomeKey, resignKey, willClose]
     }
