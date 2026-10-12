@@ -136,13 +136,6 @@ struct Composer: View {
           )
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-      .overlay {
-        CSFocusOutline(
-          isFocused: fieldFocused,
-          cornerRadius: CSRadius.composer,
-          color: CSColor.terracotta
-        )
-      }
       // Sits above the NSTextField and swallows a drop that lands *on* the
       // field, so the field editor never pastes the path as text. Only
       // hit-testable mid-drag (isDragging) so typing/clicks pass through

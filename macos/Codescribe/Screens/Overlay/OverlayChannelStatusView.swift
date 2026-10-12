@@ -224,7 +224,9 @@ struct OverlayRowHoverHighlight: ViewModifier {
           .accessibilityHidden(true)
       }
       .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-      .onHover { hovered = enabled && $0 }
+      .background {
+        OverlayMenuCursorRegion { hovered = enabled && $0 }
+      }
   }
 }
 

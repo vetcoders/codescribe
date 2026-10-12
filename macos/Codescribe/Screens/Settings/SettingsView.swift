@@ -38,7 +38,6 @@ struct SettingsView: View {
         .frame(minWidth: Self.detailMinWidth)
         .background(CSColor.windowCanvas)
     }
-    .navigationTitle(Text("Settings"))
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
@@ -94,6 +93,9 @@ struct SettingsView: View {
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
     guard let window else { return }
+    // This owner keeps the Window-menu title while the toolbar paints the
+    // wordmark. A separate navigationTitle would restore a second visible title.
+    window.title = String(localized: "Settings")
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.styleMask.insert(.fullSizeContentView)

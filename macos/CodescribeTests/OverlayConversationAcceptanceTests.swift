@@ -8,6 +8,44 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testReplyPlaybackAndCopyShareOneCompactFooter() throws {
+    for state in ["spoken", "playing", "waiting", "stopped"] {
+      for width in [CGFloat(262), 459] {
+        for scale in [CGFloat(1), 1.6] {
+          var bus = OverlayChannelDelivery.Bus()
+          let replyID = String(repeating: "c", count: 24)
+          bus.consume(reply(replyID))
+          bus.consume(
+            playback(replyID, ticket: "footer", state: state, time: "2026-10-05T04:00:01Z"))
+          let conversation = try lenaConversation(bus)
+          let message = try XCTUnwrap(conversation.messages.first { $0.kind == .reply })
+          let view = OverlayConversationView(
+            conversation: conversation, palette: .dark, topInset: 50, bottomInset: 20,
+            pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+            draft: .constant(""), sending: false, sendError: nil, onSend: {})
+          let host = NSHostingView(
+            rootView: view.messageFooter(message)
+              .environment(\.csTextScale, scale).frame(width: width))
+          let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 120),
+            styleMask: .borderless, backing: .buffered, defer: false)
+          window.isReleasedWhenClosed = false
+          window.contentView = host
+          window.orderFrontRegardless()
+          defer { window.close() }
+          host.layoutSubtreeIfNeeded()
+          RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+          host.layoutSubtreeIfNeeded()
+          XCTAssertGreaterThan(host.fittingSize.height, 0)
+          XCTAssertLessThanOrEqual(
+            host.fittingSize.height, max(24, 16 * scale) + 2,
+            "Playback and copy need one compact row: state=\(state) width=\(width) scale=\(scale)")
+        }
+      }
+    }
+  }
+
+  @MainActor
   func testActivityCueTracksReceivingUserTurnAcrossRepliesAndTerminal() throws {
     var bus = OverlayChannelDelivery.Bus()
     let firstSession = "agent-channel-2-active-cue-a"
@@ -22,7 +60,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let user = try XCTUnwrap(lenaConversation(bus).messages.first { $0.kind == .user })
     XCTAssertEqual(try view().activeCaptureMessageID, user.id)
     bus.consume(reply(String(repeating: "d", count: 24)))
-    XCTAssertEqual(try view().activeCaptureMessageID, user.id, "A reply does not own capture activity")
+    XCTAssertEqual(
+      try view().activeCaptureMessageID, user.id, "A reply does not own capture activity")
     XCTAssertNil(try view(presented: false).activeCaptureMessageID)
     endCapture(&bus, session: firstSession)
     XCTAssertNil(try view().activeCaptureMessageID, "Stop removes the activity cue")
@@ -552,44 +591,6 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         }
       }
     }
-  }
-
-  func testPlayIconKeepsAdjacentPlaybackStateAndExactControls() throws {
-    // SwiftUI AX children are unavailable in the hermetic host; pin the visible branches.
-    // Existing bus tests separately exercise canonical playback ticket/owner authority.
-    let macos = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let raw = try String(
-      contentsOf: macos.appendingPathComponent(
-        "Codescribe/Screens/Overlay/OverlayConversationView.swift"), encoding: .utf8)
-    let source = raw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(
-      separator: " "
-    ).replacingOccurrences(of: " )", with: ")")
-    XCTAssertTrue(
-      source.contains(
-        "Button { onControl(message, false) } label: { Image(systemName: \"play.fill\") }"))
-    XCTAssertTrue(source.contains(".accessibilityLabel(\"Play\")"))
-    XCTAssertTrue(source.contains(".help(\"Play\")"))
-    XCTAssertTrue(
-      source.contains(
-        "if let playback = message.playback { Text(playbackLabel(playback.state, reason: playback.reason))"
-      ))
-    XCTAssertTrue(source.contains("case \"spoken\": String(localized: \"Spoken\")"))
-    XCTAssertFalse(source.contains("Play again"))
-    XCTAssertTrue(
-      source.contains("Button(\"Stop\", systemImage: \"stop.fill\") { onControl(message, true) }"))
-    XCTAssertTrue(
-      source.contains(".disabled(pendingControls.contains(message.id) || message.owner == nil)"))
-    let data = try Data(
-      contentsOf: macos.appendingPathComponent(
-        "Codescribe/Resources/Localization/Localizable.xcstrings"))
-    let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    let strings = try XCTUnwrap(catalog["strings"] as? [String: Any])
-    let spoken = try XCTUnwrap(strings["Spoken"] as? [String: Any])
-    let localizations = try XCTUnwrap(spoken["localizations"] as? [String: Any])
-    let polish = try XCTUnwrap(localizations["pl"] as? [String: Any])
-    let unit = try XCTUnwrap(polish["stringUnit"] as? [String: Any])
-    XCTAssertEqual(unit["value"] as? String, "Odtworzono")
   }
 
   func testFollowerDeliveryIdentitySurvivesPrunedMailboxAndQuietRestart() throws {

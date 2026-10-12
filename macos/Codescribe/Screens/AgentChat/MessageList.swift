@@ -1662,6 +1662,8 @@ private struct CopyButton: View {
 /// there is nothing to copy.
 struct CopyMessageButton: View {
   let text: String
+  var labelFont: Font = CSFont.mono(10, .medium)
+  var restingColor: Color = CSColor.textTertiary
   @State private var copied = false
   @State private var hovering = false
 
@@ -1678,7 +1680,7 @@ struct CopyMessageButton: View {
             ? String(localized: "copied", comment: "Button state after copying")
             : String(localized: "copy", comment: "Button: copy this message")
         )
-        .font(CSFont.mono(10, .medium))
+        .font(labelFont)
       }
       .foregroundStyle(labelColor)
     }
@@ -1690,7 +1692,7 @@ struct CopyMessageButton: View {
 
   private var labelColor: Color {
     if copied { return CSColor.oliveLight }
-    return hovering ? Color.secondary : CSColor.textTertiary
+    return hovering ? Color.secondary : restingColor
   }
 }
 

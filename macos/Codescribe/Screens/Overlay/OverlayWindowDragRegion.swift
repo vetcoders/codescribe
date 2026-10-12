@@ -47,20 +47,58 @@ final class OverlayWindowDragRegionView: NSView {
 /// Geometry and mounted identity only; this background never intercepts clicks.
 /// Cursor decisions stay with the existing FloatingOverlayPanel owner.
 struct OverlayMenuCursorRegion: NSViewRepresentable {
+  var onHover: ((Bool) -> Void)? = nil
+
   func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
-    OverlayMenuCursorRegionView()
+    let view = OverlayMenuCursorRegionView()
+    view.onHover = onHover
+    return view
   }
 
-  func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {}
+  func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {
+    nsView.onHover = onHover
+  }
 }
 
 final class OverlayMenuCursorRegionView: NSView {
   private weak var owner: FloatingOverlayPanel?
+  var onHover: ((Bool) -> Void)?
+  private var hovered = false
+  private var hoverArea: NSTrackingArea?
+
+  func updateHover(at point: NSPoint?) {
+    let inside =
+      point.map {
+        window != nil && !isHiddenOrHasHiddenAncestor
+          && visibleRect.contains(convert($0, from: nil))
+      } ?? false
+    setHovered(inside)
+  }
+
+  private func setHovered(_ inside: Bool) {
+    guard hovered != inside else { return }
+    hovered = inside
+    onHover?(inside)
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverArea { removeTrackingArea(hoverArea) }
+    let area = NSTrackingArea(
+      rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: self, userInfo: nil)
+    addTrackingArea(area)
+    hoverArea = area
+  }
+
+  override func mouseEntered(with event: NSEvent) { updateHover(at: event.locationInWindow) }
+  override func mouseExited(with event: NSEvent) { setHovered(false) }
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    setHovered(false)
     owner?.menuCursorRegions.remove(self)
     owner = window as? FloatingOverlayPanel
     owner?.menuCursorRegions.add(self)

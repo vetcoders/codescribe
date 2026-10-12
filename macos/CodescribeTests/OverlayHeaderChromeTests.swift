@@ -1,5 +1,4 @@
 import AppKit
-import ObjectiveC
 import SwiftUI
 import XCTest
 
@@ -174,20 +173,6 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, broadcast.id, "the drawer keeps the conversation")
   }
 
-  /// Every clickable drawer row carries the tray-like hover wash.
-  func testClickableDrawerRowsCarryTheHoverWash() throws {
-    let roster = try source("Overlay/OverlayChannelStatusView.swift")
-    XCTAssertEqual(roster.components(separatedBy: "OverlayRowHoverHighlight(").count - 1, 3)
-    XCTAssertTrue(roster.contains("enabled: conversation != nil && onSelectConversation != nil"))
-    XCTAssertTrue(roster.contains("enabled: onShowTranscription != nil"))
-    XCTAssertTrue(roster.contains("CSColor.surfaceRaised(0.05)"))
-    XCTAssertTrue(
-      roster.contains(
-        ".contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))"))
-    XCTAssertTrue(roster.contains(".onHover { hovered = enabled && $0 }"))
-    XCTAssertFalse(roster.contains("opacity(hovered && enabled ? 0.06 : 0)"))
-  }
-
   /// The production agent monitor washes the empty span of a roster row on a
   /// native pointer enter and clears it on leave. Light and dark both use the
   /// live panel appearance. A disabled monitor stays calm.
@@ -211,8 +196,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let calm = try hoverFrames(
       try rosterMonitor(palette: .dark, interactive: false),
       palette: .dark,
-      size: NSSize(width: 320, height: 280),
-      requireTracking: false)
+      size: NSSize(width: 320, height: 280))
     XCTAssertLessThan(
       headerBandCount(calm.rest, calm.hover, width: calm.width, from: 0.45, to: 0.75),
       80, "disabled roster row took a hover wash")
@@ -275,8 +259,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func hoverFrames<V: View>(
     _ view: V, palette: OverlayAppearancePalette,
     size: NSSize = NSSize(width: 64, height: 64),
-    minimumWidth: CGFloat = 0,
-    requireTracking: Bool = true
+    minimumWidth: CGFloat = 0
   ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel], width: Int) {
     let root =
       view
@@ -295,87 +278,49 @@ final class OverlayHeaderChromeTests: XCTestCase {
     panel.orderFrontRegardless()
     defer { panel.orderOut(nil) }
     headerSettle(host)
+    try headerPointer(false, on: host)
+    headerSettle(host)
     let rest = headerRaster(host)
     XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
     try headerPointer(
-      true, on: host, minimumWidth: minimumWidth, requireTracking: requireTracking)
-    headerSettle(host, seconds: 0.28)
+      true, on: host, minimumWidth: minimumWidth)
+    headerSettle(host, seconds: 0.16)
     let hover = headerPixels(host)
     try headerPointer(
-      false, on: host, minimumWidth: minimumWidth, requireTracking: requireTracking)
-    headerSettle(host, seconds: 0.28)
+      false, on: host, minimumWidth: minimumWidth)
+    headerSettle(host, seconds: 0.16)
     return (rest.pixels, hover, headerPixels(host), rest.width)
   }
 
   private func headerPointer(
-    _ inside: Bool, on root: NSView, minimumWidth: CGFloat = 0, requireTracking: Bool = true
+    _ inside: Bool, on root: NSView, minimumWidth: CGFloat = 0
   ) throws {
     root.layoutSubtreeIfNeeded()
-    headerUpdateTracking(root)
-    var owners = headerTrackingOwners(in: root)
-    if owners.isEmpty {
-      headerSettle(root, seconds: 0.12)
-      headerUpdateTracking(root)
-      owners = headerTrackingOwners(in: root)
-    }
-    if minimumWidth > 0 {
-      let wide = owners.filter { $0.1.rect.width >= minimumWidth && $0.1.rect.height <= 120 }
-      XCTAssertFalse(
-        wide.isEmpty,
-        "no row-sized tracking area\n"
-          + owners.map { "\($0.1.rect)" }.joined(separator: "\n")
-          + "\n\(headerTree(root))")
-      owners = wide
-    }
-    if owners.isEmpty, !requireTracking { return }
-    XCTAssertFalse(owners.isEmpty, "no native tracking area\n\(headerTree(root))")
-    for (view, area) in owners {
-      let location = view.convert(NSPoint(x: area.rect.midX, y: area.rect.midY), to: nil)
-      let event = try XCTUnwrap(
-        NSEvent.enterExitEvent(
-          with: inside ? .mouseEntered : .mouseExited,
-          location: location,
-          modifierFlags: [],
-          timestamp: ProcessInfo.processInfo.systemUptime,
-          windowNumber: view.window?.windowNumber ?? 0,
-          context: nil,
-          eventNumber: area.trackingNumber,
-          trackingNumber: area.trackingNumber,
-          userData: nil))
-      try headerBind(area, to: event)
-      if inside {
-        view.mouseEntered(with: event)
-      } else {
-        view.mouseExited(with: event)
+    let window = try XCTUnwrap(root.window)
+    window.acceptsMouseMovedEvents = true
+    let point =
+      inside
+      ? NSPoint(x: root.bounds.midX, y: root.bounds.midY)
+      : NSPoint(x: root.bounds.maxX + 20, y: root.bounds.maxY + 20)
+    var location = root.convert(point, to: nil)
+    if inside, minimumWidth > 0, let panel = window as? FloatingOverlayPanel {
+      let rows = panel.menuCursorRegions.allObjects.compactMap {
+        $0 as? OverlayMenuCursorRegionView
       }
+      .filter {
+        $0.onHover != nil && $0.visibleRect.width >= minimumWidth && $0.visibleRect.height <= 120
+      }
+      let row = try XCTUnwrap(rows.first, "Production drawer must mount a full-width hover region")
+      location = row.convert(NSPoint(x: row.visibleRect.midX, y: row.visibleRect.midY), to: nil)
     }
-  }
-
-  private func headerBind(_ area: NSTrackingArea, to event: NSEvent) throws {
-    let selector = NSSelectorFromString("_setTrackingArea:")
-    XCTAssertTrue(event.responds(to: selector), "hover event cannot carry a tracking area")
-    _ = event.perform(selector, with: area)
-    XCTAssertTrue(event.trackingArea === area, "hover event dropped its tracking area")
-  }
-
-  private func headerTrackingOwners(in view: NSView) -> [(NSView, NSTrackingArea)] {
-    var found = view.trackingAreas.map { (view, $0) }
-    for child in view.subviews {
-      found.append(contentsOf: headerTrackingOwners(in: child))
-    }
-    return found
-  }
-
-  private func headerUpdateTracking(_ view: NSView) {
-    view.updateTrackingAreas()
-    view.subviews.forEach(headerUpdateTracking)
-  }
-
-  private func headerTree(_ view: NSView, depth: Int = 0) -> String {
-    let line =
-      String(repeating: " ", count: depth) + "\(type(of: view)) areas=\(view.trackingAreas.count)"
-    return ([line] + view.subviews.map { headerTree($0, depth: depth + 1) }).joined(
-      separator: "\n")
+    let event = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .mouseMoved,
+        location: location, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil,
+        eventNumber: 1, clickCount: 0, pressure: 0))
+    window.sendEvent(event)
   }
 
   private func headerSettle(_ view: NSView, seconds: TimeInterval = 0.08) {

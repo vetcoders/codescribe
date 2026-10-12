@@ -21,19 +21,11 @@ struct OverlayConversationComposer: View {
   }
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
-  @State private var isEditorFocused = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       composerContent
         .modifier(OverlayControlGlass())
-        .overlay {
-          CSFocusOutline(
-            isFocused: isEditorFocused,
-            cornerRadius: CSRadius.pill,
-            color: CSColor.terracotta
-          )
-        }
       if let pasteError {
         Text(verbatim: pasteError)
           .font(.system(size: 10 * textScale))
@@ -51,10 +43,7 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onFocusChange: { active in
-          isEditorFocused = active
-          onFocusChange?(active)
-        },
+        onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 }
       )
@@ -359,8 +348,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     var isFocusedInKeyWindow: Bool {
-      guard let window, isWindowKey else { return false }
-      return isFirstResponderActive || window.firstResponder === self
+      guard isWindowKey, window != nil else { return false }
+      return isFirstResponderActive
     }
 
     override func paste(_ sender: Any?) {

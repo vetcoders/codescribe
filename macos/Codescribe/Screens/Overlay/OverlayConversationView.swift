@@ -385,49 +385,7 @@ struct OverlayConversationView: View {
       }
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
-      if message.kind == .reply && message.supportsSpeechPlayback {
-        HStack(spacing: 10) {
-          let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
-          if active {
-            Button("Stop", systemImage: "stop.fill") { onControl(message, true) }
-              .font(.system(size: 13 * textScale))
-              .accessibilityIdentifier("overlay-reply-stop-\(message.id)")
-          } else {
-            Button {
-              onControl(message, false)
-            } label: {
-              Image(systemName: "play.fill")
-            }
-            .frame(width: 24, height: 24)
-            .accessibilityLabel("Play")
-            .help("Play")
-            .disabled(pendingControls.contains(message.id) || message.owner == nil)
-            .accessibilityIdentifier("overlay-reply-play-\(message.id)")
-          }
-          if let playback = message.playback {
-            Text(playbackLabel(playback.state, reason: playback.reason))
-              .font(.system(size: 10 * textScale))
-          } else if pendingControls.contains(message.id) {
-            Text("Requesting playback").font(.system(size: 10 * textScale))
-          }
-        }
-        .buttonStyle(.borderless)
-        if let reason = message.playback?.reason, reason != "muted" {
-          Text(verbatim: reason)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
-        }
-        if let error = controlErrors[message.id] {
-          Text(verbatim: error)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
-        }
-      }
-      HStack(alignment: .bottom) {
-        messageReceipts(message)
-        Spacer(minLength: 8)
-        CopyMessageButton(text: message.text)
-          .buttonStyle(.borderless)
-          .accessibilityIdentifier("overlay-message-copy-\(message.id)")
-      }
+      messageFooter(message)
     }
     .padding(12)
     .background(
@@ -444,17 +402,13 @@ struct OverlayConversationView: View {
     }
   }
 
-  private func playbackLabel(_ state: String, reason: String? = nil) -> String {
-    if reason == "muted" { return String(localized: "Automatic playback muted") }
-    return switch state {
-    case "waiting": String(localized: "Waiting for speech")
-    case "playing": String(localized: "Speaking")
-    case "spoken": String(localized: "Spoken")
-    case "failed": String(localized: "Speech failed")
-    case "refused": String(localized: "Speech refused")
-    case "stopped": String(localized: "Speech stopped")
-    default: String(localized: "Reply text retained")
-    }
+  /// Shared production footer, also mounted by the native compactness test.
+  func messageFooter(_ message: OverlayConversationMessage) -> some View {
+    OverlayConversationMessageFooter(
+      message: message, palette: palette,
+      pending: pendingControls.contains(message.id), error: controlErrors[message.id],
+      onControl: { stop in onControl(message, stop) },
+      receipts: messageReceipts(message))
   }
 
   private func addressedQuestion(
@@ -487,4 +441,82 @@ private struct OverlayNamePillGlass: ViewModifier {
       content.background(.regularMaterial, in: Capsule())
     }
   }
+}
+
+/// Playback and copy share a single metadata row. Only a diagnostic adds a line.
+private struct OverlayConversationMessageFooter<Receipts: View>: View {
+  @Environment(\.csTextScale) private var textScale
+  let message: OverlayConversationMessage
+  let palette: OverlayAppearancePalette
+  let pending: Bool
+  let error: String?
+  let onControl: (Bool) -> Void
+  let receipts: Receipts
+
+  private var supportsPlayback: Bool { message.kind == .reply && message.supportsSpeechPlayback }
+  private var active: Bool {
+    message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(spacing: 8) {
+        if supportsPlayback {
+          Button {
+            onControl(active)
+          } label: {
+            Image(systemName: active ? "stop.fill" : "play.fill")
+              .font(.system(size: 10 * textScale))
+              .frame(width: 24, height: 24)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.borderless)
+          .accessibilityLabel(active ? Text("Stop") : Text("Play"))
+          .help(active ? Text("Stop") : Text("Play"))
+          .disabled(!active && (pending || message.owner == nil))
+          .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
+          if let playback = message.playback {
+            Text(playbackLabel(playback.state, reason: playback.reason))
+              .lineLimit(1)
+              .help(playbackLabel(playback.state, reason: playback.reason))
+          } else if pending {
+            Text("Requesting playback").lineLimit(1)
+          }
+        }
+        receipts
+        Spacer(minLength: 8)
+        CopyMessageButton(
+          text: message.text, labelFont: .system(size: 10 * textScale),
+          restingColor: palette.mutedText.color
+        )
+        .fixedSize()
+        .buttonStyle(.borderless)
+        .accessibilityIdentifier("overlay-message-copy-\(message.id)")
+      }
+      .font(.system(size: 10 * textScale))
+      .foregroundStyle(palette.mutedText.color)
+      if supportsPlayback, let reason = message.playback?.reason, reason != "muted" {
+        Text(verbatim: reason)
+          .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
+      }
+      if supportsPlayback, let error {
+        Text(verbatim: error)
+          .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
+      }
+    }
+  }
+
+  private func playbackLabel(_ state: String, reason: String? = nil) -> String {
+    if reason == "muted" { return String(localized: "Automatic playback muted") }
+    return switch state {
+    case "waiting": String(localized: "Waiting for speech")
+    case "playing": String(localized: "Speaking")
+    case "spoken": String(localized: "Spoken")
+    case "failed": String(localized: "Speech failed")
+    case "refused": String(localized: "Speech refused")
+    case "stopped": String(localized: "Speech stopped")
+    default: String(localized: "Reply text retained")
+    }
+  }
+
 }
