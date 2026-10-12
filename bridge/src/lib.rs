@@ -161,9 +161,14 @@ fn prepare_transcript_storage_at(
 
     let mut receipt = path.as_os_str().to_os_string();
     receipt.push(".generations.json");
-    for selected in [path, std::path::Path::new(&receipt)] {
+    let receipt = std::path::Path::new(&receipt);
+    // Only a generation receipt makes the main journal managed. Without one
+    // there is nothing to recover, and acquiring its lease would create a lock
+    // file in a directory that may not exist before the first take.
+    let mut managed_main = false;
+    for selected in [path, receipt] {
         match fs::symlink_metadata(selected) {
-            Ok(metadata) if metadata.is_file() => {}
+            Ok(metadata) if metadata.is_file() => managed_main |= selected == receipt,
             Ok(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -177,7 +182,10 @@ fn prepare_transcript_storage_at(
             Err(error) => return Err(error),
         }
     }
-    let mut paths = std::collections::BTreeSet::from([path.to_path_buf()]);
+    let mut paths = std::collections::BTreeSet::new();
+    if managed_main {
+        paths.insert(path.to_path_buf());
+    }
     let buses = bridge_home.join("buses");
     let entries = match fs::symlink_metadata(&buses) {
         Ok(metadata) if metadata.is_dir() => Some(fs::read_dir(&buses)?),
@@ -361,6 +369,19 @@ mod startup_tests {
             b"untouched unmanaged data\n"
         );
         assert_eq!(std::fs::read(&receipt).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn storage_preparation_without_a_main_receipt_creates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("absent/bus.jsonl");
+        let home = root.path().join("agent-bridge");
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.parent().unwrap().exists());
+        std::fs::create_dir_all(bus.parent().unwrap()).unwrap();
+        std::fs::write(&bus, b"{}\n").unwrap();
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.with_file_name("bus.jsonl.generation.lock").exists());
     }
 
     #[test]
