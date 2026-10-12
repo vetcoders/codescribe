@@ -540,10 +540,15 @@ fn consume_transcript(state: &mut Projection, row: &Map<String, Value>, evidence
     let Some(text) = text else {
         return;
     };
-    // Same gate as OverlayChannelDelivery.consumeConversation: an empty
-    // document is ignored before the revision compare. It does not erase the
-    // current text and it does not move the revision tombstone.
-    if text.is_empty() {
+    // Trim-empty channel `rendered_text` is not a document. The bus history
+    // entry drops it, `apply_document_text` refuses `EmptyText`, and the
+    // ledger refuses `manual_document_text_empty`. Leave the current text and
+    // the revision tombstone where the last nonempty document put them.
+    if channel_key.is_some() {
+        if text.trim().is_empty() {
+            return;
+        }
+    } else if text.is_empty() {
         return;
     }
     if !evidence
@@ -1217,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_rendered_text_does_not_withdraw_current_text() {
+    fn empty_rendered_text_is_not_a_channel_document() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         let shared = root.join("shared.jsonl");
@@ -1242,37 +1247,28 @@ mod tests {
             }
             row
         };
+        // Root probe order: revision 1 text, revision 3 empty, revision 2 text.
+        // Empty is not a tombstone, so revision 2 replaces revision 1.
         write_jsonl(
             &shared,
             &[
-                evidence("agent-channel-4-take", 1, Some("FIRST-DRAFT"), "LABEL-ONE"),
-                evidence(
-                    "agent-channel-4-take",
-                    3,
-                    Some("KEEP-VISIBLE"),
-                    "LABEL-THREE",
-                ),
-                evidence("agent-channel-4-take", 6, Some(""), "EMPTY-DOC-LABEL"),
-                evidence(
-                    "agent-channel-4-take",
-                    4,
-                    Some("MID-AFTER-EMPTY"),
-                    "LABEL-FOUR",
-                ),
-                evidence(
-                    "agent-channel-4-take",
-                    2,
-                    Some("STALE-REPLAY-AFTER-EMPTY"),
-                    "LABEL-TWO",
-                ),
+                evidence("agent-channel-4-take", 1, Some("REVISION-ONE"), "LABEL-ONE"),
+                evidence("agent-channel-4-take", 3, Some(""), "EMPTY-DOC-LABEL"),
+                evidence("agent-channel-4-take", 2, Some("REVISION-TWO"), "LABEL-TWO"),
                 evidence(
                     "agent-channel-7-held",
-                    1,
-                    Some("ONLY-BEFORE-EMPTY"),
+                    5,
+                    Some("KEPT-DOCUMENT"),
                     "HELD-LABEL",
                 ),
                 evidence("agent-channel-7-held", 8, None, "ABSENT-DOC-LABEL"),
-                evidence("agent-channel-7-held", 9, Some(""), "EMPTY-HELD-LABEL"),
+                evidence("agent-channel-7-held", 9, Some("   "), "BLANK-DOC-LABEL"),
+                evidence(
+                    "agent-channel-7-held",
+                    4,
+                    Some("OLDER-REPLAY"),
+                    "OLDER-LABEL",
+                ),
                 transcript("beta-take", "u-beta", "NEIGHBOR-STAYS", 1, &beta, None),
             ],
         );
@@ -1284,24 +1280,23 @@ mod tests {
         let search = |query: &str| search_bus_conversations(root, query).unwrap();
 
         assert_eq!(
-            matching_ids(&search("MID-AFTER-EMPTY")),
+            matching_ids(&search("REVISION-TWO")),
             vec![alpha_id.as_str()]
         );
         assert_eq!(
-            matching_ids(&search("ONLY-BEFORE-EMPTY")),
+            matching_ids(&search("KEPT-DOCUMENT")),
             vec![alpha_id.as_str()]
         );
-        assert!(search("KEEP-VISIBLE").results.is_empty());
-        assert!(search("FIRST-DRAFT").results.is_empty());
-        assert!(search("STALE-REPLAY-AFTER-EMPTY").results.is_empty());
+        assert!(search("REVISION-ONE").results.is_empty());
+        assert!(search("OLDER-REPLAY").results.is_empty());
         assert!(search("EMPTY-DOC-LABEL").results.is_empty());
         assert!(search("ABSENT-DOC-LABEL").results.is_empty());
-        assert!(search("EMPTY-HELD-LABEL").results.is_empty());
+        assert!(search("BLANK-DOC-LABEL").results.is_empty());
         assert_eq!(
             matching_ids(&search("NEIGHBOR-STAYS")),
             vec![beta_id.as_str()]
         );
-        let held = search("ONLY-BEFORE-EMPTY");
+        let held = search("KEPT-DOCUMENT");
         assert!(held.complete);
         assert_eq!(held.error_count, 0);
         assert_eq!(snapshot(root), before);
