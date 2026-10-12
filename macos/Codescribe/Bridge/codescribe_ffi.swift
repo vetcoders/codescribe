@@ -1511,6 +1511,14 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
 
     /**
      * Explicit credential acquisition. Swift executes this off MainActor.
+     *
+     * This is the only authorized path that fills the process credential
+     * cache, so it also re-seals the live controller through the one
+     * settings-refresh path. Launch creates the controller before Swift
+     * restores provider access, and a Keychain-only secret is therefore absent
+     * from that first sealed generation: without this re-seal the Cloud lane
+     * reports `live_key_missing` on every take until an unrelated settings
+     * write happens to re-seal it.
      */
     func providerAccessSnapshot() throws  -> CsProviderAccessSnapshot
 
@@ -2096,6 +2104,14 @@ open func providerAccessRevision() -> UInt64  {
 
     /**
      * Explicit credential acquisition. Swift executes this off MainActor.
+     *
+     * This is the only authorized path that fills the process credential
+     * cache, so it also re-seals the live controller through the one
+     * settings-refresh path. Launch creates the controller before Swift
+     * restores provider access, and a Keychain-only secret is therefore absent
+     * from that first sealed generation: without this re-seal the Cloud lane
+     * reports `live_key_missing` on every take until an unrelated settings
+     * write happens to re-seal it.
      */
 open func providerAccessSnapshot()throws  -> CsProviderAccessSnapshot  {
     return try  FfiConverterTypeCsProviderAccessSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -20519,7 +20535,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_revision() != 35789) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_snapshot() != 34624) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_snapshot() != 7275) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider() != 11187) {
