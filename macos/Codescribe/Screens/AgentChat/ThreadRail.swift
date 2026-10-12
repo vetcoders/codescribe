@@ -376,7 +376,7 @@ private struct ThreadRow: View {
           .foregroundStyle(Color.secondary)
 
         if let tag = ModelTag.display(for: thread.model) {
-          Text("·")
+          Text(verbatim: "·")
             .font(.caption)
             .foregroundStyle(Color.secondary.opacity(0.6))
           Text(tag)
