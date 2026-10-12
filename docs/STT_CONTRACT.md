@@ -404,6 +404,10 @@ Settings writes `CODESCRIBE_ASR_MODE` to `settings.json`; Cloud additionally
 requires explicit `CODESCRIBE_CLOUD_CONSENT`. Apple only has no Layer 1 refiner.
 Local Power arms local refinement by default. Cloud uses the live provider
 factory and reports `live_endpoint_missing` or `live_key_missing` when unconfigured.
+Launch seals the controller before Swift restores provider access, so every
+completed `provider_access_snapshot` re-seals the live controller through the one
+settings-refresh path: a Keychain-only `STT_LIVE_API_KEY` arms the next idle take
+without a settings write or a restart, and an active take keeps its generation.
 
 The router probes Apple runtime and bridge availability directly. The retired
 `CODESCRIBE_STT_ENGINE`, `FINAL_PASS_MODE`, and `CODESCRIBE_FINAL_PASS_MODE`
