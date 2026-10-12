@@ -5950,6 +5950,8 @@ def main() -> int:
     native = parser.add_mutually_exclusive_group()
     native.add_argument("--mcp", action="store_true", help="serve the native Codescribe MCP conversation over stdio")
     native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
+    native.add_argument("--claude-code-wake", action="store_true",
+                        help="Claude Code plugin hook: read the hook payload on stdin and exit 75 when this attached session's mailbox has an unannounced message")
     parser.add_argument("--extensions-directory", type=Path, default=None,
                         help="with --install-junie-extension: override Junie's extensions directory")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
@@ -6144,8 +6146,8 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.mcp or args.install_junie_extension:
-        allowed = {"mcp", "install_junie_extension", "extensions_directory", "bridge_home", "bus", "entrypoint"}
+    if args.mcp or args.install_junie_extension or args.claude_code_wake:
+        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "extensions_directory", "bridge_home", "bus", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
             parser.error("native extension commands combine only with --bridge-home/--bus")
         if args.extensions_directory and not args.install_junie_extension:
@@ -6159,6 +6161,8 @@ def main() -> int:
             if args.install_junie_extension:
                 directory = args.extensions_directory or Path(os.environ.get("JUNIE_EXTENSIONS_DEFAULT_LOCATION", str(Path.home() / ".junie/extensions")))
                 emit(module.install_extension(sys.modules[__name__], root, directory.expanduser()))
+            elif args.claude_code_wake:
+                return module.claude_code_wake(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
             else:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0

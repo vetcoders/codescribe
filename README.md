@@ -84,17 +84,21 @@ flowchart TB
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-### Native Junie extension
+### Codescribe plugin for Claude Code and Junie
 
-Install the helpers with `make install-bus`, add the bundled local marketplace
-with `/extensions marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
-then `/extensions install codescribe` and `/codescribe junie 6` in ordinary Junie.
-Native MCP waits bring messages into that same conversation. Junie release
-26.10.5 limits each wait to three minutes; indefinite idle wakeup is not yet
-established. No IDE,
-separate ACP conversation or new executable is needed. In a running Junie, activate
-the extension with `/extensions install codescribe` before connecting.
-See [setup, permissions and recovery](docs/JUNIE_PLUGIN.md).
+One plugin, installed with the helpers by `make install-bus`, connects the
+conversation you are in to a named channel. Both clients add the same local
+marketplace at `~/.codescribe/agent-bridge/runtime/plugins`.
+
+- **Claude Code:** `/plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
+  `/plugin install codescribe@codescribe`, then `/codescribe roman 3`. The turn ends
+  after connecting; a background `Stop` hook wakes the conversation for each new
+  message, with no model turn during silence. See [Claude Code](docs/CLAUDE_CODE_PLUGIN.md).
+- **Junie:** `/extensions marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
+  `/extensions install codescribe`, then `/codescribe junie 6`. Native MCP waits bring
+  messages into the same conversation during an active reception task. Junie
+  release 26.10.5 limits each wait to three minutes; indefinite idle wakeup is not
+  yet established there. See [Junie](docs/JUNIE_PLUGIN.md).
 
 ## OpenAI Provider
 

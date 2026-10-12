@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.11.0"
+  version: "0.12.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -36,8 +36,12 @@ Founder means the human. Operator means an agent role.
 
 ## Connect once
 
-Use the current provider and its real session ID. For Codex this is the current
-thread ID; for Claude Code the helper can read `CLAUDE_CODE_SESSION_ID`.
+Use the current provider token and its real session ID: `codex` with the current
+thread ID; `claude-code` in Claude Code, where the helper reads
+`CLAUDE_CODE_SESSION_ID` (never `claude`); `kimi-code`; `junie`. Keep the same
+token on every command of the connection: another token is another lease, so
+`cs-say --provider claude` against a `claude-code` attachment fails with
+`--say needs --name`. Fix the identity; do not add another lease's name.
 Never invent a session or borrow another chat's identity. Reuse an established
 name. Ask for a name/channel only when the request and session do not supply them.
 Validate the channel as one digit 1–9. Quote arguments as data.
@@ -59,7 +63,35 @@ The engine creates or reuses **one follower**. Do not also start `--follow`.
 An occupied slot belongs to its reported owner. Do not silently choose a new
 slot, edit bindings or kill its reader. For a handoff from an ended session of
 **the same name**, use `--takeover`; read [Attach](references/attach.md) for the
-handover and inherited-message rules.
+handover and inherited-message rules. A refusal whose previous
+`follower_state` is `undrained_retained` means the old reader has not consumed
+the bus to its end.
+Resume it, never kill it: if `previous.follower_pid` is null, start exactly the
+`process_identity.command` recorded in `leases/<previous.lease_id>.json` in the
+background, then repeat the same `--attach --takeover` until the guard accepts;
+it stops the drained reader itself.
+
+### Claude Code
+
+Claude Code wakes an idle conversation on a background task's **completion** or
+an `asyncRewake` hook, never on a running process's stdout. An infinite
+`--watch --bell` in a background shell therefore leaves the lease attached and the
+model asleep; `Monitor` delivers stdout only until it expires (at most 30 min).
+
+1. **Codescribe plugin (preferred).** Install once from the payload marketplace:
+   `/plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins`, then
+   `/plugin install codescribe@codescribe`. With its `codescribe_*` tools present,
+   follow the plugin skill `codescribe:codescribe`: connect with the hook identity,
+   end the turn, and the plugin's `Stop` hook wakes the conversation per message
+   and re-arms on every turn end. Nothing has to be remembered between turns.
+2. **CLI without the plugin.** Attach with `--provider claude-code`, then run one
+   `Bash(run_in_background=true)` task with the maximum timeout over
+   `cs-bus --watch --until-event --provider claude-code` (no `--max-wait`).
+   Its completion is the wakeup; a task stopped at its timeout is only a rearm.
+   Read → ACK → act, then
+   start one new task **before ending every turn**; a forgotten rearm is deafness.
+
+### Other providers
 
 For Kimi Code, use one `Bash(run_in_background=true, disable_timeout=true)` task
 running `cs-bus --watch --until-event --provider kimi-code --session SESSION`; it
@@ -67,7 +99,7 @@ ends only when a message arrives, so an idle agent costs no model turn.
 Follow the Kimi procedure in [Monitor](references/monitor.md); an infinite watch
 does not complete and therefore cannot trigger its completion notification.
 
-For providers with notifications on process output, start or reuse one monitor over:
+For providers with notifications on process output (not Claude Code), start or reuse one monitor over:
 
 ```bash
 cs-bus --watch --bell --provider PROVIDER --session SESSION
@@ -81,9 +113,10 @@ Codex attachment also arms native queue for subsequent turns. Read
 active polling when automatic wakeup is unavailable.
 
 Report `attached_unverified` until a fresh named utterance reaches this chat and
-gets a reply without a typed nudge. Then report `listening_verified`. A PID or
-attach receipt alone does not prove message delivery. Let the Founder make the
-fresh take; attachment itself opens no microphone.
+gets a reply without a typed nudge. Then report `listening_verified` — the only
+proof of a connection. A PID, live follower, armed hook, monitor or attach receipt
+does not prove message delivery. Let the Founder make the fresh take; attachment
+itself opens no microphone.
 
 ## Read → ACK → act
 
@@ -147,11 +180,15 @@ Write concise prose for the Founder: the result and the next concrete action.
 Keep raw envelopes, JSON, PCM receipts and command logs in diagnostics. Do not
 paste them into a conversational reply or narrate every ACK.
 
-For an explicitly requested voice answer, use the **owned ID just read**:
+For an explicitly requested voice answer, use the **owned ID just read**
+(with the Codescribe plugin: `codescribe_reply`):
 
 ```bash
 cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
+cs-say "Krótka odpowiedź po polsku." --provider claude-code --reply-to ID
 ```
+
+`--name` and the voice come from the lease of exactly this provider/session.
 
 The helper stores the text before speech and uses the attached voice. Omit
 `--reply-to` only for an explicitly unsolicited reply; never select the newest
