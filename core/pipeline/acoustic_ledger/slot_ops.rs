@@ -1160,6 +1160,7 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         slots: &mut Vec<WordSlot>,
         incoming: &mut Vec<WordSlot>,
+        original_pins: &[&WordPin],
     ) -> (Vec<SlotOperationReceipt>, Vec<GroupSpeechCoverageReceipt>) {
         if !matches!(
             observation.producer,
@@ -1291,6 +1292,36 @@ impl AcousticLedger {
                 .map(|index| pins[*index].clone())
                 .collect::<Vec<_>>();
             outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+            // An incomplete word can join this component by overlap alone,
+            // without satisfying the ordinary target relation. Check the
+            // resolved correction before it can consume the held source.
+            if observation.producer == ObservationProducer::Whisper
+                && let [source] = sources.as_slice()
+                && let [output] = outputs.as_slice()
+                && source.producer == ObservationProducer::CloudLive
+                && !self.coarse_word_source(source)
+                && !word_adjudication::label_equal(&source.text, &output.text)
+                && !word_indices
+                    .first()
+                    .and_then(|index| original_pins.get(*index))
+                    .is_some_and(|pin| {
+                        self.whisper_has_correction_context(
+                            observation,
+                            pin.sample_start,
+                            pin.sample_end,
+                        )
+                    })
+            {
+                self.retain_slot_alternative(
+                    observation,
+                    &output.text,
+                    sources.clone(),
+                    "outside_publication_band",
+                );
+                self.record_word_slot_refusal(observation, output, false);
+                consumed.extend(word_indices.iter().copied());
+                continue;
+            }
             let coarse_source = |source: &WordSlot| self.coarse_word_source(source);
             let all_coarse = sources.iter().all(coarse_source);
             // A coarse hypothesis has no independent word claims. Its

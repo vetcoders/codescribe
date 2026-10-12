@@ -2521,3 +2521,135 @@ fn cloud_word_context_allows_original_span_at_floor_across_owner_edges() {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 }
+
+#[test]
+fn cloud_word_context_gates_overlap_only_resegmentation() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for (start, end, decode) in [
+        (57_000, 73_000, (48_000, 192_000)),
+        (39_000, 55_000, (0, 64_000)),
+    ] {
+        let owner = OccurrenceIdentity::new("cloud-overlap-context", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 192_000];
+        pcm[start.max(48_000) as usize + 1_000..end.min(64_000) as usize - 1_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 192_000)],
+                )
+                .grants_mutation()
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        assert!(!ledger.complete_word_slot(&before[0]));
+        assert!(!ledger.coarse_word_source(&before[0]));
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let pin = WordPin::new(start, end, "56").with_decode_window(decode.0, decode.1);
+        let projected = WordSlot {
+            sample_start: start,
+            sample_end: end,
+            text: pin.text.clone(),
+            producer: ObservationProducer::Whisper,
+            observation: whisper.clone(),
+            witness: SlotWitness::Unwitnessed,
+            confidence: pin.confidence,
+            surface_rewritten: pin.surface_rewritten,
+        };
+        assert!(!ledger.pin_targets_source(&before[0], &projected));
+        assert!(context_quality(start, end, decode) < BAND_RIGHTS_FLOOR);
+        let receipt = ledger.admit_word_slots(&whisper, &[pin]);
+        assert!(
+            !receipt.grants_mutation(),
+            "pin={start}..{end}: {receipt:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("1286"));
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert!(ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.observation == whisper
+                && alternative.candidate == "56"
+                && alternative.reason == "outside_publication_band"
+        }));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_allows_overlap_only_resegmentation_at_floor() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for (start, end, decode) in [
+        (57_000, 73_000, (33_000, 177_000)),
+        (39_000, 55_000, (10_000, 64_000)),
+    ] {
+        let owner = OccurrenceIdentity::new("cloud-overlap-context-floor", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 192_000];
+        pcm[start.max(48_000) as usize + 1_000..end.min(64_000) as usize - 1_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 192_000)],
+                )
+                .grants_mutation()
+        );
+        assert!(!ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[0]));
+        assert_eq!(context_quality(start, end, decode), BAND_RIGHTS_FLOOR);
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(start, end, "56").with_decode_window(decode.0, decode.1)],
+        );
+        assert!(receipt.grants_mutation(), "pin={start}..{end}: {receipt:?}");
+        assert_eq!(ledger.text_of(&owner), Some("56"));
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!((slots[0].sample_start, slots[0].sample_end), (start, end));
+        assert_eq!(slots[0].observation, whisper);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_overlap_refusal_keeps_the_unrelated_first_pin() {
+    let owner = OccurrenceIdentity::new("cloud-overlap-context-mixed", 1, 0, 160_000);
+    let mut pcm = vec![0.0; 192_000];
+    pcm[58_000..63_000].fill(0.2);
+    pcm[98_000..110_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+    assert!(
+        ledger
+            .admit_word_slots(
+                &cloud,
+                &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 192_000)],
+            )
+            .grants_mutation()
+    );
+    let incumbent = ledger.slots_of(&owner).unwrap()[0].clone();
+    let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+    let receipt = ledger.admit_word_slots(
+        &whisper,
+        &[
+            WordPin::new(96_000, 112_000, "dalej").with_decode_window(48_000, 192_000),
+            WordPin::new(57_000, 73_000, "56").with_decode_window(48_000, 192_000),
+        ],
+    );
+    assert!(
+        receipt.grants_mutation(),
+        "the independent first pin must survive: {receipt:?}"
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286 dalej"));
+    assert!(ledger.slots_of(&owner).unwrap().contains(&incumbent));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    assert!(ledger.slot_alternatives().iter().any(|alternative| {
+        alternative.observation == whisper
+            && alternative.candidate == "56"
+            && alternative.reason == "outside_publication_band"
+    }));
+    assert!(!ledger.text_recovery_pending(&owner));
+    assert_eq!(ledger.conservation().residue(), 0);
+}

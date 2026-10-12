@@ -1639,12 +1639,9 @@ impl AcousticLedger {
                 false
             });
         }
-        let mut incoming = incoming
-            .into_iter()
-            .map(|(word, _)| word)
-            .collect::<Vec<_>>();
+        let (mut incoming, original_pins): (Vec<_>, Vec<_>) = incoming.into_iter().unzip();
         let (mut resegments, proposed_coverages) =
-            self.resegment_word_slots(observation, &mut slots, &mut incoming);
+            self.resegment_word_slots(observation, &mut slots, &mut incoming, &original_pins);
         let mut removed = resegments
             .iter()
             .flat_map(|op| op.sources.clone())
