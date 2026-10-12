@@ -673,6 +673,22 @@ source as an unauthenticated fallback:
 
 ## 15. Guarded ordering is a separate obligation (2026-09-10)
 
+Current clipboard corridor obligations include the target check before a write,
+the second check before Cmd+V, an optional clipboard epoch, immediate recovery
+after errors or deferred delivery, and delayed restore after a successful paste.
+The retained target receives the declared `PasteMode`; the Codescribe canvas
+stays Safe and input capability remains checked. The positive live-body control
+and the clipboard mutants exercise these obligations together.
+The delegated capability helper has its own complete body obligation: it
+accumulates both Secure refusals and the non-Comfort text requirement, then
+returns that same check. A no-op helper or a later reset of the refusal is red.
+
+The emitter's mutation, seal and formatter-proposal arms are separate paths.
+Their composite body checklist follows lexical source order; it does not claim
+execution flows from one match arm into another. It proves the presence and
+lexical order of the proposal and derived-record calls, not arm-scoped routing.
+The seal corridor retains its separate application-before-publication sequence.
+
 Re-pointing a corridor onto the owner that actually executes the code proves
 presence. It does not prove sequence, and in an admission chain sequence is the
 property that matters: qualification after admission is not qualification. A

@@ -219,6 +219,12 @@
               "kind": "function",
               "symbol": "pump_capture_windows",
               "count": 1
+            },
+            {
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "kind": "function",
+              "symbol": "schedule_bounded_word_trial",
+              "count": 1
             }
           ]
         },
@@ -1709,48 +1715,73 @@
                 "if facts.latched_target_is_self",
                 "route: DeliveryRoute::DeferredInsert",
                 "reason: \"refuse_paste_into_self\"",
-                "route: DeliveryRoute::ClipboardPaste",
-                "reason: \"explicit_insert\"",
                 "paste_gate(",
                 "facts.paste_target",
                 "facts.executable_payload",
-                "gate.route == DeliveryRoute::ClipboardPaste"
+                "gate.route == DeliveryRoute::ClipboardPaste",
+                "route: DeliveryRoute::ClipboardPaste",
+                "reason: \"explicit_insert\""
               ]
             },
             {
               "symbol": "paste_to_stop_target",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "write_stop_paste(",
-                "set_clipboard_with_epoch",
-                "|| target.check_current()",
+                "let snapshot = ClipboardSnapshot::capture()?",
+                "let mut written_epoch = None",
+                "let result = write_stop_paste(",
+                "let epoch = set_clipboard_with_epoch(text)?",
+                "written_epoch = Some(epoch)",
+                "|| target.check_current(mode)",
                 "simulate_cmd_v",
-                "if receipt.delivery == StopPasteDelivery::Pasted",
-                "schedule_clipboard_restore(snapshot, epoch, get_restore_delay())"
+                "let (receipt, epoch) = match result",
+                "if let Some(epoch) = written_epoch",
+                "schedule_clipboard_restore(snapshot, epoch, Duration::ZERO)",
+                "if let Some(epoch) = epoch",
+                "let delay = if receipt.delivery == StopPasteDelivery::Pasted",
+                "get_restore_delay()",
+                "Duration::ZERO",
+                "schedule_clipboard_restore(snapshot, epoch, delay)",
+                "Ok(receipt)"
               ]
             },
             {
               "symbol": "write_stop_paste",
               "file": "app/os/clipboard.rs",
               "required_code": [
+                "let before = check_target()",
+                "if before.changed",
+                "target_changed(receipt)",
+                "return Ok((receipt, None))",
                 "let epoch = write(text)?",
                 "let target = check_target()",
                 "if target.changed",
                 "target_changed(receipt)",
-                "return Ok((receipt, epoch))",
-                "post_paste()?"
+                "return Ok((receipt, Some(epoch)))",
+                "post_paste()?",
+                "Ok((receipt, Some(epoch)))"
               ]
             },
             {
               "symbol": "check_current",
               "file": "app/os/clipboard.rs",
-              "signature_contains": "fn check_current(&self) -> StopTargetCheck",
+              "signature_contains": "fn check_current(&self, mode: PasteMode) -> StopTargetCheck",
               "required_code": [
                 "let current = Self::capture()",
                 "compare_stop_targets(",
                 "stop_target_identity::Identity::same_element",
-                "self.field != crate::os::hold_badge::FocusedInputField::Text",
-                "current.field != crate::os::hold_badge::FocusedInputField::Text"
+                "let mode = if self",
+                "crate::os::selection::is_codescribe_app(&name)",
+                "PasteMode::Safe",
+                "check.with_input_capability(mode, self.field, current.field)"
+              ]
+            },
+            {
+              "symbol": "with_input_capability",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "fn with_input_capability(",
+              "required_code": [
+                "fn with_input_capability(\n    mut self,\n    mode: PasteMode,\n    stopped: crate::os::hold_badge::FocusedInputField,\n    current: crate::os::hold_badge::FocusedInputField,\n) -> Self {\n    use crate::os::hold_badge::FocusedInputField::{Secure, Text};\n    self.changed |= stopped == Secure\n        || current == Secure\n        || (mode != PasteMode::Comfort && (stopped != Text || current != Text));\n    self\n}"
               ]
             },
             {
@@ -1940,6 +1971,13 @@
               "callee": "classify_input_capability",
               "callee_file": "app/os/hold_badge.rs",
               "minimum_count": 1
+            },
+            {
+              "caller": "check_current",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "with_input_capability",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
             }
           ]
         },
@@ -1981,10 +2019,11 @@
               "file": "app/presentation/emitter.rs",
               "required_code": [
                 "apply_ledger_mutation(&ledger, observation, receipt)",
+                "bus.publish_revision(&revision, &ledger)",
+                "self.emit_overlay_events(&events)",
                 "apply_ledger_seal(receipt)",
                 "apply_occurrence_label_proposal(&ledger, proposal)",
-                "bus.publish_revision(&revision, &ledger)",
-                "self.emit_overlay_events(&events)"
+                "bus.record_derived_projection(&projection)"
               ]
             },
             {
