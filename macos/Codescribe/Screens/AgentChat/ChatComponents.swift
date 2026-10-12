@@ -102,10 +102,25 @@ struct BlinkCaret: View {
 /// the single growing turn, never the whole history.
 struct MarkdownText: View {
   let raw: String
+  // SwiftUI's String equality is canonical, while capture revisions own their
+  // exact bytes. Include byte identity at this parent, before its native child.
+  private let utf8Identity: [UInt8]
   var size: CGFloat = 14
   var bodyColor: Color = Color.primary
   var showsCaret: Bool = false
   var showsUnderlineCaret: Bool = false
+
+  init(
+    raw: String, size: CGFloat = 14, bodyColor: Color = .primary,
+    showsCaret: Bool = false, showsUnderlineCaret: Bool = false
+  ) {
+    self.raw = raw
+    self.utf8Identity = Array(raw.utf8)
+    self.size = size
+    self.bodyColor = bodyColor
+    self.showsCaret = showsCaret
+    self.showsUnderlineCaret = showsUnderlineCaret
+  }
 
   /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
   /// block's base `size` drives EVERY element (headings, lists, code, tables,
@@ -115,10 +130,20 @@ struct MarkdownText: View {
   private var s: CGFloat { size * textScale }
 
   var body: some View {
-    let blocks = MDBlock.parse(raw)
-    VStack(alignment: .leading, spacing: 7) {
-      ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-        blockView(block, isLast: index == blocks.count - 1)
+    Group {
+      if showsUnderlineCaret {
+        // During capture these are the spoken bytes, including an open tail.
+        // The native canvas owns selection and pins activity to its insertion
+        // geometry. Settled turns keep the rich markdown rendering below.
+        TranscriptActivityText(text: raw, fontSize: s, color: bodyColor)
+          .textSelection(.disabled)
+      } else {
+        let blocks = MDBlock.parse(raw)
+        VStack(alignment: .leading, spacing: 7) {
+          ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+            blockView(block, isLast: index == blocks.count - 1)
+          }
+        }
       }
     }
     // Rich rendering must not trade away the platform's basic copy
@@ -209,14 +234,10 @@ struct MarkdownText: View {
       text, fontSize: fontSize,
       baseFont: baseFont, baseColor: baseColor)
     let content = Text(attr).lineSpacing(5)
-    if isLast, showsCaret || showsUnderlineCaret {
+    if isLast, showsCaret {
       HStack(alignment: .bottom, spacing: 2) {
         content.fixedSize(horizontal: false, vertical: true)
-        if showsUnderlineCaret {
-          TranscriptActivityUnderline()
-        } else {
-          BlinkCaret()
-        }
+        BlinkCaret()
       }
     } else {
       content
