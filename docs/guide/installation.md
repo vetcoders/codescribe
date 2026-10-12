@@ -42,6 +42,11 @@ make install-app      # Build + copy app to /Applications
 
 You'll see the Codescribe icon appear in your menu bar. It starts black (idle).
 
+The first-run setup wizard never downloads the local Whisper model on its own:
+its model step shows the model, its source, its size and where it would be
+stored, and the transfer starts only when you press **Download model**.
+Continuing without it is fine — the cloud and Apple paths do not need it.
+
 ---
 
 ## Required Permissions

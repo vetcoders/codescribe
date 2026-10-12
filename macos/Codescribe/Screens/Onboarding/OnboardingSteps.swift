@@ -510,6 +510,9 @@ private struct OnboardingPermissionRow: View {
 
 struct LocalModelStepView: View {
   @ObservedObject var model: OnboardingViewModel
+  /// Observed here too, so the background-download note appears with the
+  /// transfer the shared control starts. The step itself never starts one.
+  @ObservedObject var downloads: WhisperDownloadStore
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -531,18 +534,20 @@ struct LocalModelStepView: View {
       .font(.body)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      WhisperDownloadView(store: model.whisperDownloadStore)
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "You can move on to the next step. The download finishes in the background.",
-            locale: model.interfaceLocale,
-            comment:
-              "Whisper download never blocks navigation, closing the wizard or completing setup"))
-      )
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
+      WhisperDownloadView(store: downloads)
+      if downloads.inFlight {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "You can move on to the next step. The download finishes in the background.",
+              locale: model.interfaceLocale,
+              comment:
+                "Whisper download never blocks navigation, closing the wizard or completing setup"))
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
     }
   }
 }
