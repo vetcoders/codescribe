@@ -552,6 +552,11 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 | Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`           |
 | AI execution generation         | next selected runtime snapshot                      | sealed prompts + retry/delay + shared Agent/formatter request timing |
 
+The Whisper download listener also answers `is_cancelled`, polled between body
+chunks: a stopped transfer deletes its `.partial` file and fails with the core
+cancellation marker, so the model stays not installed. Reading the status
+drops a `.partial` stranded beside a bundle that is already complete.
+
 ### 3.3 Dictation overlay / tray
 
 | Front                         | UniFFI                                     | Handler                                                         |
