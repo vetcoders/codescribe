@@ -1,147 +1,131 @@
 import AppKit
 import SwiftUI
 
-/// Thread list content; the native split controller owns sidebar collapse and width.
+/// Thread list content hosted in the native split sidebar column.
+///
+/// Uses native macOS sidebar List selection and NSSearchField idioms coherent
+/// with Settings, delegating row cards, selection fills, and focus outlines
+/// to the system list.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   var onContentWidthChanged: (CGFloat) -> Void = { _ in }
   @State private var search: String = ""
-  @FocusState private var searchFocused: Bool
+  @State private var selectedThreadID: UUID?
   @State private var deleteCandidate: ChatThread?
   @State private var editingThreadID: UUID?
   @State private var renameDraft: String = ""
-  /// Keyboard focus on one row (keyboard navigation / Full Keyboard Access).
-  /// Nil while focus sits in the search field, the rename field, a row's
-  /// favorite button or outside the rail.
-  @FocusState private var focusedThreadID: UUID?
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.colorSchemeContrast) private var contrast
 
   var body: some View {
-    expandedRail
-      .background {
-        AgentSidebarMaterial(
-          reduceTransparency: reduceTransparency,
-          increaseContrast: contrast == .increased
-        )
+    VStack(spacing: 0) {
+      searchHeader
+
+      threadList
+    }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      newThreadFooter
+    }
+    .background {
+      AgentSidebarMaterial(
+        reduceTransparency: reduceTransparency,
+        increaseContrast: contrast == .increased
+      )
+    }
+    .onPreferenceChange(ThreadRailWidthPreference.self, perform: onContentWidthChanged)
+    .onAppear {
+      selectedThreadID = store.selectedThreadID
+    }
+    .onChange(of: store.selectedThreadID) { _, newID in
+      if selectedThreadID != newID {
+        selectedThreadID = newID
       }
-      .onPreferenceChange(ThreadRailWidthPreference.self, perform: onContentWidthChanged)
-      .onChange(of: search) { _, newValue in
-        store.searchThreads(newValue)
+    }
+    .onChange(of: selectedThreadID) { _, newID in
+      guard let newID, newID != store.selectedThreadID else { return }
+      select(newID)
+    }
+    .onChange(of: search) { _, newValue in
+      store.searchThreads(newValue)
+    }
+    .onChange(of: store.threadSearchQuery) { _, newValue in
+      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+        search = newValue
       }
-      .onChange(of: store.threadSearchQuery) { _, newValue in
-        if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
-          search = newValue
-        }
-      }
-      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+    }
+    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
   }
 
-  private var expandedRail: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(CSColor.textTertiary)
-          .imageScale(.small)
-          .accessibilityHidden(true)
-        TextField("Search threads", text: $search)
-          .textFieldStyle(.plain)
-          .focused($searchFocused)
-          .font(CSFont.ui(13, .regular))
-          .foregroundStyle(Color.primary)
-      }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(CSColor.controlFill)
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-      .overlay {
-        CSFocusOutline(isFocused: searchFocused, cornerRadius: 6)
-      }
-      .padding(.horizontal, 12)
-      .padding(.top, 10)
-      .padding(.bottom, 8)
+  private var searchHeader: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      NativeThreadSearchField(
+        text: $search,
+        prompt: "Search threads",
+        onCommit: {
+          handleSearchCommit()
+        },
+        onCancel: {
+          handleSearchCancel()
+        },
+        onMoveDown: {
+          handleSearchMoveDown()
+        }
+      )
 
       if let error = store.threadSearchError {
         Text(error)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.primary)
-          .padding(.horizontal, 12)
-          .padding(.bottom, 8)
+          .font(.caption)
+          .foregroundStyle(Color.secondary)
+          .padding(.horizontal, 4)
           .accessibilityLabel(error)
       }
-
-      // Section eyebrow
-      HStack {
-        Text("Threads", comment: "Thread rail section eyebrow")
-          .textCase(.uppercase)
-          .font(CSFont.mono(10, .semibold))
-          .tracking(1.0)
-          .foregroundStyle(CSColor.textTertiary)
-        Spacer()
-      }
-      .padding(.horizontal, 12)
-      .padding(.top, 4)
-      .padding(.bottom, 2)
-
-      // Thread list — search-filtered first, then grouped by recency
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(spacing: 4) {
-            ForEach(sectionedThreads, id: \.section) { group in
-              HStack {
-                Text(group.section.title)
-                  .font(CSFont.mono(9, .semibold))
-                  .tracking(0.8)
-                  .foregroundStyle(CSColor.textTertiary)
-                Spacer()
-              }
-              .padding(.horizontal, 2)
-              .padding(.top, 8)
-              .padding(.bottom, 2)
-              .accessibilityAddTraits(.isHeader)
-              ForEach(group.threads) { thread in
-                ThreadRow(
-                  thread: thread,
-                  isActive: thread.id == store.selectedThreadID,
-                  isEditing: editingThreadID == thread.id,
-                  renameDraft: $renameDraft,
-                  focus: $focusedThreadID,
-                  onSelect: { select(thread) },
-                  onToggleFavorite: { store.toggleFavorite(thread) },
-                  onRequestDelete: { deleteCandidate = thread },
-                  onBeginRename: { beginRename(thread) },
-                  onCommitRename: { commitRename(thread) },
-                  onCancelRename: { cancelRename(thread) }
-                )
-                .id(thread.id)
-                .contentShape(Rectangle())
-                .onTapGesture { select(thread) }
-                // Keys act only while the row itself is focused: the rename
-                // field and the favorite button keep their own key handling.
-                .onKeyPress(.return) { activateFocused(thread) }
-                .onKeyPress(.space) { activateFocused(thread) }
-                .onKeyPress(.upArrow) { moveFocus(from: thread, step: -1, proxy: proxy) }
-                .onKeyPress(.downArrow) { moveFocus(from: thread, step: 1, proxy: proxy) }
-              }
-            }
-          }
-          .padding(.horizontal, 10)
-        }
-        .scrollContentBackground(.hidden)
-      }
-
-      VStack {
-        Button(action: { store.newThread() }) {
-          Label("New thread", systemImage: "plus")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .accessibilityLabel("New thread")
-      }
-      .padding(8)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(.horizontal, 10)
+    .padding(.top, 10)
+    .padding(.bottom, 6)
+  }
+
+  private var threadList: some View {
+    List(selection: $selectedThreadID) {
+      ForEach(sectionedThreads, id: \.section) { group in
+        Section(group.section.title) {
+          ForEach(group.threads) { thread in
+            ThreadRow(
+              thread: thread,
+              isActive: thread.id == selectedThreadID,
+              isEditing: editingThreadID == thread.id,
+              renameDraft: $renameDraft,
+              onSelect: { select(thread.id) },
+              onToggleFavorite: { store.toggleFavorite(thread) },
+              onRequestDelete: { deleteCandidate = thread },
+              onBeginRename: { beginRename(thread) },
+              onCommitRename: { commitRename(thread) },
+              onCancelRename: { cancelRename(thread) },
+              onCopyTitle: { copyTitle(thread) },
+              onExportMarkdown: { exportMarkdown(thread) }
+            )
+            .tag(thread.id)
+          }
+        }
+      }
+    }
+    .listStyle(.sidebar)
+    .scrollContentBackground(.hidden)
+    .accessibilityIdentifier("thread-rail-list")
+  }
+
+  private var newThreadFooter: some View {
+    VStack(spacing: 0) {
+      Divider()
+      Button(action: { store.newThread() }) {
+        Label("New thread", systemImage: "plus")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.bordered)
+      .controlSize(.small)
+      .padding(8)
+      .accessibilityLabel("New thread")
+    }
   }
 
   private var filteredThreads: [ChatThread] {
@@ -158,41 +142,42 @@ struct ThreadRail: View {
     ThreadSection.railGroups(filteredThreads)
   }
 
-  // MARK: Selection (pointer, keyboard, Accessibility)
+  // MARK: - Selection (pointer, keyboard, Accessibility)
 
-  /// One selection path for a pointer click, the row's Accessibility
-  /// activation and the keyboard. A row being renamed is not re-selected so
-  /// the click that commits the rename cannot also switch threads.
-  private func select(_ thread: ChatThread) {
-    guard editingThreadID != thread.id else { return }
-    store.select(thread.id)
+  private func select(_ id: UUID) {
+    guard editingThreadID != id else { return }
+    store.select(id)
+    if selectedThreadID != id {
+      selectedThreadID = id
+    }
   }
 
-  private func activateFocused(_ thread: ChatThread) -> KeyPress.Result {
-    guard focusedThreadID == thread.id else { return .ignored }
-    select(thread)
-    return .handled
+  private func handleSearchCommit() {
+    if selectedThreadID == nil {
+      if let first = sectionedThreads.flatMap(\.threads).first {
+        select(first.id)
+      }
+    }
+    store.requestComposerFocus()
   }
 
-  /// Arrow keys walk the visible rail order and open the neighbouring thread,
-  /// like a native source list; focus follows so the next arrow continues.
-  private func moveFocus(
-    from thread: ChatThread, step: Int, proxy: ScrollViewProxy
-  ) -> KeyPress.Result {
-    guard focusedThreadID == thread.id else { return .ignored }
+  private func handleSearchCancel() {
+    store.requestComposerFocus()
+  }
+
+  private func handleSearchMoveDown() {
     let ordered = sectionedThreads.flatMap(\.threads)
-    guard
-      let next = ThreadRailNavigation.adjacentThread(
-        from: thread.id, in: ordered, step: step)
-    else { return .handled }
-    select(next)
-    proxy.scrollTo(next.id)
-    // A lazily built row has to exist before focus can land on it.
-    DispatchQueue.main.async { focusedThreadID = next.id }
-    return .handled
+    guard !ordered.isEmpty else { return }
+    if let current = selectedThreadID,
+      let next = ThreadRailNavigation.adjacentThread(from: current, in: ordered, step: 1)
+    {
+      select(next.id)
+    } else if let first = ordered.first {
+      select(first.id)
+    }
   }
 
-  // MARK: Rename (inline edit)
+  // MARK: - Rename (inline edit)
 
   private func beginRename(_ thread: ChatThread) {
     guard editingThreadID != thread.id else { return }
@@ -200,8 +185,6 @@ struct ThreadRail: View {
     editingThreadID = thread.id
   }
 
-  /// Persist the typed title. Clearing `editingThreadID` first makes any
-  /// trailing focus-loss commit a no-op (see ThreadRow's blur handling).
   private func commitRename(_ thread: ChatThread) {
     guard editingThreadID == thread.id else { return }
     let value = renameDraft
@@ -212,6 +195,18 @@ struct ThreadRail: View {
   private func cancelRename(_ thread: ChatThread) {
     guard editingThreadID == thread.id else { return }
     editingThreadID = nil
+  }
+
+  // MARK: - Copy and Export
+
+  private func copyTitle(_ thread: ChatThread) {
+    let title = ThreadRowTitle.displayTitle(for: thread)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(title, forType: .string)
+  }
+
+  private func exportMarkdown(_ thread: ChatThread) {
+    _ = store.exportMarkdown(thread, assistantOnly: false)
   }
 }
 
@@ -236,7 +231,6 @@ enum ThreadRowTitle {
       calendar: calendar
     )
   }
-
 }
 
 private struct ThreadRailWidthPreference: PreferenceKey {
@@ -246,88 +240,59 @@ private struct ThreadRailWidthPreference: PreferenceKey {
   }
 }
 
-/// One history row. To Accessibility it is a single button labelled with the
-/// thread title, carrying the selected state and an activation that opens the
-/// thread; Rename, Favorite and Delete are its named actions. The row is also
-/// a keyboard focus target (ThreadRail owns the key handling). While the title
-/// is being renamed the row exposes its children instead, so the text field
-/// stays reachable.
+/// One history row presented in the native sidebar List.
+///
+/// System selection, hover, and focus are owned by the enclosing List.
+/// Two-line readable row with normal system UI typography and secondary metadata.
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
   let isEditing: Bool
   @Binding var renameDraft: String
-  let focus: FocusState<UUID?>.Binding
   let onSelect: () -> Void
   let onToggleFavorite: () -> Void
   let onRequestDelete: () -> Void
   let onBeginRename: () -> Void
   let onCommitRename: () -> Void
   let onCancelRename: () -> Void
+  let onCopyTitle: () -> Void
+  let onExportMarkdown: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
-  @Environment(\.colorSchemeContrast) private var contrast
 
-  private var isRowFocused: Bool { focus.wrappedValue == thread.id }
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
-  private var increaseContrast: Bool { contrast == .increased }
 
   var body: some View {
     rowContent(measuring: false)
       .background {
-        // Measure the same fonts, symbols, metadata and spacing before truncation.
-        // The probe never contains a rename field or participates in interaction.
         rowContent(measuring: true)
           .fixedSize(horizontal: true, vertical: true)
           .hidden()
           .allowsHitTesting(false)
           .accessibilityHidden(true)
           .background {
-            // Publish the probe's width straight from layout. Relaying it
-            // through @State needed a second render pass to move the new
-            // width into the preference; when nothing else invalidated the
-            // row, that pass never came and the rail cap stayed stale.
             GeometryReader { probe in
               Color.clear.preference(
                 key: ThreadRailWidthPreference.self,
-                // Row padding: 12pt per side; rail list padding: 10pt per side.
-                value: probe.size.width + 2 * 12 + 2 * 10)
+                value: probe.size.width + 44)
             }
           }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 12)
-      // Two-line rail rows stay list-dense. 11pt of vertical padding plus the
-      // title and meta was reading as a stack of cards.
-      .padding(.vertical, 7)
-      .background(
-        isActive
-          ? Color(nsColor: .selectedContentBackgroundColor)
-            .opacity(AgentSidebarSelection.fillOpacity(increaseContrast: increaseContrast))
-          : Color.clear
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .strokeBorder(
-            isActive ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear,
-            lineWidth: isActive
-              ? AgentSidebarSelection.strokeWidth(increaseContrast: increaseContrast) : 0
-          )
-      )
-      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .focusable()
-      .focused(focus, equals: thread.id)
-      .focusEffectDisabled()
-      .overlay {
-        CSFocusOutline(
-          isFocused: isRowFocused || (isEditing && renameFieldFocused), cornerRadius: 10)
-      }
+      .padding(.vertical, 3)
       .contextMenu {
         Button("Rename") {
           onBeginRename()
         }
         Button(favoriteActionTitle) {
           onToggleFavorite()
+        }
+        Button("Copy Title") {
+          onCopyTitle()
+        }
+        if thread.backendId != nil {
+          Button("Export to Markdown") {
+            onExportMarkdown()
+          }
         }
         Divider()
         Button("Delete Thread", role: .destructive) {
@@ -345,12 +310,11 @@ private struct ThreadRow: View {
       .accessibilityAction { onSelect() }
       .accessibilityAction(named: Text("Rename")) { onBeginRename() }
       .accessibilityAction(named: Text(favoriteActionTitle)) { onToggleFavorite() }
+      .accessibilityAction(named: Text("Copy Title")) { onCopyTitle() }
       .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
+      .accessibilityIdentifier("thread-row-\(thread.id.uuidString)")
   }
 
-  /// One copy for this action everywhere it is offered — the rail's context
-  /// menu, the row's Accessibility action and the header's "•••" menu read the
-  /// same words (Founder brief, round 18, 2026-10-10).
   private var favoriteActionTitle: String {
     thread.isFavorite
       ? String(localized: "Remove from favorites")
@@ -364,90 +328,183 @@ private struct ThreadRow: View {
   }
 
   private func rowContent(measuring: Bool) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 7) {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 6) {
         if thread.isMaxConsultation {
           Image(systemName: "sparkles")
-            .font(CSFont.ui(11, .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(Color.secondary)
             .accessibilityLabel("Max consultation")
-        }
-        if isActive {
-          Circle().fill(CSColor.chromeAccent).frame(width: 6, height: 6)
         }
         if isEditing && !measuring {
           TextField("", text: $renameDraft)
             .textFieldStyle(.plain)
-            .font(CSFont.ui(13, .semibold))
-            .foregroundStyle(ChatPalette.nameActive)
+            .font(.system(size: 13, weight: .semibold))
             .focused($renameFieldFocused)
             .onSubmit { onCommitRename() }
             .onExitCommand { onCancelRename() }
             .onAppear { DispatchQueue.main.async { renameFieldFocused = true } }
             .onChange(of: renameFieldFocused) { _, focused in
-              // Click-away commits the typed value; Enter/Esc already
-              // cleared editing, so those paths make this a no-op.
               if !focused, isEditing { onCommitRename() }
             }
         } else {
           if measuring {
             titleLabel
           } else {
-            titleLabel.onTapGesture(count: 2) { onBeginRename() }
+            titleLabel
+              .onTapGesture(count: 2) { onBeginRename() }
           }
         }
         Spacer(minLength: 4)
         if measuring {
           favoriteLabel
         } else {
-          Button(action: onToggleFavorite) { favoriteLabel }
-            .csFocusRing()
-            .opacity(thread.isFavorite || isActive ? 1 : 0.38)
-            .help(favoriteHelp)
-            .accessibilityLabel(favoriteHelp)
+          Button(action: onToggleFavorite) {
+            favoriteLabel
+          }
+          .buttonStyle(.plain)
+          .opacity(thread.isFavorite ? 1 : 0.35)
+          .help(favoriteHelp)
+          .accessibilityLabel(favoriteHelp)
         }
       }
-      HStack(spacing: 6) {
+
+      HStack(spacing: 5) {
+        Text(ThreadRailMeta.timeOnly(from: thread.meta))
+          .lineLimit(1)
+          .font(.caption)
+          .foregroundStyle(Color.secondary)
+
         if let tag = ModelTag.display(for: thread.model) {
+          Text("·")
+            .font(.caption)
+            .foregroundStyle(Color.secondary.opacity(0.6))
           Text(tag)
             .lineLimit(1)
             .truncationMode(.tail)
-            .fixedSize(horizontal: measuring, vertical: false)
-            .font(CSFont.mono(9, .semibold))
-            .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textTertiary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-              (isActive ? CSColor.modeAgent : CSColor.textTertiary).opacity(0.14)
-            )
-            .clipShape(Capsule())
-            .accessibilityLabel("model \(tag)")
+            .font(.caption)
+            .foregroundStyle(Color.secondary)
         }
-        Text(ThreadRailMeta.timeOnly(from: thread.meta))
-          .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(isActive ? Color.secondary : CSColor.textTertiary)
       }
     }
   }
 
   private var titleLabel: some View {
     Text(ThreadRowTitle.displayTitle(for: thread))
-      .font(CSFont.ui(13, isActive ? .semibold : .medium))
-      .foregroundStyle(isActive ? Color.primary : Color.secondary)
+      .font(.system(size: 13, weight: isActive ? .semibold : .regular))
+      .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.85))
       .lineLimit(1)
+      .truncationMode(.tail)
   }
 
   private var favoriteLabel: some View {
-    CSIconView(
-      icon: thread.isFavorite ? .starFill : .star, size: 11, weight: .semibold,
-      color: thread.isFavorite ? CSColor.oliveLight : CSColor.textTertiary
-    )
-    .frame(width: 18, height: 18)
-    .contentShape(Rectangle())
+    Image(systemName: thread.isFavorite ? "star.fill" : "star")
+      .font(.system(size: 11, weight: .medium))
+      .foregroundStyle(Color.secondary)
+      .frame(width: 16, height: 16)
+      .contentShape(Rectangle())
+  }
+}
+
+/// Native macOS search field control wrapping NSSearchField.
+///
+/// Manages live search without modifying bindings during updateNSView.
+/// Releasing Escape clears the search field or dismisses to composer.
+struct NativeThreadSearchField: NSViewRepresentable {
+  @Binding var text: String
+  var prompt: String = "Search threads"
+  var onCommit: (() -> Void)? = nil
+  var onCancel: (() -> Void)? = nil
+  var onMoveDown: (() -> Void)? = nil
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(self)
   }
 
+  func makeNSView(context: Context) -> NSSearchField {
+    let field = NSSearchField()
+    field.placeholderString = prompt
+    field.bezelStyle = .rounded
+    field.controlSize = .small
+    field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+    field.focusRingType = .default
+    field.sendsSearchStringImmediately = true
+    field.sendsWholeSearchString = false
+    field.target = context.coordinator
+    field.action = #selector(Coordinator.searchAction(_:))
+    field.delegate = context.coordinator
+    field.setAccessibilityLabel(prompt)
+    field.setAccessibilityIdentifier("thread-rail-search-field")
+    field.setContentHuggingPriority(.defaultHigh, for: .vertical)
+    field.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
+    return field
+  }
+
+  func updateNSView(_ nsView: NSSearchField, context: Context) {
+    context.coordinator.parent = self
+    if nsView.stringValue != text {
+      nsView.stringValue = text
+    }
+  }
+
+  func sizeThatFits(
+    _ proposal: ProposedViewSize, nsView: NSSearchField, context: Context
+  ) -> CGSize? {
+    let size = nsView.fittingSize
+    let width = proposal.width ?? size.width
+    return CGSize(width: width, height: max(22, size.height))
+  }
+
+  final class Coordinator: NSObject, NSSearchFieldDelegate {
+    var parent: NativeThreadSearchField
+
+    init(_ parent: NativeThreadSearchField) {
+      self.parent = parent
+    }
+
+    @objc func searchAction(_ sender: NSSearchField) {
+      let string = sender.stringValue
+      if parent.text != string {
+        parent.text = string
+      }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+      guard let field = obj.object as? NSSearchField else { return }
+      let string = field.stringValue
+      if parent.text != string {
+        parent.text = string
+      }
+    }
+
+    func control(
+      _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
+    ) -> Bool {
+      if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+        if !parent.text.isEmpty {
+          parent.text = ""
+          if let field = control as? NSSearchField {
+            field.stringValue = ""
+          }
+          return true
+        } else {
+          parent.onCancel?()
+          return false
+        }
+      }
+      if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+        parent.onCommit?()
+        return true
+      }
+      if commandSelector == #selector(NSResponder.moveDown(_:)) {
+        if let onMoveDown = parent.onMoveDown {
+          onMoveDown()
+          return true
+        }
+      }
+      return false
+    }
+  }
 }
 
 // MARK: - Keyboard navigation (pure, unit-testable)
@@ -696,7 +753,7 @@ enum AgentSidebarSelection {
 
 /// System sidebar glass. Reduce Transparency falls back to an opaque
 /// content background that still sits inside the window.
-private struct AgentSidebarMaterial: NSViewRepresentable {
+struct AgentSidebarMaterial: NSViewRepresentable {
   var reduceTransparency: Bool
   var increaseContrast: Bool
 
