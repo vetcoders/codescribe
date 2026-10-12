@@ -7955,7 +7955,7 @@ public func FfiConverterTypeCsTrayStatusListener_lower(_ value: CsTrayStatusList
 
 
 /**
- * Progress callbacks for Settings Whisper download (large, multi-file).
+ * Progress and control callbacks for the Whisper download (large, multi-file).
  * `bytes_total` is `-1` when the server did not send Content-Length.
  */
 public protocol CsWhisperDownloadListener: AnyObject, Sendable {
@@ -7971,9 +7971,16 @@ public protocol CsWhisperDownloadListener: AnyObject, Sendable {
      */
     func onComplete(path: String)
 
+    /**
+     * Polled during the transfer: `true` stops it and clears the partial file.
+     * The answer belongs to this generation, so a stopped download can never
+     * cancel the one started after it.
+     */
+    func isCancelled()  -> Bool
+
 }
 /**
- * Progress callbacks for Settings Whisper download (large, multi-file).
+ * Progress and control callbacks for the Whisper download (large, multi-file).
  * `bytes_total` is `-1` when the server did not send Content-Length.
  */
 open class CsWhisperDownloadListenerImpl: CsWhisperDownloadListener, @unchecked Sendable {
@@ -8047,6 +8054,19 @@ open func onComplete(path: String)  {try! rustCall() {
         FfiConverterString.lower(path),$0
     )
 }
+}
+
+    /**
+     * Polled during the transfer: `true` stops it and clears the partial file.
+     * The answer belongs to this generation, so a stopped download can never
+     * cancel the one started after it.
+     */
+open func isCancelled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_is_cancelled(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
 
@@ -8124,6 +8144,28 @@ fileprivate struct UniffiCallbackInterfaceCsWhisperDownloadListener {
 
 
             let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        isCancelled: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterTypeCsWhisperDownloadListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.isCancelled(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -15634,16 +15676,24 @@ public struct CsWhisperModelStatus: Equatable, Hashable {
     public var available: Bool
     public var embedded: Bool
     public var path: String?
+    /**
+     * Directory a download writes into, for display (`~` for the home prefix).
+     */
+    public var modelsDir: String
     public var modelId: String
     public var repo: String
     public var sizeHint: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(available: Bool, embedded: Bool, path: String?, modelId: String, repo: String, sizeHint: String) {
+    public init(available: Bool, embedded: Bool, path: String?,
+        /**
+         * Directory a download writes into, for display (`~` for the home prefix).
+         */modelsDir: String, modelId: String, repo: String, sizeHint: String) {
         self.available = available
         self.embedded = embedded
         self.path = path
+        self.modelsDir = modelsDir
         self.modelId = modelId
         self.repo = repo
         self.sizeHint = sizeHint
@@ -15666,6 +15716,7 @@ public struct FfiConverterTypeCsWhisperModelStatus: FfiConverterRustBuffer {
                 available: FfiConverterBool.read(from: &buf),
                 embedded: FfiConverterBool.read(from: &buf),
                 path: FfiConverterOptionString.read(from: &buf),
+                modelsDir: FfiConverterString.read(from: &buf),
                 modelId: FfiConverterString.read(from: &buf),
                 repo: FfiConverterString.read(from: &buf),
                 sizeHint: FfiConverterString.read(from: &buf)
@@ -15676,6 +15727,7 @@ public struct FfiConverterTypeCsWhisperModelStatus: FfiConverterRustBuffer {
         FfiConverterBool.write(value.available, into: &buf)
         FfiConverterBool.write(value.embedded, into: &buf)
         FfiConverterOptionString.write(value.path, into: &buf)
+        FfiConverterString.write(value.modelsDir, into: &buf)
         FfiConverterString.write(value.modelId, into: &buf)
         FfiConverterString.write(value.repo, into: &buf)
         FfiConverterString.write(value.sizeHint, into: &buf)
@@ -19980,6 +20032,10 @@ public func currentServingVerdict() -> CsLastServingVerdict?  {
 }
 /**
  * Download the default Whisper model (idempotent if already complete).
+ *
+ * The listener both reports progress and answers whether the transfer should
+ * stop; a cancelled download fails with the core cancellation message and
+ * leaves no partial file behind.
  */
 public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async throws  -> CsWhisperModelStatus  {
     return
@@ -20328,7 +20384,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 38859) {
+    if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 26167) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
@@ -21022,6 +21078,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 46072) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_is_cancelled() != 7560) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 40045) {

@@ -502,6 +502,13 @@ typedef void (*UniffiCallbackInterfaceCsWhisperDownloadListenerMethod1)(uint64_t
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_WHISPER_DOWNLOAD_LISTENER_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_WHISPER_DOWNLOAD_LISTENER_METHOD2
+typedef void (*UniffiCallbackInterfaceCsWhisperDownloadListenerMethod2)(uint64_t, int8_t* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CS_AGENT_DELIVERY_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CS_AGENT_DELIVERY_LISTENER
 typedef struct UniffiVTableCallbackInterfaceCsAgentDeliveryListener {
@@ -600,6 +607,7 @@ typedef struct UniffiVTableCallbackInterfaceCsWhisperDownloadListener {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceCsWhisperDownloadListenerMethod0 _Nonnull onProgress;
     UniffiCallbackInterfaceCsWhisperDownloadListenerMethod1 _Nonnull onComplete;
+    UniffiCallbackInterfaceCsWhisperDownloadListenerMethod2 _Nonnull isCancelled;
 } UniffiVTableCallbackInterfaceCsWhisperDownloadListener;
 
 #endif
@@ -1884,6 +1892,11 @@ void uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_progress(uint6
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSWHISPERDOWNLOADLISTENER_ON_COMPLETE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSWHISPERDOWNLOADLISTENER_ON_COMPLETE
 void uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_complete(uint64_t ptr, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSWHISPERDOWNLOADLISTENER_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSWHISPERDOWNLOADLISTENER_IS_CANCELLED
+int8_t uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_is_cancelled(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_AGENT_CONVERSATION_BUS_PATH
@@ -3776,6 +3789,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_prog
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSWHISPERDOWNLOADLISTENER_ON_COMPLETE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSWHISPERDOWNLOADLISTENER_ON_COMPLETE
 uint16_t uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSWHISPERDOWNLOADLISTENER_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSWHISPERDOWNLOADLISTENER_IS_CANCELLED
+uint16_t uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_is_cancelled(void
 
 );
 #endif
