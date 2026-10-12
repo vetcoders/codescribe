@@ -90,8 +90,11 @@ def main() -> int:
             transcript.flush()
             try:
                 events.put(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as error:
+                # Non-JSON stdout (banners, warnings) is evidence, not an
+                # event: it is already in the transcript, mark it and go on.
+                transcript.write(f"[plugin-live] non-json stdout line skipped: {error}\n")
+                transcript.flush()
         events.put(None)
 
     threading.Thread(target=pump, daemon=True).start()
