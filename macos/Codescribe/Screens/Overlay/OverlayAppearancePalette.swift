@@ -15,6 +15,9 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let processingStatus: OverlayColorToken
   let successStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
+  /// The assistive violet (voice routed to an agent), raised for contrast on
+  /// either canvas; the Agents control's hover hue.
+  let agentAccent: OverlayColorToken
   /// A6 uncertain-word text. Distinct from `processingStatus` (engine
   /// completeness warnings) and from the app-wide `modeProcessing` orange:
   /// this role means "the engine was unsure of THIS word", nothing else.
@@ -36,6 +39,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     processingStatus: OverlayColorToken(0x8A5B00),
     successStatus: OverlayColorToken(0x4D5E2D),
     errorStatus: OverlayColorToken(0xA2302B),
+    agentAccent: OverlayColorToken(0x6F3FD8),
     uncertainWord: OverlayColorToken(0x96450A),
     lexiconMarker: OverlayColorToken(0x31587A),
     shadowOpacity: 0.16
@@ -52,6 +56,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     processingStatus: OverlayColorToken(0xE2BE5B),
     successStatus: OverlayColorToken(0xB5C98D),
     errorStatus: OverlayColorToken(0xFFAAA5),
+    agentAccent: OverlayColorToken(0xC9B7FF),
     uncertainWord: OverlayColorToken(0xF09A4E),
     lexiconMarker: OverlayColorToken(0x9FC2E8),
     shadowOpacity: 0.20

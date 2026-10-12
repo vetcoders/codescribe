@@ -436,7 +436,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(copy.sentence.contains("or prove that a recovery pass is running"))
   }
 
-  /// The header icon's tooltip and VoiceOver label are the same sentence.
+  /// The header icon's hint and VoiceOver value are the same sentence.
   func testHeaderWarningIconCarriesTheSentenceAsTooltip() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -444,7 +444,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains(".help(transcriptPreviewHelp)"))
+    XCTAssertTrue(source.contains("title: transcriptPreviewHelp, accent: .transcription"))
     XCTAssertTrue(
       source.contains(".accessibilityValue(transcriptPreviewHelp)"))
     XCTAssertTrue(source.contains("OverlayWarningCopy.liveTranscriptBehind.sentence"))

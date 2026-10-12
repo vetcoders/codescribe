@@ -134,16 +134,31 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
-/// Compact recording glyph for the widget header; capture stays with its owner.
+/// Compact circular glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
-  let symbol: String
+  private let mark: Mark
   let tint: Color
   static let diameter: CGFloat = 22
 
+  private enum Mark {
+    case symbol(String)
+    /// One text sign (`OverlayHeaderGlyph`), sized to sit like the symbols.
+    case character(String, pointSize: CGFloat)
+  }
+
+  init(symbol: String, tint: Color) {
+    mark = .symbol(symbol)
+    self.tint = tint
+  }
+
+  init(character: String, tint: Color) {
+    mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
+    self.tint = tint
+  }
+
   var body: some View {
-    Image(systemName: symbol)
-      .font(.system(size: 9, weight: .semibold))
+    markView
       .foregroundStyle(tint)
       .frame(width: Self.diameter, height: Self.diameter)
       .background { Circle().fill(tint.opacity(0.12)) }
@@ -152,6 +167,43 @@ struct OverlayMicrophoneGlyph: View {
           .strokeBorder(tint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
           .accessibilityHidden(true)
       }
+  }
+
+  @ViewBuilder
+  private var markView: some View {
+    switch mark {
+    case .symbol(let symbol):
+      Image(systemName: symbol)
+        .font(.system(size: 9, weight: .semibold))
+    case .character(let character, let pointSize):
+      Text(verbatim: character)
+        .font(.system(size: pointSize))
+        .fixedSize()
+    }
+  }
+}
+
+/// The drawer's clickable rows answer the pointer the way the tray's rows do:
+/// a faint wash under the row, lighter than the selected row's, and never a
+/// layout change. `outset` lets a row without its own padding keep its text
+/// clear of the wash's edge.
+struct OverlayRowHoverHighlight: ViewModifier {
+  let palette: OverlayAppearancePalette
+  var cornerRadius: CGFloat = 9
+  var outset: CGFloat = 0
+  var enabled = true
+  @State private var hovered = false
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        RoundedRectangle(cornerRadius: cornerRadius)
+          .fill(palette.primaryText.color.opacity(hovered && enabled ? 0.06 : 0))
+          .padding(.horizontal, -outset)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+      .onHover { hovered = $0 }
   }
 }
 
@@ -352,7 +404,7 @@ struct OverlayChannelStatusView: View {
 
   var body: some View {
     Button(action: showMonitor) {
-      OverlayMicrophoneGlyph(symbol: "sidebar.right", tint: palette.mutedText.color)
+      OverlayMicrophoneGlyph(character: OverlayHeaderGlyph.agents, tint: palette.mutedText.color)
         .contentShape(Circle())
         .overlay(alignment: .topTrailing) {
           if unreadCounts.values.contains(where: { $0 > 0 }) {
@@ -368,7 +420,10 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .csFocusOutline()
     .fixedSize()
-    .help("Agents")
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: String(localized: "Agents"), accent: .agents, palette: palette)
+    )
     .accessibilityLabel("Agents")
     .accessibilityValue(glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
@@ -415,6 +470,7 @@ struct OverlayChannelStatusView: View {
             in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain).csFocusOutline()
+        .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9))
         .disabled(onShowTranscription == nil)
         .accessibilityIdentifier("overlay-show-transcription")
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
@@ -605,6 +661,11 @@ struct OverlayChannelStatusView: View {
         ? palette.mutedText.color.opacity(0.10) : .clear,
       in: RoundedRectangle(cornerRadius: 10)
     )
+    .modifier(
+      OverlayRowHoverHighlight(
+        palette: palette, cornerRadius: 10,
+        enabled: conversation != nil && onSelectConversation != nil)
+    )
     .help(status)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
@@ -654,6 +715,7 @@ struct OverlayChannelStatusView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9, outset: 6))
     .help("View conversation without changing the microphone")
     .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
   }
