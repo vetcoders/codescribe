@@ -31,12 +31,16 @@ artifact; neither variant requires an unused embedder.
 - [ ] Confirm no recording or agent turn is active using the canonical idle
       guard. Never stop a live take to make a release pass.
 - [ ] Check local Developer ID signing, production license public key and Sparkle
-      public key inputs with `make dist-preflight-signed`. Use the approved
-      credentials under `~/.keys` and the existing Keychain notary profile; do not
-      print private values. See [the signing runbook](RELEASE_SECRETS_RUNBOOK.md).
-- [ ] Run `make release-standard` through the interactive release shell with the
-      selected `NOTARY_PROFILE`. At most one production release run per day;
-      preserve its log and exact artifact receipt. An ad-hoc source install is
+      public key inputs with `make dist-preflight-signed`. Prove signing-key and
+      named-profile access in the native GUI context described by
+      [the local signing runbook](RELEASE_SECRETS_RUNBOOK.md#local-standard-dmg-credentials-and-execution-context).
+      Reuse approved credentials; never print private values.
+- [ ] Freeze the final full source SHA after all code and documentation commits.
+      Run `make release-standard` through that native release session with the
+      selected `NOTARY_PROFILE`; keep the session unlocked and connected until
+      the complete target finishes. At most one production release run per day;
+      preserve the execution log, exact DMG/checksum and Apple UUID/info/log.
+      The internal invocation receipt is temporary. An ad-hoc source install is
       not a distribution artifact.
 - [ ] Verify Developer ID signature, Apple notarization acceptance, stapling,
       Gatekeeper and the fail-closed payload gate:
