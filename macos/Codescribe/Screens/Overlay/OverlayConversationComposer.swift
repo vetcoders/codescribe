@@ -10,6 +10,7 @@ struct OverlayConversationComposer: View {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var onFocusChange: ((Bool) -> Void)? = nil
   var placeholder = String(localized: "Message the Agent")
   var clipboard: NSPasteboard = .general
   var saveImage: (Data) throws -> URL = { data in
@@ -20,10 +21,19 @@ struct OverlayConversationComposer: View {
   }
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
+  @State private var isEditorFocused = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      composerContent.modifier(OverlayControlGlass())
+      composerContent
+        .modifier(OverlayControlGlass())
+        .overlay {
+          CSFocusOutline(
+            isFocused: isEditorFocused,
+            cornerRadius: CSRadius.pill,
+            color: CSColor.terracotta
+          )
+        }
       if let pasteError {
         Text(verbatim: pasteError)
           .font(.system(size: 10 * textScale))
@@ -41,6 +51,10 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
+        onFocusChange: { active in
+          isEditorFocused = active
+          onFocusChange?(active)
+        },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 }
       )
@@ -84,6 +98,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var onFocusChange: (Bool) -> Void = { _ in }
   let clipboard: NSPasteboard
   let saveImage: (Data) throws -> URL
   let saveFile: (Data, String) throws -> URL
@@ -117,6 +132,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
     editor.setAccessibilityLabel(placeholder)
+    editor.onFocusChange = { [weak coordinator = context.coordinator] in
+      coordinator?.noteFocusChange($0)
+    }
     scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
@@ -142,6 +160,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.submit = { context.coordinator.submit($0) }
     editor.onEditorActive = { context.coordinator.noteEditorActive($0) }
     editor.onTypingActivity = { context.coordinator.noteTyping() }
+    editor.onFocusChange = { [weak coordinator = context.coordinator] in
+      coordinator?.noteFocusChange($0)
+    }
     editor.pastedText = {
       try ConversationClipboardAttachment.text(
         from: clipboard, saveImage: saveImage, saveFile: saveFile)
@@ -191,6 +212,10 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     func textViewDidChangeSelection(_ notification: Notification) {
       (notification.object as? MessageTextView)?.revealCaretAfterLayout()
+    }
+
+    func noteFocusChange(_ active: Bool) {
+      parent.onFocusChange(active)
     }
 
     func noteEditorActive(_ active: Bool) {
@@ -253,11 +278,89 @@ private struct ConversationMessageField: NSViewRepresentable {
     var onTypingActivity: () -> Void = {}
     var pastedText: (() throws -> String?)?
     var onPasteError: (String?) -> Void = { _ in }
+    var onFocusChange: ((Bool) -> Void)?
+    private var isFirstResponderActive = false
+    private var isWindowKey = false
+    private var windowObservers: [NSObjectProtocol] = []
 
     func revealCaretAfterLayout() {
       guard let scroll = enclosingScrollView as? MessageScrollView else { return }
       scroll.caretRevealPending = true
       scroll.needsLayout = true
+    }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      rebuildWindowObservers()
+      notifyFocusChange()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+      super.viewWillMove(toWindow: newWindow)
+      if newWindow == nil {
+        isFirstResponderActive = false
+        isWindowKey = false
+        clearWindowObservers()
+        onFocusChange?(false)
+      }
+    }
+
+    deinit {
+      clearWindowObservers()
+    }
+
+    private func clearWindowObservers() {
+      for observer in windowObservers {
+        NotificationCenter.default.removeObserver(observer)
+      }
+      windowObservers.removeAll()
+    }
+
+    private func rebuildWindowObservers() {
+      clearWindowObservers()
+      guard let window else {
+        isWindowKey = false
+        return
+      }
+      isWindowKey = window.isKeyWindow
+      let center = NotificationCenter.default
+      let becomeKey = center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self else { return }
+        self.isWindowKey = true
+        self.notifyFocusChange()
+      }
+      let resignKey = center.addObserver(
+        forName: NSWindow.didResignKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self else { return }
+        self.isWindowKey = false
+        self.notifyFocusChange()
+      }
+      let willClose = center.addObserver(
+        forName: NSWindow.willCloseNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self else { return }
+        self.isWindowKey = false
+        self.notifyFocusChange()
+      }
+      windowObservers = [becomeKey, resignKey, willClose]
+    }
+
+    func notifyFocusChange() {
+      onFocusChange?(isFocusedInKeyWindow)
+    }
+
+    var isFocusedInKeyWindow: Bool {
+      guard let window, isWindowKey else { return false }
+      return isFirstResponderActive || window.firstResponder === self
     }
 
     override func paste(_ sender: Any?) {
@@ -302,13 +405,21 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func becomeFirstResponder() -> Bool {
       let accepted = super.becomeFirstResponder()
-      if accepted { onEditorActive(true) }
+      if accepted {
+        isFirstResponderActive = true
+        onEditorActive(true)
+        notifyFocusChange()
+      }
       return accepted
     }
 
     override func resignFirstResponder() -> Bool {
       let resigned = super.resignFirstResponder()
-      if resigned { onEditorActive(false) }
+      if resigned {
+        isFirstResponderActive = false
+        onEditorActive(false)
+        notifyFocusChange()
+      }
       return resigned
     }
 
@@ -331,6 +442,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
       onEditorActive(true)
       super.mouseDown(with: event)
+      notifyFocusChange()
     }
   }
 }
