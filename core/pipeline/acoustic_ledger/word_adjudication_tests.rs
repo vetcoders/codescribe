@@ -2653,3 +2653,277 @@ fn cloud_word_context_overlap_refusal_keeps_the_unrelated_first_pin() {
     assert!(!ledger.text_recovery_pending(&owner));
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn cloud_word_context_rejects_multi_output_overlap_partitions() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for decode in [(33_000, 225_000), (33_000, 177_000)] {
+        for reverse in [false, true] {
+            let owner = OccurrenceIdentity::new("cloud-multi-overlap-context", 1, 0, 160_000);
+            let mut pcm = vec![0.0; 240_000];
+            pcm[50_000..54_000].fill(0.2);
+            pcm[58_000..63_000].fill(0.2);
+            let mut ledger = measured_ledger(&owner, &pcm);
+            let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &cloud,
+                        &[
+                            WordPin::new(48_000, 64_000, "1286")
+                                .with_decode_window(48_000, 240_000)
+                        ],
+                    )
+                    .grants_mutation()
+            );
+            let before = ledger.slots_of(&owner).unwrap().to_vec();
+            assert!(!ledger.complete_word_slot(&before[0]));
+            assert!(!ledger.coarse_word_source(&before[0]));
+            assert!(context_quality(39_000, 55_000, decode) < BAND_RIGHTS_FLOOR);
+            let mut pins = vec![
+                WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
+                WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
+            ];
+            if reverse {
+                pins.reverse();
+            }
+            let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+            let receipt = ledger.admit_word_slots(&whisper, &pins);
+            assert!(
+                !receipt.grants_mutation(),
+                "decode={decode:?}, reverse={reverse}: {receipt:?}"
+            );
+            assert_eq!(ledger.text_of(&owner), Some("1286"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+            assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                alternative.observation == whisper
+                    && alternative.candidate == "pięć sześć"
+                    && alternative.reason == "outside_publication_band"
+            }));
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+}
+
+#[test]
+fn cloud_word_context_allows_multi_output_overlap_partition_at_floor() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for reverse in [false, true] {
+        let owner = OccurrenceIdentity::new("cloud-multi-overlap-context-floor", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 240_000];
+        pcm[50_000..54_000].fill(0.2);
+        pcm[58_000..63_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 240_000)],
+                )
+                .grants_mutation()
+        );
+        let decode = (15_000, 159_000);
+        assert_eq!(context_quality(39_000, 55_000, decode), BAND_RIGHTS_FLOOR);
+        assert!(context_quality(57_000, 73_000, decode) > BAND_RIGHTS_FLOOR);
+        let mut pins = vec![
+            WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
+            WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
+        ];
+        if reverse {
+            pins.reverse();
+        }
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let receipt = ledger.admit_word_slots(&whisper, &pins);
+        assert!(receipt.grants_mutation(), "reverse={reverse}: {receipt:?}");
+        assert_eq!(ledger.text_of(&owner), Some("pięć sześć"));
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(
+            (slots[0].sample_start, slots[0].sample_end),
+            (39_000, 55_000)
+        );
+        assert_eq!(
+            (slots[1].sample_start, slots[1].sample_end),
+            (57_000, 73_000)
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_gates_multi_source_overlap_components() {
+    for (decode, accepted) in [((15_000, 159_000), true), ((33_000, 225_000), false)] {
+        let owner = OccurrenceIdentity::new("cloud-multi-source-context", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 240_000];
+        pcm[50_000..54_000].fill(0.2);
+        pcm[58_000..63_000].fill(0.2);
+        pcm[68_000..72_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        for (request, start, end, text) in
+            [(1, 48_000, 64_000, "1286"), (2, 66_000, 82_000, "dalej")]
+        {
+            let cloud =
+                ledger.next_word_observation(ObservationProducer::CloudLive, request, &owner);
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &cloud,
+                        &[WordPin::new(start, end, text).with_decode_window(start, 240_000)],
+                    )
+                    .grants_mutation()
+            );
+        }
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(before.len(), 2);
+        assert!(
+            before
+                .iter()
+                .all(|source| !ledger.complete_word_slot(source))
+        );
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 3, &owner);
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[
+                WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
+                WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
+            ],
+        );
+        assert_eq!(
+            receipt.grants_mutation(),
+            accepted,
+            "decode={decode:?}: {receipt:?}"
+        );
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(if accepted {
+                "pięć sześć"
+            } else {
+                "1286 dalej"
+            })
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        if !accepted {
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+            assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                alternative.observation == whisper
+                    && alternative.candidate == "pięć sześć"
+                    && alternative.reason == "outside_publication_band"
+            }));
+        }
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_partition_refusal_keeps_the_unrelated_first_pin() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    let owner = OccurrenceIdentity::new("cloud-partition-context-mixed", 1, 0, 160_000);
+    let mut pcm = vec![0.0; 240_000];
+    pcm[50_000..54_000].fill(0.2);
+    pcm[58_000..63_000].fill(0.2);
+    pcm[98_000..110_000].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+    assert!(
+        ledger
+            .admit_word_slots(
+                &cloud,
+                &[WordPin::new(48_000, 64_000, "1286").with_decode_window(48_000, 240_000)],
+            )
+            .grants_mutation()
+    );
+    let incumbent = ledger.slots_of(&owner).unwrap()[0].clone();
+    let decode = (33_000, 177_000);
+    assert!(context_quality(39_000, 55_000, decode) < BAND_RIGHTS_FLOOR);
+    assert_eq!(context_quality(57_000, 73_000, decode), BAND_RIGHTS_FLOOR);
+    let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+    let receipt = ledger.admit_word_slots(
+        &whisper,
+        &[
+            WordPin::new(96_000, 112_000, "dalej").with_decode_window(48_000, 192_000),
+            WordPin::new(57_000, 73_000, "sześć").with_decode_window(decode.0, decode.1),
+            WordPin::new(39_000, 55_000, "pięć").with_decode_window(decode.0, decode.1),
+        ],
+    );
+    assert!(
+        receipt.grants_mutation(),
+        "the independent first pin must survive: {receipt:?}"
+    );
+    assert_eq!(ledger.text_of(&owner), Some("1286 dalej"));
+    assert!(ledger.slots_of(&owner).unwrap().contains(&incumbent));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    assert!(ledger.slot_alternatives().iter().any(|alternative| {
+        alternative.observation == whisper
+            && alternative.candidate == "pięć sześć"
+            && alternative.reason == "outside_publication_band"
+    }));
+    assert!(!ledger.text_recovery_pending(&owner));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cloud_word_same_label_overlap_component_keeps_low_context_evidence() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for reverse in [false, true] {
+        let owner = OccurrenceIdentity::new("cloud-same-word-context-mixed", 1, 0, 160_000);
+        let mut pcm = vec![0.0; 240_000];
+        pcm[50_000..54_000].fill(0.2);
+        pcm[58_000..63_000].fill(0.2);
+        pcm[68_000..72_000].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        for (request, start, end, text) in
+            [(1, 48_000, 64_000, "1286"), (2, 66_000, 82_000, "dalej")]
+        {
+            let cloud =
+                ledger.next_word_observation(ObservationProducer::CloudLive, request, &owner);
+            assert!(
+                ledger
+                    .admit_word_slots(
+                        &cloud,
+                        &[WordPin::new(start, end, text).with_decode_window(start, 240_000)],
+                    )
+                    .grants_mutation()
+            );
+        }
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let decode = (33_000, 225_000);
+        let mut pins = vec![
+            WordPin::new(39_000, 55_000, "1286").with_decode_window(decode.0, decode.1),
+            WordPin::new(57_000, 73_000, "dalej").with_decode_window(decode.0, decode.1),
+        ];
+        assert!(
+            before
+                .iter()
+                .all(|source| !ledger.coarse_word_source(source))
+        );
+        assert!(pins.iter().all(|pin| {
+            let projected = WordSlot {
+                sample_start: pin.sample_start,
+                sample_end: pin.sample_end,
+                ..before[0].clone()
+            };
+            context_quality(pin.sample_start, pin.sample_end, decode) < BAND_RIGHTS_FLOOR
+                && before
+                    .iter()
+                    .all(|source| !ledger.pin_targets_source(source, &projected))
+        }));
+        if reverse {
+            pins.reverse();
+        }
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 3, &owner);
+        let receipt = ledger.admit_word_slots(&whisper, &pins);
+        assert!(
+            matches!(receipt, MutationReceipt::Preserve { .. }),
+            "reverse={reverse}: {receipt:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("1286 dalej"));
+        assert!(!ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.observation == whisper && alternative.reason == "outside_publication_band"
+        }));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
