@@ -158,19 +158,6 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     defaults.set(true, forKey: Self.permissionAskedDefaultsKey(self))
   }
 
-  /// Falsifier for Input Monitoring. A fresh profile can report `.denied`
-  /// with no TCC list entry. That observation is unexplained: it is not
-  /// evidence of a macOS 27 semantic change and not evidence that a
-  /// CGEventTap is running. A probe reads `IOHIDCheckAccess` only.
-  /// `IOHIDRequestAccess` runs from an explicit user click, never from this text.
-  static let inputMonitoringProbeInstructions = """
-  IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) maps kIOHIDAccessTypeGranted \
-  to granted, kIOHIDAccessTypeUnknown to notDetermined, and every other value \
-  to denied. A fresh profile can report denied with no Input Monitoring TCC \
-  list entry; that reading is unexplained. A falsifying probe calls \
-  IOHIDCheckAccess only. IOHIDRequestAccess runs only from an explicit user click.
-  """
-
   /// In-app request when `repair(for:)` says one is eligible.
   ///
   /// Defaults keep the real native calls. Tests pass a client and a probe so
@@ -203,7 +190,6 @@ enum PermissionKind: String, CaseIterable, Identifiable {
       if probed == .granted { return .granted }
       return requested ? .granted : probed
     case .inputMonitoring:
-      _ = PermissionKind.inputMonitoringProbeInstructions
       let requested = client.requestInputMonitoring()
       let probed = probe.snapshot().inputMonitoring
       if probed == .granted { return .granted }
