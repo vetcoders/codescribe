@@ -57,23 +57,13 @@ pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
 /// Drop a transient recording badge through the hold-badge lifecycle and
 /// return a refused or failed start to an idle tray.
 ///
-/// A live take owns `Listening` and `Thinking`. Settlement does not hide that
-/// badge or rewrite that status. `Error` and `Starting` left behind by a start
-/// that never became a recording return to `Idle`. The refusal explanation
-/// stays on the presentation event; this function does not clear it.
-/// Visibility is the badge panel itself. There is no second published flag.
+/// Called only after the controller has refused or unwound its own start.
+/// The controller owns capture; a stale Listening/Thinking tray projection
+/// cannot veto that settlement. A competing live start returns before here.
+/// The refusal explanation stays on its presentation event.
 pub fn settle_failed_start_chrome() {
-    let status = tray_status::current_tray_status();
-    if matches!(status, tray_status::TrayStatus::Listening | tray_status::TrayStatus::Thinking) {
-        return;
-    }
     hide_hold_badge();
-    if matches!(
-        status,
-        tray_status::TrayStatus::Error | tray_status::TrayStatus::Starting
-    ) {
-        tray_status::update_tray_status(tray_status::TrayStatus::Idle);
-    }
+    tray_status::update_tray_status(tray_status::TrayStatus::Idle);
 }
 
 /// Check if current session is assistive mode

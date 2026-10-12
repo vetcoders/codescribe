@@ -369,7 +369,8 @@ private struct RecognitionLanguageRow: View {
       .labelsHidden()
       .fixedSize()
       .accessibilityLabel(
-        String(localized: "Speech recognition language", comment: "Settings row: dictation language")
+        String(
+          localized: "Speech recognition language", comment: "Settings row: dictation language")
       )
       .accessibilityIdentifier("settings-recognition-language")
     }
@@ -490,7 +491,6 @@ private struct PermissionChecklistRow: View {
         let repair = kind.repair(for: state)
         if repair.requestsNatively {
           Button {
-            kind.notePermissionAsked()
             Task { @MainActor in
               _ = await kind.requestInApp()
               onStateChanged?()

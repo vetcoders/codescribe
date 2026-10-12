@@ -71,10 +71,18 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     displayName(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
   }
 
-  func displayName(locale: Locale) -> String {
+  func displayName(
+    locale: Locale,
+    osMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+  ) -> String {
     switch self {
     case .microphone: String(localized: LocalizedStringResource("Microphone", locale: locale))
-    case .accessibility: String(localized: LocalizedStringResource("Accessibility", locale: locale))
+    case .accessibility:
+      if osMajorVersion >= 27 {
+        String(localized: LocalizedStringResource("Device Control and Data Access", locale: locale))
+      } else {
+        String(localized: LocalizedStringResource("Accessibility", locale: locale))
+      }
     case .inputMonitoring:
       String(localized: LocalizedStringResource("Input Monitoring", locale: locale))
     case .screenRecording:
@@ -113,25 +121,10 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     NSWorkspace.shared.open(privacySettingsURL)
   }
 
-  /// Whether this scope has a native in-process request API.
-  ///
-  /// This is not eligibility. Screen Recording preflight and Accessibility
-  /// trust are booleans, so `.denied` also means "not asked". Call
-  /// `repair(for:)`. Microphone and Speech Recognition stay requestable only
-  /// while `.notDetermined`. Full Disk Access has no in-app prompt.
-  var supportsInAppPermissionRequest: Bool {
-    switch self {
-    case .microphone, .speechRecognition, .screenRecording, .inputMonitoring, .accessibility:
-      return true
-    case .fullDiskAccess:
-      return false
-    }
-  }
-
   /// What a click may do for this observed state.
   ///
-  /// The local asked marker is UX history. It is not read here and it is not
-  /// proof of TCC after a reset. Observed authorization stays on the probe.
+  /// A local history marker cannot prove TCC state after a reset. Observed
+  /// authorization stays on the probe; eligibility does not depend on history.
   func repair(for observed: PermissionState) -> PermissionRepair {
     guard !observed.isGranted else {
       return PermissionRepair(requestsNatively: false, opensSettings: false)
@@ -147,15 +140,6 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     case .fullDiskAccess:
       return PermissionRepair(requestsNatively: false, opensSettings: true)
     }
-  }
-
-  /// UserDefaults key for "the user clicked request". History only.
-  static func permissionAskedDefaultsKey(_ kind: PermissionKind) -> String {
-    "codescribe.permission.asked.\(kind.rawValue)"
-  }
-
-  func notePermissionAsked(defaults: UserDefaults = .standard) {
-    defaults.set(true, forKey: Self.permissionAskedDefaultsKey(self))
   }
 
   /// In-app request when `repair(for:)` says one is eligible.
@@ -275,8 +259,9 @@ struct NativePermissionRequestClient: PermissionRequesting, Sendable {
   }
 
   func requestAccessibilityPrompt() -> Bool {
-    let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-    let options = [promptKey: true] as CFDictionary
+    // This is the public AX options dictionary key. The SDK exports the
+    // equivalent kAXTrustedCheckOptionPrompt as an unannotated mutable global.
+    let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
     return AXIsProcessTrustedWithOptions(options)
   }
 

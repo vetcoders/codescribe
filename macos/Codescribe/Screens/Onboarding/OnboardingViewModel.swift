@@ -622,7 +622,6 @@ final class OnboardingViewModel: ObservableObject {
       }
       return
     }
-    kind.notePermissionAsked()
     let permissionProbe = probe
     Task { @MainActor [weak self] in
       _ = await kind.requestInApp(client: client, probe: permissionProbe)
