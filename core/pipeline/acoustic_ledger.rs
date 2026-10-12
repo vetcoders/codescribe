@@ -1497,16 +1497,19 @@ impl AcousticLedger {
                     no_speech_refused.push(pin.clone());
                     continue;
                 }
-                incoming.push(WordSlot {
-                    sample_start: pin.sample_start.max(owner.sample_start),
-                    sample_end: pin.sample_end.min(owner.sample_end),
-                    text: pin.text.clone(),
-                    producer: observation.producer,
-                    observation: observation.clone(),
-                    witness: SlotWitness::Unwitnessed,
-                    confidence: pin.confidence,
-                    surface_rewritten: pin.surface_rewritten,
-                });
+                incoming.push((
+                    WordSlot {
+                        sample_start: pin.sample_start.max(owner.sample_start),
+                        sample_end: pin.sample_end.min(owner.sample_end),
+                        text: pin.text.clone(),
+                        producer: observation.producer,
+                        observation: observation.clone(),
+                        witness: SlotWitness::Unwitnessed,
+                        confidence: pin.confidence,
+                        surface_rewritten: pin.surface_rewritten,
+                    },
+                    pin,
+                ));
             }
         }
         if incoming.is_empty() && !no_speech_refused.is_empty() {
@@ -1554,7 +1557,7 @@ impl AcousticLedger {
         // ClockLie constrains replacements, never new words over empty audio.
         // Filter before geometric operations so blocked sources stay held.
         if observation.producer != ObservationProducer::ManualHuman {
-            incoming.retain(|word| {
+            incoming.retain(|(word, _)| {
                 let sources = slots
                     .iter()
                     .filter(|source| {
@@ -1597,9 +1600,11 @@ impl AcousticLedger {
         // Resegmentation runs before ordinary per-word correction and may consume a
         // one-to-one window refinement. Enforce the CloudLive -> Whisper
         // context boundary here so an incomplete exact source cannot bypass
-        // the direct-correction guard by entering that earlier path.
+        // the direct-correction guard by entering that earlier path. Keep each
+        // original pin paired with its projection: owner clipping cannot
+        // improve the decoder's measured context quality.
         if observation.producer == ObservationProducer::Whisper {
-            incoming.retain(|word| {
+            incoming.retain(|(word, pin)| {
                 let direct_sources = slots
                     .iter()
                     .filter(|source| {
@@ -1618,8 +1623,8 @@ impl AcousticLedger {
                 if word_adjudication::label_equal(&source.text, &word.text)
                     || self.whisper_has_correction_context(
                         observation,
-                        word.sample_start,
-                        word.sample_end,
+                        pin.sample_start,
+                        pin.sample_end,
                     )
                 {
                     return true;
@@ -1634,6 +1639,10 @@ impl AcousticLedger {
                 false
             });
         }
+        let mut incoming = incoming
+            .into_iter()
+            .map(|(word, _)| word)
+            .collect::<Vec<_>>();
         let (mut resegments, proposed_coverages) =
             self.resegment_word_slots(observation, &mut slots, &mut incoming);
         let mut removed = resegments

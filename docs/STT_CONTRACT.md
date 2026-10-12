@@ -50,7 +50,9 @@ Apple/Whisper adjudication pair, so it must independently meet the same measured
 decode-context floor before Whisper's higher producer rank may replace the
 label. The direct word-grain check runs before resegmentation as well as
 ordinary admission, including incomplete incumbents; coarse phrase partitions
-retain their own existing authority. Missing decode bounds grant no direct word
+retain their own existing authority. Context quality uses the decoder's original
+word span before owner clipping; a smaller projected slot cannot improve it.
+Missing decode bounds grant no direct word
 correction authority. Same-label evidence, first placement, and ManualHuman
 protection retain their existing admission paths; this rule creates no replay,
 sweep, or additional recovery debt.
