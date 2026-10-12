@@ -165,9 +165,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertTrue(dark === light, "Palette update must preserve native material identity")
     XCTAssertEqual(light.appearance?.name, .aqua)
     if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
-      XCTAssertEqual(
-        glass.tintColor,
-        OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.72))
+      XCTAssertNil(glass.tintColor, "Shared glass must retain its native, untinted appearance")
     }
     host.rootView = OverlayCanvasBackdrop(
       palette: .light, reduceTransparency: false, increasedContrast: true)
