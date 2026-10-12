@@ -4161,6 +4161,7 @@
       }
     },
     "Checking license…" : {
+      "comment" : "Settings health footer, sentence case",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8497,6 +8498,7 @@
       }
     },
     "License verification unavailable" : {
+      "comment" : "Settings health footer, sentence case",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17764,7 +17766,7 @@
       }
     },
     "Yesterday" : {
-      "comment" : "Thread rail section",
+      "comment" : "Message sent yesterday\nThread rail section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
