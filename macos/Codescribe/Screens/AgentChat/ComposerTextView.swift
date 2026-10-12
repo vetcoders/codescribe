@@ -449,8 +449,8 @@ private final class ComposerNativeTextView: NSTextView {
   }
 
   var isFocusedInKeyWindow: Bool {
-    guard let window, isWindowKey else { return false }
-    return isFirstResponderActive || window.firstResponder === self
+    guard isWindowKey, window != nil else { return false }
+    return isFirstResponderActive
   }
 
   override func becomeFirstResponder() -> Bool {

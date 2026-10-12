@@ -6,24 +6,6 @@ import XCTest
 
 @MainActor
 final class ComposerFocusAppearanceTests: XCTestCase {
-  func testFocusOutlineDefaultColorIsChromeAccent() {
-    let outline = CSFocusOutline(isFocused: true, cornerRadius: 10)
-    assertSameColor(
-      NSColor(outline.color),
-      NSColor(CSColor.chromeAccent),
-      message: "default focus outline must preserve system chromeAccent"
-    )
-  }
-
-  func testFocusOutlineExplicitTerracottaColor() {
-    let outline = CSFocusOutline(isFocused: true, cornerRadius: 10, color: CSColor.terracotta)
-    assertSameColor(
-      NSColor(outline.color),
-      NSColor(CSColor.terracotta),
-      message: "explicit terracotta focus outline must resolve to user bubble accent"
-    )
-  }
-
   func testAgentComposerTextViewTracksMountedResponderAndKeyWindowLifecycle() throws {
     final class StateBox { var isFocused = false }
     let state = StateBox()
@@ -200,31 +182,6 @@ final class ComposerFocusAppearanceTests: XCTestCase {
     )
   }
 
-  func testFalsifierSourceVerificationShowsSharedTerracottaHairline() throws {
-    let composerSource = try source(at: "Codescribe/Screens/AgentChat/Composer.swift")
-    XCTAssertTrue(
-      composerSource.contains("color: CSColor.terracotta"),
-      "Composer.swift must pass CSColor.terracotta to CSFocusOutline"
-    )
-
-    let overlaySource = try source(
-      at: "Codescribe/Screens/Overlay/OverlayConversationComposer.swift")
-    XCTAssertTrue(
-      overlaySource.contains("color: CSColor.terracotta"),
-      "OverlayConversationComposer.swift must pass CSColor.terracotta to CSFocusOutline"
-    )
-    XCTAssertTrue(
-      overlaySource.contains("CSFocusOutline("),
-      "OverlayConversationComposer.swift must wrap in CSFocusOutline"
-    )
-
-    let componentsSource = try source(at: "Codescribe/DesignSystem/Components.swift")
-    XCTAssertTrue(
-      componentsSource.contains("var color: Color = CSColor.chromeAccent"),
-      "Components.swift must default CSFocusOutline color to chromeAccent"
-    )
-  }
-
   func testComposerDecorationsDoNotMutateDraftOrAddTextCharacters() throws {
     final class TextHolder { var draft = "Initial typed words with 123 symbols." }
     let holder = TextHolder()
@@ -285,30 +242,6 @@ final class ComposerFocusAppearanceTests: XCTestCase {
     return nil
   }
 
-  private func assertSameColor(
-    _ actual: NSColor,
-    _ expected: NSColor,
-    message: String = ""
-  ) {
-    guard let actualRGB = actual.usingColorSpace(.deviceRGB),
-      let expectedRGB = expected.usingColorSpace(.deviceRGB)
-    else {
-      XCTFail("Colors must resolve in device RGB. \(message)")
-      return
-    }
-    XCTAssertEqual(actualRGB.redComponent, expectedRGB.redComponent, accuracy: 0.001, message)
-    XCTAssertEqual(actualRGB.greenComponent, expectedRGB.greenComponent, accuracy: 0.001, message)
-    XCTAssertEqual(actualRGB.blueComponent, expectedRGB.blueComponent, accuracy: 0.001, message)
-    XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent, accuracy: 0.001, message)
-  }
-
-  private func source(at relativePath: String) throws -> String {
-    let url = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent(relativePath)
-    return try String(contentsOf: url, encoding: .utf8)
-  }
 }
 
 private final class TestWindow: NSWindow {

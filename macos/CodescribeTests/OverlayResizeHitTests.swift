@@ -310,6 +310,47 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
+  func testMiniBodyClickExpandsButDragAndPointerJitterKeepTheirMeaning() throws {
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.mini)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.miniClick"))
+        as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    panel.setFrameOrigin(NSPoint(x: visible.minX + 100, y: visible.minY + 100))
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    root.layoutSubtreeIfNeeded()
+    let brand = try XCTUnwrap(descendant(identifier: "overlay-mini-brand-drag-region", in: root))
+    let point = brand.convert(NSPoint(x: brand.bounds.midX, y: brand.bounds.midY), to: nil)
+    XCTAssertTrue(panel.isWindowDragHit(at: point))
+    let recording = state.recording
+    let start = panel.frame
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 40, height: 20), eventNumberBase: 9500)
+    XCTAssertEqual(state.presentationMode, .mini, "Dragging must never expand the widget")
+    XCTAssertGreaterThan(panel.frame.minX, start.minX + 30)
+    let parked = panel.frame
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 1, height: 1), eventNumberBase: 9520)
+    XCTAssertEqual(
+      state.presentationMode, .midi, "A body click with normal pointer jitter expands mini")
+    XCTAssertEqual(state.recording, recording, "Expanding never starts or stops capture")
+    XCTAssertEqual(
+      panel.frame.maxX, parked.maxX, accuracy: 1,
+      "Click jitter must not move the parked widget")
+  }
+
+  @MainActor
   func testMiniDragsAtFormerResizeBandAndMidiResizesOnlyHorizontally() throws {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),

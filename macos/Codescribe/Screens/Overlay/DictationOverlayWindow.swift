@@ -16,6 +16,7 @@ import SwiftUI
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
+  var onMiniBodyClick: (() -> Void)?
   var onUserResize: (() -> Void)?
   var onUserResizeEnded: (() -> Void)?
   var onResizePresentationSelected: ((OverlayPresentationMode) -> Void)?
@@ -223,6 +224,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    if event.type == .mouseMoved {
+      for case let region as OverlayMenuCursorRegionView in menuCursorRegions.allObjects {
+        region.updateHover(at: event.locationInWindow)
+      }
+    }
     // The drawer owns cursor motion before overlapping transcript tracking
     // can set an I-beam. Clicks still follow the native controls below.
     if event.type == .mouseMoved || event.type == .cursorUpdate,
@@ -274,7 +280,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
-      let previousOrigin = frame.origin
+      // Pointer jitter belongs to a click. Once the gesture crosses the
+      // threshold it remains a drag, even if it returns to its origin.
+      guard dragMoved || hypot(current.x - dragStart.mouse.x, current.y - dragStart.mouse.y) >= 3
+      else { return }
+      dragMoved = true
       let proposed = NSPoint(
         x: dragStart.frame.minX + current.x - dragStart.mouse.x,
         y: dragStart.frame.minY + current.y - dragStart.mouse.y
@@ -287,8 +297,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       setFrameOrigin(
         visible.map { OverlayPlacement.clampOrigin(proposed, size: frame.size, in: $0) }
           ?? proposed)
-      dragMoved = dragMoved || frame.origin != previousOrigin
     case .leftMouseUp where dragStart != nil:
+      let current = screenPoint(for: event)
+      let clickedMini =
+        !dragMoved && presentationMode == .mini
+        && dragStart.map { hypot(current.x - $0.mouse.x, current.y - $0.mouse.y) < 3 } == true
+        && isWindowDragHit(at: event.locationInWindow)
       let origin = originForPersistence
       let moved = dragMoved
       if moved, presentationMode == .midi {
@@ -297,6 +311,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dragStart = nil
       dragMoved = false
       if moved { onUserDragEnded?(origin) }
+      if clickedMini { onMiniBodyClick?() }
     default:
       if event.type == .leftMouseDown, let contentView {
         var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
@@ -709,6 +724,9 @@ enum DictationOverlayWindow {
     }
     panel.onUserDragEnded = { [weak state] origin in
       state?.recordUserDrag(at: origin)
+    }
+    panel.onMiniBodyClick = { [weak state] in
+      state?.setPresentationMode(.midi)
     }
     panel.onUserResize = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }

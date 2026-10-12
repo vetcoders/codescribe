@@ -125,7 +125,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     let detail = try XCTUnwrap(view.range(of: "} detail: {"))
     let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
-    let toolbar = try XCTUnwrap(view.range(of: ".navigationTitle("))
+    let toolbar = try XCTUnwrap(view.range(of: ".toolbar {"))
     XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
     XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
     XCTAssertTrue(
@@ -263,7 +263,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let panel = try XCTUnwrap(sources["ProvidersPanel.swift"])
     let rows = try XCTUnwrap(sources["KeyRows.swift"])
 
-    let nativeAdvancedCount = panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count - 1
+    let nativeAdvancedCount =
+      panel.components(separatedBy: "DisclosureGroup(\"Advanced\")").count - 1
     let boundProviderAdvancedCount =
       panel.components(separatedBy: "DisclosureGroup(isExpanded: $showingAdvanced)").count - 1
     XCTAssertEqual(nativeAdvancedCount + boundProviderAdvancedCount, 2)
@@ -469,7 +470,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "the description must not claim a boundary around every MCP process")
 
     let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
-    XCTAssertTrue(section.contains("WorkspaceSectionHeader(String(localized: \"Allowed folders\"))"))
+    XCTAssertTrue(
+      section.contains("WorkspaceSectionHeader(String(localized: \"Allowed folders\"))"))
     XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
     XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
     XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
@@ -659,7 +661,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(search.contains("TextField(\"Search tools…\""))
     let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
     XCTAssertTrue(browser.contains("model.clearToolPermission(identity: item.identity)"))
-    XCTAssertTrue(browser.contains("Self.sourceLabel(server: group.server, count: group.items.count)"))
+    XCTAssertTrue(
+      browser.contains("Self.sourceLabel(server: group.server, count: group.items.count)"))
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
@@ -825,9 +828,9 @@ final class SettingsChromeContractTests: XCTestCase {
       tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""))
 
     let view = try XCTUnwrap(sources["SettingsView.swift"])
-    XCTAssertTrue(view.contains(".navigationTitle(Text(\"Settings\"))"))
+    XCTAssertTrue(view.contains("window.title = String(localized: \"Settings\")"))
     XCTAssertFalse(view.contains(".navigationTitle(Text(verbatim: \"\"))"))
-    XCTAssertTrue(view.contains("window?.titleVisibility = .hidden"))
+    XCTAssertTrue(view.contains("window.titleVisibility = .hidden"))
     XCTAssertTrue(view.contains("private func adoptHostWindow(_ window: NSWindow?)"))
 
     let section = try XCTUnwrap(sources["MCPServersSection.swift"])
@@ -1035,7 +1038,8 @@ final class SettingsChromeContractTests: XCTestCase {
     // The one switch that can disarm the recorder's own precondition is a
     // power-user control, and the Lab desk is where it now lives.
     let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
-    XCTAssertTrue(lab.contains("Toggle(\"Committing transcript fragments\", isOn: sealLaneBinding)"))
+    XCTAssertTrue(
+      lab.contains("Toggle(\"Committing transcript fragments\", isOn: sealLaneBinding)"))
     XCTAssertTrue(lab.contains("Text(\"Required before a recording can start.\")"))
   }
 
@@ -1052,8 +1056,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("\"Build \\(model.buildInfo.build)\""))
     XCTAssertTrue(panel.contains("@State private var showingVersionDetails = false"))
     XCTAssertTrue(panel.contains("if showingVersionDetails {"))
-    XCTAssertTrue(panel.contains("detailRow(String(localized: \"Commit\"), model.buildInfo.commit, mono: true)"))
-    XCTAssertTrue(panel.contains("detailRow(String(localized: \"Built\"), readableBuildDate, mono: false)"))
+    XCTAssertTrue(
+      panel.contains("detailRow(String(localized: \"Commit\"), model.buildInfo.commit, mono: true)")
+    )
+    XCTAssertTrue(
+      panel.contains("detailRow(String(localized: \"Built\"), readableBuildDate, mono: false)"))
     XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Running build\"))"))
     XCTAssertFalse(panel.contains("Build timestamp:"), "the raw timestamp is not a second date")
     // The configuration notice stays visible and opens to key, effect and action.
@@ -1062,10 +1069,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("notice.reviewItems(envFile: envFileDisplay)"))
     XCTAssertTrue(panel.contains("Text(verbatim: notice.raw)"))
     XCTAssertTrue(panel.contains("String(localized: \"App data\""))
-    XCTAssertTrue(panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
+    XCTAssertTrue(
+      panel.contains("pathRow(String(localized: \"Transcripts\"), model.transcriptsPath)"))
     XCTAssertTrue(panel.contains("(path as NSString).abbreviatingWithTildeInPath"))
     // No switch that cannot do anything: the opt-in shows only with a live service.
-    XCTAssertTrue(panel.contains("if ActivationPingConfiguration.production.isEnabled {\n        activationPingSection"))
+    XCTAssertTrue(
+      panel.contains(
+        "if ActivationPingConfiguration.production.isEnabled {\n        activationPingSection"))
     XCTAssertTrue(panel.contains("@AppStorage(ActivationPing.optInDefaultsKey)"))
     XCTAssertFalse(panel.contains(".disabled(!availability.serviceEnabled)"))
     // Markers: one switch, the editor closed by default, every tool kept.
@@ -1091,7 +1101,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("Text(\"Reset Agent data\""))
     XCTAssertTrue(panel.contains("Text(\"Reset app data\""))
     XCTAssertFalse(panel.contains("String(localized: \"Danger zone\")"))
-    XCTAssertFalse(panel.contains(".strokeBorder(CSColor.danger.opacity(0.55)"), "no red card borders")
+    XCTAssertFalse(
+      panel.contains(".strokeBorder(CSColor.danger.opacity(0.55)"), "no red card borders")
     XCTAssertTrue(
       panel.contains(
         "\"Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)\""
@@ -1157,7 +1168,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingDiagnostics)"))
     XCTAssertTrue(panel.contains("\"Changes in the transcript\""))
     XCTAssertFalse(panel.contains("Text(\"Changed\""))
-    XCTAssertTrue(panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
+    XCTAssertTrue(
+      panel.contains("stageDiffBlock(stage, index: stageIndex, showTitle: stages.count > 1)"))
     XCTAssertTrue(panel.contains("diffEyebrow(diffSpanKind(span).label)"))
     XCTAssertTrue(panel.contains("fullComparisonLabel("))
     XCTAssertTrue(panel.contains("\"Corrected text\""))

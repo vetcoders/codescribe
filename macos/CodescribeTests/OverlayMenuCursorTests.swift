@@ -5,6 +5,48 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testHoverUsesPanelMotionAndClearsOnNativeExitAndRemoval() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+    panel.contentView = content
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 20, y: 30, width: 200, height: 40))
+    var transitions: [Bool] = []
+    region.onHover = { transitions.append($0) }
+    content.addSubview(region)
+    panel.orderFrontRegardless()
+    content.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    defer { panel.close() }
+    func move(_ point: NSPoint) throws {
+      panel.sendEvent(
+        try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 0, pressure: 0)))
+    }
+    try move(NSPoint(x: 100, y: 50))
+    try move(NSPoint(x: 110, y: 50))
+    XCTAssertEqual(transitions, [true], "Motion inside does not repeat the enter")
+    try move(NSPoint(x: 350, y: 250))
+    XCTAssertEqual(transitions, [true, false])
+    try move(NSPoint(x: 100, y: 50))
+    region.mouseExited(
+      with: try XCTUnwrap(
+        NSEvent.enterExitEvent(
+          with: .mouseExited, location: NSPoint(x: 350, y: 250), modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 2, trackingNumber: 0, userData: nil)))
+    XCTAssertEqual(transitions, [true, false, true, false])
+    try move(NSPoint(x: 100, y: 50))
+    region.removeFromSuperview()
+    XCTAssertEqual(transitions, [true, false, true, false, true, false])
+    XCTAssertTrue(panel.menuCursorRegions.allObjects.isEmpty)
+  }
+
   func testProductionHeaderRegistersItsVisibleControlsWithThePanel() throws {
     let state = OverlayState()
     state.setPresentationMode(.midi)

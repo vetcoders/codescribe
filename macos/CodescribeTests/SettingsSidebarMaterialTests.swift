@@ -152,9 +152,11 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     )
     window.isReleasedWhenClosed = false
     window.contentView = host
+    window.orderFrontRegardless()
     defer { window.close() }
 
     host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
     await nextMainQueueTurn()
 
     // adoptHostWindow runs via HostingWindowReader

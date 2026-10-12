@@ -60,7 +60,7 @@ struct ThreadRail: View {
     VStack(alignment: .leading, spacing: 4) {
       NativeThreadSearchField(
         text: $search,
-        prompt: "Search threads",
+        prompt: String(localized: "Search threads"),
         onCommit: {
           handleSearchCommit()
         },
@@ -168,10 +168,10 @@ struct ThreadRail: View {
   private func handleSearchMoveDown() {
     let ordered = sectionedThreads.flatMap(\.threads)
     guard !ordered.isEmpty else { return }
-    if let current = selectedThreadID,
-      let next = ThreadRailNavigation.adjacentThread(from: current, in: ordered, step: 1)
-    {
-      select(next.id)
+    if let current = selectedThreadID, ordered.contains(where: { $0.id == current }) {
+      if let next = ThreadRailNavigation.adjacentThread(from: current, in: ordered, step: 1) {
+        select(next.id)
+      }
     } else if let first = ordered.first {
       select(first.id)
     }
@@ -286,7 +286,7 @@ private struct ThreadRow: View {
         Button(favoriteActionTitle) {
           onToggleFavorite()
         }
-        Button("Copy Title") {
+        Button("Copy") {
           onCopyTitle()
         }
         if thread.backendId != nil {
@@ -310,7 +310,7 @@ private struct ThreadRow: View {
       .accessibilityAction { onSelect() }
       .accessibilityAction(named: Text("Rename")) { onBeginRename() }
       .accessibilityAction(named: Text(favoriteActionTitle)) { onToggleFavorite() }
-      .accessibilityAction(named: Text("Copy Title")) { onCopyTitle() }
+      .accessibilityAction(named: Text("Copy")) { onCopyTitle() }
       .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
       .accessibilityIdentifier("thread-row-\(thread.id.uuidString)")
   }
@@ -412,7 +412,7 @@ private struct ThreadRow: View {
 /// Releasing Escape clears the search field or dismisses to composer.
 struct NativeThreadSearchField: NSViewRepresentable {
   @Binding var text: String
-  var prompt: String = "Search threads"
+  var prompt: String = String(localized: "Search threads")
   var onCommit: (() -> Void)? = nil
   var onCancel: (() -> Void)? = nil
   var onMoveDown: (() -> Void)? = nil
@@ -424,7 +424,6 @@ struct NativeThreadSearchField: NSViewRepresentable {
   func makeNSView(context: Context) -> NSSearchField {
     let field = NSSearchField()
     field.placeholderString = prompt
-    field.bezelStyle = .rounded
     field.controlSize = .small
     field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
     field.focusRingType = .default
@@ -488,8 +487,9 @@ struct NativeThreadSearchField: NSViewRepresentable {
           }
           return true
         } else {
-          parent.onCancel?()
-          return false
+          guard let onCancel = parent.onCancel else { return false }
+          onCancel()
+          return true
         }
       }
       if commandSelector == #selector(NSResponder.insertNewline(_:)) {

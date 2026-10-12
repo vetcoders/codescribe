@@ -77,10 +77,11 @@ struct OverlayHeaderControlChrome: ViewModifier {
         }
       }
       .background { OverlayHintAnchorView(anchor: anchor) }
-      .background { OverlayMenuCursorRegion() }
-      .onHover { inside in
-        hovered = inside
-        if inside { anchor.show(title, palette: palette) } else { anchor.hide() }
+      .background {
+        OverlayMenuCursorRegion { inside in
+          hovered = inside
+          if inside { anchor.show(title, palette: palette) } else { anchor.hide() }
+        }
       }
       .onChange(of: title) { _, title in
         if hovered { anchor.show(title, palette: palette) }
