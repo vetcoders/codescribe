@@ -595,7 +595,7 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
 }
 
 fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
-    anyhow!("{error}")
+    anyhow::Error::new(error)
 }
 
 fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
@@ -1744,6 +1744,36 @@ mod tests {
             resolve_digit(10, &unbound),
             Err(ChannelOpenRefusal::InvalidDigit)
         ));
+    }
+
+    #[tokio::test]
+    async fn unbound_channel_refusal_retains_its_type_without_opening_capture() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let path = write_binding(
+            dir.path(),
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{}}"#,
+        );
+        let bus = dir.path().join("shared-bus.jsonl");
+        let error = controller
+            .dispatch_agent_channel(2, &path, &bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect_err("unbound channel must refuse")
+            .context("dispatching agent shortcut");
+        assert_eq!(
+            error.downcast_ref::<ChannelOpenRefusal>(),
+            Some(&ChannelOpenRefusal::DigitUnbound { digit: 2 })
+        );
+        assert!(controller.agent_channel_snapshot(2).await.is_none());
+        assert_eq!(
+            controller.capture_subscriber_view().await,
+            (0, false, false)
+        );
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        assert!(
+            !bus.exists(),
+            "a refused shortcut must not publish a session"
+        );
     }
 
     #[tokio::test]
