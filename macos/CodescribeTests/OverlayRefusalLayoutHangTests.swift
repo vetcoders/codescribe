@@ -334,7 +334,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       // describe a window that was actually dimmed, not one that never moved.
       // Deliberately NOT synchronous: calling `completed()` here would delete
       // the delay the successor assertions depend on.
-      runHandoffFade: { faded, completed in
+      runFade: { faded, _, completed in
         faded.alphaValue = 0
         pendingFade = completed
       }
