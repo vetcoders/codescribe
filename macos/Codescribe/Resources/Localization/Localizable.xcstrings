@@ -13952,23 +13952,6 @@
         }
       }
     },
-    "Searching…" : {
-      "comment" : "Status indicator while search is in progress",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Searching…"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Szukanie…"
-          }
-        }
-      }
-    },
     "See what to correct" : {
       "comment" : "About panel: opens the refusal with the file to correct",
       "localizations" : {
