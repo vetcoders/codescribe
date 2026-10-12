@@ -1863,7 +1863,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     ])
 
     let searchModel = OverlayConversationSearchModel(client: client, debounceDuration: .zero)
-    var view = OverlayChannelStatusView(
+    let view = OverlayChannelStatusView(
       channels: [], unavailable: false, palette: .dark, animates: false,
       conversations: [alpha, beta, gamma], searchModel: searchModel
     )
