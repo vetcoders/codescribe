@@ -3111,6 +3111,131 @@ class CurrentChainMutantTests(unittest.TestCase):
             self.assertNotIn(f'"{retired}"', manifest, retired)
 
 
+class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
+    """Judge clipboard and projection contracts against current Loctree bodies."""
+
+    CORRIDORS = ("seal_to_delivery", "ledger_to_bus_projection")
+
+    @classmethod
+    def setUpClass(cls):
+        # Reuse the same live cache and mutation boundary, without inheriting
+        # the capture-specific test cases.
+        CurrentChainMutantTests.setUpClass.__func__(cls)
+
+    run_mutations = CurrentChainMutantTests.run_mutations
+    run_mutated = CurrentChainMutantTests.run_mutated
+
+    def test_current_delivery_and_projection_chains_pass(self):
+        self.assertEqual(self.positive_failures, [])
+
+    def test_tail_patch_retains_exact_owners_and_rejects_a_fourth_constructor(self):
+        literal = "TailPatchRequest {"
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        contract = next(
+            row for row in manifest["stages"]["wired"]["exclusive_production_literal_owners"]
+            if row["literal"] == literal
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            self.seed, [contract]
+        )
+        self.assertEqual(failures, [])
+        rows = copy.deepcopy(VERIFIER.require_complete_literal_evidence(
+            self.seed.literal_occurrences(literal), literal
+        ))
+        rows.append(occurrence(
+            literal, file="core/pipeline/streaming/apple_live_session.rs",
+            line=99_999, enclosing_symbol="unowned_trial_transport",
+        ))
+        mutant = StubVerifier(
+            self.repo, literal_responses={literal: literal_payload(literal, *rows)}
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            mutant, [contract]
+        )
+        self.assertTrue(any("competing or missing owners" in row for row in failures))
+
+    def test_stop_paste_requires_both_identity_checks_and_optional_epoch(self):
+        for label, old, new in (
+            ("before_check_removed", "let before = check_target();", ""),
+            ("refusal_borrows_clipboard", "return Ok((receipt, None));",
+             "return Ok((receipt, Some(epoch)));"),
+            ("second_check_removed", "let target = check_target();", ""),
+            ("second_refusal_removed", "return Ok((receipt, Some(epoch)));", ""),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "write_stop_paste", "app/os/clipboard.rs", old, new
+                ))
+        self.assertTrue(self.run_mutations(
+            "write_stop_paste", "app/os/clipboard.rs",
+            [("let epoch = write(text)?;", ""),
+             ("let before = check_target();",
+              "let epoch = write(text)?; let before = check_target();")],
+        ), "clipboard ownership must be checked before the write")
+
+    def test_stop_paste_retains_immediate_recovery_delayed_restore_and_mode(self):
+        for label, old, new in (
+            ("error_restore_removed",
+             "schedule_clipboard_restore(snapshot, epoch, Duration::ZERO);", ""),
+            ("success_restore_removed",
+             "schedule_clipboard_restore(snapshot, epoch, delay);", ""),
+            ("mode_ignored", "|| target.check_current(mode)",
+             "|| target.check_current(PasteMode::Comfort)"),
+            ("deferred_restore_delayed", "} else {\n            Duration::ZERO\n        };",
+             "} else {\n            get_restore_delay()\n        };"),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "paste_to_stop_target", "app/os/clipboard.rs", old, new
+                ))
+
+    def test_stop_target_keeps_safe_canvas_and_input_capability_checks(self):
+        for label, old, new in (
+            ("canvas_downgrade_removed", "PasteMode::Safe", "PasteMode::Comfort"),
+            ("input_capability_bypassed",
+             "check.with_input_capability(mode, self.field, current.field)", "check"),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "check_current", "app/os/clipboard.rs", old, new
+                ))
+
+    def test_input_capability_helper_cannot_ignore_fields_or_erase_the_refusal(self):
+        symbol, file = "with_input_capability", "app/os/clipboard.rs"
+        row = next(
+            row for row in self.seed.body(symbol, file)["bodies"]
+            if row["symbol"] == symbol
+        )
+        source = row["source"]
+        noop = source[:source.index("{") + 1] + "\nself\n}"
+        self.assertTrue(self.run_mutated(symbol, file, source, noop))
+        tail = source.rfind("self")
+        reset = source[:tail] + "self.changed = false;\n" + source[tail:]
+        self.assertTrue(self.run_mutated(symbol, file, source, reset))
+        for old in (
+            "stopped == Secure", "current == Secure",
+            "stopped != Text", "current != Text",
+            "mode != PasteMode::Comfort",
+        ):
+            with self.subTest(old=old):
+                self.assertTrue(self.run_mutated(symbol, file, old, "false"))
+
+    def test_insert_requires_actual_facts_and_proposals_keep_derived_publication(self):
+        for label, symbol, file, old, new in (
+            ("target_fact_bypassed", "overlay_insert_route",
+             "app/controller/delivery_route.rs", "facts.paste_target", "fake_target"),
+            ("payload_fact_bypassed", "overlay_insert_route",
+             "app/controller/delivery_route.rs", "facts.executable_payload", "true"),
+            ("paste_gate_ignored", "overlay_insert_route",
+             "app/controller/delivery_route.rs",
+             "gate.route == DeliveryRoute::ClipboardPaste", "true"),
+            ("derived_publication_removed", "on_event", "app/presentation/emitter.rs",
+             "bus.record_derived_projection(&projection);", ""),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(symbol, file, old, new))
+
+
 class CaptureOrderingProofTests(unittest.TestCase):
     """The capture corridor judged with its ordering contract still attached.
 
