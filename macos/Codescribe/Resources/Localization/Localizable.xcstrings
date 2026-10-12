@@ -5367,13 +5367,13 @@
         }
       }
     },
-    "Codescribe will restart in this language and resume setup. Your recording must finish first.": {
+    "Codescribe will restart in this language and resume setup.": {
       "comment": "Whole-app language application explanation",
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
-            "value": "Codescribe uruchomi się ponownie w wybranym języku i wznowi konfigurację. Najpierw zakończ nagrywanie."
+            "state": "translated",
+            "value": "Codescribe uruchomi się ponownie w wybranym języku i wznowi konfigurację."
           }
         }
       }
@@ -7053,7 +7053,7 @@
       }
     },
     "Dictate, or work by voice with an AI agent.": {
-      "comment": "Setup step blurb",
+      "comment": "Operating lane choice detail",
       "localizations": {
         "pl": {
           "stringUnit": {
@@ -16822,17 +16822,6 @@
         }
       }
     },
-    "Talk with the Agent and use its tools.": {
-      "comment": "Operating lane choice detail",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rozmawiasz z Agentem i korzystasz z jego narzędzi."
-          }
-        }
-      }
-    },
     "Tap Fn to dictate": {
       "localizations": {
         "pl": {
@@ -19474,6 +19463,17 @@
         }
       }
     },
+    "You can change them later in System Settings.": {
+      "comment": "Setup permissions footnote; System Settings is the macOS application",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zmienisz je później w Ustawieniach systemowych."
+          }
+        }
+      }
+    },
     "You can continue with missing permissions. The features listed below stay unavailable until you grant access in System Settings.": {
       "comment": "Permissions do not block Continue; each row explains its feature consequence",
       "localizations": {
@@ -19485,13 +19485,13 @@
         }
       }
     },
-    "You can continue without granting these permissions. You can also change them later in System Settings.": {
-      "comment": "Permissions do not block Continue; they can be granted later in System Settings",
+    "You can continue without granting these permissions.": {
+      "comment": "Permissions never block Continue",
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Możesz kontynuować bez nadania tych uprawnień. Uprawnienia zmienisz również później w Ustawieniach systemowych."
+            "value": "Możesz kontynuować bez nadania tych uprawnień."
           }
         }
       }

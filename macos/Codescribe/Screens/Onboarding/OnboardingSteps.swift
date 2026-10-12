@@ -46,7 +46,7 @@ struct InterfaceLanguageStepView: View {
         Text(
           String(
             localized: LocalizedStringResource(
-              "Codescribe will restart in this language and resume setup. Your recording must finish first.",
+              "Codescribe will restart in this language and resume setup.",
               locale: model.interfaceLocale, comment: "Whole-app language application explanation"))
         )
         .font(.callout)
@@ -149,10 +149,7 @@ struct ModeStepView: View {
           localized: LocalizedStringResource(
             "How do you want to work?", locale: model.interfaceLocale,
             comment: "Setup step heading")),
-        blurb: String(
-          localized: LocalizedStringResource(
-            "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
-            comment: "Setup step blurb"))
+        blurb: nil
       )
 
       VStack(spacing: 10) {
@@ -175,7 +172,7 @@ struct ModeStepView: View {
               comment: "Operating lane choice; Agentic is the lane name")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Talk with the Agent and use its tools.", locale: model.interfaceLocale,
+              "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
@@ -422,9 +419,9 @@ struct PermissionsStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "You can continue without granting these permissions. You can also change them later in System Settings.",
+            "You can continue without granting these permissions.",
             locale: model.interfaceLocale,
-            comment: "Permissions do not block Continue; they can be granted later in System Settings")
+            comment: "Permissions never block Continue")
         )
       )
       .font(.callout)
@@ -443,6 +440,11 @@ struct PermissionsStepView: View {
         model.refreshPermissions()
       }
       .csAction()
+      OnboardingStepNote(
+        text: String(
+          localized: LocalizedStringResource(
+            "You can change them later in System Settings.", locale: model.interfaceLocale,
+            comment: "Setup permissions footnote; System Settings is the macOS application")))
     }
   }
 }

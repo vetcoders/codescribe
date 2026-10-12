@@ -580,6 +580,13 @@ English text:
   text headers count `characters` (`1 character`) instead of `CHARS`; the
   correction field prompt reads `Correct spelling`; the provider key row of
   the setup summary reads `set` where it read `granted`.
+- Setup copy reworded on 2026-10-12 (Founder review, round 1): the interface
+  language step drops `Your recording must finish first.`; the operating-lane
+  step drops its blurb and reuses that sentence as the Agent choice detail
+  (`Talk with the Agent and use its tools.` retired); the permissions step
+  splits its two sentences, keeping the one about continuing under the
+  heading and moving the System Settings reminder to a footnote next to
+  `Refresh status`.
 - Thread rail rows show the month and day in the locale's order and names;
   English reads as before (`Jul 8`).
 - The prompt restore tooltip no longer lowercases the prompt title.
