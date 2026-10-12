@@ -77,6 +77,26 @@ final class OnboardingConsentTests: XCTestCase {
       agentBridge: ConsentTestBridge(), probe: MockPermissionProbe(.allGranted),
       preferredLanguages: ["en"], processInterfaceLanguage: .english)
   }
+
+  func testExplicitPermissionActionRequestsAndRefreshesTheSameProbe() async {
+    for kind in [PermissionKind.screenRecording, .accessibility, .inputMonitoring] {
+      let fixture = PermissionRequestFixture(grantOnRequest: true)
+      let engine = ConsentRecordingEngine()
+      let model = OnboardingViewModel(
+        engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+        agentBridge: ConsentTestBridge(), probe: fixture,
+        preferredLanguages: ["en"], processInterfaceLanguage: .english)
+      XCTAssertEqual(model.permissions.state(kind), .denied)
+
+      model.grantPermission(for: kind, client: fixture)
+      for _ in 0..<20 { await Task.yield() }
+
+      XCTAssertEqual(fixture.requests, [kind.rawValue])
+      XCTAssertEqual(model.permissions.state(kind), .granted)
+      XCTAssertEqual(engine.keyReads, 0)
+      XCTAssertEqual(engine.snapshotReads, 0)
+    }
+  }
 }
 
 @MainActor

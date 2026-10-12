@@ -6439,6 +6439,17 @@
         }
       }
     },
+    "Device Control and Data Access" : {
+      "comment" : "Privacy permission pane name on macOS 27 and later; formerly Accessibility",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sterowanie urządzeniem i dostęp do danych"
+          }
+        }
+      }
+    },
     "Diagnostic details" : {
       "comment" : "Dictionary: disclosure over telemetry coverage",
       "localizations" : {

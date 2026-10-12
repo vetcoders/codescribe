@@ -42,6 +42,8 @@ pub(crate) mod live_archive;
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
+#[cfg(test)]
+mod silver_start_refusal_tests;
 mod transcript_delivery;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;

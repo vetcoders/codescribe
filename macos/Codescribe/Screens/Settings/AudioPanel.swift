@@ -1148,7 +1148,6 @@ struct AudioPanel: View {
     let kind = PermissionKind.microphone
     let repair = kind.repair(for: model.permissions.microphone)
     if repair.requestsNatively {
-      kind.notePermissionAsked()
       Task { @MainActor in
         _ = await kind.requestInApp()
         model.refresh()
