@@ -6,11 +6,83 @@ import XCTest
 
 final class OverlayClipboardPasteTests: XCTestCase {
   @MainActor
+  func testComposerClickRetainsKeyAfterTheTranscriptResigns() throws {
+    for prompt in [String(localized: "Send to everyone"), String(localized: "Message the Agent")] {
+      var draft = ""
+      var sends = 0
+      let host = NSHostingView(
+        rootView: OverlayConversationComposer(
+          palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }), sending: false,
+          onSubmit: { sends += 1 }, placeholder: prompt))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isReleasedWhenClosed = false
+      let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+      let canvas = LiveTranscriptNativeTextView(
+        frame: NSRect(x: 0, y: 150, width: 400, height: 100))
+      canvas.isEditable = false
+      canvas.isSelectable = true
+      canvas.string = "Selected transcript"
+      content.addSubview(canvas)
+      content.addSubview(host)
+      panel.contentView = content
+      panel.orderFrontRegardless()
+      defer {
+        panel.makeFirstResponder(nil)
+        panel.close()
+      }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+      func editor(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView, text.isEditable { return text }
+        return view.subviews.lazy.compactMap { editor(in: $0) }.first
+      }
+      let text = try XCTUnwrap(editor(in: host))
+      XCTAssertTrue(panel.makeFirstResponder(canvas))
+      panel.takeKeyForTranscript()
+      XCTAssertTrue(panel.isKeyWindow)
+
+      // A real native mouse-down transfers the responder. The old canvas
+      // closes its keyboard gate while AppKit is accepting the new editor.
+      let point = text.convert(NSPoint(x: 10, y: 10), to: nil)
+      XCTAssertTrue(content.hitTest(point) === text, "The click must hit the visible composer")
+      func mouse(_ type: NSEvent.EventType) throws -> NSEvent {
+        try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+      }
+      NSApp.postEvent(try mouse(.leftMouseUp), atStart: true)
+      panel.sendEvent(try mouse(.leftMouseDown))
+      XCTAssertTrue(
+        panel.firstResponder === text,
+        "\(prompt): responder=\(String(describing: panel.firstResponder)), editor=\(text)")
+      XCTAssertTrue(panel.canBecomeKey, "The old canvas must not close the composer's gate")
+      XCTAssertTrue(panel.isKeyWindow, "A visible caret must also receive keyboard input")
+      let key = try XCTUnwrap(
+        NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+          windowNumber: panel.windowNumber, context: nil, characters: "x",
+          charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+      panel.sendEvent(key)
+      XCTAssertEqual(draft, "x")
+      XCTAssertEqual(sends, 0, "Focus and typing never send a message")
+      XCTAssertEqual(canvas.string, "Selected transcript")
+    }
+  }
+
+  @MainActor
   func testImageOnlyCommandVPastesThroughTheFocusedNativeComposer() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
     let image = try bitmap()
-    let pixels: [(Int, Int, NSColor)] = [(0, 0, .red), (1, 0, .green), (0, 1, .blue), (1, 1, .white)]
+    let pixels: [(Int, Int, NSColor)] = [
+      (0, 0, .red), (1, 0, .green), (0, 1, .blue), (1, 1, .white),
+    ]
     let rgba: [UInt8] = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
     let buffer = try XCTUnwrap(image.bitmapData)
     rgba.withUnsafeBufferPointer { bytes in
