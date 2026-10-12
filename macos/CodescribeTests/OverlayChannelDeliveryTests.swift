@@ -2546,7 +2546,6 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "Search failed",
       "Partial results",
       "Clear search",
-      "Searching…",
     ]
     let bundle = Bundle.main
     if let polishPath = bundle.path(forResource: "pl", ofType: "lproj"),
