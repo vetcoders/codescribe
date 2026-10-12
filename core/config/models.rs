@@ -546,6 +546,8 @@ pub struct WhisperModelStatus {
     pub embedded: bool,
     /// Resolved on-disk model directory, when one was found.
     pub path: Option<String>,
+    /// Directory a download writes into, for display (`~` for the home prefix).
+    pub models_dir: String,
     /// Model alias the runtime fallback looks for ([`DEFAULT_MODEL`]).
     pub model_id: String,
     /// Hugging Face repo a download would pull from ([`DEFAULT_WHISPER_REPO`]).
@@ -554,16 +556,45 @@ pub struct WhisperModelStatus {
     pub size_hint: String,
 }
 
+/// Render `path` with the home directory written as `~`, as the UI shows it.
+fn display_with_home_tilde(path: &Path) -> String {
+    let display = path.display().to_string();
+    let Some(home) = std::env::var_os("HOME") else {
+        return display;
+    };
+    let home = Path::new(&home);
+    match path.strip_prefix(home) {
+        Ok(relative) => format!("~/{}", relative.display()),
+        Err(_) => display,
+    }
+}
+
 /// Snapshot whether Whisper is embedded, already on disk, or still needs download.
+///
+/// Reading the status is also where a `.partial` left next to a model that is
+/// now complete is dropped: this is the one call that runs whenever a surface
+/// showing the model appears, and the `.partial` convention is owned here.
 pub fn whisper_model_status() -> WhisperModelStatus {
     let embedded = crate::stt::whisper::embedded::is_embedded_available();
+    let manager = ModelManager::new().ok();
+    if let Some(manager) = &manager {
+        let default_dir = manager.get_model_path(DEFAULT_MODEL);
+        if is_complete_whisper_model_dir(&default_dir) {
+            remove_partial_files(&default_dir);
+        }
+    }
     let path = resolve_runtime_whisper_model_path(None)
         .ok()
         .map(|p| p.display().to_string());
+    let models_dir = manager
+        .as_ref()
+        .map(|manager| display_with_home_tilde(manager.models_dir()))
+        .unwrap_or_else(|| "~/.codescribe/models".to_string());
     WhisperModelStatus {
         available: embedded || path.is_some(),
         embedded,
         path,
+        models_dir,
         model_id: DEFAULT_MODEL.to_string(),
         repo: DEFAULT_WHISPER_REPO.to_string(),
         size_hint: "~1.6 GB".to_string(),
@@ -796,12 +827,39 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
     options
 }
 
+/// The transfer was stopped on request, so it is not a failure to report.
+///
+/// Carried inside the `anyhow` chain of [`download_default_whisper_model`] so a
+/// caller can tell "the user pressed Cancel" from "the download broke".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhisperDownloadCancelled;
+
+impl std::fmt::Display for WhisperDownloadCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Whisper model download cancelled")
+    }
+}
+
+impl std::error::Error for WhisperDownloadCancelled {}
+
+/// Whether `error` reports a transfer stopped on request rather than a failure.
+pub fn is_whisper_download_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<WhisperDownloadCancelled>().is_some()
+}
+
 /// Download the default Whisper model into `~/.codescribe/models/<DEFAULT_MODEL>/`.
 ///
 /// Files are fetched from the Hugging Face resolve endpoint (same repo as
 /// `make download-model`). Optional `on_progress(file, bytes_done, bytes_total)`
 /// is called during each file transfer. Uses `HF_TOKEN` when set.
-pub fn download_default_whisper_model<F>(mut on_progress: F) -> Result<PathBuf>
+///
+/// `is_cancelled` is polled before each file and between body chunks. When it
+/// answers `true` the transfer stops, every `.partial` file in the model
+/// directory is removed, and the error carries [`WhisperDownloadCancelled`].
+pub fn download_default_whisper_model<F>(
+    mut on_progress: F,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<PathBuf>
 where
     F: FnMut(&str, u64, Option<u64>),
 {
@@ -830,60 +888,13 @@ where
         .build()
         .context("build HTTP client for Whisper download")?;
 
-    // Small files first so a failed auth fails fast before multi-GB weights.
-    download_hf_file(
-        &client,
-        DEFAULT_WHISPER_REPO,
-        "config.json",
-        &dest.join("config.json"),
-        &mut on_progress,
-        true,
-    )?;
-    download_hf_file(
-        &client,
-        TOKENIZER_WHISPER_REPO,
-        "tokenizer.json",
-        &dest.join("tokenizer.json"),
-        &mut on_progress,
-        true,
-    )?;
-    download_url_file(
-        &client,
-        MEL_FILTERS_URL,
-        "mel_filters.npz",
-        &dest.join("mel_filters.npz"),
-        &mut on_progress,
-    )?;
-    let weights_dest = dest.join("weights.safetensors");
-    let weights_alt = dest.join("model.safetensors");
-    // An incomplete default bundle is repaired as one model generation. Even
-    // structurally valid installed weights may belong to another architecture,
-    // so pair them with the freshly selected default config instead of reusing
-    // them independently.
-    match download_hf_file(
-        &client,
-        DEFAULT_WHISPER_REPO,
-        "weights.safetensors",
-        &weights_dest,
-        &mut on_progress,
-        true,
-    ) {
-        Ok(()) => remove_other_weight_file(&dest, "weights.safetensors")?,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "weights.safetensors missing; trying model.safetensors"
-            );
-            download_hf_file(
-                &client,
-                DEFAULT_WHISPER_REPO,
-                "model.safetensors",
-                &weights_alt,
-                &mut on_progress,
-                true,
-            )?;
-            remove_other_weight_file(&dest, "model.safetensors")?;
+    if let Err(err) = fetch_default_whisper_files(&client, &dest, &mut on_progress, is_cancelled) {
+        // A stopped transfer leaves no half-written bytes behind: the next
+        // attempt starts clean and the directory never looks half-installed.
+        if is_whisper_download_cancelled(&err) {
+            remove_partial_files(&dest);
         }
+        return Err(err);
     }
 
     validate_whisper_model_bundle(&dest).with_context(|| {
@@ -894,6 +905,82 @@ where
     })?;
 
     Ok(canonicalize_or_self(dest))
+}
+
+/// Fetch the files of the default bundle into `dest`, cheapest first.
+fn fetch_default_whisper_files<F>(
+    client: &reqwest::blocking::Client,
+    dest: &Path,
+    on_progress: &mut F,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    // Small files first so a failed auth fails fast before multi-GB weights.
+    download_hf_file(
+        client,
+        DEFAULT_WHISPER_REPO,
+        "config.json",
+        &dest.join("config.json"),
+        on_progress,
+        true,
+        is_cancelled,
+    )?;
+    download_hf_file(
+        client,
+        TOKENIZER_WHISPER_REPO,
+        "tokenizer.json",
+        &dest.join("tokenizer.json"),
+        on_progress,
+        true,
+        is_cancelled,
+    )?;
+    download_url_file(
+        client,
+        MEL_FILTERS_URL,
+        "mel_filters.npz",
+        &dest.join("mel_filters.npz"),
+        on_progress,
+        is_cancelled,
+    )?;
+    let weights_dest = dest.join("weights.safetensors");
+    let weights_alt = dest.join("model.safetensors");
+    // An incomplete default bundle is repaired as one model generation. Even
+    // structurally valid installed weights may belong to another architecture,
+    // so pair them with the freshly selected default config instead of reusing
+    // them independently.
+    match download_hf_file(
+        client,
+        DEFAULT_WHISPER_REPO,
+        "weights.safetensors",
+        &weights_dest,
+        on_progress,
+        true,
+        is_cancelled,
+    ) {
+        Ok(()) => remove_other_weight_file(dest, "weights.safetensors")?,
+        // A stopped transfer is not a missing file: never fall back to the
+        // alternate weight name after the user asked the download to end.
+        Err(err) if is_whisper_download_cancelled(&err) => return Err(err),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "weights.safetensors missing; trying model.safetensors"
+            );
+            download_hf_file(
+                client,
+                DEFAULT_WHISPER_REPO,
+                "model.safetensors",
+                &weights_alt,
+                on_progress,
+                true,
+                is_cancelled,
+            )?;
+            remove_other_weight_file(dest, "model.safetensors")?;
+        }
+    }
+    Ok(())
 }
 
 /// Copy selected model files from a local source into the user models directory.
@@ -978,6 +1065,7 @@ fn download_hf_file<F>(
     dest: &Path,
     on_progress: &mut F,
     replace_valid: bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<()>
 where
     F: FnMut(&str, u64, Option<u64>),
@@ -989,8 +1077,11 @@ where
         filename,
         dest,
         on_progress,
-        true,
-        replace_valid,
+        FetchPolicy {
+            use_hf_token: true,
+            replace_valid,
+        },
+        is_cancelled,
     )
 }
 
@@ -1000,11 +1091,35 @@ fn download_url_file<F>(
     filename: &str,
     dest: &Path,
     on_progress: &mut F,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<()>
 where
     F: FnMut(&str, u64, Option<u64>),
 {
-    download_url_file_authenticated(client, url, filename, dest, on_progress, false, false)
+    download_url_file_authenticated(
+        client,
+        url,
+        filename,
+        dest,
+        on_progress,
+        FetchPolicy {
+            use_hf_token: false,
+            replace_valid: false,
+        },
+        is_cancelled,
+    )
+}
+
+/// The two decisions one file transfer makes before it opens a socket.
+///
+/// Bundled rather than passed as a pair of positional booleans, which the
+/// cancellation predicate would have grown into a `too_many_arguments` silencer.
+#[derive(Debug, Clone, Copy)]
+struct FetchPolicy {
+    /// Send `HF_TOKEN` as bearer auth, for gated Hugging Face repos.
+    use_hf_token: bool,
+    /// Re-fetch even when `dest` already holds a valid file.
+    replace_valid: bool,
 }
 
 fn download_url_file_authenticated<F>(
@@ -1013,12 +1128,19 @@ fn download_url_file_authenticated<F>(
     filename: &str,
     dest: &Path,
     on_progress: &mut F,
-    use_hf_token: bool,
-    replace_valid: bool,
+    policy: FetchPolicy,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<()>
 where
     F: FnMut(&str, u64, Option<u64>),
 {
+    let FetchPolicy {
+        use_hf_token,
+        replace_valid,
+    } = policy;
+    if is_cancelled() {
+        return Err(anyhow::Error::new(WhisperDownloadCancelled));
+    }
     if !replace_valid && validate_model_file(filename, dest).is_ok() {
         on_progress(
             filename,
@@ -1055,6 +1177,17 @@ where
     let mut buf = [0u8; 1024 * 256];
     let mut done: u64 = 0;
     loop {
+        if is_cancelled() {
+            drop(file);
+            if let Err(err) = fs::remove_file(&partial) {
+                tracing::warn!(
+                    error = %err,
+                    "remove cancelled partial {}",
+                    partial.display()
+                );
+            }
+            return Err(anyhow::Error::new(WhisperDownloadCancelled));
+        }
         let n = response
             .read(&mut buf)
             .with_context(|| format!("read body {url}"))?;
@@ -1076,6 +1209,26 @@ where
     replace_file(&partial, dest)?;
     on_progress(filename, done, total.or(Some(done)));
     Ok(())
+}
+
+/// Remove every `*.partial` file directly inside `dir`.
+///
+/// Only regular files are touched: a directory that happens to carry the
+/// suffix is somebody else's artifact and is left where it is. Failures are
+/// logged, never fatal — a leftover partial costs disk, not correctness.
+fn remove_partial_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|suffix| suffix == "partial")
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+            && let Err(err) = fs::remove_file(&path)
+        {
+            tracing::warn!(error = %err, "remove stale partial {}", path.display());
+        }
+    }
 }
 
 fn partial_path(dest: &Path) -> PathBuf {
@@ -1632,6 +1785,7 @@ mod tests {
             "mel_filters.npz",
             &mel,
             &mut progress,
+            &|| false,
         )
         .unwrap();
     }
@@ -1845,6 +1999,7 @@ mod tests {
             "mel_filters.npz",
             &mel,
             &mut progress,
+            &|| false,
         );
         server.join().unwrap();
 
@@ -1980,6 +2135,83 @@ mod tests {
         let phantom = PathBuf::from("/__codescribe__/nonexistent/phantom/model");
         let returned = canonicalize_or_self(phantom.clone());
         assert_eq!(returned, phantom);
+    }
+
+    /// A cancelled transfer stops mid-body, promotes nothing and leaves no partial.
+    #[test]
+    fn cancelled_download_removes_its_partial_and_reports_cancellation() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            // The client stops reading; a refused write is the expected end.
+            let _ =
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nsixteen bytes!!!");
+        });
+
+        let temp_dir = TempDir::new().unwrap();
+        let mel = temp_dir.path().join("mel_filters.npz");
+        let client = reqwest::blocking::Client::new();
+        let mut progress = |_name: &str, _done: u64, _total: Option<u64>| {};
+        // False once, so the transfer starts and is stopped between chunks.
+        let polls = std::cell::Cell::new(0_u32);
+        let result = download_url_file(
+            &client,
+            &format!("http://{address}/mel_filters.npz"),
+            "mel_filters.npz",
+            &mel,
+            &mut progress,
+            &|| {
+                let seen = polls.get();
+                polls.set(seen + 1);
+                seen > 0
+            },
+        );
+        let _ = server.join();
+
+        let error = result.expect_err("a cancelled transfer must not report success");
+        assert!(
+            is_whisper_download_cancelled(&error),
+            "cancellation must be distinguishable from a failure, got: {error:#}"
+        );
+        assert!(!mel.exists(), "a cancelled download must promote nothing");
+        assert!(
+            !partial_path(&mel).exists(),
+            "a cancelled download must leave no partial file"
+        );
+    }
+
+    /// Reading the status drops a `.partial` stranded next to a complete model.
+    #[test]
+    #[serial]
+    fn whisper_model_status_drops_a_partial_left_next_to_a_complete_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("models");
+        let model = models_dir.join(DEFAULT_MODEL);
+        create_complete_whisper_model(&model);
+        let stale = model.join("weights.safetensors.partial");
+        fs::write(&stale, b"half a download").unwrap();
+        let foreign_directory = model.join("tokenizer.json.partial");
+        fs::create_dir(&foreign_directory).unwrap();
+
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_dir);
+        let _env_override = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
+        let _hf_cache = EnvGuard::remove("CODESCRIBE_HF_CACHE");
+
+        let status = whisper_model_status();
+
+        assert!(status.available);
+        assert!(!stale.exists(), "a stale partial must be dropped");
+        assert!(
+            foreign_directory.is_dir(),
+            "only regular partial files are removed"
+        );
+        assert_eq!(status.models_dir, display_with_home_tilde(&models_dir));
     }
 
     /// Status surface advertises default model id, repo, and size-hint shape.

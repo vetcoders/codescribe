@@ -325,6 +325,7 @@ data  CsWhisperModelOption.path
 data  CsWhisperModelOption.source
 prose CsWhisperModelOption.reason
 data  CsWhisperModelStatus.path
+data  CsWhisperModelStatus.modelsDir
 data  CsWhisperModelStatus.modelId
 data  CsWhisperModelStatus.repo
 prose CsWhisperModelStatus.sizeHint
