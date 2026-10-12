@@ -57,6 +57,16 @@ make install
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
+With a real signing identity, `scripts/build-app.sh` also enables the hardened
+runtime (`--options runtime --timestamp`) and applies `scripts/entitlements.plist`
+(override with `CODESCRIBE_ENTITLEMENTS`) on the publisher binary, the app
+bundle's deep sign, and the outer resource seal — the same requirement
+`make install-app` already enforced. Apple's notarization service rejects a
+bundle whose executables lack the hardened runtime flag, so `make app PROFILE=local-release` on its own now produces a notarizable bundle without a
+manual re-sign. The ad-hoc path (`CODESCRIBE_CODESIGN_IDENTITY=-`) stays
+plain: ad-hoc plus hardened runtime breaks local TCC grants and is not meant
+to be notarized.
+
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
 the app build script preserves that choice instead of selecting a listed
