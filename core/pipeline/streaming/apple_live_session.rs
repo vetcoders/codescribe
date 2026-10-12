@@ -103,6 +103,12 @@ use super::stream_log::append_to_stream_log;
 /// Bounded transport for capture-plan windows. A full queue retains the exact
 /// pending request without blocking the worker that forwards PCM to SFSpeech.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
+/// The bounded word-trial scan walks every open word component against the
+/// whole slot-operation history. The Apple worker loop reaches it on every
+/// PCM chunk and partial, so without a bound a long take spends one core on
+/// the scan alone (2026-10-12: a 19-minute take, 91 % of the worker thread).
+/// A trial is a 9 s window; a quarter second between scans costs nothing.
+const WORD_TRIAL_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bounded transport ownership for occurrence formatter jobs. Saturation skips
 /// Formatter scheduling for that occurrence; it never backpressures PCM.
@@ -1938,6 +1944,7 @@ struct AppleSealState {
     /// Utterance-grain straddles still refuse whole-span replacement.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
+    word_trial_scan_at: Option<Instant>,
     refinement_lane_lost: bool,
     refinement_started: Instant,
     /// Occurrence formatter hand-off. Presence means the frozen snapshot
@@ -2443,6 +2450,7 @@ impl AppleSealState {
             admission_horizon: 0,
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
+            word_trial_scan_at: None,
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
             formatter: None,
@@ -5086,6 +5094,13 @@ impl AppleSealState {
         {
             return;
         }
+        if self
+            .word_trial_scan_at
+            .is_some_and(|at| self.refinement_clock < at + WORD_TRIAL_SCAN_INTERVAL)
+        {
+            return;
+        }
+        self.word_trial_scan_at = Some(self.refinement_clock);
         let head = self.audio.session_sample_end();
         let padding = u64::from(self.sample_rate) * 3;
         let retained_start = if self.terminal_pcm.is_some() {
@@ -20180,6 +20195,33 @@ mod live_refinement_admission_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bounded_word_trial_scan_follows_the_refinement_clock_not_the_loop() {
+        // The worker loop ticks on every PCM chunk and Apple partial; the
+        // trial scan walks every open word component against the whole
+        // slot-operation history, so it may run once per interval, not once
+        // per tick.
+        let (mut state, events, _receiver, _requests) = fixture(1);
+        let now = state.refinement_clock;
+        state.tick_refinements(&events, now);
+        // The fixture's PCM plans one window; the scan runs only while
+        // nothing is pending, so clear the queue to reach the scan itself.
+        state.refinement_pending.clear();
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(state.word_trial_scan_at, Some(now));
+        state.refinement_clock = now + Duration::from_millis(100);
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(
+            state.word_trial_scan_at,
+            Some(now),
+            "a call inside the interval does not rescan"
+        );
+        let later = now + WORD_TRIAL_SCAN_INTERVAL;
+        state.refinement_clock = later;
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(state.word_trial_scan_at, Some(later));
     }
 
     #[test]
