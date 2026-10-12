@@ -391,7 +391,10 @@ class Mailbox:
                                  if self.provider == "claude-code" else "Call codescribe_wait again to keep listening.")
                         return {"kind": "wait_idle", "provider": self.provider, "provider_session_id": self.owner,
                                 "waited_seconds": round(time.monotonic() - started), "read_delivery_ids": [],
-                                "acknowledged": False, "instructions": "No message arrived. Nothing was read or acknowledged. " + rearm}
+                                "acknowledged": False,
+                                "playback": self.demux.playback_mute_snapshot(
+                                    self.root, self.provider, self.owner, Path(_state["bus"])),
+                                "instructions": "No message arrived. Nothing was read or acknowledged. " + rearm}
                     trigger.wait(timeout=min(0.5, remaining))
                 if stop.is_set() and not cancel.is_set():
                     raise ValueError("Codescribe wait superseded by a newer wait or detach; nothing was acknowledged")

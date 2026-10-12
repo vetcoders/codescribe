@@ -2562,6 +2562,8 @@ class SessionLease:
             "provider_session_id": self.provider_session_id,
             "name": self.name,
             "bus": self.bus,
+            "playback": playback_mute_snapshot(
+                self.root, self.provider, self.provider_session_id, Path(self.bus)),
             "cursor": self.cursor,
             "resumed": self.resumed,
             "active_names": names,
@@ -2924,7 +2926,9 @@ def read_pending_command(args: argparse.Namespace) -> int:
         raise ValueError("invalid --read-limit or --read-bytes")
     result = {"kind": "pending_read", "lease_id": lease_id, "provider": args.provider,
               "provider_session_id": args.session, "snapshot_cursor": state.get("cursor"),
-              "deliveries": [], "read_delivery_ids": [], "remaining": len(rows)}
+              "deliveries": [], "read_delivery_ids": [], "remaining": len(rows),
+              "playback": playback_mute_snapshot(
+                  args.bridge_home, args.provider, args.session, Path(state["bus"]))}
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
         raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
     for row in rows[:args.read_limit]:
@@ -4262,6 +4266,17 @@ def global_playback_muted(root: Path) -> bool:
         return True
 
 
+def playback_mute_snapshot(root: Path, provider: str, session: str, bus: Path,
+                           *, automatic: bool = True) -> dict[str, Any]:
+    """Project the canonical switches; manual replay bypasses only agent mute."""
+    global_muted = global_playback_muted(root)
+    agent_muted = agent_playback_muted(root, provider, session, bus)
+    effective_muted = global_muted or (automatic and agent_muted)
+    return {"global_muted": global_muted, "agent_muted": agent_muted,
+            "effective_muted": effective_muted,
+            "mute_scope": "global" if global_muted else "agent" if effective_muted else None}
+
+
 def set_global_muted(args: argparse.Namespace) -> int:
     row = {"schema": PLAYBACK_MUTE_SCHEMA, "scope": "all",
            "muted": args.mute_all, "emitted_at": utc_now()}
@@ -4283,7 +4298,7 @@ def set_agent_muted(args: argparse.Namespace) -> int:
            "provider_session_id": args.session, "lease_id": lease_id,
            "bus": str(bus), "muted": args.mute_agent, "emitted_at": utc_now()}
     atomic_json(playback_mute_path(args.bridge_home, args.provider, args.session, bus), row)
-    emit(row)
+    emit({**row, "playback": playback_mute_snapshot(args.bridge_home, args.provider, args.session, bus)})
     return 0
 
 
@@ -4321,10 +4336,14 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
-        return global_playback_muted(self.root) or (self.automatic and agent_playback_muted(
-            self.root, self.reply["provider"], self.reply["provider_session_id"], self.bus))
+        return self.mute_snapshot()["effective_muted"]
 
-    def publish(self, state: str, *, error: str | None = None, reason: str | None = None) -> None:
+    def mute_snapshot(self) -> dict[str, Any]:
+        return playback_mute_snapshot(self.root, self.reply["provider"],
+                                      self.reply["provider_session_id"], self.bus, automatic=self.automatic)
+
+    def publish(self, state: str, *, error: str | None = None, reason: str | None = None,
+                playback: dict[str, Any] | None = None) -> None:
         event = {"schema": AGENT_REPLY_PLAYBACK_SCHEMA, "kind": "agent_reply_playback",
                  "emitted_at": utc_now(), **self.owner(), "playback_ticket": self.ticket,
                  "state": state, "spoken": state == "spoken"}
@@ -4332,6 +4351,9 @@ class ReplyPlaybackControl:
             event["tts_error"] = error
         if reason:
             event["reason"] = reason
+        if reason == "muted":
+            event["playback"] = playback if playback is not None else self.mute_snapshot()
+            event["mute_scope"] = event["playback"]["mute_scope"]
         publish_reply_event(self.bus, event, bridge_root=self.root)
         atomic_json(self.path, {**event, "schema": REPLY_CONTROL_SCHEMA, "bus": str(self.bus)})
         emit(event)
@@ -4353,11 +4375,12 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
                                             playback_root=args.bridge_home, bus=bus_path(), control=control)
             if control.stopped() and not spoken:
                 error, reason = "playback stopped", "stopped"
-        if not spoken and control.muted():
+        playback = control.mute_snapshot()
+        if not spoken and playback["effective_muted"]:
             error, reason = None, "muted"
         state = ("spoken" if spoken else "stopped" if reason == "stopped" else
                  "refused" if reason in ("take_live", "take_started", "playback_busy", "muted") else "failed")
-        control.publish(state, error=error, reason=reason)
+        control.publish(state, error=error, reason=reason, playback=playback)
         return 0 if spoken or reason == "muted" else 5
     except Exception as error:
         control.publish("failed", error=f"speech failed ({error.__class__.__name__})",
@@ -5688,6 +5711,7 @@ def attach_command(args: argparse.Namespace) -> int:
         "wakeup_receipts": str(root / "wakeups" / lease_id),
         "voice": voice_profile(root, name), "voice_source": voice_source,
         "voices_file": "present" if (root / VOICES_FILENAME).exists() else "missing",
+        "playback": playback_mute_snapshot(root, args.provider, args.session, Path(resolved_bus)),
         "binding_path": str(binding_path), "binding_changed": previous is not None,
         "previous": previous,
     })
@@ -5789,6 +5813,8 @@ def status_command(args: argparse.Namespace) -> int:
                 else None
             ),
             "voice": voice_profile(root, name if isinstance(name, str) else None),
+            "playback": playback_mute_snapshot(root, args.provider, args.session,
+                Path(state["bus"]) if isinstance(state, dict) and isinstance(state.get("bus"), str) else args.bus),
             "cursor": state.get("cursor") if isinstance(state, dict) else None,
         }
     )

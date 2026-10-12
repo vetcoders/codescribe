@@ -20,7 +20,8 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
       try? FileManager.default.removeItem(at: root)
     }
     let old = AgentPlaybackIdentity(
-      provider: "codex", session: "mute-old", bus: root.appendingPathComponent("channel-2.jsonl").path)
+      provider: "codex", session: "mute-old",
+      bus: root.appendingPathComponent("channel-2.jsonl").path)
     let fresh = AgentPlaybackIdentity(
       provider: "codex", session: "mute-new", bus: old.bus)
     let foreignBus = root.appendingPathComponent("transcript-events.jsonl").path
@@ -31,23 +32,28 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
     }
     func lease(_ identity: AgentPlaybackIdentity, model: String, muted: Bool) throws {
       try write(
-        ["schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity.leaseID,
-         "provider": identity.provider, "provider_session_id": identity.session,
-         "bus": identity.bus, "model": model],
+        [
+          "schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity.leaseID,
+          "provider": identity.provider, "provider_session_id": identity.session,
+          "bus": identity.bus, "model": model,
+        ],
         at: root.appendingPathComponent("leases/\(identity.leaseID).json"))
       try write(
-        ["schema": "codescribe.agent-playback-mute.v1", "lease_id": identity.leaseID,
-         "provider": identity.provider, "provider_session_id": identity.session,
-         "bus": identity.bus, "muted": muted],
+        [
+          "schema": "codescribe.agent-playback-mute.v1", "lease_id": identity.leaseID,
+          "provider": identity.provider, "provider_session_id": identity.session,
+          "bus": identity.bus, "muted": muted,
+        ],
         at: root.appendingPathComponent("runtime/playback-mutes/\(identity.storageKey).json"))
     }
     try lease(old, model: "old-model", muted: true)
     try lease(fresh, model: "new-model", muted: false)
     func conversation(_ identity: AgentPlaybackIdentity) throws -> OverlayConversation {
-      let owner = try XCTUnwrap(OverlayConversationOwner(row: [
-        "provider": identity.provider, "provider_session_id": identity.session,
-        "lease_id": identity.leaseID, "channel": "2", "name": "Same display name",
-      ]))
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": identity.provider, "provider_session_id": identity.session,
+          "lease_id": identity.leaseID, "channel": "2", "name": "Same display name",
+        ]))
       let message = OverlayConversationMessage(
         id: "broadcast-\(identity.session)", kind: .user, text: "Iwo Iwo Iwo Iwo Iwo", order: 1,
         emittedAt: "2026-10-11T19:00:00Z", owner: owner, recipients: [], deliveryID: nil,
@@ -93,6 +99,34 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
     XCTAssertNil(
       state?.conversationPlaybackMuted(try conversation(otherProvider)),
       "Matching session text in another provider does not identify the bound owner")
+    let globalMuteURL = root.appendingPathComponent("runtime/playback-mutes/global.json")
+    func globalMute(_ muted: Bool) async throws {
+      try write(
+        ["schema": "codescribe.agent-playback-mute.v1", "scope": "all", "muted": muted],
+        at: globalMuteURL)
+      let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+      while state?.globalPlaybackMuted != muted && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      XCTAssertEqual(state?.globalPlaybackMuted, muted)
+    }
+    try await globalMute(true)
+    XCTAssertEqual(
+      state?.channelPlaybackMuted["2"], true,
+      "The roster must reflect global mute even when this agent is locally audible")
+    XCTAssertEqual(
+      state?.conversationPlaybackMuted(freshConversation), true,
+      "Every agent conversation must reflect the same global playback block")
+    try await globalMute(false)
+    XCTAssertEqual(state?.channelPlaybackMuted["2"], false)
+    XCTAssertEqual(state?.conversationPlaybackMuted(freshConversation), false)
+    let localMute = try XCTUnwrap(
+      JSONSerialization.jsonObject(
+        with: Data(
+          contentsOf: root.appendingPathComponent(
+            "runtime/playback-mutes/\(fresh.storageKey).json"))) as? [String: Any])
+    XCTAssertEqual(
+      localMute["muted"] as? Bool, false, "Global mute must not rewrite local preferences")
     state = nil
     let released = ContinuousClock.now.advanced(by: .seconds(2))
     while retainedState != nil && ContinuousClock.now < released {
