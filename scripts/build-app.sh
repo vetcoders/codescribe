@@ -513,20 +513,36 @@ if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
 fi
+# Entitlements for the hardened-runtime signing path below. Same default path
+# as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from
+# env if the caller already exported it.
+ENTITLEMENTS_PATH="${CODESCRIBE_ENTITLEMENTS:-$REPO_ROOT/scripts/entitlements.plist}"
 # Resource executables are outside codesign's automatic nested-code paths.
 # Sign the canonical publisher explicitly before the outer resource seal.
-codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+# With a real identity, enable the hardened runtime (notarization requires it
+# on every executable in the bundle); ad-hoc stays plain since ad-hoc +
+# hardened runtime breaks local TCC (Accessibility/Input Monitoring) testing.
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+else
+  codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
-  codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"
 # Publisher signing changes its Mach-O bytes. Seal its refreshed digest
-# with the outer signature without signing that child a second time.
-codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID" "$APP"
+# with the outer signature without signing that child a second time (no
+# --deep here by design: the nested code is already sealed above).
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+else
+  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+fi
 if [ "$INSTALL_LANE" = "1" ]; then
   # The stamped plist must sit inside the seal, not beside it.
   codesign --verify --deep --strict "$APP"
