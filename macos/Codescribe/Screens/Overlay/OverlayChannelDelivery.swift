@@ -202,10 +202,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         owner.provider == binding["provider"] as? String,
         owner.providerSessionID == binding["provider_session_id"] as? String
       else { return }
-      if historicalOwners[owner.id] == nil || historicalOwners[owner.id]?.channel.isEmpty == true {
-        // Completing missing roster metadata leaves each stored message's owner label intact.
+      if historicalOwners[owner.id] == nil {
         historicalOwners[owner.id] = owner
         revision &+= 1
+      } else {
+        reconcileOwner(owner)
       }
       let pending = lease["pending"] as? [[String: Any]] ?? []
       for envelope in pending {
@@ -221,6 +222,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           acknowledged: false)
       }
       pruneHistory()
+    }
+
+    mutating func reconcileOwner(_ owner: OverlayConversationOwner) {
+      guard let previous = historicalOwners[owner.id], previous != owner else { return }
+      // Verified roster/archive metadata repairs the conversation, including
+      // cached broadcast-route channels. Historical message labels stay intact.
+      historicalOwners[owner.id] = owner
+      revision &+= 1
     }
 
     mutating func observeAcceptance(_ receipt: [String: Any]) {
@@ -507,8 +516,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         return
       }
       if schema == "codescribe.agent-reply.v1", let replyID = row["reply_id"] as? String,
-        let owner = OverlayConversationOwner(row: row), let text = row["text"] as? String
+        let text = row["text"] as? String
       {
+        // Peer replies carry a routing channel at the top level. Their author
+        // belongs to sender; a malformed sender cannot borrow route metadata.
+        let author = row["sender"] == nil ? row : row["sender"] as? [String: Any] ?? [:]
+        guard let owner = OverlayConversationOwner(row: author) else { return }
         let key = "reply:" + replyID
         if let previous = messages[key], previous.owner?.id != owner.id { return }
         historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
