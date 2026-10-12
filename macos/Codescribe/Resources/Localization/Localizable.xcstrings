@@ -5469,17 +5469,6 @@
         }
       }
     },
-    "Copy Title" : {
-      "comment" : "Thread row context menu: copy the thread title",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kopiuj tytuł"
-          }
-        }
-      }
-    },
     "Copy code" : {
       "localizations" : {
         "pl" : {
