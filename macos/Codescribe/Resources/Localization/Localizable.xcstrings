@@ -10779,12 +10779,12 @@
         }
       }
     },
-    "No agents connected": {
+    "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session.": {
       "localizations": {
         "pl": {
           "stringUnit": {
-            "state": "needs_review",
-            "value": "Brak podpiętych agentów"
+            "state": "translated",
+            "value": "Brak podłączonych agentów. Aby połączyć agenta z Codescribe, uruchom skill `codescribe` w jego sesji."
           }
         }
       }

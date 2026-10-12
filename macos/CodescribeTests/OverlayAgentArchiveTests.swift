@@ -7,6 +7,63 @@ import XCTest
 
 @MainActor
 final class OverlayAgentArchiveTests: XCTestCase {
+  func testDisconnectingLastAgentShowsLocalizedHintAlongsideBroadcastAndSavedHistory() async throws {
+    let state = OverlayState()
+    state.applyChannelRoster([roster()])
+    let owner = try XCTUnwrap(state.archiveCandidate(for: "4"))
+    let agent = OverlayConversation(
+      id: owner.id, channel: "4", name: "adam", owner: owner, messages: [])
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, agent]))
+
+    func drawer() -> OverlayChannelStatusView {
+      var view = OverlayChannelStatusView(
+        channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
+        hudStates: state.channelHudStates, conversations: state.conversations,
+        onSelectConversation: { _ in })
+      view.archivedOwners = state.archivedAgentOwners
+      return view
+    }
+
+    XCTAssertFalse(drawer().showsConnectionHint, "An agent is still listed")
+    state.archiveAgentCommand = { _ in }
+    await state.archiveAgent(owner)
+    XCTAssertTrue(state.visibleChannelRows.isEmpty)
+    XCTAssertEqual(state.conversations.map(\.id), [broadcast.id, agent.id])
+    let emptyDrawer = drawer()
+    XCTAssertTrue(emptyDrawer.showsConnectionHint)
+    XCTAssertEqual(emptyDrawer.currentConversations.map(\.id), [broadcast.id])
+    XCTAssertEqual(emptyDrawer.savedConversations.map(\.id), [agent.id])
+
+    let key =
+      "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
+    let polish = try XCTUnwrap(Bundle.main.path(forResource: "pl", ofType: "lproj"))
+    XCTAssertEqual(
+      try XCTUnwrap(Bundle(path: polish)).localizedString(forKey: key, value: nil, table: nil),
+      "Brak podłączonych agentów. Aby połączyć agenta z Codescribe, uruchom skill `codescribe` w jego sesji."
+    )
+    for locale in ["en", "pl"] {
+      let host = NSHostingView(
+        rootView: emptyDrawer.monitorBody.frame(width: 336)
+          .environment(\.locale, Locale(identifier: locale)))
+      let window = NSWindow(
+        contentRect: .init(x: -10000, y: -10000, width: 336, height: 480),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(50))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(host.fittingSize.width, 336, accuracy: 1)
+      XCTAssertGreaterThan(host.fittingSize.height, 200, "The hint occupies space between the rows")
+      XCTAssertLessThan(host.fittingSize.height, 480, "The hint fits the sidebar")
+    }
+    state.applyChannelRoster([roster(session: "replacement", alive: true)])
+    XCTAssertFalse(drawer().showsConnectionHint, "A newly attached agent hides the hint")
+  }
+
   func testOnlyDisconnectedClosedOwnersOfferArchiveAndStaleClickDoesNothing() async throws {
     let state = OverlayState()
     for (alive, open) in [(true, false), (nil, false), (false, true)] {

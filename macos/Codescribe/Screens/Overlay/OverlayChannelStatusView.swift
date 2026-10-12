@@ -655,12 +655,20 @@ struct OverlayChannelStatusView: View {
     return "\(owner.provider) · \(date.formatted(date: .abbreviated, time: .shortened))"
   }
 
+  var showsConnectionHint: Bool {
+    channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+  }
+
   private var details: some View {
     VStack(alignment: .leading, spacing: 2) {
-      if channels.isEmpty && currentConversations.isEmpty {
-        Text("No agents connected")
+      if showsConnectionHint {
+        Text(
+          "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
+        )
           .foregroundStyle(palette.mutedText.color)
+          .fixedSize(horizontal: false, vertical: true)
           .padding(.vertical, 12)
+          .accessibilityIdentifier("overlay-agent-connection-hint")
       }
       ForEach(channels) { channel in
         channelRow(channel)
