@@ -4443,6 +4443,21 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "Transcription incomplete")
   }
 
+  /// Wait for a main-actor condition instead of a fixed yield budget: the
+  /// versions read lands only after the engine's async reply returns, and no
+  /// number of yields proves that assignment happened.
+  private func waitUntil(
+    timeout: TimeInterval = 2, _ condition: @MainActor () -> Bool
+  ) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+      guard Date() < deadline else { return false }
+      await Task.yield()
+      try? await Task.sleep(nanoseconds: 1_000_000)
+    }
+    return true
+  }
+
   /// A worse retranscription must never be a one-way door (operator,
   /// 2026-09-24: "nie można zrobić back po retranscribe"). The commit replaces
   /// the rendered text on the reducer tip; the rail must retain the replaced
@@ -4461,7 +4476,8 @@ final class OverlayStateTests: XCTestCase {
     projectText(
       "dobra wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 7)
-    for _ in 0..<30 { await Task.yield() }
+    let seeded = await waitUntil { !state.transcriptVersions.options.isEmpty }
+    XCTAssertTrue(seeded, "revision 7 history applied")
     let committed = expectation(description: "retranscribe committed")
     engine.onRevision = { committed.fulfill() }
     state.retranscribe(pass: .fullHq)
@@ -4470,8 +4486,8 @@ final class OverlayStateTests: XCTestCase {
     projectText(
       "gorsza wersja", to: state, canRetranscribe: true, terminal: true,
       sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit")
-    for _ in 0..<30 { await Task.yield() }
-    XCTAssertTrue(state.transcriptVersions.canUndo)
+    let undoable = await waitUntil { state.transcriptVersions.canUndo }
+    XCTAssertTrue(undoable, "revision 8 history applied with a step behind it")
     let restored = expectation(description: "undo selected original")
     engine.onRestore = { restored.fulfill() }
     state.undoDocumentVersion()
@@ -4482,7 +4498,8 @@ final class OverlayStateTests: XCTestCase {
       documentReceipt: emptyRecoveryReceipt(
         text: "dobra wersja", provenance: .navigation,
         sessionId: "take-undo", source: 8, revision: 9))
-    for _ in 0..<30 { await Task.yield() }
+    let redoable = await waitUntil { state.transcriptVersions.canRedo }
+    XCTAssertTrue(redoable, "revision 9 history applied at the restored step")
     XCTAssertEqual(engine.restoredSelections, [0])
     XCTAssertFalse(state.transcriptVersions.canUndo)
     XCTAssertTrue(state.transcriptVersions.canRedo)

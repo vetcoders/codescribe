@@ -2036,9 +2036,11 @@ final class AgentChatStore: ObservableObject {
     let text = queued.text
     let staged = queued.attachments
     let attachmentPaths = staged.map { $0.url.path }
-    let isMaxConsultation = restoredSearchRows().first {
-      $0.backendId == backendId
-    }?.isMaxConsultation == true
+    // The turn's own row decides the lane. A backend id can name both an agent
+    // row and its Max consultation, so matching by backend id could pick the
+    // wrong lane and have the engine refuse the turn.
+    let isMaxConsultation =
+      restoredSearchRows().first { $0.id == threadID }?.isMaxConsultation == true
     let userTurnIndex = currentUserTurnCount(in: threadID)
 
     // Carry the staged attachments onto the You bubble so the sender sees a

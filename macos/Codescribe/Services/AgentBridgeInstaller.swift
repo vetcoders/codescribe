@@ -16,7 +16,12 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
     switch self {
     case .codex: return "Codex"
     case .claudeCode: return "Claude Code"
-    case .agents: return "Other agents (~/.agents)"
+    case .agents:
+      // The path is data and stays verbatim; only the label is interface copy.
+      let label = String(
+        localized: "Other agents",
+        comment: "Agent client label; its ~/.agents path follows verbatim")
+      return "\(label) (~/.agents)"
     }
   }
 

@@ -1197,6 +1197,9 @@ final class SettingsViewModel: ObservableObject {
   /// configured MCP server and waits for its `tools/list`, so the Tools tab
   /// shows a progress row instead of an empty catalog in the meantime.
   @Published private(set) var toolCatalogLoading = false
+  /// Every permission write reloads, so discoveries overlap; only the newest
+  /// one may publish or end the progress row.
+  private var toolCatalogReloadGeneration: UInt64 = 0
   @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
     defaultLevel: "ask",
     readOnlyDefault: "allow",
@@ -1860,9 +1863,11 @@ final class SettingsViewModel: ObservableObject {
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
     toolCatalogLoading = true
+    toolCatalogReloadGeneration &+= 1
+    let generation = toolCatalogReloadGeneration
     Task { @MainActor [weak self] in
       let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
-      guard let self else { return }
+      guard let self, self.toolCatalogReloadGeneration == generation else { return }
       self.permissionPolicy = policy
       self.toolCapabilities = capabilities
       self.toolCatalogLoading = false
