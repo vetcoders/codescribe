@@ -13,7 +13,7 @@ mod closed_take;
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=5";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=6";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,6 +183,7 @@ fn check(body: &Body) -> Contract {
                             paste_text: String,
                             target_app: Option<String>,
                             context: &'static str,
+                            paste_mode: PasteMode,
                         ) -> Result<OverlayPasteResult> {
                         }
                     ),

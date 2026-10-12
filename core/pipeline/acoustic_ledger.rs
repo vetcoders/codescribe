@@ -1515,16 +1515,19 @@ impl AcousticLedger {
                     no_speech_refused.push(pin.clone());
                     continue;
                 }
-                incoming.push(WordSlot {
-                    sample_start: pin.sample_start.max(owner.sample_start),
-                    sample_end: pin.sample_end.min(owner.sample_end),
-                    text: pin.text.clone(),
-                    producer: observation.producer,
-                    observation: observation.clone(),
-                    witness: SlotWitness::Unwitnessed,
-                    confidence: pin.confidence,
-                    surface_rewritten: pin.surface_rewritten,
-                });
+                incoming.push((
+                    WordSlot {
+                        sample_start: pin.sample_start.max(owner.sample_start),
+                        sample_end: pin.sample_end.min(owner.sample_end),
+                        text: pin.text.clone(),
+                        producer: observation.producer,
+                        observation: observation.clone(),
+                        witness: SlotWitness::Unwitnessed,
+                        confidence: pin.confidence,
+                        surface_rewritten: pin.surface_rewritten,
+                    },
+                    pin,
+                ));
             }
         }
         if incoming.is_empty() && !no_speech_refused.is_empty() {
@@ -1572,7 +1575,7 @@ impl AcousticLedger {
         // ClockLie constrains replacements, never new words over empty audio.
         // Filter before geometric operations so blocked sources stay held.
         if observation.producer != ObservationProducer::ManualHuman {
-            incoming.retain(|word| {
+            incoming.retain(|(word, _)| {
                 let sources = slots
                     .iter()
                     .filter(|source| {
@@ -1612,8 +1615,51 @@ impl AcousticLedger {
                 false
             });
         }
+        // Resegmentation runs before ordinary per-word correction and may consume a
+        // one-to-one window refinement. Enforce the CloudLive -> Whisper
+        // context boundary here so an incomplete exact source cannot bypass
+        // the direct-correction guard by entering that earlier path. Keep each
+        // original pin paired with its projection: owner clipping cannot
+        // improve the decoder's measured context quality.
+        if observation.producer == ObservationProducer::Whisper {
+            incoming.retain(|(word, pin)| {
+                let direct_sources = slots
+                    .iter()
+                    .filter(|source| {
+                        source.producer == ObservationProducer::CloudLive
+                            && !self.coarse_word_source(source)
+                            && ((source.sample_start == word.sample_start
+                                && source.sample_end == word.sample_end)
+                                || self.pin_targets_source(source, word))
+                    })
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let [source] = direct_sources.as_slice() else {
+                    return true;
+                };
+                if word_adjudication::label_equal(&source.text, &word.text)
+                    || self.whisper_has_correction_context(
+                        observation,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
+                {
+                    return true;
+                }
+                self.retain_slot_alternative(
+                    observation,
+                    &word.text,
+                    vec![source.clone()],
+                    "outside_publication_band",
+                );
+                self.record_word_slot_refusal(observation, word, false);
+                false
+            });
+        }
+        let (mut incoming, original_pins): (Vec<_>, Vec<_>) = incoming.into_iter().unzip();
         let (mut resegments, proposed_coverages) =
-            self.resegment_word_slots(observation, &mut slots, &mut incoming);
+            self.resegment_word_slots(observation, &mut slots, &mut incoming, &original_pins);
         let mut removed = resegments
             .iter()
             .flat_map(|op| op.sources.clone())
@@ -9168,8 +9214,9 @@ mod tests {
                 .any(|slot| slot.producer == ObservationProducer::Apple)
         );
 
+        // Producer rank alone cannot authorize this edge-of-window change.
         assert!(
-            heard_slot(
+            !heard_slot(
                 &mut ledger,
                 ObservationProducer::Whisper,
                 &occurrence,
@@ -9178,6 +9225,20 @@ mod tests {
                 "whisper"
             )
             .grants_mutation()
+        );
+        assert_eq!(
+            ledger.slots_of(&occurrence).unwrap()[0].producer,
+            ObservationProducer::CloudLive
+        );
+        let contextual_whisper =
+            ledger.next_word_observation(ObservationProducer::Whisper, 10_000, &occurrence);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &contextual_whisper,
+                    &[WordPin::new(1_000, 5_000, "whisper").with_decode_window(0, 6_000)],
+                )
+                .grants_mutation()
         );
         let slots = ledger.slots_of(&occurrence).unwrap();
         assert_eq!(slots.len(), 1);

@@ -516,6 +516,15 @@ The `rc-w3-guard-ast` plan admits **only** `codescribe-structural-ast` under
 dependency and reads complete Loctree body JSON from stdin; it never opens
 product source, executes snippets, loads models or opens devices. Python remains
 the gate owner and still requires production definitions and real callsites.
+The current parser identity is grammar 6. Its closed productions require the
+explicit `PasteMode` from overlay selection through the paste effect, and the
+session-bound refused archive lookup plus awaited live-archive link before
+refusal delivery. Capture-corridor witnesses follow the current inline Take
+subscriber and archive ownership order, including retention before capture
+publication. AST caller body selection uses the same typed signature as AST
+validation; ambiguous overloads still fail closed, and production reference,
+caller identity, callee definition, and body-span checks remain mandatory.
+
 The only additional verifier subprocess is exactly:
 
 ```sh
@@ -649,16 +658,36 @@ Two evidence-provider limits bound what a corridor may assert, and neither may b
 worked around by flipping metadata, raising a line cap or reading raw product
 source as an unauthenticated fallback:
 
-- a generic function whose `where` clause spans lines can return a truncated
-  `window` extent instead of `brace`, identically at every line cap. No body
-  obligation can be placed on such an owner; its contract has to be carried by
-  callsite edges, and the gap recorded as an explicit `BOUNDARY`.
+- historical Loctree builds, including `0.14.5+g3678b992`, search for a body
+  opener in only ten header lines. A longer signature can return truncated
+  `window` instead of `brace`, identically at every requested cap. The corrected
+  extractor searches within that cap, shields header syntax and refuses to
+  borrow a following declaration's body. Use a build with that proof capability
+  for the live wired gate. When the provider still cannot prove the boundary,
+  carry the contract through callsite edges and record an explicit `BOUNDARY`;
+  never manufacture complete-body metadata or shorten product code to hide it.
 - `enclosing_symbol` can resolve to a function-local `const` rather than the
   enclosing function, so a caller-attribution proof observes zero callsites for
   calls that genuinely exist. That is an `INSTRUMENT_FALSE_NEGATIVE` and must be
   classified as one before anyone repairs product code to satisfy it.
 
 ## 15. Guarded ordering is a separate obligation (2026-09-10)
+
+Current clipboard corridor obligations include the target check before a write,
+the second check before Cmd+V, an optional clipboard epoch, immediate recovery
+after errors or deferred delivery, and delayed restore after a successful paste.
+The retained target receives the declared `PasteMode`; the Codescribe canvas
+stays Safe and input capability remains checked. The positive live-body control
+and the clipboard mutants exercise these obligations together.
+The delegated capability helper has its own complete body obligation: it
+accumulates both Secure refusals and the non-Comfort text requirement, then
+returns that same check. A no-op helper or a later reset of the refusal is red.
+
+The emitter's mutation, seal and formatter-proposal arms are separate paths.
+Their composite body checklist follows lexical source order; it does not claim
+execution flows from one match arm into another. It proves the presence and
+lexical order of the proposal and derived-record calls, not arm-scoped routing.
+The seal corridor retains its separate application-before-publication sequence.
 
 Re-pointing a corridor onto the owner that actually executes the code proves
 presence. It does not prove sequence, and in an admission chain sequence is the

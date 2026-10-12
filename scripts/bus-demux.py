@@ -121,6 +121,7 @@ DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
+PLAYBACK_SCAN_SECONDS = 0.5
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -394,13 +395,13 @@ def installation_idle(
     Silence alone does not release it. An open channel with no receipt for
     six hours uses the CLI abandonment threshold; unknown timestamps keep
     blocking. Evidence rows refresh the session's last known activity.
-    A supplied monotonic deadline limits each scan to one polling slice.
+    A supplied monotonic deadline limits each scan to one bounded scan slice.
     Budget expiry retains the processed prefix and refuses idle; the caller
     can resume that cursor without skipping any unread lifecycle rows.
     """
     scan_started = time.monotonic()
     scan_deadline = (
-        min(deadline, scan_started + PLAYBACK_POLL_SECONDS)
+        min(deadline, scan_started + PLAYBACK_SCAN_SECONDS)
         if deadline is not None
         else scan_started + TAKE_WAIT_SECONDS
     )
@@ -2955,10 +2956,14 @@ def effective_wakeup(args: argparse.Namespace) -> str:
 
 
 def wakeup_configuration(args: argparse.Namespace) -> dict[str, Any]:
-    return {
+    configuration = {
         "wakeup": effective_wakeup(args), "on_seal": args.on_seal,
         "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
+    workspace = getattr(args, "follower_workspace", None)
+    if workspace is not None:
+        configuration["workspace"] = str(Path(workspace).resolve())
+    return configuration
 
 
 class NativeQueueWakeup:
@@ -3957,7 +3962,7 @@ def _play_pcm_24k(
                 return False, "playback stopped", "stopped"
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-                deadline=time.monotonic() + PLAYBACK_POLL_SECONDS,
+                deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
             if not idle:
@@ -4884,13 +4889,17 @@ def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
             or lease_state.get("wakeup_configuration") or {}
         wakeup = recorded.get("wakeup") if recorded.get("wakeup") in ("codex-queue", "off") else "off"
         on_seal = recorded.get("on_seal") if isinstance(recorded.get("on_seal"), str) else None
+        workspace = recorded.get("workspace") if isinstance(recorded.get("workspace"), str) else None
         configuration = {"wakeup": wakeup, "on_seal": on_seal,
                          "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        if workspace is not None:
+            configuration["workspace"] = workspace
         child = None
         try:
             child = launch_follower(root, follower_command(
                 root, provider=provider, session=session, name=str(entry.get("audience")),
-                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal))
+                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal,
+                workspace=workspace))
             confirm_follower(root, lease_id, session, str(entry.get("bus")), child, configuration)
             outcome: dict[str, Any] = {"event": "follower_recovered", "follower_pid": child.pid}
         except OSError as error:

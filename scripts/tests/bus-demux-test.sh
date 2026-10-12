@@ -6,6 +6,10 @@ DEMUX="$ROOT/scripts/bus-demux.py"
 WORKDIR="$(mktemp -d)"
 # Install guards include channel buses; fixtures must never inspect the user bridge.
 export CODESCRIBE_AGENT_BRIDGE_HOME="$WORKDIR/ambient-agent-bridge"
+# Preserve bounded follower diagnostics before the temporary fixture is cleaned.
+trap 'for log in "$WORKDIR"/attach-bridge/runtime/followers/*.log; do
+  if [[ -f "$log" ]]; then tail -n 60 "$log" >&2; fi
+done' ERR
 trap 'rm -rf "$WORKDIR"' EXIT
 BUS="$WORKDIR/transcript-events.jsonl"
 chmod +x "$DEMUX"
@@ -1371,7 +1375,24 @@ test "$(wc -l <"$HOOK_LOG" | tr -d ' ')" = "1"
 # the voice profile. A second attach reuses the live follower.
 ATTACH_HOME="$WORKDIR/attach-bridge"
 : >"$BUS"
-mkdir -p "$ATTACH_HOME"
+mkdir -p "$ATTACH_HOME/bin"
+# Keep native queue wakeup enabled with a hermetic provider.
+python3 - "$ATTACH_HOME" <<'PYFAKE'
+import json, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+record = home / "provider-input.jsonl"
+script = home / "bin" / "codex"
+script.write_text(
+    f"#!{sys.executable}\nimport json,sys\n"
+    "assert sys.argv[1:4] == ['queue', '--thread', 'codex-attach'], sys.argv\n"
+    "assert sys.argv[4] == '--message', sys.argv\n"
+    f"with open({str(record)!r}, 'a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n"
+    "print('queued')\n",
+    encoding="utf-8",
+)
+script.chmod(0o755)
+PYFAKE
 python3 - "$ATTACH_HOME" <<'PY'
 import json, sys
 from pathlib import Path
@@ -1386,7 +1407,7 @@ Path(sys.argv[1], "voices.json").write_text(
     encoding="utf-8",
 )
 PY
-receipt="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+receipt="$(PATH="$ATTACH_HOME/bin:$PATH" python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
   --provider codex --session codex-attach --name james \
   --attach --channel 3)"
 follower_pid="$(python3 - "$receipt" "$ATTACH_HOME" <<'PY'
@@ -1394,6 +1415,8 @@ import json, sys
 from pathlib import Path
 o = json.loads(sys.argv[1])
 assert o["kind"] == "attach_receipt", o
+assert o["wakeup"] == "codex-queue", o
+assert o["on_seal_hook"] is False, o
 assert o["channel"] == "3", o
 assert o["audience"] == "james", o
 assert o["follower_spawned"] is True, o
@@ -1430,7 +1453,26 @@ PY
   sleep 0.1
 done
 test "$delivered" = "delivered"
-receipt2="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+for _ in $(seq 1 50); do
+  [[ -s "$ATTACH_HOME/provider-input.jsonl" ]] && break
+  sleep 0.1
+done
+test -s "$ATTACH_HOME/provider-input.jsonl"
+kill -0 "$follower_pid"
+python3 - "$ATTACH_HOME" "$follower_pid" <<'PYCHECK'
+import json, sys
+from pathlib import Path
+home = Path(sys.argv[1])
+recorded = None
+for path in sorted((home / "runtime" / "followers").glob("*.pid")):
+    recorded = json.loads(path.read_text())["configuration"]
+for path in sorted((home / "leases").glob("*.json")):
+    state = json.loads(path.read_text())
+    assert state["active"] is True and state["pid"] == int(sys.argv[2]), state
+    assert state["wakeup_configuration"] == recorded, state
+    assert recorded["workspace"] == str(Path.cwd().resolve()), recorded
+PYCHECK
+receipt2="$(PATH="$ATTACH_HOME/bin:$PATH" python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
   --provider codex --session codex-attach --name james \
   --attach --channel 3)"
 python3 - "$receipt2" "$follower_pid" <<'PY'
@@ -1442,7 +1484,7 @@ PY
 # A live lease heartbeat counts as a follower even without a pidfile, so a
 # manually started follower is reused instead of spawning a doomed sibling.
 rm -f "$ATTACH_HOME"/runtime/followers/*.pid
-receipt3="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+receipt3="$(PATH="$ATTACH_HOME/bin:$PATH" python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
   --provider codex --session codex-attach --name james \
   --attach --channel 3)"
 python3 - "$receipt3" "$follower_pid" <<'PY'

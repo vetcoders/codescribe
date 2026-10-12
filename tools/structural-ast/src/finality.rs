@@ -122,6 +122,8 @@ pub(super) fn controller(g: &mut Grammar, body: &Block) {
                 "terminal refusal has no matching authenticated Bus document"
             ));
         }
+        let archived = take_refused_take_archive(refusal.finality.session_id());
+        self.link_live_archive(take_id.as_deref(), archived).await;
         match deliver(refusal.committed_text.clone()).await {
             Ok(_) => Ok(ProcessRecordingOutcome {
                 transcript_present: true,
