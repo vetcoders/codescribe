@@ -13,7 +13,7 @@ mod closed_take;
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=6";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=7";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,7 +220,7 @@ fn check(body: &Body) -> Contract {
                         fn detach_take_state(
                             &mut self,
                             stopped: Option<Result<Option<std::path::PathBuf>>>,
-                            archive: Option<SpillSink>,
+                            archive: Option<TakeArchive>,
                             physical_archive: Option<ClosedCaptureArchive>,
                         ) -> ClosedTake {
                         }
@@ -239,7 +239,7 @@ fn check(body: &Body) -> Contract {
                     ),
                     "finalize_take_archive" => parse_quote!(
                         fn finalize_take_archive(
-                            archive: SpillSink,
+                            archive: TakeArchive,
                             expected_samples: u64,
                         ) -> Result<Option<std::path::PathBuf>> {
                         }

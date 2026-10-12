@@ -14,7 +14,8 @@
 
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
 use crate::audio::recorder::{
-    ClosedCaptureArchive, Recorder, RecorderConfig, SpillSender, SpillSink, convert_mono_f32_to_i16,
+    CaptureArchiveError, ClosedCaptureArchive, Recorder, RecorderConfig, SpillSender, SpillSink,
+    convert_mono_f32_to_i16,
 };
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
@@ -374,7 +375,7 @@ pub struct StreamingRecorder {
     channel_tasks: Vec<ChannelTask>,
     captured_samples: Arc<AtomicU64>,
     /// Exact take archive, independent of the physical capture's lifetime.
-    take_archive: Option<SpillSink>,
+    take_archive: Option<TakeArchive>,
     /// The existing capture owner's archive result, frozen before a closed
     /// take can leave the controller slot. Consumed by its ordinary stop tail.
     prepared_capture_archive: Option<Result<Option<std::path::PathBuf>>>,
@@ -401,6 +402,89 @@ struct TakeArchiveFeed {
     sender: SpillSender,
     captured_samples: Arc<AtomicU64>,
     send_failed: Arc<AtomicBool>,
+    /// PCM the bounded spill queue refused, in capture order. Shared with the
+    /// owning [`TakeArchive`], which merges it into the recovery evidence.
+    refused: Arc<StdMutex<Vec<i16>>>,
+}
+
+/// One subscriber's exact PCM archive: the bounded disk spill plus every
+/// block its queue refused. A writer stall must not turn a complete capture
+/// into an unrecoverable take, so refused PCM stays in RAM as evidence.
+pub(crate) struct TakeArchive {
+    sink: SpillSink,
+    sample_rate: u32,
+    captured_samples: Arc<AtomicU64>,
+    refused: Arc<StdMutex<Vec<i16>>>,
+}
+
+impl TakeArchive {
+    pub(crate) fn spawn(sample_rate: u32, captured_samples: Arc<AtomicU64>) -> Result<Self> {
+        Ok(Self {
+            sink: SpillSink::spawn_take(sample_rate)?,
+            sample_rate,
+            captured_samples,
+            refused: Arc::new(StdMutex::new(Vec::new())),
+        })
+    }
+
+    fn feed(&self) -> Result<TakeArchiveFeed> {
+        Ok(TakeArchiveFeed {
+            sender: self
+                .sink
+                .sender()
+                .context("Take archive has no sample sender")?,
+            captured_samples: Arc::clone(&self.captured_samples),
+            send_failed: self.sink.send_failure_handle(),
+            refused: Arc::clone(&self.refused),
+        })
+    }
+
+    fn captured_samples(&self) -> u64 {
+        self.captured_samples.load(Ordering::Relaxed)
+    }
+
+    /// Close the spill and account for every refused block. The queue is FIFO
+    /// and refusal latches, so refused PCM is exactly the tail after whatever
+    /// the writer confirmed or retained. It is reported as unconfirmed PCM the
+    /// existing recovery path splices after the written prefix.
+    fn finalize(self) -> std::result::Result<(std::path::PathBuf, usize), CaptureArchiveError> {
+        let Self {
+            sink,
+            sample_rate,
+            refused,
+            ..
+        } = self;
+        let refused = std::mem::take(
+            &mut *refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let mut error = match sink.finalize() {
+            Ok(written) if refused.is_empty() => return Ok(written),
+            Ok((path, written)) => CaptureArchiveError {
+                cause: "take archive queue refused PCM; refused samples retained in memory".into(),
+                source_path: Some(path),
+                sample_rate,
+                captured_samples: 0,
+                written_samples: written,
+                unwritten_samples: Arc::new(Vec::new()),
+                buffer_start_offset: 0,
+                retained_samples: Arc::new(Vec::new()),
+            },
+            Err(error) => error,
+        };
+        if !refused.is_empty() {
+            let mut unwritten = error.unwritten_samples.as_ref().clone();
+            unwritten.extend(refused);
+            error.unwritten_samples = Arc::new(unwritten);
+        }
+        if error.retained_samples.is_empty() {
+            // A take spill has no RAM ring: the unconfirmed tail ends the take.
+            error.buffer_start_offset = error.written_samples + error.unwritten_samples.len();
+        }
+        error.captured_samples = error.written_samples + error.unwritten_samples.len();
+        Err(error)
+    }
 }
 
 /// Subscriber feeds behind one lock.
@@ -412,6 +496,9 @@ struct ChannelTask {
     task: JoinHandle<()>,
     lifecycle: RecorderLifecycleHandle,
     last_window: oneshot::Receiver<()>,
+    /// The channel's own exact archive, scoped to its subscription. The
+    /// device spill spans every subscriber and is never this channel's audio.
+    archive: Option<TakeArchive>,
 }
 
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
@@ -567,6 +654,17 @@ impl StreamingRecorder {
         kind: CaptureSubscriberKind,
         pcm_feed: mpsc::Sender<Vec<f32>>,
     ) -> CaptureSubscriberId {
+        self.acquire_archived_capture_subscriber(kind, pcm_feed, None)
+    }
+
+    /// Register the feed and its archive in one registry push, so the archive
+    /// hears exactly the blocks the feed hears.
+    fn acquire_archived_capture_subscriber(
+        &mut self,
+        kind: CaptureSubscriberKind,
+        pcm_feed: mpsc::Sender<Vec<f32>>,
+        archive: Option<TakeArchiveFeed>,
+    ) -> CaptureSubscriberId {
         self.next_capture_subscriber += 1;
         let id = CaptureSubscriberId(self.next_capture_subscriber);
         self.capture_subscribers.push((id, kind));
@@ -577,7 +675,7 @@ impl StreamingRecorder {
                 id,
                 kind,
                 sender: pcm_feed,
-                archive: None,
+                archive,
             });
         id
     }
@@ -806,22 +904,17 @@ impl StreamingRecorder {
             return Err(error);
         }
         let actual_sample_rate = self.recorder.actual_sample_rate();
-        let archive = match SpillSink::spawn_take(actual_sample_rate) {
-            Ok(archive) => archive,
-            Err(error) => {
-                if !shared_capture {
-                    let _ = self.recorder.stop().await;
+        let archive =
+            match TakeArchive::spawn(actual_sample_rate, Arc::clone(&self.captured_samples)) {
+                Ok(archive) => archive,
+                Err(error) => {
+                    if !shared_capture {
+                        let _ = self.recorder.stop().await;
+                    }
+                    return Err(error.context("Cannot admit take without its native PCM archive"));
                 }
-                return Err(error.context("Cannot admit take without its native PCM archive"));
-            }
-        };
-        let archive_feed = TakeArchiveFeed {
-            sender: archive
-                .sender()
-                .context("Take archive has no sample sender")?,
-            captured_samples: Arc::clone(&self.captured_samples),
-            send_failed: archive.send_failure_handle(),
-        };
+            };
+        let archive_feed = archive.feed()?;
         self.next_capture_subscriber += 1;
         let take_subscriber = CaptureSubscriberId(self.next_capture_subscriber);
         self.capture_subscribers
@@ -926,9 +1019,22 @@ impl StreamingRecorder {
     /// Does not start the device. `needs_physical_open` is the W1a rule: the
     /// first subscriber owes `Recorder::start`, a later one joins the stream.
     pub fn register_channel_feed(&mut self) -> ChannelFeedRegistration {
+        self.register_channel_feed_archived(None)
+    }
+
+    /// [`Self::register_channel_feed`] with the channel's own archive feed
+    /// registered in the same registry push.
+    fn register_channel_feed_archived(
+        &mut self,
+        archive: Option<TakeArchiveFeed>,
+    ) -> ChannelFeedRegistration {
         let needs_physical_open = !self.recorder.is_active();
         let (sender, receiver) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
-        let id = self.acquire_capture_subscriber(CaptureSubscriberKind::Channel, sender);
+        let id = self.acquire_archived_capture_subscriber(
+            CaptureSubscriberKind::Channel,
+            sender,
+            archive,
+        );
         ChannelFeedRegistration {
             id,
             receiver,
@@ -954,14 +1060,13 @@ impl StreamingRecorder {
         configured_silence_sec: f32,
         acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     ) -> Result<CaptureSubscriberId> {
-        let registration = self.register_channel_feed();
         let utterance_silence_sec = channel_session_silence(configured_silence_sec);
-        if registration.needs_physical_open {
+        // The first subscriber owes the physical open (W1a). The device runs
+        // before anything is registered, so the channel's exact archive opens
+        // at the native rate and joins the registry together with its feed.
+        if !self.recorder.is_active() {
             self.install_pcm_fanout_callback();
-            if let Err(error) = self.recorder.start().await {
-                self.release_capture_subscriber(registration.id);
-                return Err(error);
-            }
+            self.recorder.start().await?;
             let actual_sample_rate = self.recorder.actual_sample_rate();
             crate::audio::capture_receipt::publish_open_capture_path(
                 crate::audio::capture_receipt::CapturePathMeta::from_open_path(
@@ -987,6 +1092,18 @@ impl StreamingRecorder {
                 actual
             }
         };
+        // Scoped to this subscription, like a take's. A channel that cannot
+        // open its scratch WAV still transcribes; only its retention is lost,
+        // and the log says so.
+        let archive = match TakeArchive::spawn(actual_sample_rate, Arc::new(AtomicU64::new(0))) {
+            Ok(archive) => Some(archive),
+            Err(error) => {
+                warn!(%error, "channel admitted without its own PCM archive; its audio is not retained");
+                None
+            }
+        };
+        let archive_feed = archive.as_ref().and_then(|archive| archive.feed().ok());
+        let registration = self.register_channel_feed_archived(archive_feed);
         let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle, lifecycle_events) = recorder_lifecycle_channel();
@@ -1024,6 +1141,7 @@ impl StreamingRecorder {
             task,
             lifecycle,
             last_window: last_window_rx,
+            archive,
         });
         Ok(id)
     }
@@ -1048,7 +1166,7 @@ impl StreamingRecorder {
             .position(|task| task.subscriber == id);
         let removed = position.map(|index| self.channel_tasks.remove(index));
         let last = self.release_capture_subscriber(id);
-        let archive = if last && self.recorder.is_active() {
+        let physical_archive = if last && self.recorder.is_active() {
             self.recorder.close_capture().await;
             self.recorder.detach_closed_spill()
         } else {
@@ -1057,7 +1175,7 @@ impl StreamingRecorder {
         ClosedChannel {
             last,
             task: removed,
-            archive,
+            physical_archive,
         }
     }
 
@@ -1154,7 +1272,7 @@ impl StreamingRecorder {
     fn detach_take_state(
         &mut self,
         stopped: Option<Result<Option<std::path::PathBuf>>>,
-        archive: Option<SpillSink>,
+        archive: Option<TakeArchive>,
         physical_archive: Option<ClosedCaptureArchive>,
     ) -> ClosedTake {
         ClosedTake {
@@ -1238,22 +1356,36 @@ impl StreamingRecorder {
 pub struct ClosedChannel {
     last: bool,
     task: Option<ChannelTask>,
-    archive: Option<ClosedCaptureArchive>,
+    /// The device spill when this channel closed the device. Auxiliary: it
+    /// spans every subscriber that shared the capture and belongs to no session.
+    physical_archive: Option<ClosedCaptureArchive>,
 }
 
 impl ClosedChannel {
+    /// The returned path is the channel's own exact archive, never the
+    /// device span, so retention under the channel's session stays true.
     pub async fn finish(mut self) -> Result<(bool, Option<std::path::PathBuf>)> {
-        let archive = match self.archive.take() {
-            Some(archive) => tokio::task::spawn_blocking(move || {
-                archive
-                    .finalize()
-                    .map(|(path, _)| Some(path))
-                    .map_err(anyhow::Error::new)
+        let owned = self.task.as_mut().and_then(|task| task.archive.take());
+        let physical = self.physical_archive.take();
+        let archive = if owned.is_some() || physical.is_some() {
+            tokio::task::spawn_blocking(move || {
+                let owned = match owned {
+                    Some(archive) => {
+                        let expected = archive.captured_samples();
+                        finalize_take_archive(archive, expected)
+                    }
+                    None => Ok(None),
+                };
+                if let Some(physical) = physical {
+                    settle_auxiliary_physical_archive(physical, matches!(owned, Ok(Some(_))));
+                }
+                owned
             })
             .await
             .context("channel archive worker failed")
-            .and_then(|result| result),
-            None => Ok(None),
+            .and_then(|result| result)
+        } else {
+            Ok(None)
         };
         // Archive failure still owes the original task's complete drain.
         let task = match self.task.take() {
@@ -1291,7 +1423,7 @@ impl ClosedChannel {
 /// Its ledger and sink are the original authority, moved with the worker.
 pub struct ClosedTake {
     stopped: Option<Result<Option<std::path::PathBuf>>>,
-    archive: Option<SpillSink>,
+    archive: Option<TakeArchive>,
     physical_archive: Option<ClosedCaptureArchive>,
     archive_worker: Option<JoinHandle<Result<Option<std::path::PathBuf>>>>,
     task_failure: Option<anyhow::Error>,
@@ -1365,30 +1497,43 @@ impl ClosedTake {
                     Some(archive) => finalize_take_archive(archive, expected_samples),
                     None => supplied.unwrap_or(Ok(None)),
                 };
-                if let Some(archive) = physical_archive
-                    && let Err(error) = archive.finalize()
-                {
+                if let Some(archive) = physical_archive {
                     // This archive spans the physical device's lifetime. It
-                    // must never be retained under the narrower take identity.
-                    match error.recover_complete_archive() {
-                        Ok(recovered) => {
-                            error.acknowledge_recovery(&recovered)?;
-                            warn!(source = ?error.source_path, recovered = %recovered.path().display(),
-                                "auxiliary physical archive recovered separately from owned take");
-                        }
-                        Err(recovery) => {
-                            let audio_path = stopped.as_ref().ok().and_then(Clone::clone);
-                            let cause = stopped.err().unwrap_or_else(|| anyhow!(
-                                "auxiliary physical archive recovery failed: {recovery:#}; exact take WAV remains separate"
-                            ));
-                            return Err(anyhow::Error::new(CaptureStopFailure {
-                                session_id: None,
-                                capture_epoch: 0,
-                                audio_path,
-                                cause,
-                                task_failure: Some(anyhow::Error::new(error)),
-                            }));
-                        }
+                    // must never be retained under the narrower take identity:
+                    // beside an exact take WAV it is a duplicate and goes,
+                    // without one it is the last complete evidence and stays.
+                    let exact_take = matches!(stopped, Ok(Some(_)));
+                    match archive.finalize() {
+                        Ok((path, _)) if exact_take => discard_auxiliary_archive(&path),
+                        Ok((path, samples)) => warn!(
+                            path = %path.display(),
+                            samples,
+                            "auxiliary physical archive kept: no exact take WAV"
+                        ),
+                        Err(error) if exact_take => warn!(
+                            %error,
+                            "auxiliary physical archive failed beside an exact take WAV; its source stays"
+                        ),
+                        Err(error) => match error.recover_complete_archive() {
+                            Ok(recovered) => {
+                                error.acknowledge_recovery(&recovered)?;
+                                warn!(source = ?error.source_path, recovered = %recovered.path().display(),
+                                    "auxiliary physical archive recovered separately from owned take");
+                            }
+                            Err(recovery) => {
+                                let audio_path = stopped.as_ref().ok().and_then(Clone::clone);
+                                let cause = stopped.err().unwrap_or_else(|| anyhow!(
+                                    "auxiliary physical archive recovery failed: {recovery:#}; exact take WAV remains separate"
+                                ));
+                                return Err(anyhow::Error::new(CaptureStopFailure {
+                                    session_id: None,
+                                    capture_epoch: 0,
+                                    audio_path,
+                                    cause,
+                                    task_failure: Some(anyhow::Error::new(error)),
+                                }));
+                            }
+                        },
                     }
                 }
                 stopped
@@ -1607,8 +1752,40 @@ fn copy_stop_error(error: &anyhow::Error) -> anyhow::Error {
     anyhow!("{error:#}")
 }
 
+/// The device spill is never a session's evidence. Beside an exact owned
+/// archive it is a duplicate and goes; without one it is the last complete
+/// PCM and stays on disk, named in the log.
+fn settle_auxiliary_physical_archive(archive: ClosedCaptureArchive, owned_exact: bool) {
+    match archive.finalize() {
+        Ok((path, _)) if owned_exact => discard_auxiliary_archive(&path),
+        Ok((path, samples)) => warn!(
+            path = %path.display(),
+            samples,
+            "auxiliary physical archive kept: no exact owned archive"
+        ),
+        Err(error) => warn!(
+            %error,
+            "auxiliary physical archive failed; its source stays as evidence"
+        ),
+    }
+}
+
+fn discard_auxiliary_archive(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => debug!(
+            path = %path.display(),
+            "auxiliary physical archive discarded beside an exact owned archive"
+        ),
+        Err(error) => warn!(
+            %error,
+            path = %path.display(),
+            "auxiliary physical archive could not be discarded"
+        ),
+    }
+}
+
 fn finalize_take_archive(
-    archive: SpillSink,
+    archive: TakeArchive,
     expected_samples: u64,
 ) -> Result<Option<std::path::PathBuf>> {
     let (path, count) = archive.finalize().map_err(|mut error| {
@@ -1640,12 +1817,23 @@ fn offer_pcm_to_feeds(feeds: &mut Vec<PcmFeed>, data: &[f32], dropped: &AtomicU6
             archive
                 .captured_samples
                 .fetch_add(data.len() as u64, Ordering::Relaxed);
-            if !archive.send_failed.load(Ordering::SeqCst)
-                && archive.sender.send(convert_mono_f32_to_i16(data)).is_err()
-            {
-                // A full archive queue is an explicit refusal, never a WAV
-                // receipt for a shortened take. The physical archive remains.
+            let samples = convert_mono_f32_to_i16(data);
+            let refused = if archive.send_failed.load(Ordering::SeqCst) {
+                Some(samples)
+            } else {
+                archive.sender.send(samples).err()
+            };
+            if let Some(samples) = refused {
+                // A full queue latches: the archive stays an ordered written
+                // prefix plus this RAM tail, never a WAV with a hole. The tail
+                // is kept under the registry lock the callback already holds
+                // and merged into the recovery evidence at finalize.
                 archive.send_failed.store(true, Ordering::SeqCst);
+                archive
+                    .refused
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(samples);
             }
         }
         match feed.sender.try_send(data.to_vec()) {
@@ -2186,8 +2374,8 @@ mod tests {
             &[0.1; 40],
             &recorder.dropped_chunks,
         );
-        let archive = SpillSink::spawn_take(16_000).unwrap();
         recorder.captured_samples = Arc::new(AtomicU64::new(0));
+        let archive = TakeArchive::spawn(16_000, Arc::clone(&recorder.captured_samples)).unwrap();
         let (take_tx, mut take_rx) = mpsc::channel(8);
         let take_id = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
         recorder.take_subscriber = Some(take_id);
@@ -2198,11 +2386,7 @@ mod tests {
             .iter_mut()
             .find(|feed| feed.id == take_id)
             .unwrap()
-            .archive = Some(TakeArchiveFeed {
-            sender: archive.sender().unwrap(),
-            captured_samples: Arc::clone(&recorder.captured_samples),
-            send_failed: archive.send_failure_handle(),
-        });
+            .archive = Some(archive.feed().unwrap());
         recorder.take_archive = Some(archive);
         offer_pcm_to_feeds(
             &mut recorder.pcm_feeds.lock().unwrap(),
@@ -2292,6 +2476,14 @@ mod tests {
         let exact = crate::audio::recorder::spill_take_wav_for_tests(&[700; 160], 16_000).unwrap();
         let physical =
             crate::audio::recorder::failed_physical_archive_fixture(&[2100; 800], 16_000);
+        let takes = crate::audio::recorder::takes_dir().unwrap();
+        let take_files = |dir: &std::path::Path| -> std::collections::BTreeSet<std::path::PathBuf> {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect()
+        };
+        let before = take_files(&takes);
         let mut recorder = StreamingRecorder::new().unwrap();
         recorder.sample_rate = 16_000;
         recorder.captured_samples.store(160, Ordering::Relaxed);
@@ -2299,6 +2491,11 @@ mod tests {
             recorder.detach_take_state(Some(Ok(Some(exact.clone()))), None, Some(physical));
         let (_, path) = closed.finish().await.unwrap();
         assert_eq!(path.as_ref(), Some(&exact));
+        assert_eq!(
+            take_files(&takes),
+            before,
+            "no recovery WAV is minted beside an exact take WAV; the failed source stays"
+        );
         let mut wav = hound::WavReader::open(&exact).unwrap();
         let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
         assert_eq!(
@@ -2331,6 +2528,7 @@ mod tests {
             }),
             lifecycle,
             last_window,
+            archive: None,
         });
         let closed = recorder.close_channel_session(channel).await;
         assert_eq!(recorder.capture_subscriber_count(), 1);
@@ -2369,6 +2567,7 @@ mod tests {
         let (channel_tx, mut channel_rx) = mpsc::channel(8);
         let samples = Arc::new(AtomicU64::new(0));
         let refused = Arc::new(AtomicBool::new(false));
+        let refused_pcm = Arc::new(StdMutex::new(Vec::new()));
         let mut feeds = vec![
             PcmFeed {
                 id: CaptureSubscriberId(1),
@@ -2378,6 +2577,7 @@ mod tests {
                     sender: SpillSender::Take(archive_tx),
                     captured_samples: Arc::clone(&samples),
                     send_failed: Arc::clone(&refused),
+                    refused: Arc::clone(&refused_pcm),
                 }),
             },
             PcmFeed {
@@ -2394,10 +2594,115 @@ mod tests {
         assert!(refused.load(Ordering::SeqCst));
         assert_eq!(samples.load(Ordering::Relaxed), 120);
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        // One block fit the queue; the two refused ones are kept, in order.
+        let mut expected = convert_mono_f32_to_i16(&[0.2; 40]);
+        expected.extend(convert_mono_f32_to_i16(&[0.2; 40]));
+        assert_eq!(*refused_pcm.lock().unwrap(), expected);
         for _ in 0..3 {
             assert_eq!(take_rx.try_recv().unwrap(), vec![0.2; 40]);
             assert_eq!(channel_rx.try_recv().unwrap(), vec![0.2; 40]);
         }
+    }
+
+    /// A writer stall refuses blocks at the bounded take queue. The refused
+    /// PCM is evidence, not loss: finalize reports it as the unconfirmed tail
+    /// after the written prefix and the existing recovery rebuilds the take.
+    #[test]
+    #[serial]
+    #[serial(tts_duck)]
+    fn refused_take_archive_pcm_stays_recoverable_after_writer_stall() {
+        crate::audio::tts_duck::clear();
+        let captured = Arc::new(AtomicU64::new(0));
+        let archive = TakeArchive::spawn(16_000, Arc::clone(&captured)).unwrap();
+        let (take_tx, _take_rx) = mpsc::channel(8);
+        let mut feeds = vec![PcmFeed {
+            id: CaptureSubscriberId(1),
+            kind: CaptureSubscriberKind::Take,
+            sender: take_tx,
+            archive: Some(archive.feed().unwrap()),
+        }];
+        let dropped = AtomicU64::new(0);
+        // The writer admits the first block.
+        offer_pcm_to_feeds(&mut feeds, &[0.2; 40], &dropped);
+        // Then it stalls: a zero-capacity queue refuses every later block.
+        let (stalled_tx, _stalled_rx) = std::sync::mpsc::sync_channel(0);
+        feeds[0].archive.as_mut().unwrap().sender = SpillSender::Take(stalled_tx);
+        offer_pcm_to_feeds(&mut feeds, &[0.4; 40], &dropped);
+        offer_pcm_to_feeds(&mut feeds, &[0.6; 40], &dropped);
+        assert_eq!(captured.load(Ordering::Relaxed), 120);
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        drop(feeds);
+
+        let error = finalize_take_archive(archive, 120)
+            .unwrap_err()
+            .downcast::<CaptureArchiveError>()
+            .unwrap();
+        assert_eq!(error.written_samples, 40);
+        assert_eq!(error.unwritten_samples.len(), 80);
+        assert_eq!(error.buffer_start_offset, 120);
+        assert_eq!(error.captured_samples, 120);
+        assert!(error.retained_samples.is_empty());
+
+        let recovered = error.recover_complete_archive().unwrap();
+        error.acknowledge_recovery(&recovered).unwrap();
+        let mut wav = hound::WavReader::open(recovered.path()).unwrap();
+        assert_eq!(wav.spec().sample_rate, 16_000);
+        let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
+        let mut expected = convert_mono_f32_to_i16(&[0.2; 40]);
+        expected.extend(convert_mono_f32_to_i16(&[0.4; 40]));
+        expected.extend(convert_mono_f32_to_i16(&[0.6; 40]));
+        assert_eq!(pcm, expected, "written prefix then the refused tail");
+        std::fs::remove_file(recovered.path()).unwrap();
+        if let Some(source) = error.source_path.as_deref() {
+            let _ = std::fs::remove_file(source);
+        }
+    }
+
+    /// A live channel retains its own subscriber-scoped PCM. Blocks the
+    /// device heard before the channel opened belong to the device span and
+    /// never to the channel's session.
+    #[tokio::test]
+    #[serial]
+    #[serial(tts_duck)]
+    async fn live_channel_archives_only_its_own_subscription_span() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().unwrap();
+        recorder.sample_rate = 16_000;
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let take = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.1; 40],
+            &recorder.dropped_chunks,
+        );
+        let archive = TakeArchive::spawn(16_000, Arc::new(AtomicU64::new(0))).unwrap();
+        let registration = recorder.register_channel_feed_archived(Some(archive.feed().unwrap()));
+        let (lifecycle, _) = recorder_lifecycle_channel();
+        let (_, last_window) = oneshot::channel();
+        recorder.channel_tasks.push(ChannelTask {
+            subscriber: registration.id,
+            task: tokio::spawn(async {}),
+            lifecycle,
+            last_window,
+            archive: Some(archive),
+        });
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.5; 160],
+            &recorder.dropped_chunks,
+        );
+        let closed = recorder.close_channel_session(registration.id).await;
+        let (last, path) = closed.finish().await.unwrap();
+        assert!(!last, "the take still owns the device");
+        let path = path.expect("live channel owns an exact archive");
+        let mut wav = hound::WavReader::open(&path).unwrap();
+        assert_eq!(wav.spec().sample_rate, 16_000);
+        let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
+        assert_eq!(pcm, convert_mono_f32_to_i16(&[0.5; 160]));
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.1; 40]);
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.5; 160]);
+        assert!(recorder.release_capture_subscriber(take));
     }
 
     /// The capture callback's fan-out is bounded and non-blocking: a full feed

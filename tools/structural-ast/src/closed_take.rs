@@ -164,28 +164,39 @@ pub(super) fn finish(g: &mut Grammar, body: &Block) {
                     Some(archive) => finalize_take_archive(archive, expected_samples),
                     None => supplied.unwrap_or(Ok(None)),
                 };
-                if let Some(archive) = physical_archive
-                    && let Err(error) = archive.finalize()
-                {
-                    match error.recover_complete_archive() {
-                        Ok(recovered) => {
-                            error.acknowledge_recovery(&recovered)?;
-                            warn!(source = ?error.source_path, recovered = %recovered.path().display(),
-                                "auxiliary physical archive recovered separately from owned take");
-                        }
-                        Err(recovery) => {
-                            let audio_path = stopped.as_ref().ok().and_then(Clone::clone);
-                            let cause = stopped.err().unwrap_or_else(|| anyhow!(
-                                "auxiliary physical archive recovery failed: {recovery:#}; exact take WAV remains separate"
-                            ));
-                            return Err(anyhow::Error::new(CaptureStopFailure {
-                                session_id: None,
-                                capture_epoch: 0,
-                                audio_path,
-                                cause,
-                                task_failure: Some(anyhow::Error::new(error)),
-                            }));
-                        }
+                if let Some(archive) = physical_archive {
+                    let exact_take = matches!(stopped, Ok(Some(_)));
+                    match archive.finalize() {
+                        Ok((path, _)) if exact_take => discard_auxiliary_archive(&path),
+                        Ok((path, samples)) => warn!(
+                            path = %path.display(),
+                            samples,
+                            "auxiliary physical archive kept: no exact take WAV"
+                        ),
+                        Err(error) if exact_take => warn!(
+                            %error,
+                            "auxiliary physical archive failed beside an exact take WAV; its source stays"
+                        ),
+                        Err(error) => match error.recover_complete_archive() {
+                            Ok(recovered) => {
+                                error.acknowledge_recovery(&recovered)?;
+                                warn!(source = ?error.source_path, recovered = %recovered.path().display(),
+                                    "auxiliary physical archive recovered separately from owned take");
+                            }
+                            Err(recovery) => {
+                                let audio_path = stopped.as_ref().ok().and_then(Clone::clone);
+                                let cause = stopped.err().unwrap_or_else(|| anyhow!(
+                                    "auxiliary physical archive recovery failed: {recovery:#}; exact take WAV remains separate"
+                                ));
+                                return Err(anyhow::Error::new(CaptureStopFailure {
+                                    session_id: None,
+                                    capture_epoch: 0,
+                                    audio_path,
+                                    cause,
+                                    task_failure: Some(anyhow::Error::new(error)),
+                                }));
+                            }
+                        },
                     }
                 }
                 stopped

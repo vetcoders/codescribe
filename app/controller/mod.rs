@@ -2538,6 +2538,11 @@ impl RecordingController {
         let (Some(session_id), Some(transcript)) = (session_id, transcript) else {
             return;
         };
+        // The toggle stop marks the live slot `{uuid}:stopping`. The reducer
+        // and the mirror know the take by its Bus uuid only.
+        let session_id = session_id
+            .strip_suffix(STOPPING_SUFFIX)
+            .unwrap_or(session_id);
         let Some(presentation) = self.active_presentation.read().await.clone() else {
             warn!("archived take has no live document history to keep");
             return;
@@ -5167,21 +5172,46 @@ impl RecordingController {
             CaptureStopAdmission::Immediate(outcome) => {
                 Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}"))
             }
-            CaptureStopAdmission::Settling(mut result, mut closed) => loop {
-                if *closed.borrow_and_update() {
-                    return Ok(());
-                }
-                if let Some(settled) = result.borrow_and_update().clone() {
-                    return match settled.map_err(anyhow::Error::msg)? {
-                        CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture => Ok(()),
-                        outcome => Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}")),
-                    };
-                }
+            CaptureStopAdmission::Settling(result, closed) => {
+                Self::await_admitted_stop(result, closed).await
+            }
+        }
+    }
+
+    /// Return at the capture-close receipt or at the settled result,
+    /// whichever comes first. A settlement that never closes a capture (gate
+    /// refusal, no live take, not recording) drops its receipt sender without
+    /// sending; its result still arrives and is the outcome, not an error.
+    async fn await_admitted_stop(
+        mut result: watch::Receiver<Option<CaptureSettlementResult>>,
+        mut closed: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let mut receipt_pending = true;
+        loop {
+            if receipt_pending && *closed.borrow_and_update() {
+                return Ok(());
+            }
+            if let Some(settled) = result.borrow_and_update().clone() {
+                return match settled.map_err(anyhow::Error::msg)? {
+                    CaptureStopOutcome::Stopped | CaptureStopOutcome::NoLiveCapture => Ok(()),
+                    outcome => Err(anyhow::anyhow!("Stop admission unresolved: {outcome:?}")),
+                };
+            }
+            if receipt_pending {
                 tokio::select! {
-                    change = closed.changed() => { change.map_err(|_| anyhow::anyhow!("capture-close receipt lost"))?; }
-                    change = result.changed() => { change.map_err(|_| anyhow::anyhow!("capture settlement owner lost"))?; }
+                    receipt = closed.changed() => {
+                        receipt_pending = receipt.is_ok();
+                    }
+                    change = result.changed() => {
+                        change.map_err(|_| anyhow::anyhow!("capture settlement owner lost"))?;
+                    }
                 }
-            },
+            } else {
+                result
+                    .changed()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("capture settlement owner lost"))?;
+            }
         }
     }
 
@@ -9669,6 +9699,25 @@ mod refusal_recovery_tests {
         }
     }
 
+    /// The toggle stop path reads `{uuid}:stopping` from the live slot. The
+    /// archive link must carry the Bus uuid, or the mirror never matches the
+    /// reducer's timeline and no version of the refused take is written.
+    #[tokio::test]
+    async fn refused_toggle_take_links_its_archive_under_the_bus_uuid() {
+        let take = take(State::RecToggle, false).await;
+        *take.controller.active_presentation.write().await = Some(Arc::new(take.emitter));
+        let transcript = take.dir.path().join("archived.txt");
+        take.controller
+            .link_live_archive(Some(&format!("{TAKE}:stopping")), Some(transcript.clone()))
+            .await;
+        let mirror = take.controller.live_archive.lock().unwrap();
+        let mirror = mirror
+            .as_ref()
+            .expect("refused take keeps its archive link");
+        assert_eq!(mirror.session_id(), TAKE);
+        assert_eq!(mirror.transcript(), transcript.as_path());
+    }
+
     /// The ledger refused the seal, not the words: history must receive the
     /// committed document as `Raw` text instead of a `_failed` audio bag.
     #[tokio::test]
@@ -10870,6 +10919,41 @@ mod owned_capture_settlement_tests {
             controller.hold_start_generation.load(Ordering::SeqCst),
             generation
         );
+    }
+
+    /// A stop that never closes a capture drops its receipt sender without a
+    /// receipt. The gesture then settles on the result; a lost receipt is
+    /// never an outcome of its own.
+    #[tokio::test]
+    async fn admitted_stop_settles_on_its_result_after_the_receipt_sender_is_dropped() {
+        for (settled, ok) in [
+            (Ok(CaptureStopOutcome::NoLiveCapture), true),
+            (Ok(CaptureStopOutcome::ForeignCapture), false),
+            (
+                Err("Toggle-adjudicate: recorder unavailable".to_string()),
+                false,
+            ),
+        ] {
+            let (result_tx, result_rx) = watch::channel(None);
+            let (closed_tx, closed_rx) = watch::channel(false);
+            drop(closed_tx);
+            let waiter = tokio::spawn(RecordingController::await_admitted_stop(
+                result_rx, closed_rx,
+            ));
+            tokio::task::yield_now().await;
+            assert!(!waiter.is_finished(), "a lost receipt is not an outcome");
+            result_tx.send_replace(Some(settled));
+            let outcome = waiter.await.unwrap();
+            assert_eq!(outcome.is_ok(), ok);
+            if let Err(error) = outcome {
+                let message = format!("{error:#}");
+                assert!(!message.contains("receipt"), "{message}");
+                assert!(
+                    message.contains("ForeignCapture") || message.contains("recorder unavailable"),
+                    "{message}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
