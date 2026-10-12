@@ -362,6 +362,16 @@ tests) binds each of the 24 mode × gesture cells alone, performs the gesture
 through `HotkeyDetector::feed` with synthetic key snapshots, and asserts that
 the predicate and the started mode agree — 8 routed cells, 16 unrouted.
 
+The routed set describes each cell **bound in isolation**. The per-cell
+predicate is not the whole routing decision: one cross-mode rule also reads the
+Dictation binding. With Dictation=`DoubleCtrl` the raw toggle wins and both
+Option toggles start nothing, so Formatting=`DoubleLeftOption` and
+Assistive=`DoubleRightOption` are routed cells that are still blocked.
+`detect_internal_conflicts` (`app/os/shortcut_registry.rs`) reports that pair
+as a blocking conflict ("Dictation is set to Double Ctrl, so Left/Right Option
+toggle is disabled."), which is the sentence the `ShortcutsSaveReceiptTests`
+assert; the precedence matrix below lists the same rows.
+
 **Unrouted cells are refused, not persisted.** One owner, three readers:
 
 - Validation: `detect_internal_conflicts` (`app/os/shortcut_registry.rs`)

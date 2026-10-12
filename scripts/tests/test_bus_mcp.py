@@ -1,7 +1,6 @@
 """Native MCP reads owned bus deliveries; only an explicit ACK consumes them."""
 import contextlib
 import fcntl
-import hashlib
 import importlib.util
 import io
 import json
