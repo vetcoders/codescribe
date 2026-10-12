@@ -23871,6 +23871,176 @@
           }
         }
       }
+    },
+    "Search conversations…": {
+      "comment": "Prompt inside the saved conversations search field",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search conversations…"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Szukaj rozmów…"
+          }
+        }
+      }
+    },
+    "Newest first": {
+      "comment": "Sorting option for saved conversations: newest activity first",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Newest first"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Najnowsze"
+          }
+        }
+      }
+    },
+    "Oldest first": {
+      "comment": "Sorting option for saved conversations: oldest activity first",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oldest first"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Najstarsze"
+          }
+        }
+      }
+    },
+    "By name": {
+      "comment": "Sorting option for saved conversations: alphabetical by conversation name",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By name"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Według nazwy"
+          }
+        }
+      }
+    },
+    "Sort order": {
+      "comment": "Menu label for selecting conversation sort order",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sort order"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kolejność sortowania"
+          }
+        }
+      }
+    },
+    "No matching conversations": {
+      "comment": "Status text when a search filter matches no saved conversations",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No matching conversations"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brak pasujących rozmów"
+          }
+        }
+      }
+    },
+    "Search failed": {
+      "comment": "Status text when saved conversation search encounters an error",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search failed"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Błąd wyszukiwania"
+          }
+        }
+      }
+    },
+    "Partial results": {
+      "comment": "Status warning when search results are incomplete or some archives could not be read",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial results"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Częściowe wyniki"
+          }
+        }
+      }
+    },
+    "Clear search": {
+      "comment": "Accessibility label for the button that clears the saved conversations search query",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear search"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wyczyść wyszukiwanie"
+          }
+        }
+      }
+    },
+    "Searching…": {
+      "comment": "Status indicator while search is in progress",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Searching…"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Szukanie…"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
