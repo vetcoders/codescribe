@@ -373,10 +373,9 @@ struct OverlayConversationView: View {
       Group {
         if OversizedBubblePolicy.isOversized(message.text) {
           OversizedMessageBody(fullText: message.text) { head in
-            MarkdownText(raw: head, size: 13, bodyColor: palette.primaryText.color)
-          }
-          if message.id == activeCaptureMessageID {
-            TranscriptActivityUnderline()
+            MarkdownText(
+              raw: head, size: 13, bodyColor: palette.primaryText.color,
+              showsUnderlineCaret: message.id == activeCaptureMessageID)
           }
         } else {
           MarkdownText(

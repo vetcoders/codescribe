@@ -6,6 +6,121 @@ import XCTest
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testConversationActivityUnderlineFollowsLastWrappedLine() async throws {
+    for width in [CGFloat(220), 360] {
+      let text = String(repeating: "A short spoken phrase with several words. ", count: 4) + "tail"
+      let host = NSHostingView(
+        rootView: MarkdownText(
+          raw: text, size: 13, bodyColor: .white, showsUnderlineCaret: true
+        )
+        .background(Color.black))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      await nextMainQueueTurn()
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let snapshot = XCTAttachment(
+        image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
+      snapshot.name = "transcript-tail-\(Int(width))"
+      snapshot.lifetime = .keepAlways
+      add(snapshot)
+      var ink: [NSPoint] = []
+      var activity: [NSPoint] = []
+      for y in 0..<bitmap.pixelsHigh {
+        for x in 0..<bitmap.pixelsWide {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+            continue
+          }
+          if color.redComponent > 0.75, color.greenComponent > 0.75,
+            color.blueComponent > 0.75
+          {
+            ink.append(NSPoint(x: CGFloat(x), y: CGFloat(y)))
+          }
+          if color.redComponent > 0.15, color.greenComponent > 0.05,
+            color.greenComponent < color.redComponent * 0.8,
+            color.blueComponent < color.greenComponent * 0.9
+          {
+            activity.append(NSPoint(x: CGFloat(x), y: CGFloat(y)))
+          }
+        }
+      }
+      let scale = CGFloat(bitmap.pixelsWide) / width
+      let lastRow = try XCTUnwrap(ink.map(\.y).max())
+      let tailX = try XCTUnwrap(ink.filter { $0.y >= lastRow - 13 * scale }.map(\.x).max())
+      let activityX = try XCTUnwrap(activity.map(\.x).max())
+      XCTAssertGreaterThanOrEqual(activityX - tailX, -4 * scale)
+      XCTAssertLessThanOrEqual(
+        activityX - tailX, 24 * scale,
+        "Activity belongs after the final spoken word, not beside the whole wrapped paragraph")
+    }
+  }
+
+  func testConversationActivityKeepsUnicodeSelectionAndCopyWhileGrowingAndResizing() async throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let host = NSHostingView(rootView: MarkdownText(raw: "", showsUnderlineCaret: true))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 260)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.orderFrontRegardless()
+    defer { window.close() }
+    func nativeText(in view: NSView) -> LiveTranscriptNativeTextView? {
+      if let text = view as? LiveTranscriptNativeTextView { return text }
+      return view.subviews.lazy.compactMap { nativeText(in: $0) }.first
+    }
+    var heldSelectionLength = 0
+    for text in ["", "Żółw 🐢 é", "Żółw 🐢 é", String(repeating: "Iwo ", count: 80) + "\n"] {
+      host.rootView = MarkdownText(raw: text, showsUnderlineCaret: true)
+      for width in [CGFloat(360), 220, 480] {
+        window.setContentSize(NSSize(width: width, height: 260))
+        host.layoutSubtreeIfNeeded()
+        await nextMainQueueTurn()
+        host.layoutSubtreeIfNeeded()
+        let view = try XCTUnwrap(nativeText(in: host))
+        XCTAssertEqual(Array(view.string.utf8), Array(text.utf8))
+        XCTAssertEqual(
+          view.selectedRange(),
+          NSRange(location: 0, length: min(heldSelectionLength, (text as NSString).length)))
+        let marker = try XCTUnwrap(
+          view.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+        let selected = NSRange(location: 0, length: min(3, (text as NSString).length))
+        view.setSelectedRange(selected)
+        heldSelectionLength = selected.length
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.selectedRange(), selected)
+        XCTAssertFalse(marker.isHidden)
+        XCTAssertGreaterThanOrEqual(marker.frame.minX, 0)
+        XCTAssertLessThanOrEqual(marker.frame.maxX, view.bounds.maxX + 1)
+        XCTAssertLessThanOrEqual(marker.frame.maxY, view.bounds.maxY + 1)
+        if !text.isEmpty {
+          let tail = NSRange(location: (text as NSString).length, length: 0)
+          let caret = view.convert(
+            window.convertFromScreen(view.firstRect(forCharacterRange: tail, actualRange: nil)),
+            from: nil)
+          XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
+          XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
+          view.setSelectedRange(NSRange(location: 0, length: tail.location))
+          XCTAssertTrue(view.copySelection(to: board))
+          XCTAssertEqual(
+            Array(try XCTUnwrap(board.string(forType: .string)).utf8), Array(text.utf8))
+          view.setSelectedRange(selected)
+        }
+      }
+    }
+  }
+
   func testReadinessSurvivesEditableCapabilityButNotActualEditing() throws {
     let fixture = makeScrollFixture()
     defer {
