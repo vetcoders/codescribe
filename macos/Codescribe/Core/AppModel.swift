@@ -101,9 +101,10 @@ final class OverlayController: ObservableObject {
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
   private let orderPanelFront: @MainActor (NSPanel) -> Void
   private let orderPanelOut: @MainActor (NSPanel) -> Void
-  /// Runs the agent-handoff fade and calls back when it finishes. Injected so a
+  /// Runs a panel fade of the given length and calls back when it finishes
+  /// (agent handoff 0.18 s, pin release `pinReleaseFadeSeconds`). Injected so a
   /// test can fire the completion at an exact moment in the lifecycle instead of
-  /// racing a wall-clock animation; the default keeps the real 0.18 s fade.
+  /// racing a wall-clock animation; the default runs the real fade.
   ///
   /// The completion is `@escaping` because that is the lifetime BOTH consumers
   /// actually take, not a precaution:
@@ -119,8 +120,10 @@ final class OverlayController: ObservableObject {
   /// consumer may keep the callback past the call — which is the whole point of
   /// a fade completion. `@MainActor @Sendable` stays: the completion runs on the
   /// main actor and its captures are main-actor isolated.
-  private let runHandoffFade:
-    @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+  private let runFade:
+    @MainActor (NSPanel, TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
+  /// The pin's release is a visible goodbye, slower than the handoff blink.
+  static let pinReleaseFadeSeconds: TimeInterval = 0.6
   /// A direct edge resize is the user's size decision for the current session.
   /// The next recording may breathe again from that persisted starting point.
   private var automaticContentSizingEnabled = true
@@ -149,8 +152,8 @@ final class OverlayController: ObservableObject {
     panelFactory: (@MainActor (OverlayState, TextScaleController) -> NSPanel)? = nil,
     orderPanelFront: (@MainActor (NSPanel) -> Void)? = nil,
     orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil,
-    runHandoffFade: (
-      @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+    runFade: (
+      @MainActor (NSPanel, TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
     )? = nil
   ) {
     let state = state ?? OverlayState()
@@ -163,10 +166,10 @@ final class OverlayController: ObservableObject {
       }
     self.orderPanelFront = orderPanelFront ?? { $0.orderFrontRegardless() }
     self.orderPanelOut = orderPanelOut ?? { $0.orderOut(nil) }
-    self.runHandoffFade =
-      runHandoffFade ?? { panel, completed in
+    self.runFade =
+      runFade ?? { panel, duration, completed in
         NSAnimationContext.runAnimationGroup { context in
-          context.duration = 0.18
+          context.duration = duration
           panel.animator().alphaValue = 0
         } completionHandler: {
           MainActor.assumeIsolated { completed() }
@@ -270,6 +273,7 @@ final class OverlayController: ObservableObject {
       }
     }
     state.onClose = { [weak self] in self?.hide() }
+    state.onPinReleased = { [weak self] in self?.hideAfterPinRelease() }
     state.onCloseIntent = { [weak self] in self?.dismiss() }
     state.onSendToAgent = { [weak self] text in
       guard !text.isEmpty else { return }
@@ -614,6 +618,23 @@ final class OverlayController: ObservableObject {
   /// chat window). The overlay's job is done — fade it out immediately instead
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
+    fadeOut(duration: 0.18) { true }
+  }
+
+  /// The pin let go of a resting panel (Unpin, then `pinReleaseDelaySeconds`).
+  /// It leaves with a visible fade; a Pin clicked before the fade completes
+  /// keeps it on screen.
+  func hideAfterPinRelease() {
+    fadeOut(duration: Self.pinReleaseFadeSeconds) { [weak self] in
+      self?.state.keepVisibleBetweenTakes == false
+    }
+  }
+
+  /// `stillLeaving` is asked again when the fade completes, for the live panel
+  /// of the same capture only.
+  private func fadeOut(
+    duration: TimeInterval, stillLeaving: @escaping @MainActor @Sendable () -> Bool
+  ) {
     guard !state.hasOpenChannel else { return }
     guard let panel, panel.isVisible else { return }
     DictationOverlayWindow.persist(
@@ -630,8 +651,8 @@ final class OverlayController: ObservableObject {
     // reused window at alpha 0 would trade a hidden panel for an invisible one.
     let fadedPanel = panel
     let generation = state.captureGeneration
-    runHandoffFade(
-      fadedPanel,
+    runFade(
+      fadedPanel, duration,
       { [weak self] in
         defer { fadedPanel.alphaValue = 1 }
         guard let self else { return }
@@ -643,6 +664,7 @@ final class OverlayController: ObservableObject {
           return
         }
         if self.panel === fadedPanel {
+          guard stillLeaving() else { return }
           self.panelPresented = false
           self.state.suspendAutoCollapse()
         }

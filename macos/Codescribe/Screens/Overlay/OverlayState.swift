@@ -795,11 +795,14 @@ final class OverlayState {
       return
     }
     expansionPreferenceError = nil
+    let pinWasHolding = pinKeepsOverlayVisible
     keepVisibleBetweenTakes = engine.overlayKeepVisibleBetweenTakes()
     if pinKeepsOverlayVisible {
+      pinReleaseArmed = false
       cancelAutoHide()
     } else if terminal {
-      restartAutoHideCountdown()
+      if pinWasHolding { pinReleaseArmed = true }
+      restartAutoHideCountdown(atUnpinClick: pinReleaseArmed)
     }
   }
   var onRecordingPreparing: (() -> Void)?
@@ -964,6 +967,16 @@ final class OverlayState {
   private let micAccessProvider: () -> Bool
   /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
+  /// Unpinning a resting overlay lets it go, never at the click itself: the
+  /// panel the pin held stays this long, so a mistaken click can be undone.
+  static let pinReleaseDelaySeconds: TimeInterval = 3
+  /// Set by the Unpin of a panel the pin was holding; the countdown it arms
+  /// ends in `onPinReleased` (a fade) instead of the ordinary `onClose`. The
+  /// click's own hover does not hold it; a later pointer entry pauses it like
+  /// any countdown. Re-pinning or a new take clears it.
+  @ObservationIgnored private var pinReleaseArmed = false
+  /// The pin's release: the controller fades the resting panel out.
+  @ObservationIgnored var onPinReleased: (() -> Void)?
 
   /// Idle return of an automatic expansion; see `OverlayAutoCollapse`.
   @ObservationIgnored private let autoCollapse: OverlayAutoCollapse
@@ -2504,6 +2517,7 @@ final class OverlayState {
     captureQualityIfEdited(action: "close")
     cancelWarmupWatchdog()
     cancelAutoHide()
+    pinReleaseArmed = false
     toastTask?.cancel()
     if recording, let engine {
       recording = false
@@ -2578,7 +2592,8 @@ final class OverlayState {
     restartAutoHideCountdown()
   }
 
-  /// Hover pauses dismissal entirely; leaving starts a new full five seconds.
+  /// Hover pauses dismissal entirely; leaving starts a new full countdown
+  /// (five seconds, or the pin release's three).
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
@@ -3021,7 +3036,9 @@ final class OverlayState {
       && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  private func restartAutoHideCountdown() {
+  /// `atUnpinClick`: the Unpin click itself has the pointer on the header, so
+  /// that hover cannot hold the release it starts.
+  private func restartAutoHideCountdown(atUnpinClick: Bool = false) {
     // Every auto-hide restart is user or presentation activity (drag, resize,
     // edit end, draft resolution, terminal status, archive action).
     noteAutoCollapseActivity()
@@ -3056,16 +3073,19 @@ final class OverlayState {
     }
     // A take under review (caret in the canvas, or an uncommitted draft) is
     // never auto-hidden out from under the user.
-    guard isTerminalMode, !isPointerHovering, !isEditingTranscript, !isRevisionDraftDirty
+    guard isTerminalMode, atUnpinClick || !isPointerHovering, !isEditingTranscript,
+      !isRevisionDraftDirty
     else {
       cancelAutoHide()
       return
     }
     cancelAutoHide()
     let delay =
-      presentationMode == .expanded
-      ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
-      : OverlayState.autoHideDelaySeconds
+      pinReleaseArmed
+      ? OverlayState.pinReleaseDelaySeconds
+      : presentationMode == .expanded
+        ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
+        : OverlayState.autoHideDelaySeconds
     autoHideDeadline = nowProvider() + delay
     scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
@@ -3108,7 +3128,10 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
-    guard isTerminalMode, !isPointerHovering, let deadline = autoHideDeadline else { return }
+    // A pointer that entered after the arming cancelled this wake; one still
+    // resting where it clicked Unpin does not hold the release.
+    guard isTerminalMode, pinReleaseArmed || !isPointerHovering, let deadline = autoHideDeadline
+    else { return }
     let remaining = deadline - nowProvider()
     if remaining > 0 {
       if rescheduleIfEarly {
@@ -3130,6 +3153,11 @@ final class OverlayState {
     if autoCollapsePending {
       autoHideAwaitingCollapse = generation
       if autoCollapse.deadline == nil { noteAutoCollapseActivity() }
+      return
+    }
+    if pinReleaseArmed {
+      pinReleaseArmed = false
+      onPinReleased?()
       return
     }
     onClose?()
@@ -4235,6 +4263,7 @@ final class OverlayState {
     // empty projection and misclassify a clean draft as unsaved work.
     let draftWasDirty = isRevisionDraftDirty
     captureGeneration &+= 1
+    pinReleaseArmed = false
     captureDidStart = false
     currentTakeAudioAvailable = false
     // A scheduled focus-exit commit belongs to the take being superseded.
