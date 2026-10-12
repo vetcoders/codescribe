@@ -29,11 +29,14 @@ struct SettingsView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       sidebar
+        .scrollContentBackground(.hidden)
         .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
         .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
+        .background(SettingsSidebarMaterial())
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
+        .background(CSColor.windowCanvas)
     }
     .navigationTitle(Text("Settings"))
     .toolbar {
@@ -84,10 +87,19 @@ struct SettingsView: View {
   /// Mission Control, App Exposé and the Window menu, and never minimises
   /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
   /// keeps no minimise control rather than one that could leave an Exposé tile.
+  ///
+  /// The window titlebar and backing are configured to allow native sidebar
+  /// translucency (`.sidebar` material with `.behindWindow` blending) while
+  /// keeping the integrated titlebar/toolbar intact and content areas opaque.
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
-    window?.titleVisibility = .hidden
-    if let window { DockPresence.adopt(window) }
+    guard let window else { return }
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.styleMask.insert(.fullSizeContentView)
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    DockPresence.adopt(window)
   }
 
   private var brandToolbar: some ToolbarContent {
