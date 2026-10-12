@@ -1221,7 +1221,10 @@ does not claim to notify through an expired window.
 Managed followers retain the resolved workspace in their lease wakeup
 configuration as well as the PID record. Losing the PID record therefore does
 not change the configuration or force a verified live follower to restart on
-reattachment. A changed workspace still requires the existing drained handover.
+reattachment. Recovery carries that recorded workspace through both the follower
+launch and its confirmed configuration, using the lease when the PID record is
+missing. Legacy records without an explicit workspace do not invent one.
+A changed workspace still requires the existing drained handover.
 
 A watch started with `--provider/--session` checks its follower every two
 seconds. A follower counts as lost only when two consecutive checks find no
@@ -1231,7 +1234,7 @@ watch are not losses. A held lease lock means a handover is in progress.
 
 Recovery runs under the canonical binding lock, in the same order as attach,
 detach and archive. It starts one follower with the recorded name, channel, bus,
-wakeup and hook through the same launch and readiness path as `--attach`. The
+wakeup, hook and explicit workspace through the same launch and readiness path as `--attach`. The
 replacement acquires the same lease and resumes its cursor and unread mailbox.
 Recovery writes no acknowledgment, resubmits no accepted queue copy and replays
 no transcript. Each lost follower incarnation (pid plus start time) is handled

@@ -4825,13 +4825,17 @@ def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
             or lease_state.get("wakeup_configuration") or {}
         wakeup = recorded.get("wakeup") if recorded.get("wakeup") in ("codex-queue", "off") else "off"
         on_seal = recorded.get("on_seal") if isinstance(recorded.get("on_seal"), str) else None
+        workspace = recorded.get("workspace") if isinstance(recorded.get("workspace"), str) else None
         configuration = {"wakeup": wakeup, "on_seal": on_seal,
                          "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        if workspace is not None:
+            configuration["workspace"] = workspace
         child = None
         try:
             child = launch_follower(root, follower_command(
                 root, provider=provider, session=session, name=str(entry.get("audience")),
-                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal))
+                channel=str(slot), bus=str(entry.get("bus")), wakeup=wakeup, on_seal=on_seal,
+                workspace=workspace))
             confirm_follower(root, lease_id, session, str(entry.get("bus")), child, configuration)
             outcome: dict[str, Any] = {"event": "follower_recovered", "follower_pid": child.pid}
         except OSError as error:
