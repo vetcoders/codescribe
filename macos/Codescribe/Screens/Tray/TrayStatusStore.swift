@@ -52,6 +52,19 @@ enum TrayStatusDotIcon {
   }
 }
 
+/// Menu-bar image for one tray status. Idle and settled states stay the brand
+/// mark as a real template image, so the menu bar appearance tints it. A dot
+/// is only composited for live capture activity.
+enum MenuBarStatusImage {
+  static func make(base: NSImage, dot: NSColor?) -> NSImage {
+    guard let dot else {
+      base.isTemplate = true
+      return base
+    }
+    return TrayStatusDotIcon.composite(base: base, dot: dot, glyphTint: .labelColor)
+  }
+}
+
 @MainActor
 final class TrayStatusStore: ObservableObject {
   @Published private(set) var status: CsTrayStatusPayload
@@ -219,37 +232,40 @@ final class TrayStatusStore: ObservableObject {
     }
   }
 
-  /// Colored status dot composited into the (always-static) menu bar glyph's
-  /// bottom-right corner. The glyph never changes; only this dot signals the
-  /// mode, 1:1 with the Rust tray-status feed: green = ready (idle/success,
-  /// the locked palette's ready tone), red = recording, orange = processing,
-  /// purple = assistive — recording/processing/assistive hues mirror the
-  /// caret hold-badge (`app/os/hold_badge.rs`) so the tray and the cursor
-  /// speak one language. Processing is always orange, including agent
-  /// sessions. `nil` = no dot
-  /// (starting — the app is not ready yet). Warning states (error / thermal /
-  /// hotkey conflict) fall back to a system red / yellow attention dot — the
-  /// tooltip and menu status row carry the specifics.
+  /// Live-capture dot composited into the menu-bar mark. Idle, success,
+  /// starting, and attention states return nil so the button keeps a template
+  /// image. Listening is one recording color, including an assistive
+  /// attachment. Processing stays the working orange. Error, thermal, and
+  /// hotkey details stay in the tooltip and the menu status row.
   var menuBarDotColor: Color? {
     switch status.kind {
-    case .starting:
+    case .starting, .idle, .success, .error, .thermal, .hotkeyConflict:
       return nil
-    case .idle, .success:
-      return CSColor.modeReady
     case .listening:
-      return status.indicatorMode == .assistive
-        ? CSColor.modeAgent
-        : CSColor.indicatorRecording
+      return CSColor.indicatorRecording
     case .processing:
       return CSColor.modeProcessing
-    case .error:
-      return .red
-    case .thermal, .hotkeyConflict:
-      return .yellow
     }
   }
 
   #if DEBUG
+    func testingApply(
+      kind: CsTrayStatusKind,
+      tone: CsTrayStatusTone,
+      indicatorMode: CsIndicatorMode = .hold,
+      assistive: Bool = false,
+      generation: UInt64
+    ) {
+      apply(
+        CsTrayStatusPayload(
+          kind: kind,
+          tone: tone,
+          indicatorMode: indicatorMode,
+          assistive: assistive,
+          generation: generation
+        ))
+    }
+
     static func preview(
       kind: CsTrayStatusKind = .idle,
       tone: CsTrayStatusTone = .neutral,

@@ -1,10 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Hover hue of each header control family: olive for the transcription, the
-/// assistive violet for agents, terracotta for the window and recording state
-/// (Pin, microphone/Stop, presentation). One table, so a single-accent verdict
-/// is a one-line change.
+/// One hover hue for every header control: the listening terracotta.
+/// Transcription, Agents, Pin and presentation share it. Role does not pick
+/// olive, violet or a second accent. The microphone keeps its recording tint
+/// and only borrows this hue for the hover ring.
 enum OverlayHeaderAccent {
   case transcription
   case agents
@@ -12,10 +12,34 @@ enum OverlayHeaderAccent {
 
   func color(in palette: OverlayAppearancePalette) -> Color {
     switch self {
-    case .transcription: palette.successStatus.color
-    case .agents: palette.agentAccent.color
-    case .state: palette.listeningStatus.color
+    case .transcription, .agents, .state:
+      palette.listeningStatus.color
     }
+  }
+}
+
+private struct OverlayHeaderHoverTintKey: EnvironmentKey {
+  static let defaultValue: Color? = nil
+}
+
+extension EnvironmentValues {
+  /// Set by `OverlayHeaderControlChrome` while the pointer is inside a control
+  /// that has an accent. Nil at rest, and nil for hint-only controls.
+  var overlayHeaderHoverTint: Color? {
+    get { self[OverlayHeaderHoverTintKey.self] }
+    set { self[OverlayHeaderHoverTintKey.self] = newValue }
+  }
+}
+
+/// Resting header marks stay on their neutral tint. A hovered accent replaces
+/// that tint in the descendant, which an outer `foregroundStyle` cannot do
+/// once the mark has painted its own color.
+struct OverlayHeaderHoverForeground: ViewModifier {
+  @Environment(\.overlayHeaderHoverTint) private var hoverTint
+  let resting: Color
+
+  func body(content: Content) -> some View {
+    content.foregroundStyle(hoverTint ?? resting)
   }
 }
 
@@ -35,21 +59,23 @@ struct OverlayHeaderControlChrome: ViewModifier {
   @State private var anchor = OverlayHintAnchor()
 
   func body(content: Content) -> some View {
+    let hoverTint: Color? = hovered ? accent?.color(in: palette) : nil
     content
+      .environment(\.overlayHeaderHoverTint, hoverTint)
       .background {
-        if let accent {
+        if let hoverTint {
           Circle()
-            .fill(accent.color(in: palette).opacity(hovered ? 0.10 : 0))
+            .fill(hoverTint.opacity(0.10))
             .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
       }
       .overlay {
-        if let accent {
+        if let hoverTint {
           Circle()
             .strokeBorder(
-              accent.color(in: palette).opacity(hovered ? 1 : 0),
+              hoverTint,
               lineWidth: 1 / max(displayScale, 1)
             )
             .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)

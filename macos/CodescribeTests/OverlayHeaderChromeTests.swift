@@ -1,4 +1,5 @@
 import AppKit
+import ObjectiveC
 import SwiftUI
 import XCTest
 
@@ -84,12 +85,39 @@ final class OverlayHeaderChromeTests: XCTestCase {
     withExtendedLifetime(detached) {}
   }
 
-  func testAccentsFollowWhatEachControlOpens() {
+  func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      XCTAssertEqual(
-        OverlayHeaderAccent.transcription.color(in: palette), palette.successStatus.color)
-      XCTAssertEqual(OverlayHeaderAccent.agents.color(in: palette), palette.agentAccent.color)
-      XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), palette.listeningStatus.color)
+      let hover = OverlayHeaderAccent.transcription.color(in: palette)
+      XCTAssertEqual(OverlayHeaderAccent.agents.color(in: palette), hover)
+      XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
+      XCTAssertNotEqual(hover, palette.successStatus.color)
+      XCTAssertNotEqual(hover, palette.agentAccent.color)
+      XCTAssertEqual(hover, palette.listeningStatus.color)
+    }
+  }
+
+  func testHeaderControlsRestHoverAndLeaveInLightAndDark() throws {
+    let pinned = OverlayState()
+    pinned.setKeepVisibleBetweenTakes(true)
+    let loose = OverlayState()
+    for palette in [OverlayAppearancePalette.light, OverlayAppearancePalette.dark] {
+      let name = palette.appearance == .dark ? "dark" : "light"
+      try assertNeutralHover(
+        "transcription-\(name)", palette: palette, view: HeaderHoverTranscription(palette: palette))
+      try assertNeutralHover(
+        "agents-\(name)", palette: palette,
+        view: HeaderHoverAgents(palette: palette, unread: true))
+      try assertNeutralHover(
+        "pin-selected-\(name)", palette: palette,
+        view: OverlayPinButton(state: pinned, palette: palette))
+      try assertNeutralHover(
+        "pin-resting-\(name)", palette: palette,
+        view: OverlayPinButton(state: loose, palette: palette))
+      try assertNeutralHover(
+        "presentation-\(name)", palette: palette,
+        view: headerHoverControls(palette: palette, microphone: false, preview: true))
+      try assertMicrophoneKeepsActivity(name, palette: palette)
+      try assertDisabledMicrophoneStaysCalm(name, palette: palette)
     }
   }
 
@@ -156,6 +184,215 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(roster.contains("opacity(hovered && enabled ? 0.06 : 0)"))
   }
 
+  private func assertNeutralHover<V: View>(
+    _ name: String, palette: OverlayAppearancePalette, view: V
+  ) throws {
+    let frames = try hoverFrames(view, palette: palette)
+    for role in [palette.successStatus, palette.agentAccent, palette.processingStatus] {
+      XCTAssertFalse(
+        headerContains(frames.rest, near: role, tolerance: 0.16),
+        "\(name) rests on a role color")
+    }
+    XCTAssertGreaterThan(
+      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.04,
+      "\(name) hover did not move toward the shared accent")
+    XCTAssertTrue(
+      headerContains(frames.hover, near: palette.listeningStatus, tolerance: 0.2),
+      "\(name) hover has no shared accent pixel")
+    XCTAssertLessThan(
+      headerDelta(frames.rest, frames.leave), 0.08, "\(name) hover did not clear")
+  }
+
+  private func assertMicrophoneKeepsActivity(
+    _ name: String, palette: OverlayAppearancePalette
+  ) throws {
+    let frames = try hoverFrames(
+      headerHoverControls(
+        palette: palette, microphone: true, preview: false, canFinish: true,
+        recordingLight: .holdToTalk),
+      palette: palette)
+    XCTAssertTrue(
+      headerContains(frames.rest, near: palette.errorStatus, tolerance: 0.2),
+      "\(name) microphone lost its recording color before hover")
+    XCTAssertTrue(
+      headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
+      "\(name) microphone lost its recording color on hover")
+    XCTAssertGreaterThan(
+      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.03,
+      "\(name) microphone hover ring did not appear")
+    XCTAssertLessThan(
+      headerDelta(frames.rest, frames.leave), 0.08, "\(name) microphone hover stuck")
+  }
+
+  private func assertDisabledMicrophoneStaysCalm(
+    _ name: String, palette: OverlayAppearancePalette
+  ) throws {
+    let frames = try hoverFrames(
+      headerHoverControls(
+        palette: palette, microphone: true, preview: false, canFinish: false,
+        isFinalizing: true, recordingLight: .processing),
+      palette: palette)
+    XCTAssertLessThan(
+      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.02,
+      "\(name) disabled microphone took the hover accent")
+    XCTAssertLessThan(headerDelta(frames.rest, frames.hover), 0.08)
+  }
+
+  private func hoverFrames<V: View>(
+    _ view: V, palette: OverlayAppearancePalette
+  ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel]) {
+    let root =
+      view
+      .frame(width: 64, height: 64)
+      .background(palette.desktopBackground.color)
+      .preferredColorScheme(palette.appearance == .dark ? .dark : .light)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 280, y: 460, width: 64, height: 64),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    panel.isOpaque = true
+    panel.backgroundColor = palette.desktopBackground.nsColor
+    let host = NSHostingView(rootView: root)
+    host.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    headerSettle(host)
+    let rest = headerPixels(host)
+    XCTAssertFalse(rest.isEmpty, "header control did not render")
+    try headerPointer(true, on: host)
+    headerSettle(host, seconds: 0.28)
+    let hover = headerPixels(host)
+    try headerPointer(false, on: host)
+    headerSettle(host, seconds: 0.28)
+    return (rest, hover, headerPixels(host))
+  }
+
+  private func headerPointer(_ inside: Bool, on root: NSView) throws {
+    root.layoutSubtreeIfNeeded()
+    headerUpdateTracking(root)
+    var owners = headerTrackingOwners(in: root)
+    if owners.isEmpty {
+      headerSettle(root, seconds: 0.12)
+      headerUpdateTracking(root)
+      owners = headerTrackingOwners(in: root)
+    }
+    XCTAssertFalse(owners.isEmpty, "no native tracking area\n\(headerTree(root))")
+    for (view, area) in owners {
+      let location = view.convert(NSPoint(x: area.rect.midX, y: area.rect.midY), to: nil)
+      let event = try XCTUnwrap(
+        NSEvent.enterExitEvent(
+          with: inside ? .mouseEntered : .mouseExited,
+          location: location,
+          modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: view.window?.windowNumber ?? 0,
+          context: nil,
+          eventNumber: area.trackingNumber,
+          trackingNumber: area.trackingNumber,
+          userData: nil))
+      try headerBind(area, to: event)
+      if inside {
+        view.mouseEntered(with: event)
+      } else {
+        view.mouseExited(with: event)
+      }
+    }
+  }
+
+  private func headerBind(_ area: NSTrackingArea, to event: NSEvent) throws {
+    let selector = NSSelectorFromString("_setTrackingArea:")
+    XCTAssertTrue(event.responds(to: selector), "hover event cannot carry a tracking area")
+    _ = event.perform(selector, with: area)
+    XCTAssertTrue(event.trackingArea === area, "hover event dropped its tracking area")
+  }
+
+  private func headerTrackingOwners(in view: NSView) -> [(NSView, NSTrackingArea)] {
+    var found = view.trackingAreas.map { (view, $0) }
+    for child in view.subviews {
+      found.append(contentsOf: headerTrackingOwners(in: child))
+    }
+    return found
+  }
+
+  private func headerUpdateTracking(_ view: NSView) {
+    view.updateTrackingAreas()
+    view.subviews.forEach(headerUpdateTracking)
+  }
+
+  private func headerTree(_ view: NSView, depth: Int = 0) -> String {
+    let line =
+      String(repeating: " ", count: depth) + "\(type(of: view)) areas=\(view.trackingAreas.count)"
+    return ([line] + view.subviews.map { headerTree($0, depth: depth + 1) }).joined(
+      separator: "\n")
+  }
+
+  private func headerSettle(_ view: NSView, seconds: TimeInterval = 0.08) {
+    view.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    view.layoutSubtreeIfNeeded()
+  }
+
+  private func headerPixels(_ view: NSView) -> [HeaderPixel] {
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return [] }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    var pixels: [HeaderPixel] = []
+    pixels.reserveCapacity(bitmap.pixelsWide * bitmap.pixelsHigh)
+    for y in 0..<bitmap.pixelsHigh {
+      for x in 0..<bitmap.pixelsWide {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        pixels.append(
+          HeaderPixel(
+            red: color.redComponent, green: color.greenComponent,
+            blue: color.blueComponent, alpha: color.alphaComponent))
+      }
+    }
+    return pixels
+  }
+
+  private func headerContains(
+    _ pixels: [HeaderPixel], near token: OverlayColorToken, tolerance: CGFloat
+  ) -> Bool {
+    let target = headerPixel(token.nsColor)
+    return pixels.contains { pixel in
+      pixel.alpha > 0.45 && headerDistance(pixel, target) < tolerance
+    }
+  }
+
+  private func headerShift(
+    _ before: [HeaderPixel], _ after: [HeaderPixel], toward token: OverlayColorToken
+  ) -> CGFloat {
+    let target = headerPixel(token.nsColor)
+    var moved = 0
+    var gain: CGFloat = 0
+    for (lhs, rhs) in zip(before, after) where headerDistance(lhs, rhs) > 0.05 {
+      gain += headerDistance(lhs, target) - headerDistance(rhs, target)
+      moved += 1
+    }
+    guard moved > 8 else { return 0 }
+    return gain / CGFloat(moved)
+  }
+
+  private func headerDelta(_ before: [HeaderPixel], _ after: [HeaderPixel]) -> CGFloat {
+    zip(before, after).reduce(CGFloat(0)) { partial, pair in
+      max(partial, headerDistance(pair.0, pair.1))
+    }
+  }
+
+  private func headerPixel(_ color: NSColor) -> HeaderPixel {
+    let resolved = color.usingColorSpace(.sRGB) ?? color
+    return HeaderPixel(
+      red: resolved.redComponent, green: resolved.greenComponent,
+      blue: resolved.blueComponent, alpha: resolved.alphaComponent)
+  }
+
+  private func headerDistance(_ lhs: HeaderPixel, _ rhs: HeaderPixel) -> CGFloat {
+    let red = lhs.red - rhs.red
+    let green = lhs.green - rhs.green
+    let blue = lhs.blue - rhs.blue
+    return (red * red + green * green + blue * blue).squareRoot()
+  }
+
   private func source(_ relative: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -163,4 +400,68 @@ final class OverlayHeaderChromeTests: XCTestCase {
       .appendingPathComponent(relative)
     return try String(contentsOf: url, encoding: .utf8)
   }
+}
+
+private struct HeaderPixel {
+  var red: CGFloat
+  var green: CGFloat
+  var blue: CGFloat
+  var alpha: CGFloat
+}
+
+/// The transcription button is private to the overlay. This mounts the same
+/// production glyph and chrome the header uses.
+private struct HeaderHoverTranscription: View {
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    Button(action: {}) {
+      OverlayMicrophoneGlyph(
+        character: OverlayHeaderGlyph.transcription, tint: palette.mutedText.color)
+    }
+    .buttonStyle(.plain)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: "Show transcription", accent: .transcription, palette: palette))
+  }
+}
+
+private struct HeaderHoverAgents: View {
+  let palette: OverlayAppearancePalette
+  let unread: Bool
+
+  var body: some View {
+    OverlayChannelStatusView(
+      channels: [],
+      unavailable: false,
+      palette: palette,
+      animates: false,
+      unreadCounts: unread ? ["thread": 2] : [:],
+      onShowMonitor: {}
+    )
+  }
+}
+
+private func headerHoverControls(
+  palette: OverlayAppearancePalette,
+  microphone: Bool,
+  preview: Bool,
+  canFinish: Bool = false,
+  isFinalizing: Bool = false,
+  recordingLight: OverlayRecordingLight? = nil
+) -> OverlayRecordingControls {
+  var controls = OverlayRecordingControls(
+    canFinish: canFinish,
+    presentationMode: .mini,
+    compact: false,
+    palette: palette,
+    onIntent: { _ in },
+    onPreviewToggle: {},
+    isFinalizing: isFinalizing,
+    recordingLight: recordingLight,
+    animates: false
+  )
+  controls.showsRecordingButton = microphone
+  controls.showsPreviewButton = preview
+  return controls
 }
