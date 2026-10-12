@@ -401,6 +401,16 @@ Explicitly deselecting the last client can forget an already absent folder.
 Existing entries, including broken symlinks, must still prove marker ownership;
 unreadable paths refuse teardown. Ownership is checked against the same captured
 receipt again before removal. Startup synchronization keeps its strict checks.
+`receipt.json` is the only evidence that this root holds an installation.
+`runtime/` doubles as the bus state root — follower logs, ack cursors — which a
+running app writes before anything is installed, so a receipt-less `runtime/`
+counts as not yet installed and the next installation takes it over, preserving
+that state. A receipt-less `runtime/` that already holds payload, or one
+redirected by a symlink, still belongs to an installation this root cannot
+account for and is retained untouched. A command in `~/.local/bin` carrying the
+Codescribe managed header is adopted by a first installation that owns no
+identity yet; once a receipt or a client marker names one, a command claiming a
+different identity is refused, as is any command without that header.
 
 The full readiness report, managed installation paths, MCP status, and Refresh
 action live in **Settings › Agent › Diagnostics**. Setup keeps only the client

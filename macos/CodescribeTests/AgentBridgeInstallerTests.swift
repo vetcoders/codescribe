@@ -1289,6 +1289,88 @@ final class AgentBridgeInstallerTests: XCTestCase {
         atPath: home.appendingPathComponent(".local/bin/cs-bus").path))
   }
 
+  // The fresh-profile incident (2026-10-12): the bus wrote its ack cursor into
+  // `runtime/` before anything was installed, and the installer read that state
+  // directory as somebody else's installation.
+  func testLaunchInstallsOverRuntimeStateLeftByTheBusWithoutAReceipt() throws {
+    let home = scratch.appendingPathComponent("sync-state-only-home", isDirectory: true)
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("follower filip attached\n".utf8)
+    try logBytes.write(to: log)
+    let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
+    let cursorBytes = Data("{\"cursor\": 41}\n".utf8)
+    try cursorBytes.write(to: cursor)
+    let cursorInode = try fileNumber(cursor)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("runtime installed"), detail)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path),
+      "the first launch that finds only bus state still commits a receipt")
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("bin/bus-demux.py").path))
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(try fileNumber(cursor), cursorInode, "ack cursor keeps its inode")
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("unchanged"))
+  }
+
+  func testLaunchRetainsARuntimeHoldingPayloadWithoutAReceipt() throws {
+    let home = scratch.appendingPathComponent("sync-unowned-payload-home", isDirectory: true)
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let helper = runtime.appendingPathComponent("bin/bus-demux.py")
+    try FileManager.default.createDirectory(
+      at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let helperBytes = Data("#!/usr/bin/env python3\nprint('another installation')\n".utf8)
+    try helperBytes.write(to: helper)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("skipped"), detail)
+    XCTAssertEqual(try Data(contentsOf: helper), helperBytes)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+  }
+
+  func testFirstInstallAdoptsAManagedCommandLeftByAForgottenProfile() throws {
+    let home = scratch.appendingPathComponent("orphaned-command-home")
+    let orphan = home.appendingPathComponent(".local/bin/cs-bus")
+    try FileManager.default.createDirectory(
+      at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(
+      """
+      #!/usr/bin/env python3
+      # codescribe-managed-command: {"bundle_version":"0.0.1","managed_id":"forgotten-profile"}
+      print('previous generation')
+
+      """.utf8
+    ).write(to: orphan)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: orphan.path)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    _ = try installer.installRuntime()
+
+    let managedID = try XCTUnwrap(
+      try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))[
+        "managed_id"] as? String)
+    XCTAssertEqual(installer.managedCommandID(orphan), managedID)
+    XCTAssertTrue(
+      try String(contentsOf: orphan, encoding: .utf8).contains("print('bridge')"),
+      "the adopted command carries this bundle's helper")
+  }
+
   func testForeignCommandRefusesBeforePayloadMutation() throws {
     let home = scratch.appendingPathComponent("foreign-command-home")
     let foreign = home.appendingPathComponent(".local/bin/cs-say")

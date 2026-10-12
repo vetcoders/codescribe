@@ -345,12 +345,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   func installBundledRuntime() throws -> String {
     guard let receipt = validReceipt() else {
-      guard !fileManager.fileExists(atPath: runtimeDirectory.path),
-        (try? runtimeDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true
-      else {
-        throw AgentBridgeInstallationError.conflict(
-          path: runtimeDirectory.path, reason: "unowned runtime retained")
-      }
+      // Whether this root already holds an installation is decided once, by
+      // `initializing` under the installation lease.
       _ = try install(selectedClients: [], adopting: nil, runtimeOnly: true, initializing: true)
       return "Agent bridge runtime installed; client skills remain unselected."
     }
@@ -559,12 +555,21 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       // Every remaining path entry still has to prove marker ownership below.
       try requireSynchronizationOwnership(previousReceipt, allowMissingSelectedFolders: true)
     }
-    if initializing, expectedReceipt == nil,
-      previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
-        || fileManager.fileExists(atPath: receiptURL.path)
-    {
-      throw AgentBridgeInstallationError.conflict(
-        path: receiptURL.path, reason: "the installation changed before runtime initialization")
+    if initializing, expectedReceipt == nil {
+      // The receipt is the only authority on whether this root already holds
+      // an installation. Re-read under the lease so an initialization that
+      // started earlier cannot overwrite a receipt committed meanwhile.
+      guard previousReceipt == nil, !fileManager.fileExists(atPath: receiptURL.path) else {
+        throw AgentBridgeInstallationError.conflict(
+          path: receiptURL.path, reason: "the installation changed before runtime initialization")
+      }
+      // `runtime/` is also the bus state root: the running app writes follower
+      // logs and ack cursors there before anything is installed, so its
+      // existence proves nothing. Payload inside it does.
+      if try runtimeHoldsPayload(manifest: manifest) {
+        throw AgentBridgeInstallationError.conflict(
+          path: runtimeDirectory.path, reason: "unowned runtime payload retained")
+      }
     }
     if let expectedReceipt {
       // UI installation may have changed the selection while startup verified
@@ -1024,6 +1029,24 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return units.contains(String(first))
   }
 
+  /// Payload evidence inside `runtime/`. The directory doubles as the bus state
+  /// root — follower logs, ack cursors, playback receipts — which the app
+  /// writes before any installation exists. Only payload, or a directory
+  /// redirected away from this root, marks an installation the receipt cannot
+  /// account for.
+  private func runtimeHoldsPayload(manifest: AgentBridgeBundleManifest) throws -> Bool {
+    guard try pathEntryExists(runtimeDirectory) else { return false }
+    let values = try? runtimeDirectory.resourceValues(forKeys: [
+      .isDirectoryKey, .isSymbolicLinkKey,
+    ])
+    guard values?.isDirectory == true, values?.isSymbolicLink != true else { return true }
+    guard let entries = try? fileManager.contentsOfDirectory(atPath: runtimeDirectory.path) else {
+      return true
+    }
+    let units = Set(payloadUnits(manifest: manifest))
+    return entries.contains { isPayloadPath($0, units: units) }
+  }
+
   /// Removes empty directories below `root`, deepest first. `root` itself stays.
   private func pruneEmptyDirectories(under root: URL) {
     guard
@@ -1291,6 +1314,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.conflict(
         path: directory.path, reason: "the command directory is redirected")
     }
+    // `ownedCommandIDs` is empty only when neither a receipt nor a client
+    // marker identifies an installation at this home, so no live installation
+    // can own the command: a first installation adopts the orphan a previous
+    // one left in the command directory. Once an identity is known, a command
+    // claiming a different one belongs to that other installation. A command
+    // without this product's managed header is never Codescribe's to replace.
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
@@ -1299,7 +1328,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         let ownedFile =
           link == nil
           && managedCommandID(destination).map {
-            ownedCommandIDs.contains($0)
+            ownedCommandIDs.isEmpty || ownedCommandIDs.contains($0)
           } == true
         guard ownedLink || ownedFile else {
           throw AgentBridgeInstallationError.conflict(
