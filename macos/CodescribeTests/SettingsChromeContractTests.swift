@@ -766,7 +766,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Overall status": "Stan ogólny",
       "Model provider": "Dostawca modelu",
       "Native tools": "Narzędzia natywne",
-      "VibeCrafted runtime": "Runtime VibeCrafted",
+      "Vibecrafted runtime": "Runtime Vibecrafted",
       "PRView integration": "Integracja PRView",
       "Ready — %@ configured, can send requests, %@":
         "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@",

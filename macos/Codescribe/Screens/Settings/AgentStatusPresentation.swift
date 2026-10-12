@@ -17,7 +17,7 @@ extension CsMcpStatusRow {
       return String(
         localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
     case .vibecraftedRuntime:
-      return String(localized: "VibeCrafted runtime", comment: "Diagnostics row label")
+      return String(localized: "Vibecrafted runtime", comment: "Diagnostics row label")
     case .aicxMcp: return String(localized: "AICX MCP", comment: "Diagnostics row label")
     case .loctreeMcp: return String(localized: "Loctree MCP", comment: "Diagnostics row label")
     case .prviewIntegration:

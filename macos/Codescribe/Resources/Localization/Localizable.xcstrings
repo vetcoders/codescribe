@@ -17395,13 +17395,13 @@
         }
       }
     },
-    "VibeCrafted runtime" : {
+    "Vibecrafted runtime" : {
       "comment" : "Diagnostics row label",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Runtime VibeCrafted"
+            "value" : "Runtime Vibecrafted"
           }
         }
       }
