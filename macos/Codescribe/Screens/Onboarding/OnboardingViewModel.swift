@@ -608,7 +608,10 @@ final class OnboardingViewModel: ObservableObject {
   /// `PermissionKind.repair(for:)` is the only eligibility rule. Screen
   /// Recording, Input Monitoring, and Accessibility stay requestable when the
   /// preflight boolean cannot tell "not asked" from "denied".
-  func grantPermission(for kind: PermissionKind) {
+  func grantPermission(
+    for kind: PermissionKind,
+    client: any PermissionRequesting = NativePermissionRequestClient()
+  ) {
     let repair = kind.repair(for: permissions.state(kind))
     guard repair.requestsNatively else {
       if repair.opensSettings {
@@ -620,8 +623,9 @@ final class OnboardingViewModel: ObservableObject {
       return
     }
     kind.notePermissionAsked()
+    let permissionProbe = probe
     Task { @MainActor [weak self] in
-      _ = await kind.requestInApp()
+      _ = await kind.requestInApp(client: client, probe: permissionProbe)
       self?.reprobePermissions()
     }
   }
