@@ -22,6 +22,12 @@ struct OnboardingView: View {
           palette: OverlayAppearancePalette.resolve(colorScheme),
           reduceTransparency: reduceTransparency
         )
+        .overlay {
+          // Slightly soften desktop bleed-through in setup, without tinting shared glass.
+          CSColor.windowCanvas.opacity(reduceTransparency ? 0 : 0.08)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .ignoresSafeArea()
       }
       .csFocusPolicy()

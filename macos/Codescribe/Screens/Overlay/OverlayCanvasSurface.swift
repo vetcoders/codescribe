@@ -78,11 +78,6 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
     if view.appearance?.name != name {
       view.appearance = NSAppearance(named: name)
     }
-    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView {
-      // Tint native glass toward the text palette, rather than bare desktop colors.
-      let tint = palette.desktopBackground.nsColor.withAlphaComponent(0.72)
-      if glass.tintColor != tint { glass.tintColor = tint }
-    }
   }
 }
 
