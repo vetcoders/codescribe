@@ -1949,37 +1949,83 @@ impl AcousticLedger {
     }
 
     /// Resolve provenance through earlier operations, including prior merges.
+    /// The one writer of the receipt history: appends and indexes the receipt
+    /// under the occurrence of every output slot, so `slot_source_ranges` reads
+    /// one occurrence's receipts instead of the whole take.
+    pub(super) fn record_slot_operation(&mut self, receipt: SlotOperationReceipt) {
+        let index = self.slot_operations.len();
+        let mut occurrences: Vec<&OccurrenceIdentity> = Vec::new();
+        for output in &receipt.outputs {
+            if !occurrences.contains(&&output.observation.occurrence) {
+                occurrences.push(&output.observation.occurrence);
+            }
+        }
+        for occurrence in occurrences {
+            self.slot_operation_index
+                .entry(occurrence.clone())
+                .or_default()
+                .push(index);
+        }
+        self.slot_operations.push(receipt);
+    }
+
+    /// The latest receipt whose outputs hold `slot`, read through the
+    /// per-occurrence index. Same answer as a reverse scan of the whole
+    /// history: a receipt is indexed under every output's occurrence.
     pub fn slot_source_ranges(&self, slot: &WordSlot) -> Vec<OccurrenceIdentity> {
+        let ranges = self.slot_source_ranges_indexed(slot);
+        debug_assert_eq!(
+            ranges,
+            self.slot_source_ranges_by_scan(slot),
+            "slot_operation_index disagrees with the receipt history"
+        );
+        ranges
+    }
+
+    fn slot_source_ranges_indexed(&self, slot: &WordSlot) -> Vec<OccurrenceIdentity> {
+        self.slot_operation_index
+            .get(&slot.observation.occurrence)
+            .into_iter()
+            .flat_map(|positions| positions.iter().rev())
+            .map(|position| &self.slot_operations[*position])
+            .find_map(|receipt| Self::receipt_source_ranges(receipt, slot))
+            .unwrap_or_else(|| vec![Self::slot_own_range(slot)])
+    }
+
+    /// The pre-index definition, kept as the debug-build witness of the index.
+    fn slot_source_ranges_by_scan(&self, slot: &WordSlot) -> Vec<OccurrenceIdentity> {
         self.slot_operations
             .iter()
             .rev()
-            .find_map(|receipt| {
-                receipt
-                    .outputs
-                    .iter()
-                    .any(|output| output == slot)
-                    .then(|| {
-                        // Every measured child owns its own playback PCM.
-                        // The operation still retains all original source ranges.
-                        if receipt.kind == SlotOperationKind::Split || receipt.outputs.len() > 1 {
-                            vec![OccurrenceIdentity::new(
-                                &slot.observation.occurrence.session,
-                                slot.observation.occurrence.capture_epoch,
-                                slot.sample_start,
-                                slot.sample_end,
-                            )]
-                        } else {
-                            receipt.source_ranges.clone()
-                        }
-                    })
-            })
-            .unwrap_or_else(|| {
-                vec![OccurrenceIdentity::new(
-                    &slot.observation.occurrence.session,
-                    slot.observation.occurrence.capture_epoch,
-                    slot.sample_start,
-                    slot.sample_end,
-                )]
+            .find_map(|receipt| Self::receipt_source_ranges(receipt, slot))
+            .unwrap_or_else(|| vec![Self::slot_own_range(slot)])
+    }
+
+    fn slot_own_range(slot: &WordSlot) -> OccurrenceIdentity {
+        OccurrenceIdentity::new(
+            &slot.observation.occurrence.session,
+            slot.observation.occurrence.capture_epoch,
+            slot.sample_start,
+            slot.sample_end,
+        )
+    }
+
+    fn receipt_source_ranges(
+        receipt: &SlotOperationReceipt,
+        slot: &WordSlot,
+    ) -> Option<Vec<OccurrenceIdentity>> {
+        receipt
+            .outputs
+            .iter()
+            .any(|output| output == slot)
+            .then(|| {
+                // Every measured child owns its own playback PCM.
+                // The operation still retains all original source ranges.
+                if receipt.kind == SlotOperationKind::Split || receipt.outputs.len() > 1 {
+                    vec![Self::slot_own_range(slot)]
+                } else {
+                    receipt.source_ranges.clone()
+                }
             })
     }
 
@@ -2089,7 +2135,7 @@ impl AcousticLedger {
         self.word_pin_observations.insert(observation.clone());
         self.record_layer_decision(observation, &label, &decision, None);
         let observation = observation.clone();
-        self.slot_operations.push(receipt);
+        self.record_slot_operation(receipt);
         self.remember_word_outputs(&observation);
     }
 
