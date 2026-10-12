@@ -30,9 +30,26 @@ display interval; release applies the final position immediately. Closing the
 overlay cancels any pending resize. Presentation-mode expansion still uses its
 upper-right anchor.
 
-**Keep visible between takes** and the transcription preview controls are
-separate from starting a recording. Selecting a conversation also does not start
-capture or change the destination of a recording already in progress.
+The header's **✍︎** button shows your transcription and **✦** opens the
+**Agents** sidebar. The pin beside them keeps the overlay visible between takes;
+it is filled while pinned. Unpinning an overlay that is resting between takes
+does not hide it at the click: it stays for three seconds, so another click can
+pin it again, and then fades out. Moving the pointer back onto the overlay pauses
+that; leaving gives it another three seconds. A transcript draft you have not
+committed keeps the overlay until you resolve it.
+
+Pointing at a header control shows its hint just below it, in the same chip as
+the action pill's hints, and rings the control in the color of what it opens:
+green for the transcription, violet for agents, orange for the pin and the
+recording controls. The hint floats outside the panel, so it also appears on
+the 46-point mini and compact strips.
+
+A secondary click (right-click or Control-click) anywhere on the header opens
+the same menu in every form: **Agents**, **Transcription**, **Pin** / **Unpin**,
+the six screen anchors with **Free motion**, and **Show transcript by default**.
+
+None of these controls starts a recording. Selecting a conversation also does
+not start capture or change the destination of a recording already in progress.
 
 A small orange underline indicates readiness on the visible ordinary dictation
 canvas, including when it is empty or a take has finished. It follows the native
@@ -51,6 +68,10 @@ Open the channel menu and use the microphone control next to a bound agent, or
 next to **0 · All** for a broadcast. Selecting a row only changes what you view;
 the microphone control changes whom you speak to. The named agent must be
 attached with its own provider and session identity.
+
+Clicking the conversation's name pill, including **0 · All**, opens the
+**Agents** sidebar; the conversation stays selected behind it. Rows you can open
+in the sidebar show a faint highlight under the pointer.
 
 Channel replies appear as selectable messages. Scrolling back pauses following
 the live edge; use the return-to-current control to see the latest messages

@@ -627,9 +627,10 @@ final class OverlayIntentRailTests: XCTestCase {
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.versions,
         OverlayControlSymbols.previousTake,
-        OverlayControlSymbols.actions, OverlayControlSymbols.placement,
+        OverlayControlSymbols.actions, OverlayControlSymbols.pin,
+        OverlayControlSymbols.pinned,
         OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
-        OverlayControlSymbols.returnToMini, "pin.fill",
+        OverlayControlSymbols.returnToMini,
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
     let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
