@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native MCP transport over the existing Codescribe mailbox, not an agent runner."""
 from concurrent.futures import ThreadPoolExecutor
+import datetime
 import fcntl
 import json
 import os
@@ -112,6 +113,113 @@ def bound_channel(demux, root, provider, session):
     return None, None
 
 
+def local_clock(stamp):
+    try:
+        return datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return "--:--:--"
+
+
+def describe_delivery(row):
+    """One pending message as the lines an agent needs: who, where, when, the
+    whole text, attachment paths and the id it must ACK. A Founder take carries
+    no sender field; a peer message names its sender."""
+    who = row.get("sender") or "Founder"
+    kind = "draft" if row.get("kind") == "revised" else str(row.get("kind") or "message")
+    note = " · acoustic coverage refused (diagnostic, not a gate)" if row.get("coverage") == "refused" else ""
+    lines = [f"Message from {who} on channel {row.get('channel')} ({kind}, {local_clock(row.get('emitted_at'))}{note}):",
+             str(row.get("text") or "")]
+    for item in row.get("attachments") or []:
+        if isinstance(item, dict):
+            lines.append(f"[attachment] {item.get('name') or ''}: {item.get('path') or ''}")
+    lines.append(f"delivery_id: {row.get('delivery_id')}")
+    return "\n".join(lines)
+
+
+def scalar_lines(result, skip=()):
+    out = []
+    for key, value in result.items():
+        if key in skip or key in ("kind", "schema"):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out.append(f"{key}: {value}")
+        elif isinstance(value, list) and all(isinstance(v, (str, int, float)) for v in value):
+            out.append(f"{key}: {', '.join(str(v) for v in value) or '(none)'}")
+    return out
+
+
+def describe(result):
+    """Prose for the conversation. Until 2026-10-12 every tool answered with
+    json.dumps(result): the Founder watched envelopes scroll through the agent's
+    turn (\"koperty z jsona, które się sypią przez wasze outputy\"). The dict is
+    still returned as structuredContent for programs and tests."""
+    if not isinstance(result, dict):
+        return str(result)
+    if "receipts" in result and isinstance(result["receipts"], list):
+        parts = [describe(row) for row in result["receipts"]]
+        if result.get("exit_code"):
+            parts.append(f"exit code: {result['exit_code']}")
+        return "\n".join(parts)
+    kind = result.get("kind")
+    if kind == "pending_read":
+        rows = result.get("deliveries") or []
+        remaining = result.get("remaining", 0)
+        if not rows:
+            return f"No pending message; remaining {remaining}. Nothing was acknowledged."
+        body = "\n\n".join(describe_delivery(row) for row in rows if isinstance(row, dict))
+        return (f"{body}\n\n{len(rows)} message(s) read, {remaining} remaining. "
+                "ACK the delivery_id(s) above before acting; ACK means read, not done.")
+    if kind == "wait_idle":
+        return f"No message in {result.get('waited_seconds')} s. {result.get('instructions') or 'Nothing was read or acknowledged.'}"
+    if kind == "attach_receipt":
+        voice = result.get("voice") if isinstance(result.get("voice"), dict) else {}
+        follower = "spawned" if result.get("follower_spawned") else "reused"
+        return (f"Connected to channel {result.get('channel')} as {result.get('audience')} "
+                f"({result.get('provider')} session {result.get('provider_session_id')}). "
+                f"Lease {result.get('lease_id')}, follower pid {result.get('follower_pid')} ({follower}), "
+                f"cursor {result.get('cursor')}, resumed {result.get('resumed')}, wakeup {result.get('wakeup')}, "
+                f"voice {voice.get('voice')} via {voice.get('provider')} ({result.get('voice_source')}). "
+                "State: attached_unverified until a fresh take is read and answered.")
+    if kind == "acknowledged":
+        settled = result.get("native_queue_settled")
+        tail = "" if settled is None else f"; native queue settled: {'yes' if settled else 'no'}"
+        return f"Acknowledged delivery {result.get('delivery_id')}{tail}. ACK means read, not done."
+    if kind == "agent_reply":
+        spoken = "spoken" if result.get("spoken") else "not spoken"
+        reason = result.get("reason") or result.get("state")
+        return (f"Reply saved to the bus and {spoken}" + (f" ({reason})" if reason and not result.get("spoken") else "")
+                + f"; reply to delivery {result.get('reply_to') or result.get('delivery_id')}.")
+    if kind == "status":
+        attached = "attached" if result.get("attached") else "not attached"
+        alive = "alive" if result.get("follower_alive") else "not running"
+        return (f"Connection {attached}: channel {result.get('channel')}, name {result.get('name') or result.get('audience')}, "
+                f"lease {result.get('lease_id')}, follower {alive} (pid {result.get('follower_pid')}), "
+                f"backlog {result.get('backlog')}, cursor {result.get('cursor')}, wakeup {result.get('wakeup')}"
+                + (f", native wake armed: {'yes' if result.get('native_wake_armed') else 'no'}"
+                   if "native_wake_armed" in result else "") + ".")
+    if kind == "detach_receipt":
+        released = ", ".join(str(c) for c in result.get("released_channels") or []) or "none"
+        unacked = result.get("unacked_delivery_ids") or []
+        return (f"Detached: released channel(s) {released}; follower {result.get('follower_state')} "
+                f"(pid {result.get('follower_pid')}); was attached: {result.get('was_attached')}; "
+                f"{len(unacked)} unacknowledged delivery(ies)" + (": " + ", ".join(unacked) if unacked else "") + ".")
+    head = [f"{kind}:"] if kind else []
+    return "\n".join(head + scalar_lines(result)) or "(empty result)"
+
+
+def describe_wake(notice, provider, session, channel, name):
+    where = f"for {name} on channel {channel} ({provider} session {session})"
+    kind = notice.get("kind")
+    if kind == "codescribe_listener_problem":
+        return f"Codescribe: listener problem {notice.get('problem')} {where}. {notice.get('instructions')}"
+    if kind == "codescribe_wait_idle":
+        return f"Codescribe: no message {where} in {notice.get('waited_seconds')} s. {notice.get('instructions')}"
+    ids = notice.get("new_delivery_ids") or []
+    problem = f"; problem: {notice['problem']}" if notice.get("problem") else ""
+    return (f"Codescribe: {len(ids)} new message(s) {where}; pending {notice.get('pending_count')}"
+            f"{problem}; new delivery ids: {', '.join(ids)}. {notice.get('instructions')}")
+
+
 def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS, interval=1.0):
     """Claude Code asyncRewake hook: return WAKE_EXIT once per unannounced delivery.
 
@@ -174,9 +282,7 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
                     trigger.wait(timeout=interval)
                     continue
                 demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen)})
-                sys.stderr.write("Codescribe wake for this conversation: " + json.dumps(
-                    {**notice, "provider": provider, "provider_session_id": session,
-                     "channel": channel, "name": name}, ensure_ascii=False) + "\n")
+                sys.stderr.write(describe_wake(notice, provider, session, channel, name) + "\n")
                 return WAKE_EXIT
         finally:
             trigger.close()
@@ -366,7 +472,9 @@ def serve(demux, root, bus):
     def execute(identity, params, cancel):
         try:
             result = mailbox.call(params.get("name"), params.get("arguments", {}), cancel)
-            response = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+            # Prose is what the conversation shows; the dict travels as
+            # structuredContent (MCP 2025-06-18) for programs and tests.
+            response = {"content": [{"type": "text", "text": describe(result)}], "structuredContent": result}
         except (ValueError, OSError, subprocess.SubprocessError, KeyError, TypeError) as error:
             # An unexpected helper output shape is still an answer, never a hung request.
             response = {"isError": True, "content": [{"type": "text", "text": str(error) or type(error).__name__}]}

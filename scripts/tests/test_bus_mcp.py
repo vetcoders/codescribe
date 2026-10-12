@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,25 @@ MCP_SPEC = importlib.util.spec_from_file_location("bus_mcp_tests", SCRIPTS / "bu
 MCP = importlib.util.module_from_spec(MCP_SPEC)
 sys.modules[MCP_SPEC.name] = MCP
 MCP_SPEC.loader.exec_module(MCP)
+
+
+def parse_wake_notice(line):
+    """The wake is one English sentence (what the model reads); recover its facts."""
+    text = line.split("Codescribe: ", 1)[1]
+    head = re.search(r"for (?P<name>\S+) on channel (?P<channel>\d) \((?P<provider>\S+) session (?P<session>[^)]+)\)", text)
+    notice = {"name": head["name"], "channel": head["channel"], "provider": head["provider"],
+              "provider_session_id": head["session"]}
+    if text.startswith("listener problem "):
+        notice.update(kind="codescribe_listener_problem", problem=text.split(" ")[2])
+    elif text.startswith("no message "):
+        notice["kind"] = "codescribe_wait_idle"
+    else:
+        notice.update(kind="codescribe_mailbox_ready", pending_count=int(re.search(r"pending (\d+)", text)[1]),
+                      new_delivery_ids=re.search(r"new delivery ids: ([^.]*)\.", text)[1].split(", "))
+        problem = re.search(r"problem: (\S+?);", text)
+        if problem:
+            notice["problem"] = problem[1]
+    return notice
 
 
 class MailboxFixture(unittest.TestCase):
@@ -646,7 +666,9 @@ class MCPProtocolTests(MailboxFixture):
         result = self.response(identity)["result"]
         self.assertFalse(result.get("isError"), result)
         self.assertEqual(result["content"][0]["type"], "text")
-        return json.loads(result["content"][0]["text"])
+        text = result["content"][0]["text"]
+        self.assertTrue(text.strip() and not text.lstrip().startswith("{"), text)
+        return result["structuredContent"]
 
     def connect(self):
         result = self.tool(10, "connect", {"provider": self.PROVIDER, "session_id": self.session,
@@ -814,8 +836,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
                                         self.environ if environ is None else environ,
                                         window=window, interval=0.05)
         lines = [line for line in errors.getvalue().splitlines() if line]
-        notice = json.loads(lines[-1].split(": ", 1)[1]) if lines else None
-        return code, notice
+        return code, (parse_wake_notice(lines[-1]) if lines else None)
 
     def test_existing_unread_wakes_once_then_only_for_new_deliveries(self):
         code, notice = self.wake()
@@ -918,7 +939,8 @@ class ClaudeCodeWakeTests(MailboxFixture):
                     path.unlink()
                 result = self.hook(shell)
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("codescribe_mailbox_ready", result.stderr)
+                self.assertIn("new message(s) for fable on channel 7", result.stderr)
+                self.assertNotIn("{", result.stderr)
                 junie = self.hook(shell, environ={})
                 self.assertEqual((junie.returncode, junie.stderr), (0, ""))
                 # A helper that cannot parse the hook exits 2 itself; that must
