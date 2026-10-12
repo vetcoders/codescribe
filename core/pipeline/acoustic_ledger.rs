@@ -826,6 +826,13 @@ pub struct AcousticLedger {
     /// Repeated observations of one range do not create additional debt pins.
     rejected_word_pins: BTreeMap<OccurrenceIdentity, Vec<WordSlot>>,
     slot_operations: Vec<SlotOperationReceipt>,
+    /// Positions in `slot_operations` keyed by the occurrence of each output
+    /// slot. The receipt history is append-only and public; this is the only
+    /// way to ask it about one slot without walking the whole take. A sealed
+    /// owner drops its word components, but its receipts stay in the history,
+    /// so an unindexed lookup for a slot that was never split or merged (no
+    /// receipt at all) costs every receipt of the take (2026-10-12).
+    slot_operation_index: BTreeMap<OccurrenceIdentity, Vec<usize>>,
     pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
     /// Shared capture observer and actual extent, used only to adjudicate a
     /// decoder fence. Cloning the handle does not create another observer.
@@ -1773,7 +1780,7 @@ impl AcousticLedger {
                         Err(reason) => {
                             self.refuse_word_slot(observation, &word, vec![source.clone()], reason);
                             // The unchanged source is an explicit retention decision.
-                            self.slot_operations.push(SlotOperationReceipt {
+                            self.record_slot_operation(SlotOperationReceipt {
                                 observation: observation.clone(),
                                 kind: SlotOperationKind::Correct,
                                 sources: vec![source.clone()],
@@ -1791,7 +1798,7 @@ impl AcousticLedger {
                             vec![source.clone()],
                             "held_token_retained",
                         );
-                        self.slot_operations.push(SlotOperationReceipt {
+                        self.record_slot_operation(SlotOperationReceipt {
                             observation: observation.clone(),
                             kind: SlotOperationKind::Correct,
                             sources: vec![source.clone()],
@@ -2579,7 +2586,7 @@ impl AcousticLedger {
                             )]
                         }
                     });
-                self.slot_operations.push(SlotOperationReceipt {
+                self.record_slot_operation(SlotOperationReceipt {
                     observation: observation.clone(),
                     kind: if source.is_some() {
                         SlotOperationKind::Correct
@@ -2625,7 +2632,9 @@ impl AcousticLedger {
             held.recompose();
         }
         if applies_slots {
-            self.slot_operations.extend_from_slice(operations);
+            for operation in operations {
+                self.record_slot_operation(operation.clone());
+            }
             // A partition retains its predecessor lineage as one operation.
             // Its clipped children also need an exact association to their
             // own original words. Record that association in the same receipt
@@ -2652,7 +2661,7 @@ impl AcousticLedger {
                     && (pin.sample_start != output.sample_start
                         || pin.sample_end != output.sample_end)
                 {
-                    self.slot_operations.push(SlotOperationReceipt {
+                    self.record_slot_operation(SlotOperationReceipt {
                         observation: observation.clone(),
                         kind: SlotOperationKind::Correct,
                         sources: vec![output.clone()],
@@ -2910,7 +2919,7 @@ impl AcousticLedger {
                                 held.slots.clone(),
                                 reason,
                             );
-                            self.slot_operations.push(SlotOperationReceipt {
+                            self.record_slot_operation(SlotOperationReceipt {
                                 observation: observation.clone(),
                                 kind: SlotOperationKind::Correct,
                                 sources: held.slots.clone(),
@@ -2935,7 +2944,7 @@ impl AcousticLedger {
                         current.recompose();
                         self.committed
                             .insert(observation.occurrence.clone(), current);
-                        self.slot_operations.push(SlotOperationReceipt {
+                        self.record_slot_operation(SlotOperationReceipt {
                             observation: observation.clone(),
                             kind: SlotOperationKind::Correct,
                             sources: held.slots.clone(),
