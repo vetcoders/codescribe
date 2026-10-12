@@ -32,12 +32,33 @@ private final class PendingWhisperDownload {
   }
 }
 
+/// Hand-wound clock, so a transfer rate is a fact of the fixture rather than
+/// of how fast the test machine happened to run.
+@MainActor
+private final class StoppedClock {
+  var date = Date(timeIntervalSince1970: 1_000_000)
+
+  func advance(_ seconds: TimeInterval) { date += seconds }
+}
+
 @MainActor
 final class WhisperDownloadStoreTests: XCTestCase {
+  /// 1539 MB: the shape of the real weights file, in whole megabytes.
+  private static let weightsBytes: Int64 = 1539 * 1_048_576
+
   private func makeStore(_ transfer: PendingWhisperDownload) -> WhisperDownloadStore {
     WhisperDownloadStore(
       statusProvider: { .sampleUnavailable },
       download: { listener in try await transfer.run(listener) })
+  }
+
+  private func makeStore(_ transfer: PendingWhisperDownload, clock: StoppedClock)
+    -> WhisperDownloadStore
+  {
+    WhisperDownloadStore(
+      statusProvider: { .sampleUnavailable },
+      download: { listener in try await transfer.run(listener) },
+      now: { clock.date })
   }
 
   func testConstructionAndRefreshNeverStartARequestedModelTransfer() async {
@@ -129,6 +150,84 @@ final class WhisperDownloadStoreTests: XCTestCase {
     transfer.finish()
     await awaitCondition { !store.inFlight }
     XCTAssertTrue(store.status.available)
+  }
+
+  func testCancellingStopsTheRunningGenerationAndOffersTheDownloadAgain() async throws {
+    let transfer = PendingWhisperDownload()
+    let store = makeStore(transfer)
+    store.start()
+    await awaitCondition { transfer.listener != nil }
+    let listener = try XCTUnwrap(transfer.listener)
+    listener.onProgress(file: "weights.safetensors", bytesDone: 25, bytesTotal: 100)
+    await awaitCondition { store.fraction == 0.25 }
+
+    store.cancel()
+    XCTAssertTrue(store.cancelling)
+    XCTAssertTrue(listener.isCancelled(), "the running generation is the one asked to stop")
+    // Rust reports a stopped transfer as a failed call after clearing the partial.
+    transfer.fail()
+    await awaitCondition { !store.inFlight }
+
+    XCTAssertNil(store.error, "a stop the user asked for is not a failure to report")
+    XCTAssertNil(store.detail)
+    XCTAssertNil(store.fraction)
+    XCTAssertFalse(store.cancelling)
+    XCTAssertFalse(store.status.available, "the model is back to not installed")
+
+    store.start()
+    await awaitCondition { transfer.starts == 2 }
+    XCTAssertFalse(
+      try XCTUnwrap(transfer.listener).isCancelled(),
+      "a cancelled generation cannot stop the one started after it")
+  }
+
+  func testCancelIsANoOpWhileNoTransferIsRunning() {
+    let transfer = PendingWhisperDownload()
+    let store = makeStore(transfer)
+    store.cancel()
+    XCTAssertFalse(store.cancelling)
+    XCTAssertEqual(transfer.starts, 0)
+  }
+
+  func testProgressReportsRateAndTimeLeftOnceTwoSamplesAreApart() async throws {
+    let transfer = PendingWhisperDownload()
+    let clock = StoppedClock()
+    let store = makeStore(transfer, clock: clock)
+    store.start()
+    await awaitCondition { transfer.listener != nil }
+    let listener = try XCTUnwrap(transfer.listener)
+
+    listener.onProgress(
+      file: "weights.safetensors", bytesDone: 20 * 1_048_576, bytesTotal: Self.weightsBytes)
+    await awaitCondition { store.detail?.contains("20 / 1539 MB") == true }
+    XCTAssertEqual(
+      store.detail, "weights.safetensors · 20 / 1539 MB",
+      "one sample says nothing about speed, so rate and time left stay out")
+
+    clock.advance(1)
+    listener.onProgress(
+      file: "weights.safetensors", bytesDone: 33 * 1_048_576, bytesTotal: Self.weightsBytes)
+    await awaitCondition { store.detail?.contains("MB/s") == true }
+    let detail = try XCTUnwrap(store.detail)
+    // The decimal separator belongs to the host locale; the number does not.
+    let rate = 13.0.formatted(.number.precision(.fractionLength(1)).grouping(.never))
+    XCTAssertTrue(
+      detail.hasPrefix("weights.safetensors · 33 / 1539 MB · \(rate) MB/s · about "),
+      "13 MB in one second is 13 MB/s, got: \(detail)")
+    XCTAssertTrue(detail.contains("2"), "1506 MB left at 13 MB/s is about two minutes: \(detail)")
+  }
+
+  func testTheProgressLineDropsMembersItCannotHonestlyFill() {
+    XCTAssertEqual(
+      WhisperDownloadStore.progressLine(
+        file: "config.json", bytesDone: 1_048_576, bytesTotal: 2 * 1_048_576,
+        bytesPerSecond: nil),
+      "config.json · 1 / 2 MB")
+    XCTAssertEqual(
+      WhisperDownloadStore.progressLine(
+        file: "config.json", bytesDone: 1_048_576, bytesTotal: -1, bytesPerSecond: nil),
+      "config.json · 1 MB",
+      "a server without Content-Length leaves no total to print")
   }
 
   func testSetupCanAdvanceFinishAndReleaseItsWindowModelDuringDownload() async {

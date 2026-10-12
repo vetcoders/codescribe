@@ -7,6 +7,7 @@ extension CsWhisperModelStatus {
     available: false,
     embedded: false,
     path: nil,
+    modelsDir: "~/.codescribe/models",
     modelId: "whisper-large-v3-turbo",
     repo: "mlx-community/whisper-large-v3-turbo",
     sizeHint: "~1.6 GB"
@@ -14,39 +15,45 @@ extension CsWhisperModelStatus {
 }
 
 private enum WhisperDownloadEvent: Sendable {
-  case progress(detail: String, fraction: Double?)
+  case progress(file: String, bytesDone: UInt64, bytesTotal: Int64)
   case complete(path: String)
 }
 
+/// One-way flag the store raises on the main actor and the Rust transfer thread
+/// polls between body chunks.
+private final class CancellationFlag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelled = false
+
+  var isCancelled: Bool { lock.withLock { cancelled } }
+
+  func cancel() { lock.withLock { cancelled = true } }
+}
+
 /// Value-only UniFFI callbacks; the store owns one ordered MainActor consumer.
+/// The same object also answers the transfer's cancellation question, so a
+/// stopped generation can never stop the one started after it.
 final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
   private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
+  private let cancellation = CancellationFlag()
 
   fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
     self.continuation = continuation
   }
 
   func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
-    let fraction: Double?
-    if bytesTotal > 0 {
-      fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
-    } else {
-      fraction = nil
-    }
-    let mbDone = Double(bytesDone) / 1_048_576.0
-    let detail: String
-    if bytesTotal > 0 {
-      let mbTotal = Double(bytesTotal) / 1_048_576.0
-      detail = String(format: "%@ · %.0f / %.0f MB", file, mbDone, mbTotal)
-    } else {
-      detail = String(format: "%@ · %.0f MB", file, mbDone)
-    }
-    continuation.yield(.progress(detail: detail, fraction: fraction))
+    continuation.yield(.progress(file: file, bytesDone: bytesDone, bytesTotal: bytesTotal))
   }
 
   func onComplete(path: String) {
     continuation.yield(.complete(path: path))
   }
+
+  func isCancelled() -> Bool { cancellation.isCancelled }
+
+  /// Ask the running transfer to stop. Rust clears the partial file and fails
+  /// the call; the store turns that failure into the cancelled state.
+  func requestCancel() { cancellation.cancel() }
 
   func finish() {
     continuation.finish()
@@ -65,13 +72,25 @@ final class WhisperDownloadStore: ObservableObject {
 
   @Published private(set) var status: CsWhisperModelStatus = .sampleUnavailable
   @Published private(set) var inFlight = false
+  /// A stop was requested and the transfer has not ended yet.
+  @Published private(set) var cancelling = false
   @Published private(set) var fraction: Double?
   @Published private(set) var detail: String?
   @Published private(set) var error: String?
 
   private let statusProvider: StatusProvider
   private let download: Download
+  private let now: @MainActor () -> Date
   private var downloadTask: Task<Void, Never>?
+  private var sink: WhisperDownloadProgressSink?
+  private var rateSamples: [(at: Date, bytes: UInt64)] = []
+  private var sampledFile: String?
+
+  private static let bytesPerMegabyte = 1_048_576.0
+  /// Rate is averaged over the recent past, so a stalled or bursty connection
+  /// moves the number instead of freezing the first reading on the screen.
+  private static let rateWindow: TimeInterval = 5
+  private static let shortestRateInterval: TimeInterval = 0.75
 
   /// Injection keeps the integrator's fixtures offline. Construction itself
   /// does no disk or network work; refresh is an explicit surface lifecycle read.
@@ -79,10 +98,12 @@ final class WhisperDownloadStore: ObservableObject {
     statusProvider: @escaping StatusProvider = { whisperModelStatus() },
     download: @escaping Download = { listener in
       try await downloadWhisperModel(listener: listener)
-    }
+    },
+    now: @escaping @MainActor () -> Date = { Date() }
   ) {
     self.statusProvider = statusProvider
     self.download = download
+    self.now = now
   }
 
   func refresh() {
@@ -97,17 +118,27 @@ final class WhisperDownloadStore: ObservableObject {
     // Claim the generation before enqueuing either task, so simultaneous
     // Download clicks from Settings and onboarding cannot start two transfers.
     inFlight = true
+    cancelling = false
     fraction = nil
     detail = String(localized: "Starting download…", comment: "Whisper download starting status")
     error = nil
+    rateSamples.removeAll()
+    sampledFile = nil
     let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
     let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
+    self.sink = sink
     let events = Task { @MainActor [self] in
       for await event in channel.stream {
         switch event {
-        case .progress(let progressDetail, let progressFraction):
-          detail = progressDetail
-          fraction = progressFraction
+        case .progress(let file, let bytesDone, let bytesTotal):
+          detail = Self.progressLine(
+            file: file, bytesDone: bytesDone, bytesTotal: bytesTotal,
+            bytesPerSecond: observedRate(file: file, bytesDone: bytesDone))
+          if bytesTotal > 0 {
+            fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
+          } else {
+            fraction = nil
+          }
         case .complete(let path):
           detail = String(
             localized: "Saved · \(path)",
@@ -140,13 +171,97 @@ final class WhisperDownloadStore: ObservableObject {
             comment: "Whisper download returned without usable weights")
         fraction = installed.available ? 1 : nil
         if !installed.available { error = detail }
+      case .failure where cancelling:
+        // A stop is not a failure: Rust removed the partial file, so the step
+        // goes back to offering the download instead of reporting an error.
+        status = statusProvider()
+        detail = nil
+        fraction = nil
+        error = nil
       case .failure(let failure):
         error = failure.userFacingMessage
         detail = String(localized: "Download failed", comment: "Whisper download failed status")
         fraction = nil
       }
       inFlight = false
+      cancelling = false
+      self.sink = nil
+      rateSamples.removeAll()
+      sampledFile = nil
       downloadTask = nil
     }
+  }
+
+  /// Stop the running transfer. Rust deletes the partial file it was writing,
+  /// so the model directory never holds a half-downloaded bundle.
+  func cancel() {
+    guard inFlight, !cancelling else { return }
+    cancelling = true
+    sink?.requestCancel()
+    detail = String(
+      localized: "Stopping the download…", comment: "Whisper download is being cancelled")
+    fraction = nil
+  }
+
+  /// Transfer rate in bytes per second over the recent window, or `nil` while
+  /// too little has been seen of the current file to say anything honest.
+  private func observedRate(file: String, bytesDone: UInt64) -> Double? {
+    // Progress is reported per file, so a new file starts a new measurement.
+    if file != sampledFile {
+      sampledFile = file
+      rateSamples.removeAll()
+    }
+    let at = now()
+    rateSamples.append((at: at, bytes: bytesDone))
+    rateSamples.removeAll { at.timeIntervalSince($0.at) > Self.rateWindow }
+    guard let first = rateSamples.first, let last = rateSamples.last else { return nil }
+    let seconds = last.at.timeIntervalSince(first.at)
+    guard seconds >= Self.shortestRateInterval, last.bytes > first.bytes else { return nil }
+    return Double(last.bytes - first.bytes) / seconds
+  }
+
+  /// One line under the progress bar: what is being fetched, how far it is, and
+  /// — once the rate is known — how fast and how much longer.
+  static func progressLine(
+    file: String, bytesDone: UInt64, bytesTotal: Int64, bytesPerSecond: Double?
+  ) -> String {
+    let done = megabytes(Double(bytesDone))
+    guard bytesTotal > 0 else {
+      return String(
+        localized: "\(file) · \(done) MB",
+        comment:
+          "Download progress without a known total: file name, then megabytes received")
+    }
+    let total = megabytes(Double(bytesTotal))
+    guard let bytesPerSecond, bytesPerSecond > 0 else {
+      return String(
+        localized: "\(file) · \(done) / \(total) MB",
+        comment:
+          "Download progress: file name, megabytes received, megabytes expected")
+    }
+    let rate = (bytesPerSecond / bytesPerMegabyte).formatted(
+      .number.precision(.fractionLength(1)).grouping(.never))
+    let remaining = max(0, Double(bytesTotal) - Double(bytesDone)) / bytesPerSecond
+    let left = remainingTime(seconds: remaining)
+    return String(
+      localized: "\(file) · \(done) / \(total) MB · \(rate) MB/s · about \(left)",
+      comment:
+        "Download progress: file name, megabytes received, megabytes expected, megabytes per second, time left"
+    )
+  }
+
+  private static func megabytes(_ bytes: Double) -> String {
+    (bytes / bytesPerMegabyte).formatted(.number.precision(.fractionLength(0)).grouping(.never))
+  }
+
+  /// Time left in one unit, rounded: seconds below a minute, whole minutes above.
+  private static func remainingTime(seconds: Double) -> String {
+    guard seconds >= 45 else {
+      return Duration.seconds(max(1, seconds.rounded()))
+        .formatted(.units(allowed: [.seconds], width: .abbreviated))
+    }
+    let minutes = max(1, (seconds / 60).rounded())
+    return Duration.seconds(minutes * 60)
+      .formatted(.units(allowed: [.minutes], width: .abbreviated))
   }
 }

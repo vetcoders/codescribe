@@ -44,8 +44,14 @@ You'll see the Codescribe icon appear in your menu bar. It starts black (idle).
 
 The first-run setup wizard never downloads the local Whisper model on its own:
 its model step shows the model, its source, its size and where it would be
-stored, and the transfer starts only when you press **Download model**.
-Continuing without it is fine — the cloud and Apple paths do not need it.
+stored. **Download model** asks to confirm first, naming the size and the
+directory the files go to, and the transfer starts only once you confirm.
+While it runs, the step shows a progress bar, the file being fetched with the
+megabytes done, the rate and the time left, and a **Cancel download** button
+that stops the transfer and removes the partial file — the model goes back to
+not installed and the download button returns. Continuing without the model is
+fine: the cloud and Apple paths do not need it, and a running download finishes
+in the background.
 
 ---
 
