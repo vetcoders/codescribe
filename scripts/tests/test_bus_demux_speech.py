@@ -240,7 +240,9 @@ class SayReplyTests(unittest.TestCase):
             ttl_seconds=120,
             follow_from_end=True,
         )
+        receipt = lease.attach_receipt()
         lease.close()
+        return receipt
 
     def say(self, *extra, speaker=(True, None, None)):
         argv = [
@@ -282,8 +284,10 @@ class SayReplyTests(unittest.TestCase):
             provider="claude-code", session=session, bus=bus or self.bus,
             bridge_home=self.home, mute_agent=muted,
         )
-        with contextlib.redirect_stdout(io.StringIO()):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
             self.assertEqual(DEMUX.set_agent_muted(args), 0)
+        return json.loads(out.getvalue())
 
     def test_muted_reply_keeps_text_without_synthesis_and_unmute_allows_next_reply(self):
         self.attach_lease("session-a", "filip")
@@ -355,6 +359,86 @@ class SayReplyTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), patch.object(DEMUX.sys, "argv", [
                 "cs-bus", "--mute-all" if muted else "--unmute-all", "--bridge-home", str(self.home)]):
             self.assertEqual(DEMUX.main(), 0)
+
+    def test_attach_and_playback_report_all_mute_combinations(self):
+        self.attach_lease("session-a", "filip")
+        for global_muted, agent_muted in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(global_muted=global_muted, agent_muted=agent_muted):
+                self.global_mute(global_muted)
+                self.mute("session-a", agent_muted)
+                expected = {"global_muted": global_muted, "agent_muted": agent_muted,
+                            "effective_muted": global_muted or agent_muted,
+                            "mute_scope": "global" if global_muted else "agent" if agent_muted else None}
+                receipt = self.attach_lease("session-a", "filip")
+                self.assertEqual(receipt["playback"], expected)
+                code, reply, spoken = self.say("--session", "session-a")
+                self.assertEqual(code, 0)
+                self.assertEqual(self.outcome["reply_id"], reply["reply_id"])
+                if expected["effective_muted"]:
+                    spoken.assert_not_called()
+                    self.assertEqual(self.outcome["reason"], "muted")
+                    self.assertEqual(self.outcome["mute_scope"], expected["mute_scope"])
+                    self.assertEqual(self.outcome["playback"], expected)
+                    persisted = list((self.home / "runtime/reply-playback").glob("*.json"))
+                    terminal = next(json.loads(path.read_text()) for path in persisted
+                                    if json.loads(path.read_text()).get("reply_id") == reply["reply_id"])
+                    self.assertEqual(terminal["playback"], expected)
+                else:
+                    spoken.assert_called_once()
+
+    def test_unmute_agent_receipt_reports_global_block_without_changing_global_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        self.global_mute()
+        global_path = self.home / "runtime/playback-mutes/global.json"
+        before = global_path.read_bytes()
+        receipt = self.mute("session-a", False)
+        self.assertFalse(receipt["muted"])
+        self.assertEqual(receipt["playback"], {
+            "global_muted": True, "agent_muted": False,
+            "effective_muted": True, "mute_scope": "global",
+        })
+        self.assertEqual(global_path.read_bytes(), before)
+
+    def test_playback_snapshot_preserves_missing_and_malformed_receipt_policy(self):
+        snapshot = lambda: DEMUX.playback_mute_snapshot(self.home, "claude-code", "session-a", self.bus)
+        self.assertEqual(snapshot(), {"global_muted": False, "agent_muted": False,
+                                      "effective_muted": False, "mute_scope": None})
+        global_path = self.home / "runtime/playback-mutes/global.json"
+        agent_path = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        for path, field, scope in ((global_path, "global_muted", "global"),
+                                   (agent_path, "agent_muted", "agent")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            for raw in (b"not-json", b"[]", b"\xff", json.dumps({
+                    "schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": "false",
+            }).encode()):
+                with self.subTest(scope=scope, raw=raw):
+                    path.write_bytes(raw)
+                    before = path.read_bytes()
+                    result = snapshot()
+                    self.assertTrue(result[field])
+                    self.assertTrue(result["effective_muted"])
+                    self.assertEqual(result["mute_scope"], scope)
+                    self.assertEqual(path.read_bytes(), before)
+            path.unlink()
+
+    def test_manual_replay_refusal_reports_global_scope_even_with_agent_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        self.global_mute()
+        _, reply, _ = self.say("--session", "session-a")
+        out = io.StringIO()
+        with (patch.object(DEMUX, "_speak_xai") as spoken,
+              patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+              contextlib.redirect_stdout(out)):
+            self.assertEqual(DEMUX.speak_published_reply(
+                DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply, "c" * 24), 0)
+        spoken.assert_not_called()
+        result = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(result["reason"], "muted")
+        self.assertEqual(result["mute_scope"], "global")
+        self.assertEqual(result["playback"], {"global_muted": True, "agent_muted": True,
+                                            "effective_muted": True, "mute_scope": "global"})
 
     def test_global_mute_covers_existing_future_and_other_bus_without_changing_individuals(self):
         self.attach_lease("session-a", "filip")

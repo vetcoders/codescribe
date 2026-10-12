@@ -399,6 +399,43 @@ class MailboxTests(MailboxFixture):
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
+    def test_read_wait_and_status_report_dynamic_mute_snapshot_from_lease_bus(self):
+        self.mailbox.bus = None
+        global_path = self.root / "runtime/playback-mutes/global.json"
+        agent_path = DEMUX.playback_mute_path(self.root, self.PROVIDER, self.session, self.bus)
+        for global_muted, agent_muted in ((False, False), (False, True), (True, True), (True, False)):
+            with self.subTest(global_muted=global_muted, agent_muted=agent_muted):
+                DEMUX.atomic_json(global_path, {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA,
+                                               "scope": "all", "muted": global_muted})
+                DEMUX.atomic_json(agent_path, {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA,
+                                              "provider": self.PROVIDER, "provider_session_id": self.session,
+                                              "lease_id": self.lease, "bus": str(self.bus), "muted": agent_muted})
+                expected = {"global_muted": global_muted, "agent_muted": agent_muted,
+                            "effective_muted": global_muted or agent_muted,
+                            "mute_scope": "global" if global_muted else "agent" if agent_muted else None}
+                before = {path: path.read_bytes() for path in (global_path, agent_path, self.lease_path)}
+                for operation in ("read", "wait", "status"):
+                    with self.subTest(operation=operation):
+                        result = self.call(operation)
+                        self.assertEqual(result["playback"], expected)
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+                self.assert_not_acknowledged()
+
+    def test_wait_idle_reports_global_mute_without_read_or_ack(self):
+        self.pending = []
+        self.save()
+        self.mailbox.bus = None
+        global_path = self.root / "runtime/playback-mutes/global.json"
+        DEMUX.atomic_json(global_path, {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": True})
+        before = self.lease_path.read_bytes()
+        result = self.call("wait", {"timeout_seconds": 1})
+        self.assertEqual(result["kind"], "wait_idle")
+        self.assertEqual(result["playback"], {"global_muted": True, "agent_muted": False,
+                                            "effective_muted": True, "mute_scope": "global"})
+        self.assertEqual(self.lease_path.read_bytes(), before)
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
     def test_detach_preserves_unread_deliveries_without_ack(self):
         result = self.call("detach")
         self.assertEqual(result["kind"], "detach_receipt")
@@ -728,6 +765,20 @@ class MCPProtocolTests(MailboxFixture):
         self.assertEqual(detach["released_channels"], ["3"])
         self.send("tools/call", 14, {"name": "codescribe_read", "arguments": {}})
         self.assertTrue(self.response(14)["result"]["isError"])
+        self.assert_not_acknowledged()
+
+    def test_new_connection_reports_global_mute_before_any_voice_attempt(self):
+        self.start_server(override_bus=False)
+        global_path = self.root / "runtime/playback-mutes/global.json"
+        DEMUX.atomic_json(global_path, {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": True})
+        before = global_path.read_bytes()
+        expected = {"global_muted": True, "agent_muted": False,
+                    "effective_muted": True, "mute_scope": "global"}
+        self.assertEqual(self.connect()["playback"], expected)
+        for identity, operation in ((11, "read"), (12, "status")):
+            self.assertEqual(self.tool(identity, operation)["playback"], expected)
+        self.assertEqual(self.tool(13, "wait", {"timeout_seconds": 1})["playback"], expected)
+        self.assertEqual(global_path.read_bytes(), before)
         self.assert_not_acknowledged()
 
     def test_cancel_notification_releases_wait_without_ack_or_late_result(self):
