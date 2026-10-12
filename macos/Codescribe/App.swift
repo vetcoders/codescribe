@@ -926,25 +926,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func applyStatusItemStatus() {
     guard let button = statusItem?.button else { return }
-    // The glyph never changes with status — it is always the brand mark.
-    // Mode is conveyed by the status dot composited into the glyph's
-    // bottom-right corner, 1:1 with the tray status feed: green ready /
-    // red recording / orange processing / purple assistive.
+    // The glyph never changes with status. Idle and settled states stay a
+    // template image. Listening and processing composite an activity dot.
+    // Unread replies stay in the tooltip.
     button.imagePosition = .imageOnly
     button.title = ""
-    if let dot = trayStatus.menuBarDotColor, let base = statusItemImage() {
-      // The composite is a flattened, non-template image, so the
-      // unread-agent tint rides the glyph tint, not contentTintColor.
-      button.image = TrayStatusDotIcon.composite(
+    if let base = statusItemImage() {
+      button.image = MenuBarStatusImage.make(
         base: base,
-        dot: NSColor(dot),
-        glyphTint: hasUnreadAgentUpdate ? .systemYellow : nil
+        dot: trayStatus.menuBarDotColor.map(NSColor.init)
       )
-      button.contentTintColor = nil
     } else {
-      button.image = statusItemImage()
-      button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+      button.image = nil
     }
+    button.contentTintColor = nil
     let tooltip = trayStatus.tooltip
     button.toolTip =
       hasUnreadAgentUpdate

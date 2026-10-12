@@ -137,8 +137,12 @@ struct OverlayAgentStatusMark: View {
 /// Compact circular glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.overlayHeaderHoverTint) private var headerHoverTint
   private let mark: Mark
   let tint: Color
+  /// Header pictograms follow the chrome hover. The microphone passes false so
+  /// its recording tint stays authoritative while the chrome ring still hovers.
+  var adoptsHeaderHover: Bool
   static let diameter: CGFloat = 22
 
   private enum Mark {
@@ -147,24 +151,31 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color) {
+  init(symbol: String, tint: Color, adoptsHeaderHover: Bool = true) {
     mark = .symbol(symbol)
     self.tint = tint
+    self.adoptsHeaderHover = adoptsHeaderHover
   }
 
-  init(character: String, tint: Color) {
+  init(character: String, tint: Color, adoptsHeaderHover: Bool = true) {
     mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
     self.tint = tint
+    self.adoptsHeaderHover = adoptsHeaderHover
+  }
+
+  private var shownTint: Color {
+    if adoptsHeaderHover, let headerHoverTint { return headerHoverTint }
+    return tint
   }
 
   var body: some View {
     markView
-      .foregroundStyle(tint)
+      .foregroundStyle(shownTint)
       .frame(width: Self.diameter, height: Self.diameter)
-      .background { Circle().fill(tint.opacity(0.12)) }
+      .background { Circle().fill(shownTint.opacity(0.12)) }
       .overlay {
         Circle()
-          .strokeBorder(tint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
+          .strokeBorder(shownTint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
           .accessibilityHidden(true)
       }
   }
@@ -183,10 +194,12 @@ struct OverlayMicrophoneGlyph: View {
   }
 }
 
-/// The drawer's clickable rows answer the pointer the way the tray's rows do:
-/// a faint wash under the row, lighter than the selected row's, and never a
-/// layout change. `outset` lets a row without its own padding keep its text
-/// clear of the wash's edge.
+/// The drawer's clickable rows answer the pointer the way the tray's plain
+/// rows do: the whole row is the hover target, a raised wash appears on
+/// enter, and leave clears it. The wash does not hit-test, so the row's own
+/// buttons keep clicks, audio, and selection. Icons keep their resting color.
+/// `outset` lets a row without its own padding keep its text clear of the
+/// wash's edge.
 struct OverlayRowHoverHighlight: ViewModifier {
   let palette: OverlayAppearancePalette
   var cornerRadius: CGFloat = 9
@@ -194,16 +207,24 @@ struct OverlayRowHoverHighlight: ViewModifier {
   var enabled = true
   @State private var hovered = false
 
+  /// Tray plain rows use `CSColor.surfaceRaised(0.05)`. The clear branch
+  /// still names the row's canvas so a disabled row stays on its palette.
+  private var wash: Color {
+    guard hovered, enabled else { return palette.desktopBackground.color.opacity(0) }
+    return CSColor.surfaceRaised(0.05)
+  }
+
   func body(content: Content) -> some View {
     content
       .background {
-        RoundedRectangle(cornerRadius: cornerRadius)
-          .fill(palette.primaryText.color.opacity(hovered && enabled ? 0.06 : 0))
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+          .fill(wash)
           .padding(.horizontal, -outset)
           .allowsHitTesting(false)
           .accessibilityHidden(true)
       }
-      .onHover { hovered = $0 }
+      .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .onHover { hovered = enabled && $0 }
   }
 }
 
@@ -409,7 +430,7 @@ struct OverlayChannelStatusView: View {
         .overlay(alignment: .topTrailing) {
           if unreadCounts.values.contains(where: { $0 > 0 }) {
             Circle()
-              .fill(palette.processingStatus.color)
+              .fill(palette.primaryText.color)
               .frame(width: 5, height: 5)
               .offset(x: 2, y: -2)
               .accessibilityLabel("Unread replies")
@@ -470,7 +491,10 @@ struct OverlayChannelStatusView: View {
             in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain).csFocusOutline()
-        .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9))
+        .modifier(
+          OverlayRowHoverHighlight(
+            palette: palette, cornerRadius: 9, enabled: onShowTranscription != nil)
+        )
         .disabled(onShowTranscription == nil)
         .accessibilityIdentifier("overlay-show-transcription")
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
