@@ -658,10 +658,14 @@ Two evidence-provider limits bound what a corridor may assert, and neither may b
 worked around by flipping metadata, raising a line cap or reading raw product
 source as an unauthenticated fallback:
 
-- a generic function whose `where` clause spans lines can return a truncated
-  `window` extent instead of `brace`, identically at every line cap. No body
-  obligation can be placed on such an owner; its contract has to be carried by
-  callsite edges, and the gap recorded as an explicit `BOUNDARY`.
+- historical Loctree builds, including `0.14.5+g3678b992`, search for a body
+  opener in only ten header lines. A longer signature can return truncated
+  `window` instead of `brace`, identically at every requested cap. The corrected
+  extractor searches within that cap, shields header syntax and refuses to
+  borrow a following declaration's body. Use a build with that proof capability
+  for the live wired gate. When the provider still cannot prove the boundary,
+  carry the contract through callsite edges and record an explicit `BOUNDARY`;
+  never manufacture complete-body metadata or shorten product code to hide it.
 - `enclosing_symbol` can resolve to a function-local `const` rather than the
   enclosing function, so a caller-attribution proof observes zero callsites for
   calls that genuinely exist. That is an `INSTRUMENT_FALSE_NEGATIVE` and must be
