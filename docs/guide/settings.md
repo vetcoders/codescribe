@@ -476,7 +476,7 @@ still reachable, at worst one disclosure away.
   blocking failure can never render as "ready", and a warning or an unchecked
   state never renders as an error. Before the first probe the card says "Not
   checked yet" rather than guessing.
-- **Integrations** — one row per optional integration (VibeCrafted runtime,
+- **Integrations** — one row per optional integration (Vibecrafted runtime,
   AICX MCP, Loctree MCP, PRView integration) with exactly one status: Ready · N
   tools, "Awaits first run", "Optional · not configured", Disabled, or the
   concrete failure. Each row's tooltip names the single `mcp.json` entry its
