@@ -29,9 +29,11 @@ adds the standard macOS helper/interpreter directories to its own PATH. It also
 works when Junie is launched from an app or launchd without a terminal PATH;
 HOME, credentials and the user's shell configuration are never changed.
 
-The `SessionStart`/`UserPromptSubmit` hook supplies Junie's **real session_id**.
-The skill uses it with `codescribe_connect`; an occupied channel is refused, not
-taken over. Existing voice profiles, authentication and permission policy remain
+The `SessionStart`/`UserPromptSubmit` hook supplies Junie's **real session_id**
+with `provider=junie`. The skill passes both to `codescribe_connect`; an occupied
+channel is refused, not taken over. The same plugin serves Claude Code
+([Claude Code](CLAUDE_CODE_PLUGIN.md)); its background wake hook lives in a
+separate hook file that Junie's `hooks/hooks.json` never references. Existing voice profiles, authentication and permission policy remain
 unchanged. Supply a voice only if you want to change it. Hook support is EAP;
 without a native hook receipt, obtain `/link` rather than inventing an identity.
 
@@ -50,6 +52,14 @@ not indefinite, zero-model-polling listening. After a timeout, do not silently
 retry a listening loop. Keep the mailbox intact and report that reception needs
 to be resumed. Native task exit leaves a collecting follower, not an active agent.
 
+Each wait ends after at most 150 seconds with an explicit `wait_idle` receipt,
+below that deadline, so the host no longer aborts it: nothing was read or
+acknowledged, and the same report-and-stop rule applies. A wait the client
+abandoned is never cancelled by Junie; a later `codescribe_wait` supersedes it
+and the abandoned call is answered with a `superseded` error. Before this, the
+orphan held the wait slot and every later wait was refused for the life of the
+server process.
+
 Reception stays within the active task. Cancelling the tool lets a new typed
 prompt interrupt it; explicit stop cancels and detaches. This
 does **not** inject prompts into an unrelated idle session. Async hook context
@@ -57,7 +67,8 @@ is not used as an idle wakeup, and the native Stop hook retry cap is not disable
 
 `codescribe_read`/`codescribe_ack` preserve read receipts. The MCP connection
 refuses an ACK for an ID it has not completely returned, foreign owners,
-truncated/oversized envelopes, parallel waits, and session identity changes.
+truncated/oversized envelopes and session identity changes. `codescribe_detach`
+stops an active wait before releasing the channel.
 Distinct IDs remain distinct even when all five messages say “Iwo”. A canceled
 wait or a disconnected client leaves the durable mailbox untouched.
 

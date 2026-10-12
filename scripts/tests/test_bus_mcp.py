@@ -1,6 +1,9 @@
 """Native MCP reads owned bus deliveries; only an explicit ACK consumes them."""
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -26,6 +29,8 @@ MCP_SPEC.loader.exec_module(MCP)
 
 
 class MailboxFixture(unittest.TestCase):
+    PROVIDER = "junie"
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix=".bus-mcp-test-", dir=Path(__file__).parent)
         self.addCleanup(self.temp.cleanup)
@@ -33,23 +38,23 @@ class MailboxFixture(unittest.TestCase):
         self.bus = self.root / "bus.jsonl"
         self.bus.touch()
         self.session = "11111111-2222-4333-8444-555555555555"
-        self.lease = DEMUX.lease_identifier("junie", self.session)
+        self.lease = DEMUX.lease_identifier(self.PROVIDER, self.session)
         self.lease_path = self.root / "leases" / f"{self.lease}.json"
         self.ids = [f"{n:024x}" for n in range(1, 6)]
         self.pending = [self.envelope(identity) for identity in self.ids]
         self.save()
         self.mailbox = MCP.Mailbox(DEMUX, self.root, self.bus)
-        self.mailbox.owner = self.session
+        self.mailbox.owner, self.mailbox.provider = self.session, self.PROVIDER
 
     def envelope(self, identity):
-        owner = {"lease_id": self.lease, "provider": "junie", "provider_session_id": self.session}
+        owner = {"lease_id": self.lease, "provider": self.PROVIDER, "provider_session_id": self.session}
         return dict(owner, delivery_owner=dict(owner), delivery_id=identity,
                     kind="message", source="typed", text="Iwo", bus=str(self.bus),
                     emitted_at="2026-10-11T19:03:00Z", message_id=identity)
 
     def save(self):
         DEMUX.atomic_json(self.lease_path, {
-            "schema": DEMUX.LEASE_SCHEMA, "lease_id": self.lease, "provider": "junie",
+            "schema": DEMUX.LEASE_SCHEMA, "lease_id": self.lease, "provider": self.PROVIDER,
             "provider_session_id": self.session, "bus": str(self.bus),
             "pending": self.pending, "cursor": 0,
         })
@@ -82,9 +87,9 @@ class MailboxFixture(unittest.TestCase):
 
         self.addCleanup(stop)
         deadline = time.monotonic() + 3
-        while not self.mailbox.wait_lock.locked() and thread.is_alive() and time.monotonic() < deadline:
+        while self.mailbox.active_wait is None and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
-        self.assertTrue(self.mailbox.wait_lock.locked(), "waiter never became active")
+        self.assertIsNotNone(self.mailbox.active_wait, "waiter never became active")
         return cancel, thread, outcome
 
 
@@ -170,7 +175,7 @@ class MailboxTests(MailboxFixture):
         self.save()
         with self.assertRaisesRegex(ValueError, "foreign"):
             self.call("wait")
-        self.assertFalse(self.mailbox.wait_lock.locked())
+        self.assertIsNone(self.mailbox.active_wait)
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
@@ -221,7 +226,7 @@ class MailboxTests(MailboxFixture):
         self.assertIsInstance(error, ValueError)
         self.assertIn("cancel", str(error))
         self.assertFalse(thread.is_alive())
-        self.assertFalse(self.mailbox.wait_lock.locked())
+        self.assertIsNone(self.mailbox.active_wait)
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
         self.pending = [self.envelope(self.ids[0])]
@@ -236,48 +241,102 @@ class MailboxTests(MailboxFixture):
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
-    def test_only_one_waiter_is_active(self):
+    def test_newer_wait_supersedes_abandoned_wait_without_read_or_ack(self):
+        # J-01: Junie abandons a wait at its deadline and never cancels it.
         self.pending = []
         self.save()
-        cancel, thread, outcome = self.start_wait()
-        with self.assertRaisesRegex(ValueError, "already active"):
-            self.call("wait")
-        self.assertTrue(thread.is_alive())
-        cancel.set()
-        self.assertEqual(outcome.get(timeout=5)[0], "error")
+        _cancel, thread, outcome = self.start_wait()
+        orphan = self.mailbox.active_wait
+        newer = queue.Queue()
+        threading.Thread(target=lambda: newer.put(self.call("wait")), daemon=True).start()
+        kind, error = outcome.get(timeout=5)
+        thread.join(timeout=5)
+        self.assertEqual(kind, "error")
+        self.assertIn("superseded", str(error))
+        deadline = time.monotonic() + 3
+        while self.mailbox.active_wait in (None, orphan) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertNotIn(self.mailbox.active_wait, (None, orphan))
+        self.pending = [self.envelope(self.ids[0])]
+        self.save()
+        self.assertEqual(newer.get(timeout=5)["read_delivery_ids"], self.ids[:1])
+        self.assert_not_acknowledged()
+
+    def test_wait_window_ends_with_explicit_idle_receipt(self):
+        self.pending = []
+        self.save()
+        started = time.monotonic()
+        result = self.call("wait", {"timeout_seconds": 1})
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(result["kind"], "wait_idle")
+        self.assertEqual((result["provider"], result["provider_session_id"]), (self.PROVIDER, self.session))
+        self.assertEqual(result["read_delivery_ids"], [])
+        self.assertFalse(result["acknowledged"])
+        self.assertIn("codescribe_wait again", result["instructions"])
+        self.assertIsNone(self.mailbox.active_wait)
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
+    def test_wait_window_stays_below_the_host_deadline(self):
+        window = MCP.WAIT_SECONDS[self.PROVIDER]
+        for seconds in (0, window + 1):
+            with self.subTest(seconds=seconds), self.assertRaisesRegex(ValueError, "timeout_seconds"):
+                self.call("wait", {"timeout_seconds": seconds})
+        with self.assertRaisesRegex(ValueError, "type"):
+            self.call("wait", {"timeout_seconds": True})
+        self.assertIsNone(self.mailbox.active_wait)
+
+    def test_detach_stops_active_wait_and_preserves_mailbox(self):
+        self.pending = []
+        self.save()
+        _cancel, thread, outcome = self.start_wait()
+        result = self.call("detach")
+        kind, error = outcome.get(timeout=5)
+        thread.join(timeout=5)
+        self.assertEqual(result["kind"], "detach_receipt")
+        self.assertEqual(kind, "error")
+        self.assertIn("detach", str(error))
+        self.assertIsNone(self.mailbox.owner)
         self.assert_not_acknowledged()
 
     def test_connect_cannot_change_owner_or_receipt_sets(self):
         self.call("read")
         self.call("ack", {"delivery_ids": self.ids[:1]})
         with self.assertRaisesRegex(ValueError, "another session"):
-            self.call("connect", {"session_id": "other-native-session", "name": "Roman", "channel": "3"})
-        self.assertEqual(self.mailbox.owner, self.session)
+            self.call("connect", {"provider": self.PROVIDER, "session_id": "other-native-session", "name": "Roman", "channel": "3"})
+        other = next(name for name in MCP.WAIT_SECONDS if name != self.PROVIDER)
+        with self.assertRaisesRegex(ValueError, "another session"):
+            self.call("connect", {"provider": other, "session_id": self.session, "name": "Roman", "channel": "3"})
+        self.assertEqual((self.mailbox.provider, self.mailbox.owner), (self.PROVIDER, self.session))
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
         self.assertEqual(self.mailbox.acked_ids, {self.ids[0]})
 
     def test_connect_validates_identity_name_and_channel_before_side_effects(self):
-        self.mailbox.owner = None
-        valid = {"session_id": self.session, "name": "Roman", "channel": "3"}
-        for field, value in (("session_id", ""), ("session_id", "\n"), ("session_id", 3),
+        self.mailbox.owner = self.mailbox.provider = None
+        valid = {"provider": self.PROVIDER, "session_id": self.session, "name": "Roman", "channel": "3"}
+        for field, value in (("provider", "claude"), ("provider", "codex"), ("provider", None),
+                             ("session_id", ""), ("session_id", "\n"), ("session_id", 3),
                              ("name", " "), ("name", None), ("channel", "0"),
                              ("channel", "10"), ("channel", 3)):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 self.call("connect", dict(valid, **{field: value}))
             self.assertIsNone(self.mailbox.owner)
+        with self.assertRaises(ValueError):
+            self.call("connect", {key: value for key, value in valid.items() if key != "provider"})
         self.assertFalse((self.root / DEMUX.AUDIENCE_BINDING_FILENAME).exists())
 
     def test_failed_connect_keeps_existing_slot_and_restores_unconnected_owner(self):
-        self.mailbox.owner = None
-        foreign = {"audience": "someone-else", "provider": "junie",
+        self.mailbox.owner = self.mailbox.provider = None
+        foreign = {"audience": "someone-else", "provider": self.PROVIDER,
                    "provider_session_id": "foreign", "bus": str(self.bus)}
         with DEMUX.channel_bindings(self.root) as bindings:
             bindings["3"] = foreign
         path = self.root / DEMUX.AUDIENCE_BINDING_FILENAME
         before = path.read_bytes()
         with self.assertRaises(ValueError):
-            self.call("connect", {"session_id": self.session, "name": "Roman", "channel": "3"})
+            self.call("connect", {"provider": self.PROVIDER, "session_id": self.session, "name": "Roman", "channel": "3"})
         self.assertIsNone(self.mailbox.owner)
+        self.assertIsNone(self.mailbox.provider)
         self.assertEqual(path.read_bytes(), before)
         self.assert_not_acknowledged()
 
@@ -306,7 +365,7 @@ class MailboxTests(MailboxFixture):
 
     def test_no_bus_override_reads_lease_bus_without_touching_default_bus(self):
         self.mailbox = MCP.Mailbox(DEMUX, self.root, None)
-        self.mailbox.owner = self.session
+        self.mailbox.owner, self.mailbox.provider = self.session, self.PROVIDER
         self.assertEqual(self.call("read")["deliveries"], self.pending[:1])
         self.call("ack", {"delivery_ids": self.ids[:1]})
         marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{self.ids[0]}.json")
@@ -364,7 +423,7 @@ class MailboxTests(MailboxFixture):
         self.assertEqual(command[:2], [sys.executable, str(SCRIPTS / "cs-bus")])
         self.assertEqual(command[command.index("--bridge-home") + 1], str(self.root))
         self.assertEqual(command[command.index("--bus") + 1], str(self.bus))
-        self.assertEqual(command[command.index("--provider") + 1], "junie")
+        self.assertEqual(command[command.index("--provider") + 1], self.PROVIDER)
         self.assertEqual(command[command.index("--session") + 1], self.session)
         self.assertEqual(command[-4:], ["--say", text, "--reply-to", self.ids[0]])
         self.assertEqual(self.mailbox.replied_ids, {self.ids[0]})
@@ -543,7 +602,7 @@ class MCPProtocolTests(MailboxFixture):
 
     def detach_follower(self):
         result = subprocess.run([sys.executable, str(SCRIPTS / "cs-bus"), "--detach",
-                                 "--bridge-home", str(self.root), "--provider", "junie",
+                                 "--bridge-home", str(self.root), "--provider", self.PROVIDER,
                                  "--session", self.session], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -590,9 +649,10 @@ class MCPProtocolTests(MailboxFixture):
         return json.loads(result["content"][0]["text"])
 
     def connect(self):
-        result = self.tool(10, "connect", {"session_id": self.session, "name": "Roman", "channel": "3"})
+        result = self.tool(10, "connect", {"provider": self.PROVIDER, "session_id": self.session,
+                                           "name": "Roman", "channel": "3"})
         self.assertEqual(result["kind"], "attach_receipt")
-        self.assertEqual(result["provider"], "junie")
+        self.assertEqual(result["provider"], self.PROVIDER)
         self.assertEqual(result["provider_session_id"], self.session)
         self.assertEqual(result["wakeup"], "off")
         return result
@@ -601,10 +661,6 @@ class MCPProtocolTests(MailboxFixture):
         self.send("tools/call", identity, {"name": "codescribe_wait", "arguments": {}})
         with self.assertRaises(queue.Empty):
             self.responses.get(timeout=0.2)
-        self.send("tools/call", identity + 1, {"name": "codescribe_wait", "arguments": {}})
-        result = self.response(identity + 1)["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("already active", result["content"][0]["text"])
 
     def test_initialize_and_list_advertise_all_seven_native_tools(self):
         self.start_server(override_bus=False)
@@ -680,6 +736,283 @@ class MCPProtocolTests(MailboxFixture):
             reader.join(timeout=2)
         self.assertTrue(self.responses.empty(), "EOF produced a cancelled wait result")
         self.assert_not_acknowledged()
+
+
+class MCPWaitProtocolTests(MCPProtocolTests):
+    def test_newer_wait_answers_the_abandoned_wait_and_stays_pending(self):
+        self.start_server()
+        self.connect()
+        self.start_active_wait(20)
+        self.send("tools/call", 21, {"name": "codescribe_wait", "arguments": {}})
+        result = self.response(20)["result"]
+        self.assertTrue(result["isError"])
+        self.assertIn("superseded", result["content"][0]["text"])
+        with self.assertRaises(queue.Empty):
+            self.responses.get(timeout=0.3)
+        self.send("notifications/cancelled", params={"requestId": 21})
+        self.send("ping", 22)
+        self.assertEqual(self.response(22)["result"], {})
+        self.assert_not_acknowledged()
+
+    def test_bounded_wait_returns_idle_receipt_over_stdio(self):
+        self.start_server()
+        self.connect()
+        result = self.tool(20, "wait", {"timeout_seconds": 1})
+        self.assertEqual(result["kind"], "wait_idle")
+        self.assertFalse(result["acknowledged"])
+        self.assertEqual(self.tool(21, "read")["deliveries"], [])
+        self.assert_not_acknowledged()
+
+
+class ServeRobustnessTests(unittest.TestCase):
+    def test_unexpected_helper_output_still_answers_the_request(self):
+        request = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                              "params": {"name": "codescribe_read", "arguments": {}}}) + "\n"
+        output = io.StringIO()
+        with patch.object(MCP.Mailbox, "call", side_effect=KeyError("read_delivery_ids")), \
+                patch.object(sys, "stdin", io.StringIO(request)), contextlib.redirect_stdout(output):
+            MCP.serve(DEMUX, Path(tempfile.gettempdir()), None)
+        response = json.loads(output.getvalue())
+        self.assertEqual(response["id"], 7)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("read_delivery_ids", response["result"]["content"][0]["text"])
+
+
+class ClaudeCodeMailboxTests(MailboxTests):
+    """The whole native contract again, owned by a Claude Code session."""
+    PROVIDER = "claude-code"
+
+
+class ClaudeCodeProtocolTests(MCPProtocolTests):
+    PROVIDER = "claude-code"
+
+
+class ClaudeCodeWakeTests(MailboxFixture):
+    PROVIDER = "claude-code"
+    HOOK = SCRIPTS.parent / "plugins/codescribe/hooks/claude-code.json"
+
+    def setUp(self):
+        super().setUp()
+        self.bind()
+        self.environ = {"CLAUDE_CODE_SESSION_ID": self.session, "CLAUDE_PID": str(os.getpid())}
+
+    def save(self):
+        super().save()
+        state = DEMUX.read_json(self.lease_path)
+        state["pid"] = os.getpid()  # a live follower owns this lease
+        DEMUX.atomic_json(self.lease_path, state)
+
+    def bind(self, provider="claude-code"):
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings["7"] = {"audience": "fable", "provider": provider,
+                             "provider_session_id": self.session, "bus": str(self.bus)}
+
+    def wake(self, environ=None, window=0.6):
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            code = MCP.claude_code_wake(DEMUX, self.root, None, {"session_id": self.session},
+                                        self.environ if environ is None else environ,
+                                        window=window, interval=0.05)
+        lines = [line for line in errors.getvalue().splitlines() if line]
+        notice = json.loads(lines[-1].split(": ", 1)[1]) if lines else None
+        return code, notice
+
+    def test_existing_unread_wakes_once_then_only_for_new_deliveries(self):
+        code, notice = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(notice["kind"], "codescribe_mailbox_ready")
+        self.assertEqual(notice["new_delivery_ids"], self.ids)
+        self.assertEqual((notice["provider"], notice["channel"], notice["name"]), ("claude-code", "7", "fable"))
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.pending.append(self.envelope("f" * 24))
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(notice["new_delivery_ids"], ["f" * 24])
+        self.assertEqual(notice["pending_count"], 6)
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
+    def test_arrival_during_silence_wakes_without_reading(self):
+        self.pending = []
+        self.save()
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+        time.sleep(0.3)
+        self.assertTrue(outcome.empty())
+        self.assertTrue(MCP.wake_armed(self.root, self.lease))
+        self.pending = [self.envelope(self.ids[0])]
+        self.save()
+        code, notice = outcome.get(timeout=5)
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, self.ids[:1]))
+        self.assertFalse(MCP.wake_armed(self.root, self.lease))
+        self.assert_not_acknowledged()
+
+    def test_acknowledged_delivery_leaves_the_announced_set(self):
+        self.wake()
+        self.call("read")
+        self.call("ack", {"delivery_ids": self.ids[:1]})
+        self.wake()
+        record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
+        self.assertEqual(record["announced"], self.ids[1:])
+
+    def test_only_claude_code_owner_of_an_attached_channel_waits(self):
+        for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "another-claude-session"}):
+            with self.subTest(environ=environ):
+                started = time.monotonic()
+                self.assertEqual(self.wake(environ=environ, window=30), (0, None))
+                self.assertLess(time.monotonic() - started, 1)
+        self.bind(provider="claude")
+        self.assertEqual(self.wake(window=30), (0, None))
+        self.assertFalse(MCP.wake_paths(self.root, self.lease)[0].exists())
+
+    def test_armed_lease_lets_a_later_stop_return_at_once(self):
+        lock = MCP.wake_paths(self.root, self.lease)[0]
+        lock.parent.mkdir(parents=True)
+        with open(lock, "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertTrue(MCP.wake_armed(self.root, self.lease))
+            started = time.monotonic()
+            self.assertEqual(self.wake(window=30), (0, None))
+            self.assertLess(time.monotonic() - started, 1)
+
+    def test_detach_or_host_exit_ends_the_wait_silently(self):
+        self.pending = []
+        self.save()
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=30)), daemon=True).start()
+        time.sleep(0.3)
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings.pop("7")
+        self.assertEqual(outcome.get(timeout=5), (0, None))
+        self.bind()
+        ended = subprocess.Popen(["true"])
+        ended.wait()
+        self.assertEqual(self.wake(environ=dict(self.environ, CLAUDE_PID=str(ended.pid)), window=30), (0, None))
+
+    def test_lost_follower_is_announced_once_without_reading(self):
+        self.pending = []
+        super().save()  # no live follower pid
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"], notice["problem"]),
+                         (MCP.WAKE_EXIT, "codescribe_listener_problem", "follower_lost"))
+        code, notice = self.wake()
+        self.assertEqual(notice["kind"], "codescribe_wait_idle")
+        self.assert_not_acknowledged()
+
+    def hook(self, shell, command=None, environ=None):
+        entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
+        script = (command or entry["command"]).replace('"$HOME/.local/bin/cs-bus"', f'"{SCRIPTS / "cs-bus"}"')
+        env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE_CODE")}
+        env.update({"CODESCRIBE_AGENT_BRIDGE_HOME": str(self.root), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+        env.update(self.environ if environ is None else environ)
+        payload = json.dumps({"session_id": self.session, "hook_event_name": "Stop"})
+        return subprocess.run([shell, "-c", script], input=payload, env=env,
+                              capture_output=True, text=True, timeout=20)
+
+    def test_plugin_hook_command_maps_only_the_wake_to_exit_two(self):
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                (self.root / "runtime" / "native-wake").mkdir(parents=True, exist_ok=True)
+                for path in (self.root / "runtime" / "native-wake").iterdir():
+                    path.unlink()
+                result = self.hook(shell)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("codescribe_mailbox_ready", result.stderr)
+                junie = self.hook(shell, environ={})
+                self.assertEqual((junie.returncode, junie.stderr), (0, ""))
+                # A helper that cannot parse the hook exits 2 itself; that must
+                # never become a model wake on every turn end.
+                entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
+                stale = self.hook(shell, command=entry["command"].replace("--claude-code-wake", "--no-such-wake"))
+                self.assertEqual(stale.returncode, 0, stale.stderr)
+                self.assertIn("unrecognized arguments", stale.stderr)
+        self.assert_not_acknowledged()
+
+
+class PluginContractTests(unittest.TestCase):
+    PLUGIN = SCRIPTS.parent / "plugins/codescribe"
+
+    def load(self, relative):
+        return json.loads((self.PLUGIN / relative).read_text())
+
+    def test_claude_code_only_hooks_stay_out_of_the_shared_hook_file(self):
+        manifest = self.load(".claude-plugin/plugin.json")
+        self.assertEqual(manifest["hooks"], "./hooks/claude-code.json")
+        shared = json.dumps(self.load("hooks/hooks.json"))
+        self.assertNotIn("asyncRewake", shared)
+        claude = self.load("hooks/claude-code.json")["hooks"]
+        self.assertEqual(set(claude), {"SessionStart", "Stop"})
+        for event, groups in claude.items():
+            entry = groups[0]["hooks"][0]
+            with self.subTest(event=event):
+                self.assertTrue(entry["asyncRewake"])
+                self.assertGreater(entry["timeout"], MCP.WAKE_SECONDS)
+                self.assertIn(f'-eq {MCP.WAKE_EXIT} ]; then exit 2', entry["command"])
+                self.assertNotIn("status=", entry["command"])  # read-only in zsh
+
+    def test_wait_windows_stay_below_measured_client_deadlines(self):
+        self.assertLess(MCP.WAIT_SECONDS["junie"], 180)
+        self.assertLess(MCP.WAIT_SECONDS["claude-code"], 1800)
+        connect = next(tool for tool in MCP.TOOLS if tool["name"] == "codescribe_connect")
+        self.assertEqual(connect["inputSchema"]["properties"]["provider"]["enum"], sorted(MCP.WAIT_SECONDS))
+
+
+class SessionHookTests(unittest.TestCase):
+    HOOK = SCRIPTS.parent / "plugins/codescribe/hooks/session.py"
+
+    def run_hook(self, event, session="2bb934cc-f1d9-48df-a456-1f5f8190f8ae", exported=None):
+        env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"}
+        if exported is not None:
+            env["CLAUDE_CODE_SESSION_ID"] = exported
+        payload = json.dumps({"session_id": session, "hook_event_name": event})
+        return subprocess.run([sys.executable, str(self.HOOK)], input=payload, env=env,
+                              capture_output=True, text=True, timeout=10)
+
+    def context(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_claude_code_identity_is_proven_by_its_exported_session(self):
+        session = "2bb934cc-f1d9-48df-a456-1f5f8190f8ae"
+        context = self.context(self.run_hook("SessionStart", exported=session))
+        self.assertIn(f"provider=claude-code session_id={session}", context)
+        self.assertIn("Stop hook", context)
+        quiet = self.run_hook("UserPromptSubmit", exported=session)
+        self.assertEqual((quiet.returncode, quiet.stdout), (0, ""))
+
+    def test_junie_keeps_its_identity_even_inside_a_claude_code_shell(self):
+        for exported in (None, "the-parent-claude-session"):
+            with self.subTest(exported=exported):
+                context = self.context(self.run_hook("UserPromptSubmit", session="session-261011-220514-1xgd",
+                                                     exported=exported))
+                self.assertIn("provider=junie session_id=session-261011-220514-1xgd", context)
+
+    def test_missing_identity_is_refused(self):
+        result = self.run_hook("SessionStart", session="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("do not invent", result.stderr)
+
+    def test_hook_command_survives_a_refusing_python_first_on_path(self):
+        # Live Claude Code 2.1.296 run: a runtime-pinned python3 door first on
+        # PATH refused the bare `python3`, so the model never got its identity.
+        managed = [Path.home() / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+        if not any((directory / "python3").is_file() for directory in managed):
+            self.skipTest("no python3 in the plugin's managed interpreter directories")
+        command = json.loads((self.HOOK.parent / "hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        session = "2bb934cc-f1d9-48df-a456-1f5f8190f8ae"
+        with tempfile.TemporaryDirectory() as temporary:
+            door = Path(temporary) / "python3"
+            door.write_text("#!/bin/sh\necho 'no interpreter is pinned' >&2\nexit 1\n")
+            door.chmod(0o755)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE_")}
+            env.update({"PATH": f"{temporary}:/usr/bin:/bin", "CLAUDE_CODE_SESSION_ID": session,
+                        "CLAUDE_PLUGIN_ROOT": str(self.HOOK.parents[1])})
+            for shell in ("/bin/bash", "/bin/zsh"):
+                with self.subTest(shell=shell):
+                    result = subprocess.run([shell, "-c", command], env=env, capture_output=True, text=True, timeout=10,
+                                            input=json.dumps({"session_id": session, "hook_event_name": "SessionStart"}))
+                    self.assertIn(f"provider=claude-code session_id={session}", self.context(result))
 
 
 class NativeLaunchTests(unittest.TestCase):

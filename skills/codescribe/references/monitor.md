@@ -166,6 +166,24 @@ This is the integration contract, not a claim of verified live Kimi wakeup.
 Acceptance requires a fresh named utterance received and answered by that same
 Kimi conversation after it yielded, without a typed nudge.
 
+## Claude Code: plugin hook or completion task
+
+The Codescribe plugin's `Stop` hook runs `cs-bus --claude-code-wake` as an
+`asyncRewake` hook. It waits in the background, holds one lock per lease, and
+exits 75 (mapped to the hook's wake code 2) once per delivery not yet announced,
+with a `codescribe_mailbox_ready` notice on stderr. It never reads or ACKs.
+Announced IDs stay recorded until acknowledged, so a message left unread does
+not wake every turn. It also announces `follower_lost` or a refused mailbox once,
+and wakes after six silent hours only to re-arm. It ends silently when the
+session detaches or Claude Code exits. Every turn end re-arms it.
+
+Without the plugin, use the Kimi pattern with `--provider claude-code`: one
+`Bash(run_in_background=true)` task over `cs-bus --watch --until-event`; on
+`mailbox_ready` read, ACK, act, and start one new task before ending the turn.
+Claude Code stops a background task at its timeout (default 10 min, at most
+2 h) and wakes the model: set the maximum timeout and treat that wake as a rearm
+without ACK or reply. A turn that ends without a new task is deaf.
+
 ## Watch stream
 
 `--watch` is the stream a monitor consumes. It replaces a hand-built
@@ -194,8 +212,10 @@ from the event file. Never tail `events.jsonl` as a notification bell: its
 transport fields precede the words and may be truncated by the monitor.
 An older session with only a JSON `.log` remains readable by `--watch`.
 
-Run it under the provider's output-notifying monitor (for example the Claude
-Code `Monitor` tool), not as a bare background shell. `--once` prints what the
+Run it under the provider's output-notifying monitor, not as a bare background
+shell. Claude Code is not such a provider for an idle conversation: its `Monitor`
+tool delivers stdout only while armed (at most 30 min) and a background shell
+wakes it only on exit. Use the Codescribe plugin, or `--until-event` below. `--once` prints what the
 event file already holds and exits; `--from-start` replays it before following;
 `--from-file <path>` reads another JSON event file or an older JSON log. The watch never acknowledges and never
 moves the lease cursor.
