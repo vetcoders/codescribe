@@ -2426,3 +2426,98 @@ fn cloud_word_context_refusal_does_not_discard_an_unrelated_batch_word() {
     assert!(!ledger.text_recovery_pending(&owner));
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn cloud_word_context_uses_original_span_across_owner_edges() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for (owner_start, owner_end, pin_start, pin_end) in [
+        (24_000, 144_000, 16_000, 40_000),
+        (0, 120_000, 104_000, 128_000),
+    ] {
+        let owner = OccurrenceIdentity::new("cloud-original-context", 1, owner_start, owner_end);
+        let mut pcm = vec![0.0; 144_000];
+        pcm[pin_start as usize..pin_end as usize].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let clipped_start = pin_start.max(owner_start);
+        let clipped_end = pin_end.min(owner_end);
+        assert_eq!(context_quality(pin_start, pin_end, (0, 144_000)), 333_333);
+        assert_eq!(
+            context_quality(clipped_start, clipped_end, (0, 144_000)),
+            BAND_RIGHTS_FLOOR
+        );
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(clipped_start, clipped_end, "1286")
+                        .with_decode_window(clipped_start, 144_000)],
+                )
+                .grants_mutation()
+        );
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        assert!(!ledger.complete_word_slot(&before[0]));
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(pin_start, pin_end, "56").with_decode_window(0, 144_000)],
+        );
+        assert!(!receipt.grants_mutation(), "owner={owner:?}: {receipt:?}");
+        assert_eq!(ledger.text_of(&owner), Some("1286"));
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert!(ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.observation == whisper
+                && alternative.candidate == "56"
+                && alternative.reason == "outside_publication_band"
+        }));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn cloud_word_context_allows_original_span_at_floor_across_owner_edges() {
+    use super::word_adjudication::{BAND_RIGHTS_FLOOR, context_quality};
+    for (owner_start, owner_end, pin_start, pin_end, decode) in [
+        (24_000, 144_000, 16_000, 40_000, (0, 96_000)),
+        (0, 120_000, 104_000, 128_000, (48_000, 144_000)),
+    ] {
+        let owner =
+            OccurrenceIdentity::new("cloud-original-context-floor", 1, owner_start, owner_end);
+        let mut pcm = vec![0.0; 144_000];
+        pcm[pin_start as usize..pin_end as usize].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        let clipped_start = pin_start.max(owner_start);
+        let clipped_end = pin_end.min(owner_end);
+        assert_eq!(
+            context_quality(pin_start, pin_end, decode),
+            BAND_RIGHTS_FLOOR
+        );
+        let cloud = ledger.next_word_observation(ObservationProducer::CloudLive, 1, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &cloud,
+                    &[WordPin::new(clipped_start, clipped_end, "1286")
+                        .with_decode_window(clipped_start, 144_000)],
+                )
+                .grants_mutation()
+        );
+        assert!(!ledger.complete_word_slot(&ledger.slots_of(&owner).unwrap()[0]));
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 2, &owner);
+        let receipt = ledger.admit_word_slots(
+            &whisper,
+            &[WordPin::new(pin_start, pin_end, "56").with_decode_window(decode.0, decode.1)],
+        );
+        assert!(receipt.grants_mutation(), "owner={owner:?}: {receipt:?}");
+        assert_eq!(ledger.text_of(&owner), Some("56"));
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            (slots[0].sample_start, slots[0].sample_end),
+            (clipped_start, clipped_end)
+        );
+        assert_eq!(slots[0].observation, whisper);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
