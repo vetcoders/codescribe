@@ -53,14 +53,14 @@ Authored-By: copilot <agents@vetcoders.io>
 
 ## Two remotes: fast-forward first
 
-The integration branch moves on two remotes: `origin` (GitHub) and `dragon`
-(the build host). Founder's rule, 2026-10-13: pull `--ff-only` first; when a
+The integration branch moves on two remotes: `origin` (GitHub) and the build
+host remote (`<build-remote>` below; `git remote -v` shows its name in your checkout). Founder's rule, 2026-10-13: pull `--ff-only` first; when a
 fast-forward is impossible, either `--rebase` or a `--no-ff` merge. Rewritten
 hashes of your own unpushed commits are not a problem. Never `--force` over a
 remote branch.
 
 ```
-git pull dragon <branch> --ff-only || git pull dragon <branch> --rebase
+git pull <build-remote> <branch> --ff-only || git pull <build-remote> <branch> --rebase
 git push origin <branch>
 ```
 
