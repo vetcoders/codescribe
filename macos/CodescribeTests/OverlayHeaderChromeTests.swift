@@ -177,11 +177,45 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// Every clickable drawer row carries the tray-like hover wash.
   func testClickableDrawerRowsCarryTheHoverWash() throws {
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
-    XCTAssertEqual(
-      roster.components(separatedBy: ".modifier(OverlayRowHoverHighlight(").count - 1, 2)
-    XCTAssertEqual(roster.components(separatedBy: "OverlayRowHoverHighlight(\n").count - 1, 1)
+    XCTAssertEqual(roster.components(separatedBy: "OverlayRowHoverHighlight(").count - 1, 3)
     XCTAssertTrue(roster.contains("enabled: conversation != nil && onSelectConversation != nil"))
-    XCTAssertTrue(roster.contains("opacity(hovered && enabled ? 0.06 : 0)"))
+    XCTAssertTrue(roster.contains("enabled: onShowTranscription != nil"))
+    XCTAssertTrue(roster.contains("CSColor.surfaceRaised(0.05)"))
+    XCTAssertTrue(
+      roster.contains(
+        ".contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))"))
+    XCTAssertTrue(roster.contains(".onHover { hovered = enabled && $0 }"))
+    XCTAssertFalse(roster.contains("opacity(hovered && enabled ? 0.06 : 0)"))
+  }
+
+  /// The production agent monitor washes the empty span of a roster row on a
+  /// native pointer enter and clears it on leave. Light and dark both use the
+  /// live panel appearance. A disabled monitor stays calm.
+  func testProductionRosterRowHoverWashesTheWholeRow() throws {
+    for palette in [OverlayAppearancePalette.light, OverlayAppearancePalette.dark] {
+      let frames = try hoverFrames(
+        try rosterMonitor(palette: palette, interactive: true),
+        palette: palette,
+        size: NSSize(width: 320, height: 280),
+        minimumWidth: 180)
+      let name = palette.appearance == .dark ? "dark" : "light"
+      XCTAssertGreaterThan(
+        headerBandCount(frames.rest, frames.hover, width: frames.width, from: 0.45, to: 0.75),
+        400, "\(name) roster row did not wash its empty span")
+      XCTAssertTrue(
+        headerBandStaysOffRole(frames.rest, frames.hover, width: frames.width, palette: palette),
+        "\(name) roster hover recolored the row")
+      XCTAssertLessThan(
+        headerDelta(frames.rest, frames.leave), 0.08, "\(name) roster hover did not clear")
+    }
+    let calm = try hoverFrames(
+      try rosterMonitor(palette: .dark, interactive: false),
+      palette: .dark,
+      size: NSSize(width: 320, height: 280),
+      requireTracking: false)
+    XCTAssertLessThan(
+      headerBandCount(calm.rest, calm.hover, width: calm.width, from: 0.45, to: 0.75),
+      80, "disabled roster row took a hover wash")
   }
 
   private func assertNeutralHover<V: View>(
@@ -239,36 +273,43 @@ final class OverlayHeaderChromeTests: XCTestCase {
   }
 
   private func hoverFrames<V: View>(
-    _ view: V, palette: OverlayAppearancePalette
-  ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel]) {
+    _ view: V, palette: OverlayAppearancePalette,
+    size: NSSize = NSSize(width: 64, height: 64),
+    minimumWidth: CGFloat = 0,
+    requireTracking: Bool = true
+  ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel], width: Int) {
     let root =
       view
-      .frame(width: 64, height: 64)
+      .frame(width: size.width, height: size.height)
       .background(palette.desktopBackground.color)
       .preferredColorScheme(palette.appearance == .dark ? .dark : .light)
     let panel = FloatingOverlayPanel(
-      contentRect: NSRect(x: 280, y: 460, width: 64, height: 64),
+      contentRect: NSRect(x: 280, y: 460, width: size.width, height: size.height),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
     panel.isOpaque = true
     panel.backgroundColor = palette.desktopBackground.nsColor
     let host = NSHostingView(rootView: root)
-    host.frame = NSRect(x: 0, y: 0, width: 64, height: 64)
+    host.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
     panel.contentView = host
     panel.orderFrontRegardless()
     defer { panel.orderOut(nil) }
     headerSettle(host)
-    let rest = headerPixels(host)
-    XCTAssertFalse(rest.isEmpty, "header control did not render")
-    try headerPointer(true, on: host)
+    let rest = headerRaster(host)
+    XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
+    try headerPointer(
+      true, on: host, minimumWidth: minimumWidth, requireTracking: requireTracking)
     headerSettle(host, seconds: 0.28)
     let hover = headerPixels(host)
-    try headerPointer(false, on: host)
+    try headerPointer(
+      false, on: host, minimumWidth: minimumWidth, requireTracking: requireTracking)
     headerSettle(host, seconds: 0.28)
-    return (rest, hover, headerPixels(host))
+    return (rest.pixels, hover, headerPixels(host), rest.width)
   }
 
-  private func headerPointer(_ inside: Bool, on root: NSView) throws {
+  private func headerPointer(
+    _ inside: Bool, on root: NSView, minimumWidth: CGFloat = 0, requireTracking: Bool = true
+  ) throws {
     root.layoutSubtreeIfNeeded()
     headerUpdateTracking(root)
     var owners = headerTrackingOwners(in: root)
@@ -277,6 +318,16 @@ final class OverlayHeaderChromeTests: XCTestCase {
       headerUpdateTracking(root)
       owners = headerTrackingOwners(in: root)
     }
+    if minimumWidth > 0 {
+      let wide = owners.filter { $0.1.rect.width >= minimumWidth && $0.1.rect.height <= 120 }
+      XCTAssertFalse(
+        wide.isEmpty,
+        "no row-sized tracking area\n"
+          + owners.map { "\($0.1.rect)" }.joined(separator: "\n")
+          + "\n\(headerTree(root))")
+      owners = wide
+    }
+    if owners.isEmpty, !requireTracking { return }
     XCTAssertFalse(owners.isEmpty, "no native tracking area\n\(headerTree(root))")
     for (view, area) in owners {
       let location = view.convert(NSPoint(x: area.rect.midX, y: area.rect.midY), to: nil)
@@ -334,20 +385,103 @@ final class OverlayHeaderChromeTests: XCTestCase {
   }
 
   private func headerPixels(_ view: NSView) -> [HeaderPixel] {
-    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return [] }
+    headerRaster(view).pixels
+  }
+
+  /// Row-major sRGB samples. Every bitmap cell is kept so a column band is
+  /// `index % width`.
+  private func headerRaster(_ view: NSView) -> (width: Int, pixels: [HeaderPixel]) {
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+      return (0, [])
+    }
     view.cacheDisplay(in: view.bounds, to: bitmap)
     var pixels: [HeaderPixel] = []
     pixels.reserveCapacity(bitmap.pixelsWide * bitmap.pixelsHigh)
     for y in 0..<bitmap.pixelsHigh {
       for x in 0..<bitmap.pixelsWide {
-        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
         pixels.append(
           HeaderPixel(
-            red: color.redComponent, green: color.greenComponent,
-            blue: color.blueComponent, alpha: color.alphaComponent))
+            red: color?.redComponent ?? 0, green: color?.greenComponent ?? 0,
+            blue: color?.blueComponent ?? 0, alpha: color?.alphaComponent ?? 0))
       }
     }
-    return pixels
+    return (bitmap.pixelsWide, pixels)
+  }
+
+  /// Pixels that moved inside a horizontal band. The band is the empty span
+  /// of a full-width roster row: left of the audio controls, right of the label.
+  private func headerBandCount(
+    _ before: [HeaderPixel], _ after: [HeaderPixel], width: Int,
+    from start: CGFloat, to end: CGFloat
+  ) -> Int {
+    guard width > 0, before.count == after.count, before.count.isMultiple(of: width) else {
+      return 0
+    }
+    let lower = Int(CGFloat(width) * start)
+    let upper = Int(CGFloat(width) * end)
+    var count = 0
+    for index in before.indices where headerDistance(before[index], after[index]) > 0.05 {
+      let column = index % width
+      if column >= lower && column < upper { count += 1 }
+    }
+    return count
+  }
+
+  private func headerBandStaysOffRole(
+    _ before: [HeaderPixel], _ after: [HeaderPixel], width: Int,
+    palette: OverlayAppearancePalette
+  ) -> Bool {
+    guard width > 0, before.count == after.count else { return false }
+    let roles = [
+      palette.successStatus, palette.agentAccent, palette.processingStatus,
+      palette.listeningStatus,
+    ].map { headerPixel($0.nsColor) }
+    let lower = Int(CGFloat(width) * 0.45)
+    let upper = Int(CGFloat(width) * 0.75)
+    for index in before.indices {
+      let column = index % width
+      guard column >= lower, column < upper,
+        headerDistance(before[index], after[index]) > 0.05
+      else { continue }
+      let pixel = after[index]
+      if pixel.alpha > 0.45, roles.contains(where: { headerDistance(pixel, $0) < 0.16 }) {
+        return false
+      }
+    }
+    return true
+  }
+
+  /// Production monitor: the transcription row plus one live agent row.
+  private func rosterMonitor(palette: OverlayAppearancePalette, interactive: Bool) throws
+    -> some View
+  {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "roster-hover",
+        "lease_id": String(repeating: "c", count: 32),
+        "channel": "1", "name": "Atlas",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "1", name: "Atlas", owner: owner, messages: [])
+    let channel = OverlayChannelDelivery(
+      channel: "1", agent: "Atlas", deliveryID: nil, stage: nil, isOpen: false)
+    var status = OverlayChannelStatusView(
+      channels: [channel],
+      unavailable: false,
+      palette: palette,
+      animates: false,
+      hudStates: interactive
+        ? [
+          "1": .init(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+            provider: owner.provider, providerSessionID: owner.providerSessionID)
+        ] : [:],
+      conversations: interactive ? [conversation] : [],
+      onSelectConversation: interactive ? { _ in } : nil
+    )
+    if interactive { status.onShowTranscription = {} }
+    return status.monitorBody(maximumHeight: 260)
   }
 
   private func headerContains(
