@@ -173,7 +173,7 @@ struct OnboardingView: View {
     case .language:
       LanguageStepView(model: model)
     case .localModel:
-      LocalModelStepView(model: model)
+      LocalModelStepView(model: model, downloads: model.whisperDownloadStore)
     case .apiKey:
       ApiKeyStepView(model: model)
     case .hotkeyMode:

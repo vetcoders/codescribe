@@ -49,6 +49,20 @@ final class WhisperDownloadStoreTests: XCTestCase {
     XCTAssertFalse(store.inFlight)
   }
 
+  func testOpeningTheSetupModelStepNeverStartsARequestedModelTransfer() async {
+    let transfer = PendingWhisperDownload()
+    let store = makeStore(transfer)
+    let setup = OnboardingViewModel(
+      engine: MockOnboardingEngine(progress: 4), hotkeys: MockHotkeysEngine(),
+      agentStatus: MockAgentStatusEngine(), probe: MockPermissionProbe(.allGranted),
+      whisperDownloadStore: store)
+    XCTAssertEqual(setup.step, .localModel)
+    setup.refreshForCurrentStep()
+    await Task.yield()
+    XCTAssertEqual(transfer.starts, 0, "Opening the step reads status; the download stays opt-in")
+    XCTAssertFalse(store.inFlight)
+  }
+
   func testSettingsAndSetupCoalesceClicksIntoOneTransferAndShareProgress() async throws {
     let transfer = PendingWhisperDownload()
     let store = makeStore(transfer)

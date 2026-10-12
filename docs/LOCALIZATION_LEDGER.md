@@ -586,7 +586,10 @@ English text:
   (`Talk with the Agent and use its tools.` retired); the permissions step
   splits its two sentences, keeping the one about continuing under the
   heading and moving the System Settings reminder to a footnote next to
-  `Refresh status`.
+  `Refresh status`; the local-model step names the size on its opt-in button
+  (`Download model (%@)`, fed by the Rust size hint), drops `Recheck` once
+  the model is installed, and shows the background-download note only while
+  a transfer runs.
 - Thread rail rows show the month and day in the locale's order and names;
   English reads as before (`Jul 8`).
 - The prompt restore tooltip no longer lowercases the prompt title.

@@ -7335,6 +7335,17 @@
         }
       }
     },
+    "Download model (%@)": {
+      "comment": "Opt in to download Whisper; the placeholder is the approximate size",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobierz model (%@)"
+          }
+        }
+      }
+    },
     "Download source": {
       "comment": "Model details: Hugging Face repository",
       "localizations": {

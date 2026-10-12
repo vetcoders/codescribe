@@ -70,16 +70,6 @@ struct WhisperDownloadView: View {
         Button(downloadTitle, action: store.start)
           .csAction(prominent: true)
           .disabled(!downloadEnabled)
-      } else {
-        Button(
-          String(
-            localized: LocalizedStringResource(
-              "Recheck", locale: locale,
-              comment: "Recheck local Whisper availability without downloading")),
-          action: store.refresh
-        )
-        .csAction()
-        .disabled(!downloadEnabled)
       }
     }
     .accessibilityIdentifier("whisper-download")
@@ -92,7 +82,8 @@ struct WhisperDownloadView: View {
     store.error == nil
       ? String(
         localized: LocalizedStringResource(
-          "Download", locale: locale, comment: "Opt in to download Whisper from Hugging Face"))
+          "Download model (\(store.status.sizeHint))", locale: locale,
+          comment: "Opt in to download Whisper; the placeholder is the approximate size"))
       : String(
         localized: LocalizedStringResource(
           "Try again", locale: locale, comment: "Retry the failed Whisper model download"))
