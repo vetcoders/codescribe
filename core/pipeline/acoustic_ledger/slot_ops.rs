@@ -1199,6 +1199,7 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         slots: &mut Vec<WordSlot>,
         incoming: &mut Vec<WordSlot>,
+        original_pins: &[&WordPin],
     ) -> (Vec<SlotOperationReceipt>, Vec<GroupSpeechCoverageReceipt>) {
         if !matches!(
             observation.producer,
@@ -1330,6 +1331,50 @@ impl AcousticLedger {
                 .map(|index| pins[*index].clone())
                 .collect::<Vec<_>>();
             outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+            // Incomplete words can join this component by overlap alone,
+            // without satisfying the ordinary target relation. Every output
+            // of a changed component containing a CloudLive word needs context.
+            let authority = sources.iter().all(|source| {
+                source.producer != ObservationProducer::ManualHuman
+                    && (source.producer.authority_rank() < observation.producer.authority_rank()
+                        || (source.producer == observation.producer
+                            && source.observation.generation < observation.generation))
+            });
+            let cloud_word = sources.iter().any(|source| {
+                source.producer == ObservationProducer::CloudLive
+                    && !self.coarse_word_source(source)
+            });
+            let same_words = sources.len() == outputs.len()
+                && sources.iter().zip(&outputs).all(|(source, output)| {
+                    word_adjudication::label_equal(&source.text, &output.text)
+                });
+            if observation.producer == ObservationProducer::Whisper
+                && authority
+                && cloud_word
+                && !same_words
+                && !word_indices.iter().all(|index| {
+                    original_pins.get(*index).is_some_and(|pin| {
+                        self.whisper_has_correction_context(
+                            observation,
+                            pin.sample_start,
+                            pin.sample_end,
+                        )
+                    })
+                })
+            {
+                let candidate = compose_label(&outputs);
+                self.retain_slot_alternative(
+                    observation,
+                    &candidate,
+                    sources.clone(),
+                    "outside_publication_band",
+                );
+                for output in &outputs {
+                    self.record_word_slot_refusal(observation, output, false);
+                }
+                consumed.extend(word_indices.iter().copied());
+                continue;
+            }
             let coarse_source = |source: &WordSlot| self.coarse_word_source(source);
             let all_coarse = sources.iter().all(coarse_source);
             // A coarse hypothesis has no independent word claims. Its
@@ -1338,12 +1383,6 @@ impl AcousticLedger {
             // before the measured words can replace the held phrase.
             let source_complete =
                 all_coarse || self.asr_source_scope_complete(observation, &sources);
-            let authority = sources.iter().all(|source| {
-                source.producer != ObservationProducer::ManualHuman
-                    && (source.producer.authority_rank() < observation.producer.authority_rank()
-                        || (source.producer == observation.producer
-                            && source.observation.generation < observation.generation))
-            });
             // A measured single-word pin remains an independent source even
             // when Apple supplied no decoder-fence completeness receipt.
             // Lexical agreement cannot retire that source by merging it with

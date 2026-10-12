@@ -1118,6 +1118,10 @@ channel 0. The microphone guard always starts from the canonical global
 capture bus and discovers the dedicated channel buses; a reply's publication
 path never substitutes for the global capture journal. The existing lifecycle
 cursor enforces capture interlocks.
+Lifecycle scans have a separate 500 ms slice budget from the playback polling
+cadence. Faster polling does not shorten the safety scan; a scan that exhausts
+its budget still refuses idle and stops playback conservatively. The original
+cursor retains its processed prefix for the next scan.
 Stop writes an owner-checked request for that exact reply/ticket and requires
 its live ticket lock. The Python owner checks the request during lock/capture
 wait and playback, and terminates only its own `afplay` child. A stop request
@@ -1230,6 +1234,14 @@ The helper cannot see a provider's notification window or conversation. A
 window ending while the watch keeps running is not a disconnect, and the helper
 does not claim to notify through an expired window.
 
+Managed followers retain the resolved workspace in their lease wakeup
+configuration as well as the PID record. Losing the PID record therefore does
+not change the configuration or force a verified live follower to restart on
+reattachment. Recovery carries that recorded workspace through both the follower
+launch and its confirmed configuration, using the lease when the PID record is
+missing. Legacy records without an explicit workspace do not invent one.
+A changed workspace still requires the existing drained handover.
+
 A watch started with `--provider/--session` checks its follower every two
 seconds. A follower counts as lost only when two consecutive checks find no
 live follower process, the lease lock is free, and the channel binding still
@@ -1238,7 +1250,7 @@ watch are not losses. A held lease lock means a handover is in progress.
 
 Recovery runs under the canonical binding lock, in the same order as attach,
 detach and archive. It starts one follower with the recorded name, channel, bus,
-wakeup and hook through the same launch and readiness path as `--attach`. The
+wakeup, hook and explicit workspace through the same launch and readiness path as `--attach`. The
 replacement acquires the same lease and resumes its cursor and unread mailbox.
 Recovery writes no acknowledgment, resubmits no accepted queue copy and replays
 no transcript. Each lost follower incarnation (pid plus start time) is handled

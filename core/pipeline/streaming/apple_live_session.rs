@@ -26328,18 +26328,28 @@ mod relay_l1_overlap_admission_tests {
         }
         assert_eq!(ledger.text_of(&owner), Some("zima usza rości dalej"));
         assert_eq!(&ledger.slots_of(&owner).unwrap()[..3], sources.as_slice());
-        for candidate in ["zimą", "szarości"] {
-            assert!(
-                ledger
-                    .word_choices()
-                    .iter()
-                    .any(|choice| choice.candidate.surface == candidate
-                        && !choice.accepted
-                        && !choice.lexical_resolved),
-                "{candidate}: {:?}",
-                ledger.word_choices()
-            );
-        }
+        // Independent word pins are protected before lexical adjudication.
+        // A refused contraction remains an alternative, not a lexical vote.
+        assert!(
+            ledger.slot_alternatives().iter().any(|alternative| {
+                alternative
+                    .candidate
+                    .split_whitespace()
+                    .any(|word| word == "zimą")
+                    && sources[..2]
+                        .iter()
+                        .all(|source| alternative.sources.contains(source))
+            }),
+            "the refused contraction must retain both independent sources"
+        );
+        assert!(
+            ledger.word_choices().iter().any(|choice| {
+                choice.candidate.surface == "szarości"
+                    && !choice.accepted
+                    && !choice.lexical_resolved
+            }),
+            "the legal 1:1 candidate still needs lexical evidence"
+        );
         assert!(!ledger.slot_operations().iter().any(|operation| {
             operation
                 .sources
@@ -26351,7 +26361,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn three_real_frames_resolve_coarse_and_partitioned_sources_without_loss() {
+    fn three_real_frames_preserve_independent_pins_and_refine_coarse_sources() {
         use crate::pipeline::acoustic_ledger::WordPin;
         for partitioned in [false, true] {
             let session = if partitioned {
@@ -26436,7 +26446,7 @@ mod relay_l1_overlap_admission_tests {
             }
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
             let expected = if partitioned {
-                "zimą szarości dalej"
+                "zima usza szarości dalej"
             } else {
                 "na tym naprawdę jesteśmy z Technicznym Foundation."
             };
@@ -26447,7 +26457,7 @@ mod relay_l1_overlap_admission_tests {
                 ledger.word_choices()
             );
             let changed = if partitioned {
-                &sources[..3]
+                &sources[2..3]
             } else {
                 &sources[..]
             };
@@ -26477,7 +26487,28 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
             if partitioned {
-                assert!(ledger.slots_of(&owner).unwrap().contains(&sources[3]));
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(slots.len(), sources.len());
+                for source in [&sources[0], &sources[1], &sources[3]] {
+                    assert!(
+                        slots.contains(source),
+                        "independent source changed: {source:?}"
+                    );
+                    assert!(
+                        !ledger
+                            .slot_operations()
+                            .iter()
+                            .any(|operation| { operation.sources.contains(source) }),
+                        "a protected source must not be retired"
+                    );
+                }
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .all(|operation| { operation.sources.len() <= operation.outputs.len() }),
+                    "lexical agreement cannot contract independent word pins"
+                );
             }
             assert!(ledger.word_deletions().is_empty());
             assert_eq!(ledger.conservation().residue(), 0);
@@ -27970,6 +28001,82 @@ mod relay_l1_overlap_admission_tests {
         assert!(ledger.is_sealed(&owner));
         ledger.assert_slot_labels();
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn cloud_word_context_guard_emits_one_matching_live_receipt() {
+        for (decode, accepted) in [((48_000, 192_000), false), ((24_000, 168_000), true)] {
+            let session = "cloud-word-context-receipt";
+            let mut lane = open(session);
+            let owner = OccurrenceIdentity::new(session, 1, 0, 160_000);
+            let lexicon = tempfile::tempdir().unwrap();
+            lane.state.lexicon_custom_path = lexicon.path().join("absent.jsonl");
+            let mut pcm = vec![0.0_f32; 192_000];
+            pcm[48_000..64_000].fill(0.2);
+            record_voiced_capture(&mut lane, 192_000, &[(48_000, 64_000)]);
+            *lane.state.acoustic_ledger.lock().unwrap() =
+                crate::pipeline::acoustic_ledger::word_adjudication_tests::measured_ledger(
+                    &owner, &pcm,
+                );
+            let pins = [RoutedPin {
+                confidence: None,
+                index: 0,
+                pin: OccurrenceIdentity::new(session, 1, 48_000, 64_000),
+                text: "1286".into(),
+            }];
+            assert!(lane.state.admit_routed_words_with_decode_window(
+                &lane.tx,
+                1,
+                &owner,
+                (1, Some((0, 144_000))),
+                RoutedWords {
+                    pins: &pins,
+                    neighbours: &[]
+                },
+                LedgerObservationProducer::CloudLive,
+            ));
+            assert_eq!(
+                lane.state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()[0]
+                    .producer,
+                ObservationProducer::CloudLive
+            );
+            drain(&mut lane.rx);
+            let candidate = [RoutedPin {
+                text: "56".into(),
+                ..pins[0].clone()
+            }];
+            let admitted = lane.state.admit_routed_words_with_decode_window(
+                &lane.tx,
+                1,
+                &owner,
+                (2, Some(decode)),
+                RoutedWords {
+                    pins: &candidate,
+                    neighbours: &[],
+                },
+                LedgerObservationProducer::Whisper,
+            );
+            assert_eq!(admitted, accepted);
+            let events = drain(&mut lane.rx);
+            let mutations = whisper_mutations(&events);
+            assert_eq!(mutations.len(), 1, "one admission must emit one receipt");
+            assert_eq!(mutations[0].1.grants_mutation(), accepted);
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if accepted { "56" } else { "1286" })
+            );
+            assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+            assert_eq!(ledger.conservation().residue(), 0);
+            if accepted {
+                assert_eq!(mutations[0].0, "56");
+            }
+        }
     }
 
     #[test]

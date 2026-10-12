@@ -150,6 +150,52 @@ class ListenerRecoveryTests(unittest.TestCase):
         self.assertEqual(self.drive(watch, 20, 30)[0], [])
         self.assertEqual(len(self.launches), 1)
 
+    def assert_recovery_retains_workspace(self, *, from_lease):
+        workspace = self.root.parent / "agent workspace"
+        workspace.mkdir()
+        record_path = DEMUX.follower_pidfile(self.root, self.lease_id)
+        recorded = DEMUX.read_json(record_path)["configuration"]
+        recorded["workspace"] = str(workspace)
+        if from_lease:
+            lease = DEMUX.read_json(self.lease_path)
+            lease["wakeup_configuration"] = recorded
+            DEMUX.atomic_json(self.lease_path, lease)
+            record_path.unlink()
+        else:
+            record = DEMUX.read_json(record_path)
+            record["configuration"] = recorded
+            DEMUX.atomic_json(record_path, record)
+        lease_before = DEMUX.read_json(self.lease_path)
+        notice = DEMUX.recover_follower(self.root, "codex", SESSION)
+        self.assertEqual(notice["event"], "follower_recovered")
+        argv = self.launches[0]
+        self.assertIn("--follower-workspace", argv)
+        self.assertEqual(argv[argv.index("--follower-workspace") + 1], str(workspace))
+        recovered = DEMUX.read_json(record_path)["configuration"]
+        self.assertEqual(recovered["workspace"], str(workspace))
+        requested = DEMUX.wakeup_configuration(argparse.Namespace(
+            wakeup="codex-queue", on_seal=None, follower_workspace=str(workspace)))
+        self.assertEqual(recovered, requested)
+        lease_after = DEMUX.read_json(self.lease_path)
+        self.assertEqual(lease_after["pending"], lease_before["pending"])
+        self.assertEqual(lease_after["cursor"], 777)
+        self.assertFalse((self.root / "acknowledgments").exists())
+        self.assertFalse((self.root / "wakeups").exists())
+
+    def test_recovery_preserves_workspace_from_pid_record(self):
+        self.assert_recovery_retains_workspace(from_lease=False)
+
+    def test_recovery_preserves_workspace_from_lease_when_pid_record_is_missing(self):
+        self.assert_recovery_retains_workspace(from_lease=True)
+
+    def test_legacy_recovery_does_not_invent_a_workspace(self):
+        notice = DEMUX.recover_follower(self.root, "codex", SESSION)
+        self.assertEqual(notice["event"], "follower_recovered")
+        self.assertNotIn("--follower-workspace", self.launches[0])
+        configuration = DEMUX.read_json(
+            DEMUX.follower_pidfile(self.root, self.lease_id))["configuration"]
+        self.assertNotIn("workspace", configuration)
+
     def test_two_losses_without_message_suspend_visibly_and_stop_reviving(self):
         self.alive.add(4101)
         watch = self.supervisor()
