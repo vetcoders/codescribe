@@ -9225,6 +9225,17 @@
         }
       }
     },
+    "Microphone access is unavailable" : {
+      "comment" : "Admission refusal when microphone permission blocks recording",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostęp do mikrofonu jest niedostępny"
+          }
+        }
+      }
+    },
     "Microphone active" : {
       "localizations" : {
         "pl" : {
@@ -9271,6 +9282,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kalibracja mikrofonu"
+          }
+        }
+      }
+    },
+    "Microphone calibration required" : {
+      "comment" : "Admission refusal when microphone calibration is missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagana jest kalibracja mikrofonu"
           }
         }
       }
@@ -10182,6 +10204,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze wiadomości"
+          }
+        }
+      }
+    },
+    "No microphone is available" : {
+      "comment" : "Admission refusal when no microphone is available",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żaden mikrofon nie jest dostępny"
           }
         }
       }
@@ -12353,6 +12386,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagrywanie"
+          }
+        }
+      }
+    },
+    "Recording admission is disabled" : {
+      "comment" : "Admission refusal when recording admission is disabled",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dopuszczenie nagrania jest wyłączone"
           }
         }
       }
@@ -14884,6 +14928,17 @@
         }
       }
     },
+    "Speech Recognition is unavailable" : {
+      "comment" : "Admission refusal when Speech Recognition is unavailable",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie mowy jest niedostępne"
+          }
+        }
+      }
+    },
     "Speech coverage incomplete" : {
       "localizations" : {
         "pl" : {
@@ -14960,6 +15015,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie zmierzono pokrycia mowy, bo pomiar był niedostępny."
+          }
+        }
+      }
+    },
+    "Speech detection is unavailable" : {
+      "comment" : "Admission refusal when speech detection is unavailable",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykrywanie mowy jest niedostępne"
           }
         }
       }
@@ -15498,6 +15564,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie można użyć zapisanej kalibracji"
+          }
+        }
+      }
+    },
+    "Stored microphone calibration cannot be used" : {
+      "comment" : "Admission refusal when stored microphone calibration cannot be used",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisanej kalibracji mikrofonu nie można użyć"
           }
         }
       }

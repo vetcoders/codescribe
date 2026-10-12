@@ -455,7 +455,8 @@ private struct OnboardingPermissionRow: View {
   private var state: PermissionState { model.permissions.state(kind) }
 
   private var actionTitle: String {
-    if state == .notDetermined, kind.supportsInAppPermissionRequest {
+    let repair = kind.repair(for: state)
+    if repair.requestsNatively {
       return String(
         localized: LocalizedStringResource(
           "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
@@ -494,9 +495,26 @@ private struct OnboardingPermissionRow: View {
           .font(.caption.weight(.medium))
           .foregroundStyle(state.isGranted ? CSColor.oliveLight : Color.secondary)
         if !state.isGranted {
-          Button(actionTitle) { model.grantPermission(for: kind) }
+          let repair = kind.repair(for: state)
+          if repair.requestsNatively {
+            Button(actionTitle) { model.grantPermission(for: kind) }
+              .csAction()
+              .controlSize(.small)
+          }
+          if repair.opensSettings {
+            Button {
+              model.openSystemSettings(for: kind)
+            } label: {
+              Text(
+                String(
+                  localized: LocalizedStringResource(
+                    "Open System Settings", locale: model.interfaceLocale,
+                    comment: "Open this permission's native macOS privacy pane"))
+              )
+            }
             .csAction()
             .controlSize(.small)
+          }
         }
       }
     }

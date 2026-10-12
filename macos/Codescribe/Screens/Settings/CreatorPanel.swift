@@ -487,25 +487,31 @@ private struct PermissionChecklistRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityValue(state.label)
       if !granted {
-        Button {
-          if state == .notDetermined, kind.supportsInAppPermissionRequest {
+        let repair = kind.repair(for: state)
+        if repair.requestsNatively {
+          Button {
+            kind.notePermissionAsked()
             Task { @MainActor in
               _ = await kind.requestInApp()
               onStateChanged?()
             }
-          } else {
-            kind.openSystemSettings()
+          } label: {
+            Text("allow \(kind.displayName)")
+              .font(CSFont.mono(11, .semibold))
+              .foregroundStyle(CSColor.terracotta)
           }
-        } label: {
-          Text(
-            state == .notDetermined && kind.supportsInAppPermissionRequest
-              ? "allow \(kind.displayName)"
-              : "open System Settings"
-          )
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.terracotta)
+          .csFocusRing()
         }
-        .csFocusRing()
+        if repair.opensSettings {
+          Button {
+            kind.openSystemSettings()
+          } label: {
+            Text("open System Settings")
+              .font(CSFont.mono(11, .semibold))
+              .foregroundStyle(CSColor.terracotta)
+          }
+          .csFocusRing()
+        }
       }
     }
     .padding(.horizontal, 15)

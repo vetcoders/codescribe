@@ -3385,6 +3385,8 @@ final class OverlayState {
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
     let addressing = statusAddressing(for: event)
+    let presentedHeadline = AdmissionRefusalCopy.headline(
+      code: event.code, fallback: event.headline)
     switch addressing {
     case .retiredSession:
       // A known retired session's delayed terminal. `applyTranscriptProjection`
@@ -3405,14 +3407,14 @@ final class OverlayState {
         kind: event.kind,
         code: event.code,
         statusLabel: event.statusLabel,
-        headline: event.headline,
+        headline: presentedHeadline,
         message: event.message,
         isError: event.isError,
         terminal: event.terminal,
         calibrationVersion: event.calibrationVersion
       )
       onPresentationStatus?()
-      showToast(event.headline)
+      showToast(presentedHeadline)
       return
     case .currentCapture:
       break
@@ -3427,7 +3429,7 @@ final class OverlayState {
       kind: event.kind,
       code: event.code,
       statusLabel: event.statusLabel,
-      headline: event.headline,
+      headline: presentedHeadline,
       message: event.message,
       isError: event.isError,
       terminal: event.terminal,
@@ -3447,7 +3449,7 @@ final class OverlayState {
     if event.terminal { finalized = true }
     errorMessage = event.isError ? event.message : nil
     onPresentationStatus?()
-    showToast(event.headline)
+    showToast(presentedHeadline)
     if event.terminal { restartAutoHideCountdown() }
   }
 
