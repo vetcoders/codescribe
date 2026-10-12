@@ -1150,7 +1150,9 @@ impl RecordingController {
         let observer = Self::channel_take_observer(&open);
         if let Some(path) = retained_audio.as_deref() {
             // W5 retention parity: a capture the channel owned joins the same
-            // take store and retention rules as dictation. The slug carries
+            // take store and retention rules as dictation. The path is the
+            // channel's own subscriber-scoped archive; the device spill spans
+            // other sessions and never enters this retention. The slug carries
             // the heard words; a voiceless close archives as no-speech.
             let heard = open
                 .last_text
