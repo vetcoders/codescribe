@@ -604,23 +604,24 @@ final class OnboardingViewModel: ObservableObject {
     kind.openSystemSettings()
   }
 
-  /// Same grant path as Settings › Dictation / Creator checklist:
-  /// - undetermined + in-app-requestable → system dialog from this process
-  /// - otherwise → Privacy deep-link (macOS never re-prompts once determined)
-  /// Always re-probes (and re-arms hotkeys) after the attempt settles.
+  /// Same grant path as Settings › Dictation / Creator checklist.
+  /// `PermissionKind.repair(for:)` is the only eligibility rule. Screen
+  /// Recording, Input Monitoring, and Accessibility stay requestable when the
+  /// preflight boolean cannot tell "not asked" from "denied".
   func grantPermission(for kind: PermissionKind) {
-    let state = permissions.state(kind)
-    if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      Task { @MainActor [weak self] in
-        _ = await kind.requestInApp()
-        self?.reprobePermissions()
+    let repair = kind.repair(for: permissions.state(kind))
+    guard repair.requestsNatively else {
+      if repair.opensSettings {
+        kind.openSystemSettings()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+          self?.reprobePermissions()
+        }
       }
       return
     }
-    kind.openSystemSettings()
-    // User may flip the toggle and return without leaving the step — refresh
-    // once after the deep-link so a fast grant is visible immediately.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+    kind.notePermissionAsked()
+    Task { @MainActor [weak self] in
+      _ = await kind.requestInApp()
       self?.reprobePermissions()
     }
   }

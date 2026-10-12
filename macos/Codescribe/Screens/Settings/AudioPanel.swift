@@ -1146,12 +1146,15 @@ struct AudioPanel: View {
 
   private func resolveMicrophonePermission() {
     let kind = PermissionKind.microphone
-    if model.permissions.microphone == .notDetermined {
+    let repair = kind.repair(for: model.permissions.microphone)
+    if repair.requestsNatively {
+      kind.notePermissionAsked()
       Task { @MainActor in
         _ = await kind.requestInApp()
         model.refresh()
       }
-    } else {
+    }
+    if repair.opensSettings {
       kind.openSystemSettings()
     }
   }
