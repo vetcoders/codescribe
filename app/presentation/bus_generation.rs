@@ -875,6 +875,16 @@ fn compressed(_path: &Path) -> io::Result<bool> {
 }
 /// This is an off-lock platform operation, never a clone-only success claim.
 pub fn compress_segment(root: &Path, id: &str) -> io::Result<()> {
+    compress_segment_with(root, id, compress_prepared)
+}
+/// `prepare` yields the verified compressed stage, or `None` when the
+/// filesystem kept the bytes uncompressed. The platform decides that outcome
+/// without a size threshold, so a test pins it instead of guessing.
+fn compress_segment_with(
+    root: &Path,
+    id: &str,
+    prepare: impl FnOnce(&Path) -> io::Result<Option<PathBuf>>,
+) -> io::Result<()> {
     let original = view(root)?.ok_or_else(invalid)?;
     let segment = original
         .segments
@@ -892,7 +902,7 @@ pub fn compress_segment(root: &Path, id: &str) -> io::Result<()> {
     if before.dev != segment.dev || before.ino != segment.ino || before.length != segment.length {
         return Err(invalid());
     }
-    let Some(stage) = compress_prepared(&segment.path)? else {
+    let Some(stage) = prepare(&segment.path)? else {
         let (length, digest) = digest_file(&segment.path)?;
         if length != segment.length || source_identity(&fs::metadata(&segment.path)?) != before {
             return Err(invalid());
@@ -1893,11 +1903,11 @@ mod integrator_generation_acceptance {
         let mut file = pinned_previous_day(&path, bytes);
         let id = prepare_append(&path, &mut file).unwrap().unwrap();
         let original = view(&path).unwrap().unwrap().segments[0].clone();
-        compress_segment(&path, &id).unwrap();
+        compress_segment_with(&path, &id, |_: &Path| Ok(None)).unwrap();
         let settled = view(&path).unwrap().unwrap().segments[0].clone();
         assert!(
             !settled.compressed,
-            "tiny archive has no compression benefit"
+            "a no-benefit stage result settles without a compressed copy"
         );
         assert_eq!(settled.path, original.path);
         assert_eq!(
