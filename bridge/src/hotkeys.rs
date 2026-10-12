@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use codescribe::controller::{
-    AgentArchiveRequest, CaptureStopOutcome, HotkeyAction, HotkeyInput, HotkeyType,
-    RecordingController, State, admission,
+    AgentArchiveRequest, CaptureStopOutcome, ChannelOpenRefusal, HotkeyAction, HotkeyInput,
+    HotkeyType, RecordingController, State, admission,
 };
 use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
@@ -953,9 +953,7 @@ impl CodescribeHotkeys {
                     let dispatch =
                         dispatch_recording_with_capture_gate(recording_event, controller).await;
                     if let Err(error) = dispatch {
-                        tray_status::update_tray_status(TrayStatus::Error);
-                        notifications::notify("Codescribe", &error.to_string());
-                        tracing::error!(%error, "Hotkey event dispatch failed");
+                        report_hotkey_dispatch_error(&error, notifications::notify);
                     }
                 }
             });
@@ -1990,6 +1988,23 @@ async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
         })
 }
 
+/// Present a dispatch failure through the existing tray and notification paths.
+/// The notification callback keeps this boundary testable without host alerts.
+fn report_hotkey_dispatch_error(error: &anyhow::Error, notify: impl FnOnce(&str, &str)) {
+    if matches!(
+        error.downcast_ref::<ChannelOpenRefusal>(),
+        Some(ChannelOpenRefusal::DigitUnbound { .. } | ChannelOpenRefusal::BindingMissing { .. })
+    ) {
+        // A vacant slot is a refused user action, not a broken runtime. Leave
+        // the current tray state (including any genuine earlier error) intact.
+        tracing::warn!(%error, "Agent channel shortcut has no connected agent");
+    } else {
+        tray_status::update_tray_status(TrayStatus::Error);
+        tracing::error!(%error, "Hotkey event dispatch failed");
+    }
+    notify("Codescribe", &error.to_string());
+}
+
 /// Wrap a recording dispatch in the one-controller capture lifecycle: claim on
 /// a session-starting event, dispatch, compensate an orphaned "preparing", and
 /// release ownership once the controller is back at `Idle`.
@@ -2311,6 +2326,64 @@ mod application_shutdown_tests {
 mod dispatch_tests {
     use super::*;
     use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
+
+    #[test]
+    #[serial_test::serial]
+    fn empty_channel_warns_once_and_preserves_existing_tray_status() {
+        for refusal in [
+            ChannelOpenRefusal::DigitUnbound { digit: 2 },
+            ChannelOpenRefusal::BindingMissing {
+                path: "fixture.json".into(),
+            },
+        ] {
+            for status in [
+                TrayStatus::Idle,
+                TrayStatus::Listening,
+                TrayStatus::Thinking,
+                TrayStatus::Error,
+            ] {
+                tray_status::update_tray_status(status);
+                let before = tray_status::current_tray_status_snapshot();
+                let error =
+                    anyhow::Error::new(refusal.clone()).context("dispatching agent shortcut");
+                let mut notices = Vec::new();
+                report_hotkey_dispatch_error(&error, |title, body| {
+                    notices.push((title.to_owned(), body.to_owned()));
+                });
+                assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+                assert_eq!(
+                    tray_status::current_tray_status_snapshot(),
+                    before,
+                    "{refusal:?}"
+                );
+            }
+        }
+        tray_status::update_tray_status(TrayStatus::Idle);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dispatch_failures_still_publish_persistent_error() {
+        for error in [
+            anyhow::Error::new(ChannelOpenRefusal::BindingMalformed {
+                path: "fixture.json".into(),
+                detail: "invalid JSON".into(),
+            }),
+            anyhow::Error::new(ChannelOpenRefusal::InvalidDigit),
+            anyhow::anyhow!("recorder unavailable"),
+            // Identical text without the refusal type must not hide a real failure.
+            anyhow::anyhow!(ChannelOpenRefusal::DigitUnbound { digit: 2 }.to_string()),
+        ] {
+            tray_status::update_tray_status(TrayStatus::Idle);
+            let mut notices = Vec::new();
+            report_hotkey_dispatch_error(&error, |title, body| {
+                notices.push((title.to_owned(), body.to_owned()));
+            });
+            assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+            assert_eq!(tray_status::current_tray_status(), TrayStatus::Error);
+        }
+        tray_status::update_tray_status(TrayStatus::Idle);
+    }
 
     /// Detector already owns blocked-double-tap tray truth; bridge stays silent.
     #[tokio::test]
