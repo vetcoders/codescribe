@@ -52,8 +52,9 @@ label. The direct word-grain check runs before resegmentation as well as
 ordinary admission, including incomplete incumbents; coarse phrase partitions
 retain their own existing authority. Context quality uses the decoder's original
 word span before owner clipping; a smaller projected slot cannot improve it.
-The resolved one-to-one resegmentation enforces the same floor when timestamp
-jitter connects an incomplete word by overlap instead of an ordinary target.
+Resolved CloudLive word components enforce the same floor for every original
+output when labels or word multiplicity change, including overlap-only jitter.
+The component refuses the entire proposed partition if any output lacks context.
 Missing decode bounds grant no direct word
 correction authority. Same-label evidence, first placement, and ManualHuman
 protection retain their existing admission paths; this rule creates no replay,
