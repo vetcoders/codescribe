@@ -4767,6 +4767,14 @@ public protocol CodescribeThreadsProtocol: AnyObject, Sendable {
     func renameThread(id: String, title: String) throws  -> Bool
 
     /**
+     * Read-only search of released bus archives under `root_path`.
+     *
+     * Wraps `conversation_search::search_bus_conversations`. History files are
+     * not acknowledged or rewritten. `complete` is false when a source failed.
+     */
+    func searchBusConversations(rootPath: String, query: String) throws  -> CsBusConversationSearchResponse
+
+    /**
      * Full-text search over indexed threads (all query words must match),
      * newest first. Wraps `ThreadIndex::search` (`thread_index.rs:206`).
      */
@@ -5020,6 +5028,22 @@ open func renameThread(id: String, title: String)throws  -> Bool  {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
         FfiConverterString.lower(title),$0
+    )
+})
+}
+
+    /**
+     * Read-only search of released bus archives under `root_path`.
+     *
+     * Wraps `conversation_search::search_bus_conversations`. History files are
+     * not acknowledged or rewritten. `complete` is false when a source failed.
+     */
+open func searchBusConversations(rootPath: String, query: String)throws  -> CsBusConversationSearchResponse  {
+    return try  FfiConverterTypeCsBusConversationSearchResponse_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribethreads_search_bus_conversations(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(rootPath),
+        FfiConverterString.lower(query),$0
     )
 })
 }
@@ -9294,6 +9318,121 @@ public func FfiConverterTypeCsBindingOption_lift(_ buf: RustBuffer) throws -> Cs
 #endif
 public func FfiConverterTypeCsBindingOption_lower(_ value: CsBindingOption) -> RustBuffer {
     return FfiConverterTypeCsBindingOption.lower(value)
+}
+
+
+/**
+ * Read-only bus archive search. `complete` is false when coverage is partial.
+ */
+public struct CsBusConversationSearchResponse: Equatable, Hashable {
+    public var results: [CsBusConversationSearchResult]
+    public var complete: Bool
+    public var errorCount: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(results: [CsBusConversationSearchResult], complete: Bool, errorCount: UInt32) {
+        self.results = results
+        self.complete = complete
+        self.errorCount = errorCount
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsBusConversationSearchResponse: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsBusConversationSearchResponse: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsBusConversationSearchResponse {
+        return
+            try CsBusConversationSearchResponse(
+                results: FfiConverterSequenceTypeCsBusConversationSearchResult.read(from: &buf),
+                complete: FfiConverterBool.read(from: &buf),
+                errorCount: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsBusConversationSearchResponse, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsBusConversationSearchResult.write(value.results, into: &buf)
+        FfiConverterBool.write(value.complete, into: &buf)
+        FfiConverterUInt32.write(value.errorCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsBusConversationSearchResponse_lift(_ buf: RustBuffer) throws -> CsBusConversationSearchResponse {
+    return try FfiConverterTypeCsBusConversationSearchResponse.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsBusConversationSearchResponse_lower(_ value: CsBusConversationSearchResponse) -> RustBuffer {
+    return FfiConverterTypeCsBusConversationSearchResponse.lower(value)
+}
+
+
+/**
+ * One saved bus conversation. `conversation_id` is provider, session, and
+ * lease joined by NUL. `last_activity` is RFC3339 or empty when no date is known.
+ */
+public struct CsBusConversationSearchResult: Equatable, Hashable {
+    public var conversationId: String
+    public var lastActivity: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(conversationId: String, lastActivity: String) {
+        self.conversationId = conversationId
+        self.lastActivity = lastActivity
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsBusConversationSearchResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsBusConversationSearchResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsBusConversationSearchResult {
+        return
+            try CsBusConversationSearchResult(
+                conversationId: FfiConverterString.read(from: &buf),
+                lastActivity: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsBusConversationSearchResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.conversationId, into: &buf)
+        FfiConverterString.write(value.lastActivity, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsBusConversationSearchResult_lift(_ buf: RustBuffer) throws -> CsBusConversationSearchResult {
+    return try FfiConverterTypeCsBusConversationSearchResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsBusConversationSearchResult_lower(_ value: CsBusConversationSearchResult) -> RustBuffer {
+    return FfiConverterTypeCsBusConversationSearchResult.lower(value)
 }
 
 
@@ -19060,6 +19199,31 @@ fileprivate struct FfiConverterSequenceTypeCsBindingOption: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsBusConversationSearchResult: FfiConverterRustBuffer {
+    typealias SwiftType = [CsBusConversationSearchResult]
+
+    public static func write(_ value: [CsBusConversationSearchResult], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsBusConversationSearchResult.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsBusConversationSearchResult] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsBusConversationSearchResult]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsBusConversationSearchResult.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsCapabilityRow: FfiConverterRustBuffer {
     typealias SwiftType = [CsCapabilityRow]
 
@@ -20946,6 +21110,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_rename_thread() != 27435) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribethreads_search_bus_conversations() != 4514) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribethreads_search_threads() != 18770) {

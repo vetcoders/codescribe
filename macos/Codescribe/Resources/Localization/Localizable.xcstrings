@@ -3673,6 +3673,23 @@
         }
       }
     },
+    "By name" : {
+      "comment" : "Sorting option for saved conversations: alphabetical by conversation name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "By name"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Według nazwy"
+          }
+        }
+      }
+    },
     "CODESCRIBE_LAYERED_TRANSCRIPTION disables live refinement. Remove the diagnostic override from .env and restart." : {
       "comment" : "CODESCRIBE_LAYERED_TRANSCRIPTION is an environment variable name",
       "localizations" : {
@@ -4456,6 +4473,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyczyść: %@"
+          }
+        }
+      }
+    },
+    "Clear search" : {
+      "comment" : "Accessibility label for the button that clears the saved conversations search query",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear search"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyczyść wyszukiwanie"
           }
         }
       }
@@ -9850,6 +9884,23 @@
         }
       }
     },
+    "Newest first" : {
+      "comment" : "Sorting option for saved conversations: newest activity first",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Newest first"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najnowsze"
+          }
+        }
+      }
+    },
     "Next" : {
       "localizations" : {
         "pl" : {
@@ -9924,12 +9975,12 @@
         }
       }
     },
-    "No agents connected" : {
+    "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Brak podpiętych agentów"
+            "state" : "translated",
+            "value" : "Brak podłączonych agentów. Aby połączyć agenta z Codescribe, uruchom skill `codescribe` w jego sesji."
           }
         }
       }
@@ -10114,6 +10165,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak wyników"
+          }
+        }
+      }
+    },
+    "No matching conversations" : {
+      "comment" : "Status text when a search filter matches no saved conversations",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matching conversations"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak pasujących rozmów"
           }
         }
       }
@@ -10693,6 +10761,23 @@
         }
       }
     },
+    "Oldest first" : {
+      "comment" : "Sorting option for saved conversations: oldest activity first",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oldest first"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najstarsze"
+          }
+        }
+      }
+    },
     "On" : {
       "comment" : "Toggle state",
       "localizations" : {
@@ -11150,6 +11235,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Integracja PRView"
+          }
+        }
+      }
+    },
+    "Partial results" : {
+      "comment" : "Status warning when search results are incomplete or some archives could not be read",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Partial results"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Częściowe wyniki"
           }
         }
       }
@@ -13786,6 +13888,40 @@
         }
       }
     },
+    "Search conversations…" : {
+      "comment" : "Prompt inside the saved conversations search field",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search conversations…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szukaj rozmów…"
+          }
+        }
+      }
+    },
+    "Search failed" : {
+      "comment" : "Status text when saved conversation search encounters an error",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search failed"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Błąd wyszukiwania"
+          }
+        }
+      }
+    },
     "Search settings" : {
       "localizations" : {
         "pl" : {
@@ -13812,6 +13948,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szukaj narzędzia…"
+          }
+        }
+      }
+    },
+    "Searching…" : {
+      "comment" : "Status indicator while search is in progress",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Searching…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szukanie…"
           }
         }
       }
@@ -14539,6 +14692,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Coś poszło nie tak: %@"
+          }
+        }
+      }
+    },
+    "Sort order" : {
+      "comment" : "Menu label for selecting conversation sort order",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sort order"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kolejność sortowania"
           }
         }
       }

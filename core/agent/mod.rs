@@ -19,6 +19,8 @@ pub mod assets;
 pub mod capabilities;
 /// Serialized Max consultation ownership over the existing Agent session.
 pub mod consultation;
+/// Shared query matching and read-only saved-conversation archive search.
+pub mod conversation_search;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
 /// Tool permission policy — the allow / ask / deny gateway.
@@ -54,6 +56,9 @@ pub use capabilities::{
     AgentCapabilityPreferences, CapabilityOp, CapabilityProvider, CapabilityResolution,
     CapabilityStatus, CapabilityTier, ConnectorHealth, capability_matrix,
     resolve as resolve_capability,
+};
+pub use conversation_search::{
+    BusConversationSearch, BusConversationSearchHit, query_matches, search_bus_conversations,
 };
 pub use event::{AgentEvent, AgentUiEvent};
 pub use permissions::{
