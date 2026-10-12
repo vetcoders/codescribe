@@ -237,6 +237,7 @@ actor OverlayChannelDeliveryReader {
       }
     }
     var deliveries: [OverlayChannelDelivery] = []
+    var rosterOwners: [OverlayConversationOwner] = []
     for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel)
     {
       guard let binding = bindings[channel] else { continue }
@@ -245,8 +246,11 @@ actor OverlayChannelDeliveryReader {
           && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
       }
       guard owners.count == 1, let lease = owners.first,
-        let path = lease["bus"] as? String
+        let path = lease["bus"] as? String,
+        let owner = OverlayConversationOwner(
+          lease: lease, channel: channel, name: binding["audience"] as? String ?? "")
       else { continue }
+      rosterOwners.append(owner)
       let bus = URL(fileURLWithPath: path).standardizedFileURL
       guard var cursor = buses[bus] else { continue }
       cursor.projection.observeLease(lease, channel: channel, binding: binding)
@@ -255,8 +259,17 @@ actor OverlayChannelDeliveryReader {
       }
       buses[bus] = cursor
     }
+    let rosterByID = Dictionary(grouping: rosterOwners, by: \.id)
+    let archivesByID = Dictionary(grouping: archives.map(\.owner), by: \.id)
+    let verifiedOwners = Set(rosterByID.keys).union(archivesByID.keys).compactMap { id in
+      // A live binding plus its unique lease outranks an archive. Ambiguous
+      // coordinates are never resolved by alias, channel digit, or bus order.
+      let candidates = Set(rosterByID[id] ?? archivesByID[id] ?? [])
+      return candidates.count == 1 ? candidates.first : nil
+    }
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
+      for owner in verifiedOwners { cursor.projection.reconcileOwner(owner) }
       for (owner, delivery) in cursor.projection.receiptCoordinates() {
         guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
           continue

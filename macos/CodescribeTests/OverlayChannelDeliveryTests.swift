@@ -7,6 +7,122 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testPeerReplyUsesSenderChannelInsteadOfBroadcastRoute() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    var row = fixture.recipient()
+    row["schema"] = "codescribe.agent-reply.v1"
+    row["reply_id"] = "peer-reply"
+    row["text"] = "Reply to everyone"
+    row["channel"] = "0"
+    row["sender"] = fixture.recipient()
+    projection.consume(row)
+    let conversation = try XCTUnwrap(projection.conversations(busPath: fixture.bus.path).first {
+      $0.owner?.providerSessionID == "agent-session"
+    })
+    XCTAssertEqual(conversation.channel, "1", "Channel 0 is the route, not the author's slot")
+    XCTAssertEqual(conversation.owner?.channel, "1")
+    XCTAssertEqual(conversation.messages.first?.owner?.channel, "1")
+    XCTAssertEqual(conversation.messages.map(\.text), ["Reply to everyone"])
+    XCTAssertTrue(projection.conversations(busPath: fixture.bus.path).first { $0.id == "0" }!
+      .messages.isEmpty, "An unsolicited peer reply must not invent a broadcast question")
+  }
+
+  func testMalformedPeerSenderCannotBorrowTopLevelAuthor() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    var row = fixture.recipient()
+    row["schema"] = "codescribe.agent-reply.v1"
+    row["reply_id"] = "malformed-peer"
+    row["text"] = "Wrong attribution"
+    row["sender"] = ["channel": "3"]
+    projection.consume(row)
+    XCTAssertTrue(projection.conversations(busPath: fixture.bus.path).allSatisfy {
+      $0.messages.isEmpty
+    })
+  }
+
+  func testRestoredBroadcastOwnerRecoversCurrentThreadWithoutReplayingHistory() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let peer = fixture.root.appendingPathComponent("000-peer.jsonl")
+    var reply = fixture.recipient()
+    reply["schema"] = "codescribe.agent-reply.v1"
+    reply["reply_id"] = "peer-current"
+    reply["text"] = "Current reply"
+    reply["channel"] = "0"
+    reply["sender"] = fixture.recipient()
+    var previous = fixture.recipient()
+    previous["provider_session_id"] = "previous-session"
+    previous["lease_id"] = String(repeating: "a", count: 32)
+    previous["schema"] = "codescribe.agent-reply.v1"
+    previous["reply_id"] = "peer-previous"
+    previous["text"] = "Previous reply"
+    var bytes = try JSONSerialization.data(withJSONObject: reply)
+    bytes.append(10)
+    bytes.append(try JSONSerialization.data(withJSONObject: previous))
+    bytes.append(10)
+    try bytes.write(to: peer)
+    _ = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: peer).readSnapshot()
+
+    // Simulate the shipped cache: the same exact owner was first observed on
+    // a lexicographically earlier peer bus with the broadcast route as its slot.
+    var marks = OverlayDeliveryCursorStore.load(root: fixture.root)
+    for path in marks.keys {
+      var mark = try XCTUnwrap(marks[path])
+      var projection = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
+      var owners = try XCTUnwrap(projection["historicalOwners"] as? [String: [String: Any]])
+      for id in owners.keys where owners[id]?["providerSessionID"] as? String == "agent-session" {
+        owners[id]?["channel"] = "0"
+      }
+      projection["historicalOwners"] = owners
+      mark.projection = try JSONSerialization.data(withJSONObject: projection)
+      marks[path] = mark
+    }
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: peer)
+    let snapshot = try await reader.readSnapshot()
+    let current = try XCTUnwrap(snapshot.conversations.first {
+      $0.owner?.providerSessionID == "agent-session"
+    })
+    XCTAssertEqual(current.channel, "1")
+    XCTAssertEqual(current.owner?.channel, "1")
+    XCTAssertEqual(Set(current.messages.map(\.text)), ["Iwo", "Current reply"])
+    XCTAssertEqual(current.messages.count, 2, "Peer copies must not duplicate the history")
+    let old = try XCTUnwrap(snapshot.conversations.first {
+      $0.owner?.providerSessionID == "previous-session"
+    })
+    XCTAssertEqual(old.messages.map(\.text), ["Previous reply"])
+    XCTAssertEqual(old.owner?.leaseID, String(repeating: "a", count: 32))
+    let consumed = await reader.consumedBytes
+    XCTAssertEqual(consumed, 0, "Repair metadata at the existing cursor; do not replay or delete history")
+    let hud = OverlayChannelHudProjection(
+      open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+      provider: "codex", providerSessionID: "agent-session")
+    let view = OverlayChannelStatusView(
+      channels: snapshot.deliveries, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["1": hud], conversations: snapshot.conversations)
+    XCTAssertEqual(view.conversation(for: try XCTUnwrap(snapshot.deliveries.first))?.id, current.id)
+    XCTAssertTrue(view.savedConversations.contains { $0.id == old.id })
+
+    _ = try await reader.readSnapshot(checkpointTime: .now.advanced(by: .seconds(31)))
+    let saved = OverlayDeliveryCursorStore.load(root: fixture.root)
+    for mark in saved.values {
+      let projection = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
+      let owners = try XCTUnwrap(projection["historicalOwners"] as? [String: [String: Any]])
+      for owner in owners.values where owner["providerSessionID"] as? String == "agent-session" {
+        XCTAssertEqual(owner["channel"] as? String, "1", "Persist the repaired metadata on every mirror")
+      }
+    }
+  }
+
   func testActiveSnapshotsUpdateTheViewWithoutRewritingTheWholeCache() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
