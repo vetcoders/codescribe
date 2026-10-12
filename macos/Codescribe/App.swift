@@ -976,16 +976,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
     // back into the style mask (Founder decision, 2026-10-10).
     let window = HidingWindow(contentViewController: hosting)
-    window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-    window.titlebarAppearsTransparent = true
     window.isReleasedWhenClosed = false
     // LSUIElement accessory: join the active Space so a passive
     // `orderFrontRegardless` is actually visible during voice delivery.
     window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     window.center()
     DockPresence.adopt(window)
+    // After adopt: style-mask repair must not leave a second painted "Agent" row.
+    AgentWindowChrome.apply(window)
     agentWindow = window
     return window
   }

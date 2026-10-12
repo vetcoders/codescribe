@@ -24,11 +24,13 @@ struct AgentChatView: View {
       sidebar: ThreadRail(store: store) { width in
         if width > 0 { sidebarContentWidth = width }
       },
-      detail: ThreadDetail(
+      detail: ThreadDetail(store: store)
+    )
+    .modifier(
+      AgentIntegratedChrome(
         store: store,
-        isSidebarExpanded: sidebarExpanded,
-        isPinned: $isPinned,
-        toggleSidebar: toggleSidebar
+        sidebarExpanded: $sidebarExpanded,
+        isPinned: $isPinned
       )
     )
     .safeAreaInset(edge: .bottom) {
@@ -50,12 +52,6 @@ struct AgentChatView: View {
       // load" / "selected thread load" durations in the same log stream.
       AgentPerf.logger.info("agent window shell rendered")
       store.startDemoStreamIfNeeded()
-    }
-  }
-
-  private func toggleSidebar() {
-    withAnimation {
-      sidebarExpanded.toggle()
     }
   }
 }
@@ -82,9 +78,9 @@ enum AgentWindowMetrics {
   static let minHeight: CGFloat = 440
   static let idealWidth: CGFloat = 840
   static let idealHeight: CGFloat = 520
-  /// Traffic-light cluster when the rail is `.detailOnly` under
-  /// `fullSizeContentView` — the sidebar toggle lives in the detail chrome
-  /// and must stay clickable after native collapse.
+  /// Measured width of the traffic-light cluster. The integrated toolbar is
+  /// already inset past those controls; this remains the clearance for any
+  /// content-view control that still sits under `fullSizeContentView`.
   static let collapsedTrafficLightClearance: CGFloat = 70
 }
 
@@ -94,6 +90,23 @@ enum AgentSidebarMetrics {
   static let maximumWidth: CGFloat = 360
   static func boundedMaximum(_ contentWidth: CGFloat) -> CGFloat {
     min(maximumWidth, max(minimumWidth, ceil(contentWidth)))
+  }
+}
+
+/// One native titlebar for the Agent window. The title string stays "Agent"
+/// for Mission Control, Exposé, and the Window menu. It is not painted, so the
+/// toolbar is the only header plane.
+enum AgentWindowChrome {
+  static func title() -> String {
+    String(localized: "Agent", comment: "Agent window title")
+  }
+
+  static func apply(_ window: NSWindow) {
+    window.title = title()
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = false
+    window.toolbarStyle = .unified
+    window.titlebarSeparatorStyle = .automatic
   }
 }
 
@@ -119,13 +132,9 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 
   private func configure(_ window: NSWindow?) {
-    window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
-    // Only the app identity. The model belongs to the conversation, so it
-    // reads next to the thread title in the chrome — a second copy in the
-    // native titlebar stacked two headers over one window (Founder brief
-    // 2026-10-10). The titlebar itself stays native: it owns dragging and
-    // the window controls.
-    window?.title = String(localized: "Agent", comment: "Agent window title")
+    guard let window else { return }
+    window.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    AgentWindowChrome.apply(window)
   }
 }
 
@@ -146,11 +155,16 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
     rail.minimumThickness = AgentSidebarMetrics.minimumWidth
     rail.maximumThickness = sidebarMaximumWidth
     rail.canCollapse = false
+    // Below the unified toolbar, so the divider meets the header instead of
+    // running under a second painted title row. The host stays unlayered so
+    // the sidebar material can sample the window.
+    rail.allowsFullHeightLayout = false
     controller.addSplitViewItem(rail)
     let conversation = NSSplitViewItem(
       viewController: NSHostingController(
         rootView: AnyView(detail.environment(\.self, context.environment))))
     conversation.minimumThickness = 320
+    conversation.allowsFullHeightLayout = false
     controller.addSplitViewItem(conversation)
     return controller
   }
@@ -167,35 +181,330 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
         controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
       }
     }
+    rail.allowsFullHeightLayout = false
+    controller.splitViewItems[1].allowsFullHeightLayout = false
     rail.isCollapsed = !sidebarExpanded
   }
 }
 
-// MARK: - Detail (chrome · messages · composer)
+// MARK: - Integrated titlebar
 
-private struct ThreadDetail: View {
+/// The window's only painted header. Sidebar toggle, wordmark, thread identity,
+/// and pin/menu share the native toolbar. Rename, delete, and export alerts
+/// stay on this modifier: alerts attached to a toolbar item do not present.
+private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
-  /// Sidebar controls live in the DETAIL header so the toggle stays reachable
-  /// while the native sidebar is collapsed.
-  let isSidebarExpanded: Bool
+  @Binding var sidebarExpanded: Bool
   @Binding var isPinned: Bool
-  let toggleSidebar: () -> Void
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
-  /// Toolbar deletion goes through the same confirmation as the rail.
   @State private var deleteCandidate: ChatThread?
-  /// The last Markdown export, shown until the user dismisses the alert.
   @State private var exportOutcome: ThreadExportOutcome?
-  /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
   @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode
     .rawValue
 
   private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
+  private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
+
+  func body(content: Content) -> some View {
+    content
+      .toolbar { agentToolbar }
+      .alert("Rename thread", isPresented: $isRenaming) {
+        TextField("Thread title", text: $renameText)
+        Button("Rename") {
+          if let thread = store.currentThread { store.rename(thread, to: renameText) }
+        }
+        Button("Cancel", role: .cancel) {}
+      }
+      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+      .alert(
+        exportOutcome?.title ?? Text(verbatim: ""),
+        isPresented: Binding(
+          get: { exportOutcome != nil },
+          set: { if !$0 { exportOutcome = nil } }
+        ),
+        presenting: exportOutcome
+      ) { outcome in
+        if case .saved(let path, _) = outcome {
+          let url = URL(fileURLWithPath: path)
+          Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+          }
+          Button("Open") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        Button("OK", role: .cancel) {}
+      } message: { outcome in
+        outcome.message
+      }
+  }
+
+  @ToolbarContentBuilder
+  private var agentToolbar: some ToolbarContent {
+    if #available(macOS 26.0, *) {
+      ToolbarItem(placement: .navigation) { leadingCluster }
+        .sharedBackgroundVisibility(.hidden)
+      ToolbarItem(placement: .principal) { identityCluster }
+        .sharedBackgroundVisibility(.hidden)
+      ToolbarItem(placement: .primaryAction) { trailingCluster }
+        .sharedBackgroundVisibility(.hidden)
+    } else {
+      ToolbarItem(placement: .navigation) { leadingCluster }
+      ToolbarItem(placement: .principal) { identityCluster }
+      ToolbarItem(placement: .primaryAction) { trailingCluster }
+    }
+  }
+
+  /// Toggle stays in the toolbar so ⌃⌘S and the collapsed rail still reach it.
+  /// The wordmark sits here only while the sidebar is open; the rail does not
+  /// paint a second one.
+  private var leadingCluster: some View {
+    HStack(spacing: 8) {
+      sidebarToggle
+      if sidebarExpanded {
+        Wordmark(size: 13)
+          .fixedSize(horizontal: true, vertical: false)
+      }
+    }
+    .fixedSize()
+  }
+
+  private var identityCluster: some View {
+    HStack(spacing: 8) {
+      Text(store.currentThread?.title ?? "—")
+        .font(CSFont.ui(14, .semibold))
+        .foregroundStyle(Color.primary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+
+      if turnCount > 0 {
+        Text(verbatim: "· \(turnCount)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+          .fixedSize()
+          .lineLimit(1)
+      }
+
+      if let model = store.currentThread?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !model.isEmpty
+      {
+        Text(verbatim: model)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+
+      liveStatusPill
+        .layoutPriority(2)
+    }
+  }
+
+  private var trailingCluster: some View {
+    HStack(spacing: 12) {
+      pinToggle
+      threadMenu
+    }
+    .fixedSize()
+  }
+
+  private var sidebarToggle: some View {
+    Button(action: toggleSidebar) {
+      Image(systemName: "sidebar.leading")
+        .font(.system(size: 13, weight: .medium))
+    }
+    .buttonStyle(.borderless)
+    .csFocusRing()
+    .foregroundStyle(sidebarExpanded ? CSColor.chromeAccent : Color.secondary)
+    .keyboardShortcut("s", modifiers: [.command, .control])
+    .help(
+      sidebarExpanded
+        ? String(localized: "Collapse sidebar (⌃⌘S)")
+        : String(localized: "Expand sidebar (⌃⌘S)")
+    )
+    .accessibilityLabel("Toggle Sidebar")
+    .accessibilityValue(
+      sidebarExpanded
+        ? String(localized: "Expanded", comment: "Sidebar state")
+        : String(localized: "Compact", comment: "Sidebar state"))
+  }
+
+  private func toggleSidebar() {
+    withAnimation {
+      sidebarExpanded.toggle()
+    }
+  }
+
+  /// Always on top. This writes only the persisted flag; the window level is
+  /// applied by `AgentWindowCapabilities`.
+  private var pinToggle: some View {
+    Button {
+      isPinned.toggle()
+    } label: {
+      Image(systemName: isPinned ? "pin.fill" : "pin")
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(isPinned ? CSColor.chromeAccent : Color.secondary)
+        .frame(width: 24, height: 20)
+        .background(
+          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            .fill(isPinned ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            .strokeBorder(
+              isPinned ? CSColor.chromeAccent.opacity(0.32) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.borderless)
+    .csFocusRing(cornerRadius: CSRadius.pill)
+    .help(
+      isPinned
+        ? String(
+          localized: "Always on top — on. Click to let other windows cover the Agent.",
+          comment: "Tooltip on the pin button while the Agent window floats")
+        : String(
+          localized: "Keep the Agent above other windows",
+          comment: "Tooltip on the pin button while the Agent window behaves like any other")
+    )
+    .accessibilityLabel(
+      String(localized: "Always on top", comment: "Pin toggle in the Agent header")
+    )
+    .accessibilityValue(
+      isPinned
+        ? String(localized: "On", comment: "Toggle state")
+        : String(localized: "Off", comment: "Toggle state")
+    )
+    .accessibilityAddTraits(.isToggle)
+    .accessibilityAddTraits(isPinned ? .isSelected : [])
+  }
+
+  private var threadMenu: some View {
+    Menu {
+      if let thread = store.currentThread {
+        Section {
+          Button("Rename") { beginRename(thread) }
+          Button(
+            thread.isFavorite
+              ? String(localized: "Remove from favorites")
+              : String(localized: "Add to favorites")
+          ) {
+            store.toggleFavorite(thread)
+          }
+        } header: {
+          Text("Thread", comment: "Menu section header above the current thread's actions")
+        }
+        if thread.backendId != nil {
+          Section {
+            Button("Export to Markdown") { export(thread, assistantOnly: false) }
+            Button("Export Agent replies only") { export(thread, assistantOnly: true) }
+          } header: {
+            Text(
+              "Exports save to the Transcripts folder",
+              comment: "Menu section header above the Markdown export actions")
+          }
+        }
+        Section {
+          widthModeMenu
+        }
+        Section {
+          Button("Open settings") { openWindow.presentSettings() }
+        }
+        Section {
+          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
+        }
+      }
+    } label: {
+      CSIconView(icon: .more, size: 14, color: CSColor.textTertiary)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("More actions")
+    .accessibilityLabel(String(localized: "More actions"))
+  }
+
+  private var widthModeMenu: some View {
+    Menu {
+      ForEach(ChatWidthMode.allCases) { mode in
+        Button {
+          widthModeRaw = mode.rawValue
+        } label: {
+          if mode == widthMode {
+            Label(mode.label, systemImage: "checkmark")
+          } else {
+            Text(mode.label)
+          }
+        }
+      }
+    } label: {
+      Text("Conversation width", comment: "Submenu of the Agent header menu")
+    }
+    .accessibilityLabel(
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu")
+    )
+    .accessibilityValue(widthMode.label)
+  }
+
+  private func beginRename(_ thread: ChatThread) {
+    renameText = thread.title
+    isRenaming = true
+  }
+
+  private func export(_ thread: ChatThread, assistantOnly: Bool) {
+    let title = ThreadRowTitle.displayTitle(for: thread)
+    if let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) {
+      exportOutcome = .saved(path: path, assistantOnly: assistantOnly)
+    } else {
+      exportOutcome = .failed(threadTitle: title, assistantOnly: assistantOnly)
+    }
+  }
+
+  /// Header phase comes from the store's lifecycle projection. Message
+  /// `isStreaming` stays sticky for the caret and must not choose this label.
+  @ViewBuilder
+  private var liveStatusPill: some View {
+    switch store.selectedHeaderActivity {
+    case .idle:
+      EmptyView()
+    case .thinking:
+      StatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.amber, rippling: true)
+    case .answering:
+      StatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.terracotta, rippling: true)
+    case .usingTools:
+      StatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.oliveLight, rippling: true)
+    case .awaitingApproval:
+      StaticStatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.amber)
+    case .stopping:
+      StaticStatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.textTertiary)
+    case .failed:
+      StaticStatusPill(
+        text: store.selectedHeaderActivity.statusLabel ?? "",
+        color: CSColor.terracotta)
+    }
+  }
+}
+
+// MARK: - Detail (messages · composer)
+
+private struct ThreadDetail: View {
+  @ObservedObject var store: AgentChatStore
 
   var body: some View {
     VStack(spacing: 0) {
-      chrome
       if let thread = store.currentThread {
         MessageList(
           threadID: thread.id,
@@ -248,274 +557,7 @@ private struct ThreadDetail: View {
     } message: {
       Text(store.speechError ?? "")
     }
-    .alert("Rename thread", isPresented: $isRenaming) {
-      TextField("Thread title", text: $renameText)
-      Button("Rename") {
-        if let thread = store.currentThread { store.rename(thread, to: renameText) }
-      }
-      Button("Cancel", role: .cancel) {}
-    }
-    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
-    .alert(
-      exportOutcome?.title ?? Text(verbatim: ""),
-      isPresented: Binding(
-        get: { exportOutcome != nil },
-        set: { if !$0 { exportOutcome = nil } }
-      ),
-      presenting: exportOutcome
-    ) { outcome in
-      if case .saved(let path, _) = outcome {
-        let url = URL(fileURLWithPath: path)
-        Button("Reveal in Finder") {
-          NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
-        Button("Open") {
-          NSWorkspace.shared.open(url)
-        }
-      }
-      Button("OK", role: .cancel) {}
-    } message: { outcome in
-      outcome.message
-    }
   }
-
-  // One compact chrome row: sidebar · title · live pill · pin · "•••".
-  // The thread title is the window's only title; every other action moved
-  // into the "•••" menu (Founder brief, round 18, 2026-10-10).
-  private var chrome: some View {
-    HStack(spacing: 8) {
-      Button(action: toggleSidebar) {
-        Image(systemName: "sidebar.leading")
-          .font(.system(size: 13, weight: .medium))
-      }
-      .csFocusRing()
-      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textTertiary)
-      .keyboardShortcut("s", modifiers: [.command, .control])
-      .help(
-        isSidebarExpanded
-          ? String(localized: "Collapse sidebar (⌃⌘S)")
-          : String(localized: "Expand sidebar (⌃⌘S)")
-      )
-      .accessibilityLabel("Toggle Sidebar")
-      .accessibilityValue(
-        isSidebarExpanded
-          ? String(localized: "Expanded", comment: "Sidebar state")
-          : String(localized: "Compact", comment: "Sidebar state"))
-
-      Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(14, .semibold))
-        .foregroundStyle(ChatPalette.nameActive)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .layoutPriority(1)
-
-      if turnCount > 0 {
-        Text(verbatim: "· \(turnCount)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-          .fixedSize()
-      }
-
-      // The model is conversation information, so it reads here beside the
-      // thread title — not in the native titlebar. First to give way when
-      // the window narrows.
-      if let model = store.currentThread?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !model.isEmpty
-      {
-        Text(verbatim: model)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-      }
-
-      liveStatusPill
-        .layoutPriority(2)
-
-      Spacer(minLength: 8)
-
-      // One visual weight for the whole trailing cluster: 14 pt glyphs,
-      // tertiary at rest, accent only for an active state (the pin). Even
-      // 12 pt gaps — no control is louder than its neighbours.
-      HStack(spacing: 12) {
-        pinToggle
-
-        threadMenu
-      }
-    }
-    .padding(
-      .leading,
-      isSidebarExpanded ? 12 : AgentWindowMetrics.collapsedTrafficLightClearance
-    )
-    .padding(.trailing, 12)
-    .padding(.vertical, 6)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
-    }
-  }
-
-  /// Always on top. The state has to be readable at a glance: on is the filled
-  /// glyph on an accent plate, like a selected toolbar item; off is the outline
-  /// glyph with no plate. The Founder ran the window pinned for days without
-  /// realising it, so a tint alone was not enough (Founder brief, round 18,
-  /// 2026-10-10). This writes only the persisted flag; the window level is
-  /// applied by `AgentWindowCapabilities`.
-  private var pinToggle: some View {
-    Button {
-      isPinned.toggle()
-    } label: {
-      Image(systemName: isPinned ? "pin.fill" : "pin")
-        .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(isPinned ? CSColor.chromeAccent : Color.secondary)
-        .frame(width: 24, height: 20)
-        .background(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-            .fill(isPinned ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-            .strokeBorder(
-              isPinned ? CSColor.chromeAccent.opacity(0.32) : Color.clear, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-    }
-    .csFocusRing(cornerRadius: CSRadius.pill)
-    .help(
-      isPinned
-        ? String(
-          localized: "Always on top — on. Click to let other windows cover the Agent.",
-          comment: "Tooltip on the pin button while the Agent window floats")
-        : String(
-          localized: "Keep the Agent above other windows",
-          comment: "Tooltip on the pin button while the Agent window behaves like any other")
-    )
-    .accessibilityLabel(
-      String(localized: "Always on top", comment: "Pin toggle in the Agent header"))
-    .accessibilityValue(
-      isPinned
-        ? String(localized: "On", comment: "Toggle state")
-        : String(localized: "Off", comment: "Toggle state")
-    )
-    .accessibilityAddTraits(.isToggle)
-    .accessibilityAddTraits(isPinned ? .isSelected : [])
-  }
-
-  // The header's one menu: every action that used to sit in the chrome as its
-  // own control (width selector, Settings gear) lives here, grouped thread
-  // first, app second, destructive last (Founder brief, round 18, 2026-10-10).
-  // Export entries appear only for persisted threads (a not-yet-saved local
-  // thread has no backend id to export from). The export section names its
-  // fixed destination up front: there is no file chooser, the file always
-  // lands in the Transcripts folder.
-  private var threadMenu: some View {
-    Menu {
-      if let thread = store.currentThread {
-        Section {
-          Button("Rename") { beginRename(thread) }
-          Button(
-            thread.isFavorite
-              ? String(localized: "Remove from favorites")
-              : String(localized: "Add to favorites")
-          ) {
-            store.toggleFavorite(thread)
-          }
-        } header: {
-          Text("Thread", comment: "Menu section header above the current thread's actions")
-        }
-        if thread.backendId != nil {
-          Section {
-            Button("Export to Markdown") { export(thread, assistantOnly: false) }
-            Button("Export Agent replies only") { export(thread, assistantOnly: true) }
-          } header: {
-            Text(
-              "Exports save to the Transcripts folder",
-              comment: "Menu section header above the Markdown export actions")
-          }
-        }
-        Section {
-          widthModeMenu
-        }
-        Section {
-          Button("Open settings") { openWindow.presentSettings() }
-        }
-        Section {
-          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
-        }
-      }
-    } label: {
-      CSIconView(icon: .more, size: 14, color: CSColor.textTertiary)
-    }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    // Shared key with the overlay's intent rail, so it carries no new comment.
-    .help("More actions")
-    .accessibilityLabel(String(localized: "More actions"))
-  }
-
-  /// Standard / Wide / Full width — persists via `ChatLayoutPolicy.defaultsKey`.
-  /// A submenu of the header's "•••" menu: it is a layout setting, not a
-  /// headline Agent feature, so it no longer occupies its own slot in the
-  /// chrome (Founder brief, round 18, 2026-10-10).
-  private var widthModeMenu: some View {
-    Menu {
-      ForEach(ChatWidthMode.allCases) { mode in
-        Button {
-          widthModeRaw = mode.rawValue
-        } label: {
-          if mode == widthMode {
-            Label(mode.label, systemImage: "checkmark")
-          } else {
-            Text(mode.label)
-          }
-        }
-      }
-    } label: {
-      Text("Conversation width", comment: "Submenu of the Agent header menu")
-    }
-    .accessibilityLabel(
-      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
-    .accessibilityValue(widthMode.label)
-  }
-
-  private func beginRename(_ thread: ChatThread) {
-    renameText = thread.title
-    isRenaming = true
-  }
-
-  /// Export the thread, then report where the file went — or that nothing was
-  /// written. Finder is opened only from the alert's own button, never as a
-  /// side effect of the menu action. The path lives under the app's own data
-  /// directory, so no permission prompt is involved.
-  private func export(_ thread: ChatThread, assistantOnly: Bool) {
-    let title = ThreadRowTitle.displayTitle(for: thread)
-    if let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) {
-      exportOutcome = .saved(path: path, assistantOnly: assistantOnly)
-    } else {
-      exportOutcome = .failed(threadTitle: title, assistantOnly: assistantOnly)
-    }
-  }
-
-  /// Live status only. Idle is silent chrome — the always-on olive pill was
-  /// a second title row's worth of empty studio.
-  @ViewBuilder
-  private var liveStatusPill: some View {
-    if store.isCancelling {
-      StaticStatusPill(
-        text: String(localized: "Stopping", comment: "Turn status"),
-        color: CSColor.textTertiary)
-    } else if store.isStreaming {
-      StatusPill(
-        text: String(localized: "Streaming", comment: "Turn status"),
-        color: CSColor.terracotta, rippling: true)
-    } else if store.isThinking {
-      StatusPill(
-        text: String(localized: "Thinking", comment: "Turn status"),
-        color: CSColor.amber, rippling: true)
-    }
-  }
-
-  private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
 }
 
 /// One accepted-but-not-yet-running message. Visible until the queue's single
