@@ -11149,6 +11149,17 @@
         }
       }
     },
+    "Other agents" : {
+      "comment" : "Agent client label; its ~/.agents path follows verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inni agenci"
+          }
+        }
+      }
+    },
     "Other detected models" : {
       "comment" : "Whisper tab section: models found on disk that cannot be selected",
       "localizations" : {
