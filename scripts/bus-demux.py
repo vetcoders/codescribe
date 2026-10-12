@@ -5274,8 +5274,7 @@ def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool
 
     state = read_json(root / "leases" / f"{lease_id}.json") or {}
     observed = process_identity(pid)
-    caller = process_identity(os.getpid())
-    if (observed is None or caller is None or state.get("process_identity") != observed
+    if (observed is None or state.get("process_identity") != observed
             or state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
             or state.get("pid") != pid or state.get("provider_session_id") != session
             or not isinstance(state.get("provider"), str)
@@ -5283,17 +5282,20 @@ def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool
         return False
     try:
         words = shlex.split(observed["command"])
-        caller_words = shlex.split(caller["command"])
         def argument(flag: str) -> str | None:
             positions = [i for i, word in enumerate(words) if word == flag]
             if len(positions) != 1 or positions[0] + 1 >= len(words):
                 return None
             return words[positions[0] + 1]
         return (
-            # macOS Python can execute a framework binary behind its launcher.
-            # Compare the actual running interpreters, not the launcher path.
-            len(words) >= 2 and bool(caller_words)
-            and Path(words[0]).resolve() == Path(caller_words[0]).resolve()
+            # The follower is this helper script with these flags, recorded by
+            # the lease owner with its start stamp. The interpreter that
+            # launched it is not part of that identity: a CLI attach runs the
+            # shell's python3, the Claude Code plugin's MCP server runs the one
+            # on its own PATH, and a follower spawned by one lane must be
+            # adoptable by the other (2026-10-12: every plugin connect after a
+            # CLI attach refused with "identity could not be verified").
+            len(words) >= 2
             and Path(words[1]).resolve() == Path(__file__).resolve()
             and "--follow" in words and argument("--session") == session
             and argument("--provider") == state["provider"]
