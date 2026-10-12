@@ -179,6 +179,7 @@ struct OverlayConversationView: View {
         .accessibilityHint("Opens the Agents sidebar")
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: true))
+        .background { OverlayMenuCursorRegion() }
     } else {
       namePillLabel
         .accessibilityAddTraits(.isHeader)

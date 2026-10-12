@@ -61,8 +61,8 @@ final class OverlayMenuCursorRegionView: NSView {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    if owner?.menuCursorRegion === self { owner?.menuCursorRegion = nil }
+    owner?.menuCursorRegions.remove(self)
     owner = window as? FloatingOverlayPanel
-    owner?.menuCursorRegion = self
+    owner?.menuCursorRegions.add(self)
   }
 }
