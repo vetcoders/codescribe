@@ -13,6 +13,7 @@ import ssl
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import ANY, MagicMock, patch
 import wave
@@ -463,6 +464,7 @@ def queued_say(
     vendor="xai",
     speech_bus=None,
     take_wait_seconds=0.15,
+    scan_delay=0.0,
 ):
     """Real --say and flock in a process; only synthesis and afplay are replaced."""
     DEMUX.PLAYBACK_WAIT_SECONDS = wait_seconds
@@ -471,6 +473,13 @@ def queued_say(
     acquire = DEMUX._acquire_playback_lock
     playback_log = Path(home) / "playback.jsonl"
     sentinel = Path(home) / "playing"
+    probe = DEMUX.installation_idle
+
+    def delayed_probe(*args, **kwargs):
+        # Delay the real safety probe only after playback has started.
+        if scan_delay and sentinel.exists():
+            time.sleep(scan_delay)
+        return probe(*args, **kwargs)
 
     def synthesize(_request):
         synthesized.set()
@@ -540,6 +549,7 @@ def queued_say(
         patch.object(DEMUX, "_xai_speech_key", return_value="test-only-key"),
         patch.object(DEMUX, "_openai_speech_key", return_value="test-only-key"),
         patch.object(DEMUX, "_acquire_playback_lock", side_effect=lock),
+        patch.object(DEMUX, "installation_idle", side_effect=delayed_probe),
         patch("subprocess.Popen", side_effect=Player),
         patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
         patch.object(DEMUX, "bus_path", return_value=speech_bus or Path(bus)),
@@ -576,6 +586,7 @@ class PlaybackQueueTests(unittest.TestCase):
         vendor="xai",
         speech_bus=None,
         take_wait_seconds=0.15,
+        scan_delay=0.0,
     ):
         events = [self.context.Event() for _ in range(3)]
         child = self.context.Process(
@@ -590,6 +601,7 @@ class PlaybackQueueTests(unittest.TestCase):
                 vendor,
                 speech_bus,
                 take_wait_seconds,
+                scan_delay,
             ),
         )
         child.start()
@@ -663,6 +675,34 @@ class PlaybackQueueTests(unittest.TestCase):
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         # The timed-out waiter must not remove the shared lock inode.
         self.assertTrue((self.home / "runtime" / "playback.lock").exists())
+
+    def test_slow_scan_keeps_playback_and_lock_until_release(self):
+        release = self.context.Event()
+        first, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.03
+        )
+        self.assertTrue(playing.wait(5))
+        second, (_, waiting, second_playing) = self.start_say("astra")
+        self.assertTrue(waiting.wait(5))
+        early = second_playing.wait(0.15)
+        release.set()
+        self.join(first)
+        self.join(second)
+        log = (self.home / "playback.jsonl").read_text()
+        self.assertFalse(early, f"premature lock release: {log}; {self.outcomes()}")
+        self.assertTrue(all(row["spoken"] for row in self.outcomes()))
+
+    def test_scan_beyond_budget_still_terminates_playback(self):
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertEqual(reply["reason"], "take_started")
+        self.assertFalse(reply["spoken"])
+        self.assertIn('["filip", "terminate"]', (self.home / "playback.jsonl").read_text())
 
     def test_take_started_while_waiting_is_checked_after_acquisition(self):
         lock = self.hold_lock()
