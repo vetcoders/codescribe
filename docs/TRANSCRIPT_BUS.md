@@ -1102,6 +1102,10 @@ channel 0. The microphone guard always starts from the canonical global
 capture bus and discovers the dedicated channel buses; a reply's publication
 path never substitutes for the global capture journal. The existing lifecycle
 cursor enforces capture interlocks.
+Lifecycle scans have a separate 500 ms slice budget from the playback polling
+cadence. Faster polling does not shorten the safety scan; a scan that exhausts
+its budget still refuses idle and stops playback conservatively. The original
+cursor retains its processed prefix for the next scan.
 Stop writes an owner-checked request for that exact reply/ticket and requires
 its live ticket lock. The Python owner checks the request during lock/capture
 wait and playback, and terminates only its own `afplay` child. A stop request
@@ -1213,6 +1217,11 @@ and only some can be recovered by the helper:
 The helper cannot see a provider's notification window or conversation. A
 window ending while the watch keeps running is not a disconnect, and the helper
 does not claim to notify through an expired window.
+
+Managed followers retain the resolved workspace in their lease wakeup
+configuration as well as the PID record. Losing the PID record therefore does
+not change the configuration or force a verified live follower to restart on
+reattachment. A changed workspace still requires the existing drained handover.
 
 A watch started with `--provider/--session` checks its follower every two
 seconds. A follower counts as lost only when two consecutive checks find no
