@@ -1015,6 +1015,14 @@ impl CodescribeConfig {
     }
 
     /// Explicit credential acquisition. Swift executes this off MainActor.
+    ///
+    /// This is the only authorized path that fills the process credential
+    /// cache, so it also re-seals the live controller through the one
+    /// settings-refresh path. Launch creates the controller before Swift
+    /// restores provider access, and a Keychain-only secret is therefore absent
+    /// from that first sealed generation: without this re-seal the Cloud lane
+    /// reports `live_key_missing` on every take until an unrelated settings
+    /// write happens to re-seal it.
     pub fn provider_access_snapshot(&self) -> Result<CsProviderAccessSnapshot, CsError> {
         let previous_revision = keychain::bundle_revision();
         keychain::refresh_bundle().map_err(provider_error)?;
@@ -1025,6 +1033,12 @@ impl CodescribeConfig {
         if revision != previous_revision {
             invalidate_runtime_snapshot_cache();
         }
+        // Unconditional, not gated on `revision`: a coalesced bundle read keeps
+        // the revision while still being the moment the controller's sealed
+        // generation is known to be credential-complete. The refresh is a no-op
+        // before the controller exists and defers to the next take while one is
+        // active, so it can never interrupt capture.
+        crate::hotkeys::refresh_live_controller_config();
         let registry = ProviderRegistry::from_settings(&UserSettings::load());
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();

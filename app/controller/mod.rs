@@ -11412,6 +11412,38 @@ mod c15d_settings_one_path_falsifiers {
         assert_eq!(before.values().hold_start_delay_ms, before_delay);
     }
 
+    /// Startup-seal falsifier: launch creates the controller before Swift
+    /// restores provider access, so a Keychain-only live key is absent from the
+    /// first sealed generation and Layer 1 reports `live_key_missing`. The
+    /// refresh that credential acquisition triggers must publish that secret to
+    /// the next take without any settings write.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn credential_acquisition_after_seal_arms_the_live_key_on_refresh() {
+        use codescribe_core::config::keychain::test_support::install_bundle;
+        use codescribe_core::test_isolation::EnvGuard;
+
+        let temp = tempfile::tempdir().unwrap();
+        let _data_dir = DataDirGuard::install(temp.path());
+        let _live_env = EnvGuard::remove("STT_LIVE_API_KEY");
+        let _retired_env = EnvGuard::remove("STT_API_KEY");
+        let _empty_bundle = install_bundle(&[]);
+
+        let controller = RecordingController::new_without_keychain();
+        let sealed_at_launch = controller.runtime_settings_arc().await;
+        assert!(sealed_at_launch.values().stt_live_api_key.is_none());
+
+        let _acquired = install_bundle(&[("STT_LIVE_API_KEY", "synthetic-live")]);
+        assert!(
+            controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .expect("idle refresh after credential acquisition")
+        );
+        let resealed = controller.get_config().await;
+        assert_eq!(resealed.stt_live_api_key.as_deref(), Some("synthetic-live"));
+    }
+
     /// W3-T11 race falsifier: after the profile is stored, the calibration
     /// path must replace the live controller Arc before Swift can issue its
     /// immediate readiness probe.

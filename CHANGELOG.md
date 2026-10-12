@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No changes recorded yet.
+- Cloud transcription works on the first dictation after launch. The recording controller was sealed before the app had read the Keychain, so a live key kept only there was missing from that first configuration and every take ran on Apple alone (`layer1_decision … reason="live_key_missing"`) until some Settings save happened to reseal it. Restoring saved provider access now reseals the controller too; a recording in progress keeps its own settings and picks the key up on the next take.
 
 ## [0.17.0] - 2026-10-11
 
