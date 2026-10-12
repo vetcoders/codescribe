@@ -17,7 +17,7 @@ Record host/model/OS, physical/logical core count, power source, initial thermal
 state, foreground/background workload and measurement duration. Use the same
 WAV, mode and immutable settings for each side. Measure cold and warm runs
 separately. Isolate cloud, on-device and Max provider costs. Full acceptance needs
-Dragon and MacBook absolute CPU/RSS/thermal ceilings chosen from measurements;
+host-a and host-b absolute CPU/RSS/thermal ceilings chosen from measurements;
 no invented ceiling is entered here.
 
 The full authorized profile includes idle, continuous dictation, Stop, repeated
