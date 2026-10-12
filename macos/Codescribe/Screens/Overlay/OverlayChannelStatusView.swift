@@ -461,6 +461,18 @@ struct OverlayChannelStatusView: View {
   var savedConversations: [OverlayConversation] {
     let current = Set(currentConversations.map(\.id))
     return conversations.filter { !current.contains($0.id) }
+      .map { (conversation: $0, date: lastActivityDate(in: $0)) }
+      .sorted {
+        if let left = $0.date, let right = $1.date {
+          if left != right { return left > right }
+        } else if $0.date != nil {
+          return true
+        } else if $1.date != nil {
+          return false
+        }
+        return $0.conversation.id < $1.conversation.id
+      }
+      .map(\.conversation)
   }
 
   func conversation(for channel: OverlayChannelDelivery) -> OverlayConversation? {
@@ -647,12 +659,16 @@ struct OverlayChannelStatusView: View {
   private func savedConversationDetail(
     _ conversation: OverlayConversation, owner: OverlayConversationOwner
   ) -> String {
-    guard let stamp = conversation.messages.last?.emittedAt else { return owner.provider }
-    let parser = ISO8601DateFormatter()
-    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let date = parser.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)
-    guard let date else { return owner.provider }
+    guard let date = lastActivityDate(in: conversation) else { return owner.provider }
     return "\(owner.provider) · \(date.formatted(date: .abbreviated, time: .shortened))"
+  }
+
+  private func lastActivityDate(in conversation: OverlayConversation) -> Date? {
+    // Messages are in history order. Parse once per row, outside the sort
+    // comparator; an unloaded archive has no verified message date yet.
+    conversation.messages.reversed().lazy.compactMap {
+      MessageTimestamp.date(fromISO8601: $0.emittedAt)
+    }.first
   }
 
   var showsConnectionHint: Bool {

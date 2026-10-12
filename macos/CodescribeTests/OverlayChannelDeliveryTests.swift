@@ -998,6 +998,40 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(calls, [1, 3], "both directions use the same per-digit toggle intent")
   }
 
+  func testSavedConversationsShowNewestMessageFirstWithUnknownDatesLast() {
+    func conversation(_ id: String, dates: [String]) -> OverlayConversation {
+      OverlayConversation(
+        id: id, channel: "1", name: id, owner: nil,
+        messages: dates.enumerated().map { index, stamp in
+          .init(
+            id: "\(id)-\(index)", kind: .reply, text: "Retained reply", order: UInt64(index),
+            emittedAt: stamp, owner: nil, recipients: [], deliveryID: nil, replyTo: nil,
+            unsolicited: true, playback: nil, busPath: "")
+        })
+    }
+    let old = conversation("old", dates: ["2026-10-05T15:26:00Z"])
+    let newest = conversation(
+      "newest", dates: ["2026-10-01T08:00:00Z", "2026-10-12T10:00:00.250Z", "invalid"])
+    let offset = conversation("offset", dates: ["2026-10-12T12:00:00+02:00"])
+    let tieB = conversation("tie-b", dates: ["2026-10-07T21:19:00Z"])
+    let tieA = conversation("tie-a", dates: ["2026-10-07T21:19:00Z"])
+    var unloaded = conversation("unloaded", dates: [])
+    unloaded.historyLoaded = false
+    let invalid = conversation("invalid", dates: ["not-a-date"])
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: newest.messages)
+    let input = [old, unloaded, tieB, invalid, newest, broadcast, offset, tieA]
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false, conversations: input)
+
+    XCTAssertEqual(
+      view.savedConversations.map(\.id),
+      [newest.id, offset.id, tieA.id, tieB.id, old.id, invalid.id, unloaded.id])
+    XCTAssertEqual(view.currentConversations.map(\.id), [broadcast.id])
+    XCTAssertEqual(view.conversations, input, "Sorting is a passive presentation projection")
+    XCTAssertFalse(unloaded.historyLoaded, "Sorting must not load archives or invent their dates")
+  }
+
   func testMonitorSeparatesCurrentOwnerFromSameNamedSavedConversation() throws {
     func conversation(session: String, lease: String) throws -> OverlayConversation {
       let owner = try XCTUnwrap(
