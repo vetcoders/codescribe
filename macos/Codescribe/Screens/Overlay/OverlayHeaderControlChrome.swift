@@ -18,17 +18,10 @@ enum OverlayHeaderAccent {
   }
 }
 
-private struct OverlayHeaderHoverTintKey: EnvironmentKey {
-  static let defaultValue: Color? = nil
-}
-
 extension EnvironmentValues {
   /// Set by `OverlayHeaderControlChrome` while the pointer is inside a control
   /// that has an accent. Nil at rest, and nil for hint-only controls.
-  var overlayHeaderHoverTint: Color? {
-    get { self[OverlayHeaderHoverTintKey.self] }
-    set { self[OverlayHeaderHoverTintKey.self] = newValue }
-  }
+  @Entry var overlayHeaderHoverTint: Color? = nil
 }
 
 /// Resting header marks stay on their neutral tint. A hovered accent replaces
