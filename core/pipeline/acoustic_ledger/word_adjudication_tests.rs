@@ -1,6 +1,229 @@
 //! Integrator-owned counterexamples for local adjudication, independent of ASR.
 use super::*;
 
+/// Recorded producer pins and Silero/energy receipts from a delayed Apple
+/// sequence. No recognition is rerun and no synthetic word boundaries stand
+/// in for the acoustic observer: Silero measured one continuous speech range.
+fn recorded_delayed_sequence(
+    apple_first: bool,
+    labels: [&str; 5],
+) -> (AcousticLedger, OccurrenceIdentity) {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let owner = OccurrenceIdentity::new("delayed-apple-sequence", 1, 249_120, 370_560);
+    let mut ledger = AcousticLedger::new();
+    ledger.bind_capture_rate(48_000);
+    let calibration =
+        EnergyCalibration::new("recorded-capture", 0.000_502_740_854_707_725_4, 14_400);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: owner.clone(),
+                    duration_ms: 2_530.0,
+                    energy_integral: 1.207_372_940_917_736,
+                    mean_rms_dbfs: -50.025_203_201_313_49,
+                    peak_dbfs: -33.903_532_383_023_95,
+                    vad_open_sample: Some(owner.sample_start),
+                    vad_close_sample: Some(owner.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: 575_488,
+        },
+        [(46_080, 224_256), (256_512, 345_600), (387_072, 473_088)]
+            .into_iter()
+            .map(|(sample_start, sample_end)| TailSampleRange {
+                session: owner.session.clone(),
+                capture_epoch: owner.capture_epoch,
+                sample_start,
+                sample_end,
+            })
+            .collect(),
+    ));
+    let apple = ObservationIdentity::new(ObservationProducer::Apple, 2, 0, owner.clone());
+    let mut apple_words = [
+        (284_640, 290_400, "Jest"),
+        (290_400, 291_840, "w"),
+        (291_840, 296_160, "tej"),
+        (296_160, 303_360, "chwili"),
+        (303_360, 337_920, "dopięty"),
+    ]
+    .map(|(start, end, text)| WordPin::new(start, end, text));
+    for (word, label) in apple_words.iter_mut().zip(labels) {
+        word.text = label.into();
+    }
+
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 10_001, owner.clone());
+    let mut whisper_words = [
+        (250_560, 261_120, "jest"),
+        (261_120, 276_480, "w"),
+        (276_480, 284_160, "tej"),
+        (284_160, 299_520, "chwili"),
+        (299_520, 328_320, "dopięty"),
+    ]
+    .map(|(start, end, text)| WordPin::new(start, end, text).with_decode_window(144_000, 575_488));
+    for (word, label) in whisper_words.iter_mut().zip(labels) {
+        word.text = label.to_lowercase();
+    }
+    if apple_first {
+        ledger.admit_word_slots(&apple, &apple_words);
+        ledger.admit_word_slots(&whisper, &whisper_words);
+    } else {
+        ledger.admit_word_slots(&whisper, &whisper_words);
+        ledger.admit_word_slots(&apple, &apple_words);
+    }
+    (ledger, owner)
+}
+
+#[test]
+fn recorded_delayed_apple_sequence_does_not_mint_extra_words() {
+    let (ledger, owner) =
+        recorded_delayed_sequence(true, ["Jest", "w", "tej", "chwili", "dopięty"]);
+    assert_eq!(
+        ledger.text_of(&owner).unwrap().to_lowercase(),
+        "jest w tej chwili dopięty"
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 5);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn recorded_delayed_sequence_does_not_depend_on_recognition_arrival_order() {
+    for apple_first in [false, true] {
+        let (ledger, owner) =
+            recorded_delayed_sequence(apple_first, ["Jest", "w", "tej", "chwili", "dopięty"]);
+        assert_eq!(
+            ledger.slots_of(&owner).unwrap().len(),
+            5,
+            "apple_first={apple_first}"
+        );
+        assert_eq!(
+            ledger.text_of(&owner).unwrap().to_lowercase(),
+            "jest w tej chwili dopięty"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn recorded_delayed_geometry_cannot_be_fixed_by_a_polish_phrase_special_case() {
+    // Same recorded timing; deliberately different labels. These are controls,
+    // not a claim that the speaker said these replacement phrases.
+    for labels in [
+        ["We", "have", "five", "distinct", "words"],
+        ["A", "B", "C", "D", "E"],
+        ["Iwo", "Iwo", "Iwo", "Iwo", "Iwo"],
+    ] {
+        let (ledger, owner) = recorded_delayed_sequence(true, labels);
+        assert_eq!(
+            ledger.text_of(&owner).unwrap().to_lowercase(),
+            labels.join(" ").to_lowercase()
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 5);
+    }
+}
+
+#[test]
+fn recorded_delayed_sequence_keeps_one_complete_adjudication_question() {
+    let (ledger, owner) =
+        recorded_delayed_sequence(true, ["Jest", "w", "tej", "chwili", "dopięty"]);
+    let complete_correction = ledger.slot_operations().iter().any(|operation| {
+        operation.sources.len() == 5
+            && operation.outputs.len() == 5
+            && compose_label(&operation.outputs).to_lowercase() == "jest w tej chwili dopięty"
+    });
+    let complete_pending = ledger.text_recovery_pending(&owner)
+        && ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.sources.len() == 5
+                && alternative.candidate.to_lowercase() == "jest w tej chwili dopięty"
+        });
+    assert!(
+        complete_correction || complete_pending,
+        "the whole competing sequence must be admitted with provenance or retained as one unresolved question; dropping the new prefix is not a repair"
+    );
+}
+
+#[test]
+fn acoustic_identity_five_real_repetitions_survive_with_and_without_energy_valleys() {
+    for connected in [false, true] {
+        let owner =
+            OccurrenceIdentity::new(format!("five-repetitions-{connected}"), 1, 16_000, 112_000);
+        let ranges = [
+            (24_000, 32_000),
+            (40_000, 48_000),
+            (56_000, 64_000),
+            (72_000, 80_000),
+            (88_000, 96_000),
+        ];
+        let mut pcm = vec![0.0; 176_000];
+        if connected {
+            pcm[16_000..112_000].fill(0.2);
+        } else {
+            for (start, end) in ranges {
+                pcm[start..end].fill(0.2);
+            }
+        }
+        let mut ledger = measured_ledger(&owner, &pcm);
+        for (generation, decode) in [(1, (0, 160_000)), (2, (8_000, 176_000))] {
+            let words = ranges.map(|(start, end)| {
+                WordPin::new(start as u64, end as u64, "Iwo").with_decode_window(decode.0, decode.1)
+            });
+            ledger.admit_word_slots(
+                &ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    generation,
+                    generation,
+                    owner.clone(),
+                ),
+                &words,
+            );
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some("Iwo Iwo Iwo Iwo Iwo"),
+                "connected={connected}, generation={generation}"
+            );
+            let actual = ledger
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .map(|word| (word.sample_start as usize, word.sample_end as usize))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, ranges);
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+}
+
+#[test]
+fn acoustic_identity_one_word_over_several_energy_bursts_stays_one_word() {
+    let owner = OccurrenceIdentity::new("syllables-are-not-word-identity", 1, 16_000, 112_000);
+    let mut pcm = vec![0.0; 176_000];
+    for (start, end) in [(48_000, 52_000), (60_000, 64_000), (72_000, 76_000)] {
+        pcm[start..end].fill(0.2);
+    }
+    let mut ledger = measured_ledger(&owner, &pcm);
+    let word = [WordPin::new(48_000, 76_000, "transkrypcja").with_decode_window(0, 160_000)];
+    ledger.admit_word_slots(
+        &ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone()),
+        &word,
+    );
+    assert_eq!(ledger.text_of(&owner), Some("transkrypcja"));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
 #[test]
 fn rc_word_completeness_requires_pcm_before_the_word() {
     for (producer, start, decode_start, complete) in [

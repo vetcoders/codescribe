@@ -1283,12 +1283,56 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
 
 /// EngineEvent collector for the device-capture path (the session-internal
 /// collector is private). Push-only; assertions read the final snapshot.
-struct DeviceCaptureSink(std::sync::Mutex<Vec<EngineEvent>>);
+struct DeviceCaptureSink(
+    std::sync::Mutex<Vec<EngineEvent>>,
+    std::sync::Mutex<Option<(String, u64)>>,
+);
 
 impl codescribe_core::pipeline::contracts::EventSink for DeviceCaptureSink {
+    fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+        let mut capture = self.1.lock().expect("capture identity lock");
+        let opened = (session_id.to_string(), capture_epoch);
+        assert!(capture.as_ref().is_none_or(|prior| prior == &opened));
+        *capture = Some(opened);
+    }
+
+    fn wait_presentation_published<'a>(
+        &'a self,
+        session_id: &'a str,
+        capture_epoch: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // This fixture publishes synchronously into its event snapshot.
+            // Stop has joined producers; only the bound capture can fence it.
+            let capture = self.1.lock().expect("capture identity lock");
+            anyhow::ensure!(
+                capture
+                    .as_ref()
+                    .is_some_and(|(id, epoch)| { id == session_id && *epoch == capture_epoch }),
+                "capture presentation identity mismatch"
+            );
+            Ok(())
+        })
+    }
+
     fn on_event(&self, event: &EngineEvent) {
         self.0.lock().expect("collector lock").push(event.clone());
     }
+}
+
+#[tokio::test]
+async fn device_capture_presentation_fences_only_the_opened_capture() {
+    use codescribe_core::pipeline::contracts::EventSink;
+
+    let sink = DeviceCaptureSink(
+        std::sync::Mutex::new(Vec::new()),
+        std::sync::Mutex::new(None),
+    );
+    assert!(sink.wait_presentation_published("take", 1).await.is_err());
+    sink.on_capture_opened("take", 1);
+    assert!(sink.wait_presentation_published("take", 1).await.is_ok());
+    assert!(sink.wait_presentation_published("other", 1).await.is_err());
+    assert!(sink.wait_presentation_published("take", 2).await.is_err());
 }
 
 /// Lowercased alphanumeric tokens of length ≥ 4 — long enough to be
@@ -1317,7 +1361,10 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
 
     // 1) Arm capture FIRST — the recorder must already be listening when the
     //    first sample leaves the player, or the head of the fixture is lost.
-    let sink = std::sync::Arc::new(DeviceCaptureSink(std::sync::Mutex::new(Vec::new())));
+    let sink = std::sync::Arc::new(DeviceCaptureSink(
+        std::sync::Mutex::new(Vec::new()),
+        std::sync::Mutex::new(None),
+    ));
     let mut recorder = codescribe_core::audio::streaming_recorder::StreamingRecorder::new()
         .expect("recorder init (is the loopback device present?)");
     recorder.set_event_sink(Some(sink.clone()));
