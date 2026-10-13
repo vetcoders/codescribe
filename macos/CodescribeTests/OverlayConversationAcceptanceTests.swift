@@ -8,6 +8,67 @@ import XCTest
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
   @MainActor
+  func testWholeReplyBubbleKeepsPlaybackCopyAndBottomInsetCompact() throws {
+    for state in ["spoken", "playing", "waiting", "stopped"] {
+      for width in [CGFloat(262), 459] {
+        for scale in [CGFloat(1), 1.6] {
+          var bus = OverlayChannelDelivery.Bus()
+          let replyID = String(repeating: "c", count: 24)
+          var row = reply(replyID, delivery: "footer-measurement")
+          row["text"] = "A retained reply with enough words to wrap onto another line."
+          bus.consume(row)
+          bus.consume(
+            playback(replyID, ticket: "bubble-footer", state: state, time: "2026-10-05T04:00:01Z"))
+          let conversation = try lenaConversation(bus)
+          let message = try XCTUnwrap(conversation.messages.first { $0.kind == .reply })
+          let view = OverlayConversationView(
+            conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+            pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+            draft: .constant(""), sending: false, sendError: nil, onSend: {})
+          let user = OverlayConversationMessage(
+            id: "user:footer", kind: .user, text: message.text, order: message.order,
+            emittedAt: message.emittedAt, owner: nil, recipients: [], deliveryID: nil,
+            replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+          let host = NSHostingView(
+            rootView: view.messageBubble(message)
+              .environment(\.csTextScale, scale).frame(width: width))
+          let userHost = NSHostingView(
+            rootView: view.messageBubble(user)
+              .environment(\.csTextScale, scale).frame(width: width))
+          let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
+            styleMask: .borderless, backing: .buffered, defer: false)
+          window.isReleasedWhenClosed = false
+          window.contentView = host
+          window.orderFrontRegardless()
+          let userWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
+            styleMask: .borderless, backing: .buffered, defer: false)
+          userWindow.isReleasedWhenClosed = false
+          userWindow.contentView = userHost
+          userWindow.orderFrontRegardless()
+          defer {
+            window.close()
+            userWindow.close()
+          }
+          host.layoutSubtreeIfNeeded()
+          userHost.layoutSubtreeIfNeeded()
+          window.setContentSize(host.fittingSize)
+          userWindow.setContentSize(userHost.fittingSize)
+          RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+          host.layoutSubtreeIfNeeded()
+          userHost.layoutSubtreeIfNeeded()
+          let context = "state=\(state) width=\(width) scale=\(scale)"
+          XCTAssertGreaterThan(userHost.fittingSize.height, 0, context)
+          XCTAssertEqual(
+            host.fittingSize.height, userHost.fittingSize.height, accuracy: 1,
+            "Playback must not add height to an otherwise identical user bubble: \(context)")
+        }
+      }
+    }
+  }
+
+  @MainActor
   func testReplyPlaybackAndCopyShareOneCompactFooter() throws {
     for state in ["spoken", "playing", "waiting", "stopped"] {
       for width in [CGFloat(262), 459] {

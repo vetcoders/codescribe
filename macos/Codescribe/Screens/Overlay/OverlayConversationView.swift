@@ -346,7 +346,7 @@ struct OverlayConversationView: View {
     .id(message.id)
   }
 
-  private func messageBubble(_ message: OverlayConversationMessage) -> some View {
+  func messageBubble(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
         if message.kind == .user {
@@ -467,7 +467,7 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           } label: {
             Image(systemName: active ? "stop.fill" : "play.fill")
               .font(.system(size: 10 * textScale))
-              .frame(width: 24, height: 24)
+              .frame(width: 24)
               .contentShape(Rectangle())
           }
           .buttonStyle(.borderless)
