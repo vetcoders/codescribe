@@ -1269,6 +1269,41 @@ impl AcousticLedger {
                         .zip(raw)
                         .is_some_and(|(a, b)| label_equal(a, b))
             });
+        // Acoustic authority over an edge-cut incumbent (plan §4). A held
+        // word whose own decode fence ran through speech — no authenticated
+        // quiet at the fence, so `acoustic_boundaries_complete` is false — is
+        // not a complete witness of that PCM. A fresh trial return with
+        // complete acoustic boundaries over the same PCM therefore does not
+        // need a second agreeing voice: the fence energy is the evidence. A
+        // complete-boundary witness that disagrees with the candidate still
+        // holds the question open; the rule never fires on mixed sources,
+        // whose incumbent completeness is cleared artificially above.
+        let single_source_incumbent = !sources
+            .iter()
+            .any(|source| source.observation != sources[0].observation);
+        let incumbent_edge_cut = single_source_incumbent
+            && component.incumbent.family() == ObservationProducer::Whisper
+            && component.incumbent.original_text.is_some()
+            && component.incumbent.decode.is_some()
+            && (!component.incumbent.acoustic_boundaries_complete
+                || self
+                    .incumbent_cut_by_decode_fence(&observation.occurrence, &component.incumbent));
+        let complete_witness_disagrees = prior_support.iter().any(|h| {
+            h.complete
+                && h.acoustic_boundaries_complete
+                && h.original_text
+                    .as_deref()
+                    .zip(raw)
+                    .is_some_and(|(a, b)| !label_equal(a, b))
+        });
+        let confirmed_trial = confirmed_trial
+            || (trial_matches
+                && fresh
+                && complete
+                && candidate.acoustic_boundaries_complete
+                && raw.is_some()
+                && incumbent_edge_cut
+                && !complete_witness_disagrees);
         let raw_disagrees = raw
             .zip(component.incumbent.original_text.as_deref())
             .is_some_and(|(a, b)| !label_equal(a, b));
@@ -1398,6 +1433,38 @@ impl AcousticLedger {
             lexical_resolved,
         });
         Some(accepted)
+    }
+
+    /// The held word's own decode fence ran through measured speech: the
+    /// decoder stamped its last word before the fence, but the acoustic
+    /// observer saw no quiet between that word and the fence. The word is cut
+    /// by its window whatever the decoder's own stamp says ("pumpy to" at
+    /// 26.56–26.68 s under a 27.0 s fence while speech ran to 27.02 s). A
+    /// missing or closed-only measurement cannot establish the cut.
+    fn incumbent_cut_by_decode_fence(
+        &self,
+        owner: &OccurrenceIdentity,
+        incumbent: &WordHypothesis,
+    ) -> bool {
+        let Some((decode_start, fence)) = incumbent.decode else {
+            return false;
+        };
+        let Some(last_end) = incumbent.pins.iter().map(|pin| pin.sample_end).max() else {
+            return false;
+        };
+        if last_end >= fence {
+            return true;
+        }
+        let window =
+            OccurrenceIdentity::new(&owner.session, owner.capture_epoch, decode_start, fence);
+        let Some(speech) = self.measured_speech_for(&window) else {
+            return false;
+        };
+        speech.ranges().iter().any(|range| {
+            range.sample_start < last_end
+                && last_end <= range.sample_end
+                && range.sample_end >= fence
+        })
     }
 
     /// Called only after admission committed. Failed batches cannot advance targets.
