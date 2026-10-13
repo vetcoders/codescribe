@@ -1067,7 +1067,7 @@ struct AttachmentPreviewSheet: View {
 /// Minimal wrapping layout: lays chips left→right, wrapping to a new row when the
 /// next would exceed the proposed width. Hugs its content so the You bubble stays
 /// tight around 1–N attachment chips instead of overflowing or forcing full width.
-private struct WrapLayout: Layout {
+struct WrapLayout: Layout {
   var spacing: CGFloat = 6
 
   func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
