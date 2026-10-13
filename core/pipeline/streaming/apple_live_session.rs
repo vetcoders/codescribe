@@ -2396,6 +2396,13 @@ impl AppleSealState {
                     .map(|(range, window)| (range, window.samples.as_slice()))
             }),
         );
+        if self.capture_stopping {
+            ledger.record_exhausted_capture(
+                &self.session_id,
+                self.capture_epoch,
+                self.audio.session_sample_end(),
+            );
+        }
     }
 
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {

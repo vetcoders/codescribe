@@ -78,7 +78,20 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         pins: &mut [WordPin],
     ) {
-        if observation.producer == ObservationProducer::ManualHuman {
+        // Clock normalization is the Apple/Whisper sequence contract. Cloud
+        // publications have their own raw-context admission requirements;
+        // moving their pins first would manufacture that context.
+        if !matches!(
+            observation.producer,
+            ObservationProducer::Apple | ObservationProducer::Whisper
+        ) || self.slots_of(&observation.occurrence).is_some_and(|slots| {
+            slots.iter().any(|slot| {
+                !matches!(
+                    slot.producer,
+                    ObservationProducer::Apple | ObservationProducer::Whisper
+                )
+            })
+        }) {
             return;
         }
         let owner = &observation.occurrence;
