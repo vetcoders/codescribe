@@ -55,16 +55,17 @@ fn unions_share_speech(held: &[WordSlot], incoming: &[WordPin]) -> bool {
 impl AcousticLedger {
     /// Adopt held word geometry for an incoming sequence that names the same
     /// measured speech. Mutates `pins` in place (ranges only) and records one
-    /// `SlotOperationReceipt` per normalised speech range with every held
-    /// source and every adopted output, so the whole competing sequence is
+    /// `SlotOperationReceipt` for the owner with every held source and every
+    /// adopted output, so the whole competing sequence is
     /// admitted with provenance instead of a dropped or minted prefix.
     ///
-    /// Conditions, all required, per measured speech range:
+    /// Conditions, all required, over the owner occurrence:
     /// - the acoustic observer (Silero boundaries or the energy ladder) has
-    ///   measured this capture and the owner lies within the observed PCM;
+    ///   measured this capture, the owner lies within the observed PCM and
+    ///   measured speech exists under the union of both claims;
     /// - the ledger holds `n >= 1` measured single-word slots of another
-    ///   producer family inside the range, and the incoming batch offers
-    ///   exactly `n` pins inside the same range;
+    ///   producer family in the owner, and the incoming batch offers
+    ///   exactly `n` pins;
     /// - the two unions overlap by at least half of the shorter one;
     /// - no incoming pin declares a decode fence that would exclude the held
     ///   range it is about to adopt;
@@ -107,101 +108,112 @@ impl AcousticLedger {
         if held.is_empty() {
             return;
         }
-        let mut receipts = Vec::new();
+        // One owner occurrence is one acoustically bounded stretch of speech
+        // (its VAD open/close samples). The producers' pins are matched as
+        // whole ordered sequences over that stretch, not per energy burst:
+        // on recorded takes the capture ladder splits one phrase into
+        // several bursts and a producer's timestamps can land a word on the
+        // burst after the one the other producer chose ("Jest" at 5.93 s
+        // against "jest" at 5.22 s on take 018e2177). Membership per burst
+        // would read that as two words; the ordered sequence does not.
+        let mut held_sorted = held;
+        held_sorted.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        let mut incoming_sorted = pins
+            .iter()
+            .enumerate()
+            .filter(|(_, pin)| !pin.text.trim().is_empty() && pin.sample_start < pin.sample_end)
+            .map(|(index, pin)| (index, pin.clone()))
+            .collect::<Vec<(usize, WordPin)>>();
+        incoming_sorted.sort_by_key(|(_, pin)| (pin.sample_start, pin.sample_end));
+        if held_sorted.len() != incoming_sorted.len() {
+            return;
+        }
+        let incoming_pins = incoming_sorted
+            .iter()
+            .map(|(_, pin)| pin.clone())
+            .collect::<Vec<WordPin>>();
+        if !unions_share_speech(&held_sorted, &incoming_pins) {
+            return;
+        }
+        // Measured speech must exist under both claims: a sequence over
+        // quiet PCM is not speech named twice, it is a claim to refuse later.
+        let (Some(union_start), Some(union_end)) = (
+            held_sorted
+                .iter()
+                .map(|slot| slot.sample_start)
+                .chain(incoming_pins.iter().map(|pin| pin.sample_start))
+                .min(),
+            held_sorted
+                .iter()
+                .map(|slot| slot.sample_end)
+                .chain(incoming_pins.iter().map(|pin| pin.sample_end))
+                .max(),
+        ) else {
+            return;
+        };
+        if speech_range_of(&ranges, union_start, union_end).is_none() {
+            return;
+        }
+        let already_same = held_sorted.iter().zip(&incoming_pins).all(|(slot, pin)| {
+            pcm_ranges_share_slot(
+                slot.sample_start,
+                slot.sample_end,
+                pin.sample_start,
+                pin.sample_end,
+            )
+        });
+        if already_same {
+            return;
+        }
+        let fences_allow = held_sorted.iter().zip(&incoming_pins).all(|(slot, pin)| {
+            match (pin.decode_sample_start, pin.decode_sample_end) {
+                (Some(start), Some(end)) => start <= slot.sample_start && slot.sample_end <= end,
+                _ => true,
+            }
+        });
+        if !fences_allow {
+            return;
+        }
         let mut moves: Vec<((u64, u64), (u64, u64))> = Vec::new();
-        for (range_index, _) in ranges.iter().enumerate() {
-            let mut held_in_range = held
-                .iter()
-                .filter(|slot| {
-                    speech_range_of(&ranges, slot.sample_start, slot.sample_end)
-                        == Some(range_index)
-                })
-                .cloned()
-                .collect::<Vec<WordSlot>>();
-            held_in_range.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
-            let mut incoming_in_range = pins
-                .iter()
-                .enumerate()
-                .filter(|(_, pin)| {
-                    !pin.text.trim().is_empty()
-                        && speech_range_of(&ranges, pin.sample_start, pin.sample_end)
-                            == Some(range_index)
-                })
-                .map(|(index, pin)| (index, pin.clone()))
-                .collect::<Vec<(usize, WordPin)>>();
-            incoming_in_range.sort_by_key(|(_, pin)| (pin.sample_start, pin.sample_end));
-            if held_in_range.is_empty() || held_in_range.len() != incoming_in_range.len() {
-                continue;
-            }
-            let incoming_pins = incoming_in_range
-                .iter()
-                .map(|(_, pin)| pin.clone())
-                .collect::<Vec<WordPin>>();
-            if !unions_share_speech(&held_in_range, &incoming_pins) {
-                continue;
-            }
-            let already_same = held_in_range.iter().zip(&incoming_pins).all(|(slot, pin)| {
-                pcm_ranges_share_slot(
-                    slot.sample_start,
-                    slot.sample_end,
-                    pin.sample_start,
-                    pin.sample_end,
-                )
-            });
-            if already_same {
-                continue;
-            }
-            let fences_allow = held_in_range.iter().zip(&incoming_pins).all(|(slot, pin)| {
-                match (pin.decode_sample_start, pin.decode_sample_end) {
-                    (Some(start), Some(end)) => {
-                        start <= slot.sample_start && slot.sample_end <= end
-                    }
-                    _ => true,
-                }
-            });
-            if !fences_allow {
-                continue;
-            }
-            let mut outputs = Vec::with_capacity(held_in_range.len());
-            for (slot, (pin_index, _)) in held_in_range.iter().zip(&incoming_in_range) {
-                let pin = &mut pins[*pin_index];
-                moves.push((
-                    (pin.sample_start, pin.sample_end),
-                    (slot.sample_start, slot.sample_end),
-                ));
-                pin.sample_start = slot.sample_start;
-                pin.sample_end = slot.sample_end;
-                outputs.push(WordSlot {
-                    sample_start: slot.sample_start,
-                    sample_end: slot.sample_end,
-                    text: pin.text.clone(),
-                    producer: observation.producer,
-                    observation: observation.clone(),
-                    witness: SlotWitness::Unwitnessed,
-                    confidence: pin.confidence,
-                    surface_rewritten: pin.surface_rewritten,
-                });
-            }
-            let source_ranges = held_in_range
-                .iter()
-                .map(|slot| {
-                    OccurrenceIdentity::new(
-                        &owner.session,
-                        owner.capture_epoch,
-                        slot.sample_start,
-                        slot.sample_end,
-                    )
-                })
-                .collect::<Vec<OccurrenceIdentity>>();
-            receipts.push(SlotOperationReceipt {
+        let mut outputs = Vec::with_capacity(held_sorted.len());
+        for (slot, (pin_index, _)) in held_sorted.iter().zip(&incoming_sorted) {
+            let pin = &mut pins[*pin_index];
+            moves.push((
+                (pin.sample_start, pin.sample_end),
+                (slot.sample_start, slot.sample_end),
+            ));
+            pin.sample_start = slot.sample_start;
+            pin.sample_end = slot.sample_end;
+            outputs.push(WordSlot {
+                sample_start: slot.sample_start,
+                sample_end: slot.sample_end,
+                text: pin.text.clone(),
+                producer: observation.producer,
                 observation: observation.clone(),
-                kind: SlotOperationKind::Correct,
-                sources: held_in_range,
-                outputs,
-                source_ranges,
-                rule_id: SEQUENCE_NORMALISATION_RULE.to_string(),
+                witness: SlotWitness::Unwitnessed,
+                confidence: pin.confidence,
+                surface_rewritten: pin.surface_rewritten,
             });
         }
+        let source_ranges = held_sorted
+            .iter()
+            .map(|slot| {
+                OccurrenceIdentity::new(
+                    &owner.session,
+                    owner.capture_epoch,
+                    slot.sample_start,
+                    slot.sample_end,
+                )
+            })
+            .collect::<Vec<OccurrenceIdentity>>();
+        let receipts = vec![SlotOperationReceipt {
+            observation: observation.clone(),
+            kind: SlotOperationKind::Correct,
+            sources: held_sorted,
+            outputs,
+            source_ranges,
+            rule_id: SEQUENCE_NORMALISATION_RULE.to_string(),
+        }];
         for receipt in receipts {
             self.record_slot_operation(receipt);
         }
