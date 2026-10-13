@@ -636,12 +636,18 @@ mod tests {
         let words = align_measured_words(&heads, 0, &[1, 1], &["raz", "dwa"], 40)
             .expect("one measured word keeps the alignment");
         assert_eq!(
-            words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+            words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
             ["raz", "dwa"]
         );
         assert_eq!((words[0].token_start, words[0].token_len), (0, 1));
         assert_eq!((words[1].token_start, words[1].token_len), (1, 1));
-        assert!(!words[0].is_aligned(), "collapsed word must not carry a pin");
+        assert!(
+            !words[0].is_aligned(),
+            "collapsed word must not carry a pin"
+        );
         let second = words[1].span.expect("second word measured");
         assert!(second.end_secs > second.start_secs);
     }
@@ -677,7 +683,10 @@ mod tests {
         merge_word_punctuation(&mut words);
         assert_eq!(words.len(), 2);
         assert_eq!(words[0].text, "raz,");
-        assert_eq!(words[0].span, None, "punctuation lends no bounds to an unaligned word");
+        assert_eq!(
+            words[0].span, None,
+            "punctuation lends no bounds to an unaligned word"
+        );
         assert_eq!((words[0].token_start, words[0].token_len), (0, 2));
         assert_eq!(words[1].text, "dwa");
         assert!(words[1].is_aligned());
@@ -685,12 +694,13 @@ mod tests {
 
     #[test]
     fn label_words_keep_decode_order_across_pins_and_unaligned_words() {
-        let pin = |text: &str, start: f32, end: f32| crate::pipeline::contracts::TranscriptSegment {
-            text: text.into(),
-            start_ts: start,
-            end_ts: end,
-            confidence: None,
-        };
+        let pin =
+            |text: &str, start: f32, end: f32| crate::pipeline::contracts::TranscriptSegment {
+                text: text.into(),
+                start_ts: start,
+                end_ts: end,
+                confidence: None,
+            };
         let aligned = AlignedWordPins {
             pins: vec![pin("raz", 0.0, 0.2), pin("trzy", 0.5, 0.9)],
             unaligned: vec![UnalignedWord {

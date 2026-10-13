@@ -154,7 +154,10 @@ fn oracle_overlapping_predictive_jumps_unpin_only_the_zero_duration_word() {
     let words = align_measured_words(&[matrix], 0, &[1, 1], &["raz", "dwa"], 40)
         .expect("a measured neighbour keeps the alignment");
     assert_eq!(
-        words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+        words
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
         ["raz", "dwa"]
     );
     assert_eq!(words[0].span, None, "zero-length word carries no pin");

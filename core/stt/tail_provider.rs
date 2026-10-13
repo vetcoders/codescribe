@@ -2400,7 +2400,9 @@ mod tests {
             ordinal: 0,
             text: "raz".into(),
         }];
-        payload.validate().expect("one unpinned word beside one pin");
+        payload
+            .validate()
+            .expect("one unpinned word beside one pin");
         assert!(payload.evidence.is_partial_alignment());
 
         payload.evidence.unaligned_words[0].ordinal = 2;
@@ -2443,7 +2445,9 @@ mod tests {
                 .contains("unaligned words require word-grain")
         );
         payload.evidence.unaligned_words.clear();
-        payload.validate().expect("phrase grain without unaligned words");
+        payload
+            .validate()
+            .expect("phrase grain without unaligned words");
     }
 
     fn cloud_window(sample_start: u64, frames: u64) -> TailProviderRequest {
