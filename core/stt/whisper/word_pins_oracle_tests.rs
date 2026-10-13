@@ -38,6 +38,10 @@ fn check_oracle(name: &str) {
             (token_start, counts[index])
         );
         token_start += counts[index];
+        // Every oracle word is measured; a fixture never collapses a word.
+        let span = word
+            .span
+            .unwrap_or_else(|| panic!("{name}[{index}]: oracle word must carry a measured span"));
         // The upstream oracle hard-codes the first DTW entry to frame zero.
         // Every checked-in fixture deliberately opens its first predictive
         // attention blob at frame 6. Interior and closing jumps stay exact.
@@ -48,14 +52,14 @@ fn check_oracle(name: &str) {
         };
         let end_secs = end as f32 / 50.0;
         assert!(
-            (word.start_secs - start_secs).abs() < 0.000_01,
+            (span.start_secs - start_secs).abs() < 0.000_01,
             "{name}[{index}]: start {} != oracle {start_secs}",
-            word.start_secs
+            span.start_secs
         );
         assert!(
-            (word.end_secs - end_secs).abs() < 0.000_01,
+            (span.end_secs - end_secs).abs() < 0.000_01,
             "{name}[{index}]: end {} != oracle {end_secs}",
-            word.end_secs
+            span.end_secs
         );
     }
 }
@@ -128,12 +132,45 @@ fn oracle_all_nonfinite_attention_is_refused() {
 }
 
 #[test]
-fn oracle_overlapping_predictive_jumps_refuse_zero_duration() {
-    // Pinned reference produces boundaries [0, 0, 7] on the previous fixture.
-    // A zero-length first word cannot become a measured occurrence.
+fn oracle_overlapping_predictive_jumps_unpin_only_the_zero_duration_word() {
+    // Pinned reference produces boundaries [0, 0, 7] on the previous fixture:
+    // the first word has no duration. That word cannot become a measured
+    // occurrence. Its neighbour, measured over frames 0..7, still can, and
+    // the decoded label keeps both words: the collapsed one is returned
+    // explicitly unaligned, never dropped from the hypothesis.
+    //
+    // Counterexample from dragon, 2026-10-13 09:12Z, take 018e2177: the
+    // window [0, 9) s decoded "Doprecyzuj jaki session id Juni jest dopięty na
+    // konferencji." and word 8 came back with end == start. The whole window
+    // was returned phrase-grain, the ledger refused it as
+    // overlap_without_word_pins, and "Doprecyzuj jaki" never reached the
+    // user, although no other window covered that speech. On dragon 12.9 %
+    // of the day's windows (64/64 refusals = nonpositive_word_duration) lost
+    // every pin this way; 15.4 % the day before.
     let mut matrix = vec![vec![0.0; 40]; 4];
     for (row, start) in [(0, 0), (1, 2), (2, 30)] {
         matrix[row][start..start + 5].fill(8.0);
     }
-    assert!(align_measured_words(&[matrix], 0, &[1, 1], &["raz", "dwa"], 40).is_none());
+    let words = align_measured_words(&[matrix], 0, &[1, 1], &["raz", "dwa"], 40)
+        .expect("a measured neighbour keeps the alignment");
+    assert_eq!(
+        words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+        ["raz", "dwa"]
+    );
+    assert_eq!(words[0].span, None, "zero-length word carries no pin");
+    let second = words[1].span.expect("second word measured");
+    assert!(second.end_secs > second.start_secs);
+    assert_eq!((words[1].token_start, words[1].token_len), (1, 1));
+}
+
+#[test]
+fn oracle_overlapping_predictive_jumps_refuse_when_every_word_collapses() {
+    // One content frame leaves every jump at frame zero: both words collapse
+    // and nothing is measured, so the window keeps phrase grain instead of
+    // an empty pin set.
+    let mut matrix = vec![vec![0.0; 40]; 4];
+    for (row, start) in [(0, 0), (1, 2), (2, 30)] {
+        matrix[row][start..start + 5].fill(8.0);
+    }
+    assert!(align_measured_words(&[matrix], 0, &[1, 1], &["raz", "dwa"], 1).is_none());
 }

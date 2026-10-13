@@ -22,18 +22,76 @@ pub const ENCODER_FRAME_SECS: f32 = 0.02;
 /// Odd median-filter width used by OpenAI's alignment.
 const MEDIAN_WIDTH: usize = 7;
 
-/// One measured word. `start_secs` / `end_secs` are on the audio the decoder saw.
+/// Measured bounds of one word on the audio the decoder saw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasuredSpan {
+    pub start_secs: f32,
+    pub end_secs: f32,
+}
+
+/// One decoded word. `span` is its measured DTW range. `None` means the path
+/// gave this word no positive duration: the word stays in the decoded label,
+/// explicitly unaligned, and never becomes a pin. One such word does not take
+/// the measured pins away from its neighbours.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeasuredWord {
     pub text: String,
-    pub start_secs: f32,
-    pub end_secs: f32,
+    pub span: Option<MeasuredSpan>,
     /// First text token of this word in the decode's filtered token stream
     /// (EOT/timestamp rows removed). Lets the caller re-aggregate per-token
     /// evidence — A6 per-word confidence — after punctuation merges.
     pub token_start: usize,
     /// Number of text tokens the word spans.
     pub token_len: usize,
+}
+
+impl MeasuredWord {
+    pub fn is_aligned(&self) -> bool {
+        self.span.is_some()
+    }
+}
+
+/// A word the decoder emitted but the alignment could not place. It is part
+/// of the hypothesis text, not of the pin set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnalignedWord {
+    /// Position of the word in the decoded word sequence, pins included.
+    pub ordinal: usize,
+    pub text: String,
+    pub token_start: usize,
+    pub token_len: usize,
+}
+
+/// Measured pins of one decode plus the words it could not place. `pins`
+/// keep decode order; `unaligned` ordinals index the full word sequence, so
+/// the decoded label can be rebuilt without losing a word.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlignedWordPins {
+    pub pins: Vec<crate::pipeline::contracts::TranscriptSegment>,
+    pub unaligned: Vec<UnalignedWord>,
+}
+
+impl AlignedWordPins {
+    pub fn is_partial(&self) -> bool {
+        !self.unaligned.is_empty()
+    }
+
+    /// Every decoded word in order, pinned or not, joined by one space. The
+    /// decoded label never shrinks to the pinned subset.
+    pub fn label_words(&self) -> Vec<&str> {
+        let total = self.pins.len() + self.unaligned.len();
+        let mut pins = self.pins.iter();
+        let mut unaligned = self.unaligned.iter().peekable();
+        let mut words = Vec::with_capacity(total);
+        for ordinal in 0..total {
+            if unaligned.peek().is_some_and(|word| word.ordinal == ordinal) {
+                words.push(unaligned.next().map_or("", |word| word.text.as_str()));
+            } else if let Some(pin) = pins.next() {
+                words.push(pin.text.as_str());
+            }
+        }
+        words
+    }
 }
 
 /// Align text tokens to encoder frames.
@@ -43,8 +101,10 @@ pub struct MeasuredWord {
 /// `len(sot_sequence)` and does not include `no_timestamps`. `content_frames`
 /// trims padded encoder frames (`num_frames // 2` in the reference).
 ///
-/// Returns `None` when the path does not yield a strictly increasing pin per
-/// word. Callers keep the utterance-grain span in that case.
+/// Returns `None` when the inputs are malformed or no word receives a
+/// positive measured span; callers keep the utterance-grain span then. A word
+/// whose path jumps give it no positive duration comes back with `span: None`
+/// while its neighbours keep their measured pins and its text stays in place.
 pub fn align_measured_words(
     head_qk: &[Vec<Vec<f32>>],
     sot_prefix_len: usize,
@@ -198,22 +258,11 @@ pub fn align_measured_words(
     }
 
     let mut words = Vec::with_capacity(word_texts.len());
+    let mut unaligned = 0usize;
     for (index, text) in word_texts.iter().enumerate() {
         let start = jump_times[boundaries[index]];
         let end_index = boundaries[index + 1];
         let end = jump_times[end_index];
-        if end <= start {
-            tracing::info!(
-                reason = "nonpositive_word_duration",
-                word_index = index,
-                token_start = boundaries[index],
-                token_len = end_index - boundaries[index],
-                start_secs = start,
-                end_secs = end,
-                "tail_word_pin_alignment_refused"
-            );
-            return None;
-        }
         let text = text.trim();
         if text.is_empty() {
             tracing::info!(
@@ -225,15 +274,72 @@ pub fn align_measured_words(
             );
             return None;
         }
+        // A collapsed jump pair is this word's failure, not the window's.
+        // The word keeps its text and loses only its pin.
+        let span = if end > start {
+            Some(MeasuredSpan {
+                start_secs: start,
+                end_secs: end,
+            })
+        } else {
+            unaligned += 1;
+            tracing::info!(
+                reason = "nonpositive_word_duration",
+                word_index = index,
+                token_start = boundaries[index],
+                token_len = end_index - boundaries[index],
+                start_secs = start,
+                end_secs = end,
+                "tail_word_pin_unaligned"
+            );
+            None
+        };
         words.push(MeasuredWord {
             text: text.to_string(),
-            start_secs: start,
-            end_secs: end,
+            span,
             token_start: boundaries[index],
             token_len: end_index - boundaries[index],
         });
     }
+    if unaligned == words.len() {
+        tracing::info!(
+            reason = "no_measured_word",
+            word_count = words.len(),
+            "tail_word_pin_alignment_refused"
+        );
+        return None;
+    }
+    if unaligned > 0 {
+        tracing::info!(
+            unaligned,
+            measured = words.len() - unaligned,
+            "tail_word_pin_alignment_partial"
+        );
+    }
     Some(words)
+}
+
+/// Span of a word after punctuation joins it. The word's own span is the
+/// authority: a measured piece of punctuation widens it, an unmeasured one
+/// leaves it, and a word without a span stays unaligned. Punctuation never
+/// lends a word bounds the word itself did not measure.
+fn merged_span(
+    word: Option<MeasuredSpan>,
+    punctuation: Option<MeasuredSpan>,
+    punctuation_leads: bool,
+) -> Option<MeasuredSpan> {
+    let word = word?;
+    Some(match punctuation {
+        Some(punctuation) if punctuation_leads => MeasuredSpan {
+            start_secs: punctuation.start_secs.min(word.start_secs),
+            end_secs: word.end_secs,
+        },
+        Some(punctuation) => MeasuredSpan {
+            start_secs: word.start_secs,
+            end_secs: punctuation.end_secs.max(word.end_secs),
+        },
+        None => word,
+    })
 }
 
 /// Group tokenizer pieces into `(start, len)` spans. A piece that starts
@@ -277,7 +383,7 @@ pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
         if opens {
             let taken = words[previous].clone();
             words[index].text = format!("{}{}", taken.text.trim(), words[index].text.trim());
-            words[index].start_secs = taken.start_secs;
+            words[index].span = merged_span(words[index].span, taken.span, true);
             let token_end = words[index].token_start + words[index].token_len;
             words[index].token_start = taken.token_start;
             words[index].token_len = token_end - taken.token_start;
@@ -290,9 +396,9 @@ pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
     while index + 1 < words.len() {
         let following = words[index + 1].text.trim();
         if !words[index].text.ends_with(' ') && APPENDED.contains(&following) {
-            let end = words[index + 1].end_secs;
+            let trail = words[index + 1].span;
             words[index].text = format!("{}{following}", words[index].text.trim());
-            words[index].end_secs = end;
+            words[index].span = merged_span(words[index].span, trail, false);
             words[index].token_len = (words[index + 1].token_start + words[index + 1].token_len)
                 - words[index].token_start;
             words[index + 1].text.clear();
@@ -508,14 +614,100 @@ mod tests {
         assert_eq!(words.len(), 2);
         assert_eq!(words[0].text, "raz");
         assert_eq!(words[1].text, "dwa");
+        let first = words[0].span.expect("first word measured");
+        let second = words[1].span.expect("second word measured");
         let uniform_half = (frames as f32 / 2.0) * ENCODER_FRAME_SECS;
         assert!(
-            words[1].start_secs < uniform_half - 0.15,
+            second.start_secs < uniform_half - 0.15,
             "second word started at {}s; a uniform split of two tokens would open it at {uniform_half}s",
-            words[1].start_secs
+            second.start_secs
         );
-        assert!(words[1].end_secs > words[1].start_secs);
-        assert!(words[0].end_secs <= words[1].start_secs + f32::EPSILON);
+        assert!(second.end_secs > second.start_secs);
+        assert!(first.end_secs <= second.start_secs + f32::EPSILON);
+    }
+
+    /// One collapsed jump pair unpins that word only. The neighbour keeps its
+    /// measured span and the decoded label keeps both words in order.
+    #[test]
+    fn zero_duration_word_stays_in_the_label_without_a_pin() {
+        // Row-1 peak at frame 2 collapses the first word in the pinned OpenAI
+        // reference (boundaries [0, 0, 7]); the second word is still measured.
+        let heads = spike(4, 40, &[(0, 0), (1, 2), (2, 30)]);
+        let words = align_measured_words(&heads, 0, &[1, 1], &["raz", "dwa"], 40)
+            .expect("one measured word keeps the alignment");
+        assert_eq!(
+            words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+            ["raz", "dwa"]
+        );
+        assert_eq!((words[0].token_start, words[0].token_len), (0, 1));
+        assert_eq!((words[1].token_start, words[1].token_len), (1, 1));
+        assert!(!words[0].is_aligned(), "collapsed word must not carry a pin");
+        let second = words[1].span.expect("second word measured");
+        assert!(second.end_secs > second.start_secs);
+    }
+
+    #[test]
+    fn unaligned_word_is_not_a_pin_after_punctuation_merge() {
+        let mut words = vec![
+            MeasuredWord {
+                text: "raz".into(),
+                span: None,
+                token_start: 0,
+                token_len: 1,
+            },
+            MeasuredWord {
+                text: ",".into(),
+                span: Some(MeasuredSpan {
+                    start_secs: 0.4,
+                    end_secs: 0.46,
+                }),
+                token_start: 1,
+                token_len: 1,
+            },
+            MeasuredWord {
+                text: "dwa".into(),
+                span: Some(MeasuredSpan {
+                    start_secs: 0.5,
+                    end_secs: 0.9,
+                }),
+                token_start: 2,
+                token_len: 1,
+            },
+        ];
+        merge_word_punctuation(&mut words);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "raz,");
+        assert_eq!(words[0].span, None, "punctuation lends no bounds to an unaligned word");
+        assert_eq!((words[0].token_start, words[0].token_len), (0, 2));
+        assert_eq!(words[1].text, "dwa");
+        assert!(words[1].is_aligned());
+    }
+
+    #[test]
+    fn label_words_keep_decode_order_across_pins_and_unaligned_words() {
+        let pin = |text: &str, start: f32, end: f32| crate::pipeline::contracts::TranscriptSegment {
+            text: text.into(),
+            start_ts: start,
+            end_ts: end,
+            confidence: None,
+        };
+        let aligned = AlignedWordPins {
+            pins: vec![pin("raz", 0.0, 0.2), pin("trzy", 0.5, 0.9)],
+            unaligned: vec![UnalignedWord {
+                ordinal: 1,
+                text: "dwa".into(),
+                token_start: 1,
+                token_len: 1,
+            }],
+        };
+        assert!(aligned.is_partial());
+        assert_eq!(aligned.label_words(), ["raz", "dwa", "trzy"]);
+        let complete = AlignedWordPins {
+            pins: vec![pin("raz", 0.0, 0.2)],
+            unaligned: Vec::new(),
+        };
+        assert!(!complete.is_partial());
+        assert_eq!(complete.label_words(), ["raz"]);
     }
 
     #[test]
@@ -531,22 +723,28 @@ mod tests {
         let mut words = vec![
             MeasuredWord {
                 text: "raz".into(),
-                start_secs: 0.0,
-                end_secs: 0.2,
+                span: Some(MeasuredSpan {
+                    start_secs: 0.0,
+                    end_secs: 0.2,
+                }),
                 token_start: 0,
                 token_len: 1,
             },
             MeasuredWord {
                 text: "dwa".into(),
-                start_secs: 0.2,
-                end_secs: 0.4,
+                span: Some(MeasuredSpan {
+                    start_secs: 0.2,
+                    end_secs: 0.4,
+                }),
                 token_start: 1,
                 token_len: 1,
             },
             MeasuredWord {
                 text: ",".into(),
-                start_secs: 0.4,
-                end_secs: 0.46,
+                span: Some(MeasuredSpan {
+                    start_secs: 0.4,
+                    end_secs: 0.46,
+                }),
                 token_start: 2,
                 token_len: 1,
             },
@@ -554,8 +752,9 @@ mod tests {
         merge_word_punctuation(&mut words);
         assert_eq!(words.len(), 2);
         assert_eq!(words[1].text, "dwa,");
-        assert_eq!(words[1].start_secs, 0.2);
-        assert_eq!(words[1].end_secs, 0.46);
+        let merged = words[1].span.expect("merged word keeps its span");
+        assert_eq!(merged.start_secs, 0.2);
+        assert_eq!(merged.end_secs, 0.46);
         // The punctuation token joins the word's span so per-token evidence
         // (A6 confidence aggregation) covers the merged surface.
         assert_eq!((words[1].token_start, words[1].token_len), (1, 2));
@@ -578,10 +777,11 @@ mod tests {
         let heads = spike(4, 80, &[(0, 10), (1, 35), (2, 60)]);
         let words = align_measured_words(&heads, 0, &[1, 1], &["Ostatni", "wyraz"], 80).unwrap();
         assert_eq!(words.len(), 2);
-        assert_eq!(words[0].start_secs, 10.0 * ENCODER_FRAME_SECS);
+        let first = words[0].span.expect("first word measured");
+        assert_eq!(first.start_secs, 10.0 * ENCODER_FRAME_SECS);
         assert_eq!(words[0].token_start, 0);
         assert_eq!(words[1].token_start, 1);
-        assert!(words[0].end_secs > words[0].start_secs);
+        assert!(first.end_secs > first.start_secs);
     }
 
     #[test]

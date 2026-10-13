@@ -629,18 +629,16 @@ pub(crate) fn transcribe_controlled(
     })
 }
 
-/// L1 tail window. Phrase segments stay on the transcript. Word segments are
-/// measured only when the checkpoint's alignment heads produce a DTW path.
+/// L1 tail window. Phrase segments stay on the transcript. Word pins are
+/// measured only when the checkpoint's alignment heads produce a DTW path;
+/// a word the path could not place rides along unaligned, text intact.
 pub(crate) fn transcribe_tail_window(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
     initial_prompt: Option<String>,
     control: &LocalExecutionControl,
-) -> Result<(
-    RawTranscript,
-    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
-)> {
+) -> Result<(RawTranscript, Option<super::word_pins::AlignedWordPins>)> {
     with_engine_controlled(control, |engine| {
         engine.with_request(initial_prompt, |engine| {
             engine.transcribe_tail_window(samples, sample_rate, language, control)

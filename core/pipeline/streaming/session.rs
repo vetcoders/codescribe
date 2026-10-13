@@ -829,6 +829,7 @@ mod session_tests {
         };
         let evidence = crate::stt::tail_provider::TailProviderEvidence {
             segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+            unaligned_words: Vec::new(),
             source: TailEvidenceSource::Whisper,
             revision: Some("fixture-r1".to_string()),
             stability: TailEvidenceStability::Final,
@@ -1115,6 +1116,7 @@ mod local_execution_tests {
                     elapsed_ms: 0,
                     evidence: crate::stt::tail_provider::TailProviderEvidence {
                         segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                        unaligned_words: Vec::new(),
                         source: TailEvidenceSource::Whisper,
                         revision: None,
                         stability: TailEvidenceStability::Final,
