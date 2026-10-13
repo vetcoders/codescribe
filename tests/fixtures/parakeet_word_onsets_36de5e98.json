@@ -1,0 +1,309 @@
+{
+  "model_id": "mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c",
+  "weights_sha256": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592",
+  "input_sample_rate": 48000,
+  "frame_hop_samples": 3840,
+  "frame0_centre_sample": 0,
+  "centre_uncertainty_samples": 1920,
+  "pcm_span": [0, 593664],
+  "decode": "greedy_tdt",
+  "runtime": "parakeet-mlx 0.5.3 f32",
+  "events": [
+    {
+      "frame": 3,
+      "centre_sample": 11520,
+      "duration_frames": 3,
+      "token_id": 6663,
+      "word_start": true,
+      "confidence": 0.5684
+    },
+    {
+      "frame": 6,
+      "centre_sample": 23040,
+      "duration_frames": 2,
+      "token_id": 7451,
+      "word_start": true,
+      "confidence": 0.988
+    },
+    {
+      "frame": 8,
+      "centre_sample": 30720,
+      "duration_frames": 2,
+      "token_id": 7997,
+      "word_start": false,
+      "confidence": 0.9865
+    },
+    {
+      "frame": 10,
+      "centre_sample": 38400,
+      "duration_frames": 3,
+      "token_id": 732,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 13,
+      "centre_sample": 49920,
+      "duration_frames": 4,
+      "token_id": 688,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 18,
+      "centre_sample": 69120,
+      "duration_frames": 4,
+      "token_id": 7877,
+      "word_start": false,
+      "confidence": 0.8023
+    },
+    {
+      "frame": 22,
+      "centre_sample": 84480,
+      "duration_frames": 3,
+      "token_id": 1321,
+      "word_start": true,
+      "confidence": 0.9996
+    },
+    {
+      "frame": 25,
+      "centre_sample": 96000,
+      "duration_frames": 4,
+      "token_id": 2174,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 29,
+      "centre_sample": 111360,
+      "duration_frames": 3,
+      "token_id": 1386,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 32,
+      "centre_sample": 122880,
+      "duration_frames": 4,
+      "token_id": 7974,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 36,
+      "centre_sample": 138240,
+      "duration_frames": 4,
+      "token_id": 732,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 40,
+      "centre_sample": 153600,
+      "duration_frames": 4,
+      "token_id": 1385,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 44,
+      "centre_sample": 168960,
+      "duration_frames": 3,
+      "token_id": 366,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 47,
+      "centre_sample": 180480,
+      "duration_frames": 1,
+      "token_id": 4079,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 48,
+      "centre_sample": 184320,
+      "duration_frames": 1,
+      "token_id": 7898,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 49,
+      "centre_sample": 188160,
+      "duration_frames": 1,
+      "token_id": 703,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 50,
+      "centre_sample": 192000,
+      "duration_frames": 1,
+      "token_id": 7865,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 52,
+      "centre_sample": 199680,
+      "duration_frames": 2,
+      "token_id": 767,
+      "word_start": true,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 54,
+      "centre_sample": 207360,
+      "duration_frames": 2,
+      "token_id": 332,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 56,
+      "centre_sample": 215040,
+      "duration_frames": 2,
+      "token_id": 448,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 58,
+      "centre_sample": 222720,
+      "duration_frames": 3,
+      "token_id": 7880,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 61,
+      "centre_sample": 234240,
+      "duration_frames": 2,
+      "token_id": 446,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 63,
+      "centre_sample": 241920,
+      "duration_frames": 4,
+      "token_id": 7877,
+      "word_start": false,
+      "confidence": 0.9703
+    },
+    {
+      "frame": 71,
+      "centre_sample": 272640,
+      "duration_frames": 4,
+      "token_id": 1913,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 75,
+      "centre_sample": 288000,
+      "duration_frames": 2,
+      "token_id": 3061,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 77,
+      "centre_sample": 295680,
+      "duration_frames": 2,
+      "token_id": 7884,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 81,
+      "centre_sample": 311040,
+      "duration_frames": 4,
+      "token_id": 1032,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 85,
+      "centre_sample": 326400,
+      "duration_frames": 2,
+      "token_id": 1102,
+      "word_start": true,
+      "confidence": 0.9947
+    },
+    {
+      "frame": 87,
+      "centre_sample": 334080,
+      "duration_frames": 3,
+      "token_id": 996,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 90,
+      "centre_sample": 345600,
+      "duration_frames": 4,
+      "token_id": 419,
+      "word_start": false,
+      "confidence": 0.8874
+    },
+    {
+      "frame": 98,
+      "centre_sample": 376320,
+      "duration_frames": 4,
+      "token_id": 322,
+      "word_start": true,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 102,
+      "centre_sample": 391680,
+      "duration_frames": 2,
+      "token_id": 1619,
+      "word_start": true,
+      "confidence": 0.9817
+    },
+    {
+      "frame": 104,
+      "centre_sample": 399360,
+      "duration_frames": 2,
+      "token_id": 7878,
+      "word_start": false,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 106,
+      "centre_sample": 407040,
+      "duration_frames": 3,
+      "token_id": 5146,
+      "word_start": false,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 112,
+      "centre_sample": 430080,
+      "duration_frames": 3,
+      "token_id": 517,
+      "word_start": true,
+      "confidence": 0.6785
+    },
+    {
+      "frame": 115,
+      "centre_sample": 441600,
+      "duration_frames": 3,
+      "token_id": 467,
+      "word_start": false,
+      "confidence": 0.7958
+    },
+    {
+      "frame": 146,
+      "centre_sample": 560640,
+      "duration_frames": 4,
+      "token_id": 7883,
+      "word_start": false,
+      "confidence": 0.5188
+    }
+  ]
+}
