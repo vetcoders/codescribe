@@ -115,9 +115,8 @@ struct LabPanel: View {
         comment: "VoiceOver value: a toggle state frozen by an override")
   }
 
-  /// Raw recognition timings. They used to be a Dictation tab; they are
-  /// parameters, not product choices, so Lab is their only surface. The
-  /// bindings and the promoted keys behind them are unchanged.
+  /// Experimental recognition parameters. The speech-pause limit is a
+  /// product control in Agent settings; these engine timings stay in Lab.
   private var recognitionParameters: some View {
     VStack(alignment: .leading, spacing: 10) {
       SettingsSectionLabel(
@@ -126,19 +125,7 @@ struct LabPanel: View {
           comment: "Lab group: raw recognition timings"))
 
       VStack(alignment: .leading, spacing: 14) {
-        LabSecondsSlider(
-          title: String(localized: "Pause recognition after silence"),
-          detail: String(
-            localized:
-              "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again."
-          ),
-          seconds: model.settings.toggleSilenceSec,
-          value: $model.toggleSilenceSlider,
-          range: 0.5...30,
-          step: 0.5
-        )
-
-        LabSecondsSlider(
+        SettingsSecondsSlider(
           title: String(localized: "Whisper context length"),
           detail: String(
             localized:
@@ -150,7 +137,7 @@ struct LabPanel: View {
           step: 0.5
         )
 
-        LabSecondsSlider(
+        SettingsSecondsSlider(
           title: String(localized: "Sentence pause"),
           detail: String(
             localized:
@@ -172,50 +159,4 @@ struct LabPanel: View {
       .settingsGroupedInset()
     }
   }
-}
-
-/// One labelled seconds slider: title, the one line that says what it changes,
-/// and the live value. Shared shape for the Lab recognition parameters.
-private struct LabSecondsSlider: View {
-  let title: String
-  let detail: String
-  /// The persisted value, so the label shows what the core accepted.
-  let seconds: Float
-  @Binding var value: Double
-  let range: ClosedRange<Double>
-  let step: Double
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(CSFont.ui(13, .semibold))
-            .foregroundStyle(Color.primary)
-          Text(detail)
-            .font(CSFont.ui(11.5))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        Text(valueLabel)
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(Color.primary)
-      }
-      Slider(value: $value, in: range, step: step)
-        .tint(CSColor.chromeAccent)
-        .accessibilityLabel(title)
-        .accessibilityValue(valueLabel)
-    }
-  }
-
-  /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
-  private var valueLabel: String {
-    String(
-      localized: "\(seconds, format: Self.seconds) s",
-      comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
-  }
-
-  private static let seconds = FloatingPointFormatStyle<Float>.number
-    .precision(.fractionLength(0...1))
 }

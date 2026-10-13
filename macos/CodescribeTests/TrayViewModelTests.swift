@@ -196,6 +196,19 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertGreaterThan(sampled.alphaComponent, 0.95)
   }
 
+  func testIdleMenuBarKeepsItsMonochromeCornerIndicator() throws {
+    let image = MenuBarStatusImage.make(base: menuBarMark(), dot: nil)
+    XCTAssertTrue(image.isTemplate)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+      let bitmap = try menuBarBitmap(menuBarArtwork(image), appearance: appearance)
+      let rect = TrayStatusDotIcon.dotRect(in: NSRect(origin: .zero, size: image.size))
+      let center = try menuBarColor(bitmap, image: image, at: CGPoint(x: rect.midX, y: rect.midY))
+      XCTAssertGreaterThan(center.alphaComponent, 0.9, "Idle indicator must stay visible")
+      XCTAssertEqual(center.redComponent, center.greenComponent, accuracy: 0.01)
+      XCTAssertEqual(center.greenComponent, center.blueComponent, accuracy: 0.01)
+    }
+  }
+
   func testMenuBarIdleAndSuccessStayTemplateWhileActivityKeepsADot() throws {
     for kind in [
       CsTrayStatusKind.starting, .idle, .success, .error, .thermal, .hotkeyConflict,
@@ -213,10 +226,14 @@ final class TrayViewModelTests: XCTestCase {
     let plain = TrayStatusStore.preview(kind: .listening, tone: .active)
     let assistive = TrayStatusStore.preview(
       kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true)
-    XCTAssertEqual(
-      plain.menuBarDotColor.map { NSColor($0) }, assistive.menuBarDotColor.map { NSColor($0) })
+    XCTAssertNotEqual(plain.menuBarDotColor, assistive.menuBarDotColor)
+    XCTAssertEqual(assistive.menuBarDotColor, CSColor.modeAgent)
     try assertActivityDot(plain, red: true)
-    try assertActivityDot(assistive, red: true)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+      let agent = try menuBarDotSample(assistive, appearance: appearance)
+      XCTAssertGreaterThan(agent.alphaComponent, 0.9)
+      XCTAssertGreaterThan(agent.blueComponent, agent.greenComponent)
+    }
 
     let processing = TrayStatusStore.preview(kind: .processing, tone: .active)
     try assertActivityDot(processing, red: false)

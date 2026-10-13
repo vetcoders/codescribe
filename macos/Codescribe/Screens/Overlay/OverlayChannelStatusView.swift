@@ -137,12 +137,8 @@ struct OverlayAgentStatusMark: View {
 /// Compact circular glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
-  @Environment(\.overlayHeaderHoverTint) private var headerHoverTint
   private let mark: Mark
   let tint: Color
-  /// Header pictograms follow the chrome hover. The microphone passes false so
-  /// its recording tint stays authoritative while the chrome ring still hovers.
-  var adoptsHeaderHover: Bool
   static let diameter: CGFloat = 22
 
   private enum Mark {
@@ -151,31 +147,24 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color, adoptsHeaderHover: Bool = true) {
+  init(symbol: String, tint: Color) {
     mark = .symbol(symbol)
     self.tint = tint
-    self.adoptsHeaderHover = adoptsHeaderHover
   }
 
-  init(character: String, tint: Color, adoptsHeaderHover: Bool = true) {
+  init(character: String, tint: Color) {
     mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
     self.tint = tint
-    self.adoptsHeaderHover = adoptsHeaderHover
-  }
-
-  private var shownTint: Color {
-    if adoptsHeaderHover, let headerHoverTint { return headerHoverTint }
-    return tint
   }
 
   var body: some View {
     markView
-      .foregroundStyle(shownTint)
+      .foregroundStyle(tint)
       .frame(width: Self.diameter, height: Self.diameter)
-      .background { Circle().fill(shownTint.opacity(0.12)) }
+      .background { Circle().fill(tint.opacity(0.12)) }
       .overlay {
         Circle()
-          .strokeBorder(shownTint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
+          .strokeBorder(tint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
           .accessibilityHidden(true)
       }
   }

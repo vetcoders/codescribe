@@ -2529,16 +2529,6 @@
         }
       }
     },
-    "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Po tak długiej ciszy silnik Apple przechodzi w stan spoczynku. Rozpoznawanie wznawia się, gdy znowu zaczniesz mówić."
-          }
-        }
-      }
-    },
     "After your correction · %lld characters" : {
       "localizations" : {
         "en" : {
@@ -11404,12 +11394,12 @@
         }
       }
     },
-    "Pause recognition after silence" : {
+    "Pause before sending to Codescribe Bus" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wstrzymanie rozpoznawania po ciszy"
+            "state" : "needs_review",
+            "value" : "Pauza przed wysłaniem do Codescribe Bus"
           }
         }
       }
@@ -17631,6 +17621,16 @@
         }
       }
     },
+    "Waits this long after you stop speaking before sending your message. Also sets the silence limit for hands-free dictation. Changes apply when you open a channel or start a recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Codescribe Bus czeka tyle czasu od zakończenia mowy, zanim wyśle wiadomość. Ten sam limit ciszy obowiązuje przy dyktowaniu bez trzymania klawisza. Zmiany działają od otwarcia kanału lub rozpoczęcia nagrania."
+          }
+        }
+      }
+    },
     "What I checked · %lld running · %lld tools" : {
       "comment" : "Tool activity header: calls still running, then the total",
       "localizations" : {
@@ -21114,13 +21114,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "provider, model, endpoint, assistive, formatting"
+            "value" : "provider, model, endpoint, assistive, formatting, bus, speech pause, silence"
           }
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "provider, model, endpoint, assistive, formatting, dostawca, adres API, asystent, formatowanie"
+            "state" : "needs_review",
+            "value" : "provider, model, endpoint, assistive, formatting, dostawca, adres API, asystent, formatowanie, bus, pauza w mowie, cisza"
           }
         }
       }

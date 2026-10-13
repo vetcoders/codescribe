@@ -1,38 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// One hover hue for every header control: the listening terracotta.
-/// Transcription, Agents, Pin and presentation share it. Role does not pick
-/// olive, violet or a second accent. The microphone keeps its recording tint
-/// and only borrows this hue for the hover ring.
+/// Header hover uses the macOS accent, independent of brand and activity colors.
 enum OverlayHeaderAccent {
   case transcription
   case agents
   case state
 
   func color(in palette: OverlayAppearancePalette) -> Color {
-    switch self {
-    case .transcription, .agents, .state:
-      palette.listeningStatus.color
-    }
-  }
-}
-
-extension EnvironmentValues {
-  /// Set by `OverlayHeaderControlChrome` while the pointer is inside a control
-  /// that has an accent. Nil at rest, and nil for hint-only controls.
-  @Entry var overlayHeaderHoverTint: Color? = nil
-}
-
-/// Resting header marks stay on their neutral tint. A hovered accent replaces
-/// that tint in the descendant, which an outer `foregroundStyle` cannot do
-/// once the mark has painted its own color.
-struct OverlayHeaderHoverForeground: ViewModifier {
-  @Environment(\.overlayHeaderHoverTint) private var hoverTint
-  let resting: Color
-
-  func body(content: Content) -> some View {
-    content.foregroundStyle(hoverTint ?? resting)
+    Color(nsColor: .controlAccentColor)
   }
 }
 
@@ -54,16 +30,6 @@ struct OverlayHeaderControlChrome: ViewModifier {
   func body(content: Content) -> some View {
     let hoverTint: Color? = hovered ? accent?.color(in: palette) : nil
     content
-      .environment(\.overlayHeaderHoverTint, hoverTint)
-      .background {
-        if let hoverTint {
-          Circle()
-            .fill(hoverTint.opacity(0.10))
-            .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-      }
       .overlay {
         if let hoverTint {
           Circle()

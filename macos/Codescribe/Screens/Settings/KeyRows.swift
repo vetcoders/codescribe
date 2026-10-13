@@ -476,7 +476,9 @@ struct KeyRow: View {
   }
 
   private func save() {
-    guard !isUpdating, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    guard !isUpdating, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return
+    }
     let submitted = draft
     operationPending = true
     operationError = nil
@@ -704,4 +706,50 @@ struct OAuthClientIdButton: View {
         draft = updated ?? ""
       }
   }
+}
+
+/// One labelled seconds slider: title, the one line that says what it changes,
+/// and the live value. Shared by Agent voice timing and Lab recognition parameters.
+struct SettingsSecondsSlider: View {
+  let title: String
+  let detail: String
+  /// The persisted value, so the label shows what the core accepted.
+  let seconds: Float
+  @Binding var value: Double
+  let range: ClosedRange<Double>
+  let step: Double
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(CSFont.ui(13, .semibold))
+            .foregroundStyle(Color.primary)
+          Text(detail)
+            .font(CSFont.ui(11.5))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(valueLabel)
+          .font(CSFont.mono(11, .semibold))
+          .foregroundStyle(Color.primary)
+      }
+      Slider(value: $value, in: range, step: step)
+        .tint(CSColor.chromeAccent)
+        .accessibilityLabel(title)
+        .accessibilityValue(valueLabel)
+    }
+  }
+
+  /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
+  private var valueLabel: String {
+    String(
+      localized: "\(seconds, format: Self.seconds) s",
+      comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
+  }
+
+  private static let seconds = FloatingPointFormatStyle<Float>.number
+    .precision(.fractionLength(0...1))
 }
