@@ -452,6 +452,8 @@ struct PermissionsStepView: View {
 private struct OnboardingPermissionRow: View {
   let kind: PermissionKind
   @ObservedObject var model: OnboardingViewModel
+  /// The Done chapter lists granted scopes without repeating their reason.
+  var compact = false
   private var state: PermissionState { model.permissions.state(kind) }
 
   private var actionTitle: String {
@@ -484,10 +486,19 @@ private struct OnboardingPermissionRow: View {
             .foregroundStyle(.secondary)
           }
         }
-        Text(kind.onboardingReason(locale: model.interfaceLocale))
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        if !compact || !state.isGranted {
+          Text(kind.onboardingReason(locale: model.interfaceLocale))
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if let note = model.permissionRepairNote(for: kind) {
+          Text(note)
+            .font(.callout)
+            .foregroundStyle(CSColor.terracottaLight)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("onboarding-permission-note-\(kind.id)")
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       VStack(alignment: .trailing, spacing: 6) {
@@ -553,6 +564,18 @@ struct LocalModelStepView: View {
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       WhisperDownloadView(store: downloads)
+      if model.dictationLane.requiresLocalModel, downloads.readiness != .installed {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Local power is selected, so setup finishes once this model is installed.",
+              locale: model.interfaceLocale,
+              comment: "Local power is the engine name; setup waits for its Whisper model"))
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
       if downloads.inFlight {
         Text(
           String(
@@ -867,10 +890,17 @@ struct ApiKeyStepView: View {
 
 // MARK: - Done
 
+/// The setup gate. The required rows are the inputs of `DictationReadiness`
+/// for the selected lane, each with its repair in place; Finish stays off
+/// until all of them are ready. Optional rows never block Finish.
 struct DoneStepView: View {
   @ObservedObject var model: OnboardingViewModel
+  /// Observed so the Whisper row repaints with the shared transfer.
+  @ObservedObject var downloads: WhisperDownloadStore
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
+    let readiness = model.dictationReadiness
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(
         text: String(
@@ -884,62 +914,353 @@ struct DoneStepView: View {
       )
       .font(.title2.weight(.semibold))
       .foregroundStyle(.primary)
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Finish saves your choices. Features with missing permissions remain unavailable.",
-            locale: model.interfaceLocale,
-            comment: "Finish closes setup without promising that every feature is ready"))
-      )
-      .font(.body)
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
+      Text(summary(readiness))
+        .font(.body)
+        .lineSpacing(3)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("onboarding-done-summary")
 
-      VStack(alignment: .leading, spacing: 8) {
-        ForEach(PermissionKind.allCases) { kind in
-          summaryRow(
-            kind.displayName(locale: model.interfaceLocale),
-            done: model.permissions.state(kind).isGranted,
-            doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale),
-            missingLabel: kind.isOptionalForSetup
-              ? String(
-                localized: LocalizedStringResource(
-                  "Optional", locale: model.interfaceLocale,
-                  comment: "Optional scope skipped in setup"))
-              : model.permissions.state(kind).label(locale: model.interfaceLocale))
-        }
-        if model.selectedProviderRequiresApiKey {
-          summaryRow(
-            String(
-              localized: LocalizedStringResource(
-                "Provider API key", locale: model.interfaceLocale,
-                comment: "Summary row: whether an API key is stored for the chosen AI provider")),
-            done: model.providerAccessResolved && !model.providerAccessPending
-              && model.providerAccessError == nil && model.selectedProviderKeySet,
-            doneLabel: model.selectedProviderKeyStatus,
-            statusLabel: model.selectedProviderKeyStatus)
-        }
-        if model.selectedProviderHasAccountAccess {
-          summaryRow(
-            String(
-              localized: LocalizedStringResource(
-                "Agent account", locale: model.interfaceLocale,
-                comment: "Summary row: provider account used by Agent features")),
-            done: model.providerAccessResolved && !model.providerAccessPending
-              && model.providerAccessError == nil && model.selectedProviderAccountError == nil
-              && model.selectedProviderAccountConnected,
-            doneLabel: model.selectedProviderAccountStatus,
-            statusLabel: model.selectedProviderAccountStatus)
-        }
+      requiredSection(readiness)
+        .padding(.top, 6)
+      optionalSection
+        .padding(.top, 6)
+
+      if !readiness.isReady {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "You can close this window. Setup resumes here the next time Codescribe starts.",
+              locale: model.interfaceLocale,
+              comment: "Setup Done chapter while not ready: closing keeps setup unfinished"))
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       }
-      .padding(.top, 6)
       OnboardingStepNote(
         text: String(
           localized: LocalizedStringResource(
             "Anything you skipped is available later in Settings.",
             locale: model.interfaceLocale, comment: "Setup completion footnote")))
     }
+  }
+
+  private func summary(_ readiness: DictationReadiness) -> String {
+    guard readiness.isReady else {
+      return String(
+        localized: LocalizedStringResource(
+          "Finish unlocks once each required item below is ready.",
+          locale: model.interfaceLocale,
+          comment: "Setup summary while something required for transcription is missing"))
+    }
+    let lane = readiness.lane.displayName(locale: model.interfaceLocale)
+    return String(
+      localized: LocalizedStringResource(
+        "Everything is ready for transcription (\(lane)).", locale: model.interfaceLocale,
+        comment: "Setup summary when ready; the placeholder is the dictation engine name"))
+  }
+
+  // MARK: Required
+
+  private func requiredSection(_ readiness: DictationReadiness) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      sectionLabel(
+        String(
+          localized: LocalizedStringResource(
+            "Required for transcription", locale: model.interfaceLocale,
+            comment: "Setup Done group: what Finish waits for")))
+      ForEach(PermissionKind.allCases.filter(\.isRequiredForSetup)) { kind in
+        OnboardingPermissionRow(kind: kind, model: model, compact: true)
+        Divider()
+      }
+      if readiness.lane.requiresLocalModel {
+        localModelRow
+        Divider()
+      }
+      recordingRow(readiness)
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("onboarding-done-required")
+  }
+
+  /// Local power only: the shared download control, plus the deliberate way
+  /// out — changing the lane in Settings. Setup never switches it itself.
+  private var localModelRow: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      WhisperDownloadView(store: downloads)
+      if downloads.readiness != .installed {
+        HStack(spacing: 10) {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Local power is selected, so setup finishes once this model is installed.",
+                locale: model.interfaceLocale,
+                comment: "Local power is the engine name; setup waits for its Whisper model"))
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 0)
+          Button(
+            String(
+              localized: LocalizedStringResource(
+                "Change engine in Settings…", locale: model.interfaceLocale,
+                comment: "Open Settings › Dictation to choose another transcription engine"))
+          ) {
+            model.prepareDictationSettingsDeepLink()
+            openWindow(id: SettingsView.windowID)
+          }
+          .csAction()
+        }
+      }
+    }
+    .accessibilityIdentifier("onboarding-done-local-model")
+  }
+
+  /// The controller's admission verdict: the check that runs before a
+  /// microphone opens. Calibration is repaired here, through the shared
+  /// recorder; anything else links to Settings › Audio.
+  private func recordingRow(_ readiness: DictationReadiness) -> some View {
+    let blocker = readiness.admissionBlocker
+    let state = recordingState(blocker)
+    return VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 10) {
+        CSIconView(
+          icon: state.done ? .checkCircleFill : .circleEmpty,
+          size: 12,
+          weight: .semibold,
+          color: state.done ? CSColor.oliveLight : CSColor.textFaint
+        )
+        .padding(.top, 3)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Recording readiness", locale: model.interfaceLocale))
+          )
+          .font(.body.weight(.semibold))
+          if let detail = state.detail {
+            Text(verbatim: detail)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .textSelection(.enabled)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(state.status)
+          .font(.caption.weight(.medium))
+          .foregroundStyle(state.tint)
+          .multilineTextAlignment(.trailing)
+      }
+      if model.calibrationPending, let startedAt = model.calibrationStartedAt {
+        calibrationProgress(startedAt: startedAt)
+      }
+      if let error = model.calibrationError {
+        Text(verbatim: error)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracottaLight)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+      }
+      recordingAction(blocker)
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("onboarding-done-recording")
+  }
+
+  private struct RecordingRowState {
+    let done: Bool
+    let blocked: Bool
+    let status: String
+    let detail: String?
+
+    var tint: Color {
+      if done { return CSColor.oliveLight }
+      return blocked ? CSColor.terracottaLight : Color.secondary
+    }
+  }
+
+  private func recordingState(_ blocker: DictationReadiness.Blocker?) -> RecordingRowState {
+    let locale = model.interfaceLocale
+    if !model.permissions.microphone.isGranted, blocker == nil || blocker?.isCalibration == true {
+      // The probe already names the microphone above; nothing can be measured without it.
+      return RecordingRowState(
+        done: false, blocked: true,
+        status: String(
+          localized: LocalizedStringResource(
+            "Calibration waits for microphone access", locale: locale)),
+        detail: nil)
+    }
+    switch blocker {
+    case nil:
+      return RecordingRowState(
+        done: true, blocked: false,
+        status: String(localized: LocalizedStringResource("Microphone calibrated", locale: locale)),
+        detail: model.admission?.deviceName)
+    case .admission(let code, let message):
+      let status: String
+      if code == "admission_calibration_no_profile" {
+        status = String(
+          localized: LocalizedStringResource(
+            "No calibration for the current microphone", locale: locale))
+      } else {
+        // An unknown code keeps the controller's own sentence, never the code.
+        status = AdmissionRefusalCopy.headline(code: code, fallback: message, locale: locale)
+      }
+      return RecordingRowState(done: false, blocked: true, status: status, detail: nil)
+    case .admissionUnknown(let error?):
+      return RecordingRowState(
+        done: false, blocked: true,
+        status: String(
+          localized: LocalizedStringResource(
+            "Recording readiness could not be checked.", locale: locale,
+            comment: "Setup could not read the recording admission verdict")),
+        detail: error)
+    case .admissionUnknown(nil), .permission, .localModel:
+      return RecordingRowState(
+        done: false, blocked: false,
+        status: String(localized: LocalizedStringResource("Checking…", locale: locale)),
+        detail: nil)
+    }
+  }
+
+  @ViewBuilder
+  private func recordingAction(_ blocker: DictationReadiness.Blocker?) -> some View {
+    switch blocker {
+    case .some(let refusal) where refusal.isCalibration:
+      if model.permissions.microphone.isGranted {
+        calibrationAction
+      }
+    case .some(.admission):
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Open Audio settings", locale: model.interfaceLocale,
+            comment: "Open Settings › Audio from setup to repair recording readiness"))
+      ) {
+        model.prepareAudioSettingsDeepLink()
+        openWindow(id: SettingsView.windowID)
+      }
+      .csAction()
+    case .some(.admissionUnknown(.some(_))):
+      Button(
+        String(
+          localized: LocalizedStringResource(
+            "Check again", locale: model.interfaceLocale,
+            comment: "Setup: read the recording readiness verdict again"))
+      ) { model.refreshAdmission() }
+      .csAction()
+      .disabled(model.admissionPending)
+    default:
+      EmptyView()
+    }
+  }
+
+  /// Shown only with microphone access: the instruction and the one action
+  /// that clears a calibration refusal.
+  private var calibrationAction: some View {
+    HStack(spacing: 10) {
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Speak normally for about ten seconds while Codescribe measures your microphone. The audio is not kept.",
+            locale: model.interfaceLocale,
+            comment: "Setup calibration instruction shown with the Calibrate microphone button"))
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
+      Button(calibrationTitle) { model.calibrateMicrophone() }
+      .csAction(prominent: true)
+      .disabled(!model.calibrationAvailable)
+      .accessibilityIdentifier("onboarding-done-calibrate")
+    }
+  }
+
+  private var calibrationTitle: String {
+    let locale = model.interfaceLocale
+    return model.calibrationPending
+      ? String(localized: LocalizedStringResource("Measuring…", locale: locale))
+      : String(localized: LocalizedStringResource("Calibrate microphone", locale: locale))
+  }
+
+  private func calibrationProgress(startedAt: Date) -> some View {
+    TimelineView(.periodic(from: startedAt, by: 0.2)) { context in
+      let elapsed = context.date.timeIntervalSince(startedAt)
+      HStack(spacing: 10) {
+        ProgressView(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
+          .progressViewStyle(.linear)
+          .tint(CSColor.chromeAccent)
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left",
+              locale: model.interfaceLocale))
+        )
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(.secondary)
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      String(
+        localized: LocalizedStringResource(
+          "Calibration capture progress", locale: model.interfaceLocale)))
+  }
+
+  // MARK: Optional
+
+  private var optionalSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      sectionLabel(
+        String(
+          localized: LocalizedStringResource(
+            "Optional features", locale: model.interfaceLocale,
+            comment: "Setup Done group: items that never block Finish")))
+      ForEach(PermissionKind.allCases.filter(\.isOptionalForSetup)) { kind in
+        summaryRow(
+          kind.displayName(locale: model.interfaceLocale),
+          done: model.permissions.state(kind).isGranted,
+          doneLabel: model.permissions.state(kind).label(locale: model.interfaceLocale),
+          missingLabel: String(
+            localized: LocalizedStringResource(
+              "Optional", locale: model.interfaceLocale,
+              comment: "Optional scope skipped in setup")))
+      }
+      if model.selectedProviderRequiresApiKey {
+        summaryRow(
+          String(
+            localized: LocalizedStringResource(
+              "Provider API key", locale: model.interfaceLocale,
+              comment: "Summary row: whether an API key is stored for the chosen AI provider")),
+          done: model.providerAccessResolved && !model.providerAccessPending
+            && model.providerAccessError == nil && model.selectedProviderKeySet,
+          doneLabel: model.selectedProviderKeyStatus,
+          statusLabel: model.selectedProviderKeyStatus)
+      }
+      if model.selectedProviderHasAccountAccess {
+        summaryRow(
+          String(
+            localized: LocalizedStringResource(
+              "Agent account", locale: model.interfaceLocale,
+              comment: "Summary row: provider account used by Agent features")),
+          done: model.providerAccessResolved && !model.providerAccessPending
+            && model.providerAccessError == nil && model.selectedProviderAccountError == nil
+            && model.selectedProviderAccountConnected,
+          doneLabel: model.selectedProviderAccountStatus,
+          statusLabel: model.selectedProviderAccountStatus)
+      }
+    }
+  }
+
+  private func sectionLabel(_ text: String) -> some View {
+    Text(text)
+      .font(.subheadline.weight(.semibold))
+      .foregroundStyle(.secondary)
   }
 
   private func summaryRow(

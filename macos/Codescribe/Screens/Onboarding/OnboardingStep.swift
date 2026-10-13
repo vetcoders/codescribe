@@ -7,7 +7,8 @@ enum OnboardingStep: Equatable {
   case mode
   case permissions
   case language
-  /// Opt-in local model download; never a navigation or completion gate.
+  /// Opt-in local model download; never a navigation gate. Finishing setup
+  /// waits for the model only when Local power is the selected lane.
   case localModel
   case apiKey
   case hotkeyMode

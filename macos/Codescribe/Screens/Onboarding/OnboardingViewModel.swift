@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // State machine for the first-run wizard: current step index (persisted on every
@@ -9,6 +10,8 @@ import SwiftUI
 //   - every advance()/back() writes the new index via `saveOnboardingProgress`.
 //   - finishing the Done step calls `markOnboardingDone()`, which clears the
 //     resume marker and writes `setup_done` so `shouldShowOnboarding()` is false.
+//     It does so only on a fresh ready `DictationReadiness` verdict: finishing
+//     the screens is not proof that the selected path can record.
 
 // MARK: - Step choices (mirror the excised AppKit wizard's state.rs enums)
 
@@ -182,6 +185,22 @@ final class OnboardingViewModel: ObservableObject {
 
   @Published var lastError: String?
 
+  // Done-chapter state. Every value is read from its owner (Settings ›
+  // Dictation, the controller's admission, the shared download store);
+  // nothing here is assumed or carried over from an earlier screen.
+  @Published private(set) var dictationLane: DictationLane
+  @Published private(set) var admission: CsAdmissionReadiness?
+  @Published private(set) var admissionReadError: String?
+  @Published private(set) var admissionPending = false
+  @Published private(set) var calibrationPending = false
+  @Published private(set) var calibrationStartedAt: Date?
+  @Published private(set) var calibrationError: String?
+  @Published private(set) var finishPending = false
+  /// Scopes requested in-app or opened in System Settings in this process.
+  @Published private(set) var requestedPermissions: Set<PermissionKind> = []
+  private var admissionGeneration: UInt64 = 0
+  private var whisperDownloadChangeSink: AnyCancellable?
+
   private let engine: OnboardingEngine
   private let hotkeys: HotkeysEngine
   private let agentStatus: AgentStatusEngine
@@ -237,6 +256,11 @@ final class OnboardingViewModel: ObservableObject {
     self.selectedProviderId =
       engine.assistiveProvider()
       ?? "openai-responses"
+    self.dictationLane = engine.dictationLane()
+    // The Done verdict reads the shared store; its changes repaint Finish.
+    whisperDownloadChangeSink = whisperDownloadStore.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
+    }
   }
 
   // MARK: - Derived
@@ -327,6 +351,111 @@ final class OnboardingViewModel: ObservableObject {
     agentBridgeError != nil && agentBridgeErrorClient == client
   }
 
+  // MARK: - Dictation readiness (Done chapter)
+
+  /// The selected path's verdict: the same projection the Settings health
+  /// footer reads, over the same owners.
+  var dictationReadiness: DictationReadiness {
+    evaluateDictationReadiness(
+      lane: dictationLane, permissions: permissions,
+      localModel: whisperDownloadStore.readiness,
+      admission: admission, admissionError: admissionReadError)
+  }
+
+  /// No verdict can be stated yet: only the first admission read is missing.
+  var dictationReadinessChecking: Bool {
+    dictationReadiness.blockers == [.admissionUnknown(error: nil)]
+  }
+
+  /// Finish is offered only on a ready verdict with nothing still in flight.
+  var canFinish: Bool {
+    dictationReadiness.isReady && !admissionPending && !calibrationPending && !finishPending
+  }
+
+  /// Calibration runs only with microphone access, and only to clear a
+  /// calibration refusal the controller actually reported.
+  var calibrationAvailable: Bool {
+    permissions.microphone.isGranted && !calibrationPending
+      && dictationReadiness.admissionBlocker?.isCalibration == true
+  }
+
+  func permissionRepairNote(for kind: PermissionKind) -> String? {
+    kind.repairNote(
+      for: permissions.state(kind), requested: requestedPermissions.contains(kind),
+      locale: interfaceLocale)
+  }
+
+  /// Re-read every input of the Done verdict: grants, the lane chosen in
+  /// Settings › Dictation, the local model and the controller's admission.
+  func refreshDictationReadiness() {
+    reprobePermissions()
+    dictationLane = engine.dictationLane()
+    whisperDownloadStore.refresh()
+    refreshAdmission()
+  }
+
+  func refreshAdmission() {
+    Task { @MainActor [weak self] in await self?.readAdmission() }
+  }
+
+  /// One admission read. A later read supersedes one still in flight, so a
+  /// slow answer can never overwrite a newer verdict.
+  private func readAdmission() async {
+    admissionGeneration &+= 1
+    let generation = admissionGeneration
+    admissionPending = true
+    let result: Result<CsAdmissionReadiness, Error>
+    do {
+      result = .success(try await engine.admissionReadiness())
+    } catch {
+      result = .failure(error)
+    }
+    guard generation == admissionGeneration else { return }
+    admissionPending = false
+    switch result {
+    case .success(let verdict):
+      admission = verdict
+      admissionReadError = nil
+    case .failure(let error):
+      admission = nil
+      admissionReadError = error.userFacingMessage
+    }
+  }
+
+  /// Guided calibration through the shared recorder — the bridge call
+  /// Settings › Audio makes — then a fresh admission read, so the row shows
+  /// the controller's verdict rather than the calibration report.
+  func calibrateMicrophone() {
+    guard calibrationAvailable else { return }
+    calibrationPending = true
+    calibrationStartedAt = Date()
+    calibrationError = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        _ = try await engine.calibrateEnergy(seconds: SettingsViewModel.calibrationCaptureSeconds)
+      } catch {
+        let failure = error.userFacingMessage
+        calibrationError = String(
+          localized: LocalizedStringResource(
+            "Calibration refused: \(failure)", locale: interfaceLocale,
+            comment: "The placeholder is a technical failure description"))
+      }
+      calibrationPending = false
+      calibrationStartedAt = nil
+      await readAdmission()
+    }
+  }
+
+  /// Settings › Dictation owns the lane; setup never switches it silently.
+  func prepareDictationSettingsDeepLink() {
+    SettingsDeepLink.shared.present(.engine)
+  }
+
+  func prepareAudioSettingsDeepLink() {
+    SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
+  }
+
   // MARK: - Lifecycle refresh
 
   /// Refresh live state when a step (re)appears. Called on view `onAppear` and
@@ -334,9 +463,12 @@ final class OnboardingViewModel: ObservableObject {
   /// without a manual poll.
   func refreshForCurrentStep() {
     switch step {
-    case .permissions, .done:
+    case .permissions:
       reprobePermissions()
+    case .done:
+      refreshDictationReadiness()
     case .localModel:
+      dictationLane = engine.dictationLane()
       whisperDownloadStore.refresh()
     case .apiKey:
       refreshProviderAccess()
@@ -592,15 +724,31 @@ final class OnboardingViewModel: ObservableObject {
     engine.saveOnboardingProgress(step: UInt32(stepIndex))
   }
 
+  /// Writes `setup_done` only after a fresh read of every input says the
+  /// selected path can record. Otherwise setup stays open on this chapter
+  /// with the blocker and its repair on screen; closing the window keeps the
+  /// resume marker, so setup reopens here on the next launch.
   func finish() {
-    guard !providerMutationPending, !applyingInterfaceLanguage else { return }
-    engine.markOnboardingDone()
-    onFinished?()
+    guard !providerMutationPending, !applyingInterfaceLanguage, !finishPending else { return }
+    finishPending = true
+    reprobePermissions()
+    dictationLane = engine.dictationLane()
+    whisperDownloadStore.refresh()
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await readAdmission()
+      finishPending = false
+      // A newer read still in flight means this verdict is already stale.
+      guard dictationReadiness.isReady, !admissionPending, !calibrationPending else { return }
+      engine.markOnboardingDone()
+      onFinished?()
+    }
   }
 
   // MARK: - Permission step actions
 
   func openSystemSettings(for kind: PermissionKind) {
+    requestedPermissions.insert(kind)
     kind.openSystemSettings()
   }
 
@@ -615,22 +763,33 @@ final class OnboardingViewModel: ObservableObject {
     let repair = kind.repair(for: permissions.state(kind))
     guard repair.requestsNatively else {
       if repair.opensSettings {
+        requestedPermissions.insert(kind)
         kind.openSystemSettings()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-          self?.reprobePermissions()
+          self?.refreshAfterPermissionChange()
         }
       }
       return
     }
+    requestedPermissions.insert(kind)
     let permissionProbe = probe
     Task { @MainActor [weak self] in
+      // The request's return value is not a grant; only the probe that
+      // follows decides what the row shows.
       _ = await kind.requestInApp(client: client, probe: permissionProbe)
-      self?.reprobePermissions()
+      self?.refreshAfterPermissionChange()
     }
   }
 
   func refreshPermissions() {
+    refreshAfterPermissionChange()
+  }
+
+  /// A grant can change admission (the microphone is its first check), so the
+  /// Done chapter re-reads the controller's verdict after every probe.
+  private func refreshAfterPermissionChange() {
     reprobePermissions()
+    if step == .done { refreshAdmission() }
   }
 
   // MARK: - Mode step actions

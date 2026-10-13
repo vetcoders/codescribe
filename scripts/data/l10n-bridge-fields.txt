@@ -243,6 +243,7 @@ data  CsSettings.whisperModel
 data  CsSettings.layeredTranscription
 data  CsSettings.agentWorkspaceRoots
 data  CsSettings.asrMode
+data  CsSettings.resolvedAsrMode
 data  CsSettings.cloudConsent
 data  CsSettings.asrGatewayUrl
 data  CsSpeechResult.outcome
