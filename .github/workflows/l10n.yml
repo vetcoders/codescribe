@@ -49,13 +49,16 @@ jobs:
       - name: Show the Xcode this image selected
         run: xcodebuild -version
 
+      # The ref reaches the shell through `env:`, never through `${{ }}` inside
+      # `run:`: a branch name is attacker-controlled input on a public repo.
       - name: Fetch the base the prose ratchet measures against
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
-          base="${{ github.base_ref || 'main' }}"
-          echo "L10N_BASE=origin/$base" >> "$GITHUB_ENV"
+          echo "L10N_BASE=origin/$BASE_REF" >> "$GITHUB_ENV"
           git fetch --no-tags --depth=1 origin \
-            "+refs/heads/$base:refs/remotes/origin/$base" \
-            || echo "::warning::could not fetch origin/$base; the census will say the ratchet is unenforced"
+            "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" \
+            || echo "::warning::could not fetch origin/$BASE_REF; the ratchet will report itself unenforced"
 
       - name: Verify catalog localization contracts
         run: make verify-l10n-catalog
