@@ -371,20 +371,31 @@ struct OverlayConversationView: View {
           .lineLimit(2)
       }
       Group {
-        if OversizedBubblePolicy.isOversized(message.text) {
-          OversizedMessageBody(fullText: message.text) { head in
+        if OversizedBubblePolicy.isOversized(message.bodyText) {
+          OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
               raw: head, size: 13, bodyColor: palette.primaryText.color,
               showsUnderlineCaret: message.id == activeCaptureMessageID)
           }
         } else {
           MarkdownText(
-            raw: message.text, size: 13, bodyColor: palette.primaryText.color,
+            raw: message.bodyText, size: 13, bodyColor: palette.primaryText.color,
             showsUnderlineCaret: message.id == activeCaptureMessageID)
         }
       }
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
+      if let attachments = message.attachments, !attachments.isEmpty {
+        WrapLayout(spacing: 6) {
+          ForEach(attachments, id: \.self) { pointer in
+            AttachmentChip(
+              attachment: MessageAttachment(
+                name: pointer.name, url: URL(fileURLWithPath: pointer.path),
+                type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+          }
+        }
+        .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
+      }
       messageFooter(message)
     }
     .padding(12)
