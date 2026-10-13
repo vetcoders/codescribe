@@ -391,3 +391,77 @@ fn real_take_36de5e98_an_edge_cut_word_is_held_live_and_owned_by_the_next_comple
     );
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Five real repetitions of one word ("pięć" ×5, numerals take on dragon,
+// 32.4–34.8 s, 48 kHz). Plan case (a): energy alone must not decide how
+// many words were spoken, and a word-onset witness must count them.
+// ---------------------------------------------------------------------------
+
+const PIEC_TAKE: &str = "numerals_piec_x5.wav";
+const PIEC_ONSETS: &str = "parakeet_word_onsets_numerals_piec_x5.json";
+
+fn onset_window(file: &str, session: &str) -> WordOnsetEvidence {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures")
+        .join(file);
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+    let mut window: WordOnsetEvidence =
+        serde_json::from_str(&text).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+    window.session = session.into();
+    window.capture_epoch = 1;
+    window.validate().unwrap();
+    window
+}
+
+#[test]
+fn fixture_piec_x5_energy_finds_three_bursts_under_five_spoken_words() {
+    // The valleys between the first three repetitions never drop below the
+    // take's own floor + 8 dB: the ladder hears one long burst, then two.
+    let pcm = take_pcm(PIEC_TAKE);
+    let bursts = speech_bursts(&pcm, 0, pcm.len() as u64);
+    assert_eq!(
+        bursts.len(),
+        3,
+        "energy bursts are not words; this cut holds five 'pięć': {bursts:?}"
+    );
+}
+
+#[test]
+fn real_take_piec_x5_word_onset_witness_counts_five_where_energy_counts_three() {
+    let pcm = take_pcm(PIEC_TAKE);
+    let bursts = speech_bursts(&pcm, 0, pcm.len() as u64);
+    let mut ledger = AcousticLedger::new();
+    ledger
+        .record_word_onset_evidence(onset_window(PIEC_ONSETS, "numerals-piec"))
+        .unwrap();
+    let whole = OccurrenceIdentity::new("numerals-piec", 1, 0, pcm.len() as u64);
+    assert_eq!(
+        ledger.word_onset_count(&whole),
+        Some(5),
+        "five word onsets over the whole cut"
+    );
+    // Known limit, kept visible: the first emission falls ~280 ms before any
+    // measured speech (0.16 s against a first burst at 0.42 s), so the count
+    // inside the measured speech union is four. Emission lag has no measured
+    // distribution yet (parakeet-representation-report.md, step 2); until it
+    // has one, a span must be asked over the whole claim, not over bursts.
+    let speech_union = OccurrenceIdentity::new(
+        "numerals-piec",
+        1,
+        bursts.first().map_or(0, |b| b.0),
+        bursts.last().map_or(0, |b| b.1),
+    );
+    assert_eq!(ledger.word_onset_count(&speech_union), Some(4));
+    // A sequence of five pins over the whole cut agrees with the witness; a
+    // sequence of three (one per burst) does not.
+    let owner = OccurrenceIdentity::new("numerals-piec", 1, 0, pcm.len() as u64);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    assert!(ledger.word_onsets_agree(&observation, "piec_x5", 0, pcm.len() as u64, 5));
+    assert!(!ledger.word_onsets_agree(&observation, "piec_x5", 0, pcm.len() as u64, 3));
+    let verdicts = ledger.word_onset_verdicts();
+    assert_eq!(verdicts.len(), 2);
+    assert_eq!(verdicts[1].measured_onsets, Some(5));
+    assert!(!verdicts[1].agrees);
+}
