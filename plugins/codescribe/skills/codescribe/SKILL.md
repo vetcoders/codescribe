@@ -1,12 +1,13 @@
 ---
 name: codescribe
-description: Connect this Claude Code or Junie conversation to a named Codescribe channel, receive messages without a typed nudge and answer through its attached voice. Use for /codescribe or a request to listen to Codescribe.
+description: Connect this Claude Code, Junie or OMP conversation to a named Codescribe channel, receive messages without a typed nudge and answer through its attached voice. Use for /codescribe or a request to listen to Codescribe.
 ---
 
-# Codescribe — native conversation (Claude Code and Junie)
+# Codescribe — native conversation (Claude Code, Junie and OMP)
 
 Use the provider and real session_id injected by the native Codescribe session
-hook: `provider=claude-code` in Claude Code, `provider=junie` in Junie. Never
+hook: `provider=claude-code` in Claude Code, `provider=junie` in Junie,
+`provider=omp` in OMP (oh-my-pi), where the bundled extension injects it. Never
 invent an ID, use another chat's ID, launch cs-junie, or create an ACP session.
 If the hook identity is absent, do not connect; report the missing hook (Junie:
 obtain this conversation's /link).
@@ -47,6 +48,19 @@ active listening turn: it blocks typed prompts until it returns, at most 15 min,
 with a `wait_idle` receipt. Without the plugin hook, use the CLI lane of the
 foundation `codescribe` skill (`cs-bus --watch --until-event` as a background task).
 
+## OMP: end the turn, the extension wakes you
+
+Same contract as Claude Code with a different carrier. The plugin's
+`hooks/pre/codescribe-omp.ts` extension injects this conversation's identity
+(`provider=omp`, the OMP session id) at session start, serves `/codescribe NAME CHANNEL [VOICE]`, and after every turn end holds `cs-bus --omp-wake` in the
+background with no model turn. One announced delivery, listener problem or
+six-hour idle receipt returns as a `codescribe_mailbox_ready`,
+`codescribe_listener_problem` or `codescribe_wait_idle` message that starts a
+turn; then do the steps above and end the turn again. The waiter never reads,
+ACKs or replies. `codescribe_status` reports `native_wake_armed`. A new OMP
+session id (`/new`, a resumed other session) is a new mailbox: drain and ACK,
+`codescribe_detach`, connect with the new identity.
+
 ## Junie: reception within the active task
 
 Call `codescribe_wait` after each drained batch during the active reception task.
@@ -65,8 +79,9 @@ is EAP functionality; do not silently fabricate it on an unsupported Junie versi
 Preserve the connection after ordinary answers. Explicit stop: `codescribe_detach`
 (it stops an active wait first). Never delete pending state. An MCP restart keeps
 the same identity: connect again with it; the mailbox and ACKs are durable. A new
-session id (Claude Code `/clear`) is a new mailbox: drain and ACK before clearing,
-then `codescribe_detach` (releases the old identity) and connect with the new one.
+session id (Claude Code `/clear`, OMP `/new`) is a new mailbox: drain and ACK before
+clearing, then `codescribe_detach` (releases the old identity) and connect with the
+new one.
 
 Only a fresh bus message reaching this conversation without a typed nudge, followed
 by an answer, establishes `listening_verified`. A PID, cached plugin, armed hook or
