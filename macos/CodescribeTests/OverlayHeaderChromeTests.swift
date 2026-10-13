@@ -99,8 +99,6 @@ final class OverlayHeaderChromeTests: XCTestCase {
   }
 
   func testHeaderControlsRestHoverAndLeaveInLightAndDark() throws {
-    let pinned = OverlayState()
-    pinned.setKeepVisibleBetweenTakes(true)
     let loose = OverlayState()
     for palette in [OverlayAppearancePalette.light, OverlayAppearancePalette.dark] {
       let name = palette.appearance == .dark ? "dark" : "light"
@@ -110,9 +108,6 @@ final class OverlayHeaderChromeTests: XCTestCase {
         "agents-\(name)", palette: palette,
         view: HeaderHoverAgents(palette: palette, unread: true))
       try assertNeutralHover(
-        "pin-selected-\(name)", palette: palette,
-        view: OverlayPinButton(state: pinned, palette: palette))
-      try assertNeutralHover(
         "pin-resting-\(name)", palette: palette,
         view: OverlayPinButton(state: loose, palette: palette))
       try assertNeutralHover(
@@ -120,6 +115,34 @@ final class OverlayHeaderChromeTests: XCTestCase {
         view: headerHoverControls(palette: palette, microphone: false, preview: true))
       try assertMicrophoneKeepsActivity(name, palette: palette)
       try assertDisabledMicrophoneStaysCalm(name, palette: palette)
+    }
+  }
+
+  func testSelectedPinShowsFullAccentWithoutLiftingItsPlate() throws {
+    let pinned = OverlayState()
+    pinned.engine = OverlayChromePolicyEngine()
+    pinned.setKeepVisibleBetweenTakes(true)
+    XCTAssertTrue(pinned.keepVisibleBetweenTakes)
+    let loose = OverlayState()
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      let selected = try hoverFrames(
+        OverlayPinButton(state: pinned, palette: palette), palette: palette)
+      XCTAssertTrue(
+        headerContains(selected.rest, near: headerSystemAccent(palette), tolerance: 0.2))
+      XCTAssertLessThan(
+        headerInteriorDelta(selected.rest, selected.hover, width: selected.width), 0.01,
+        "hover must not brighten the selected pin's plate or glyph")
+      XCTAssertLessThan(headerDelta(selected.rest, selected.leave), 0.01)
+      let unselected = try hoverFrames(
+        OverlayPinButton(state: loose, palette: palette), palette: palette)
+      let scale = CGFloat(selected.width) / 64
+      let plateSample = Int(40 * scale) * selected.width + Int(32 * scale)
+      XCTAssertLessThan(
+        headerDistance(selected.rest[plateSample], unselected.rest[plateSample]), 0.01,
+        "pin state must not lift the empty circular plate")
+      XCTAssertGreaterThan(
+        headerDelta(selected.rest, unselected.rest), 0.05,
+        "filled accent pin must remain distinct from the hollow inactive pin")
     }
   }
 
@@ -150,7 +173,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let menu = try source("Overlay/OverlayHeaderMenu.swift")
     XCTAssertTrue(
       menu.contains(
-        ".modifier(OverlayHeaderControlChrome(title: help, accent: .state, palette: palette))"))
+        "OverlayHeaderControlChrome(title: help, accent: .state, palette: palette, selected: pinned)"
+      ))
     XCTAssertFalse(menu.contains(".help(help)"))
   }
 
@@ -556,6 +580,19 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func headerDelta(_ before: [HeaderPixel], _ after: [HeaderPixel]) -> CGFloat {
     zip(before, after).reduce(CGFloat(0)) { partial, pair in
       max(partial, headerDistance(pair.0, pair.1))
+    }
+  }
+
+  private func headerInteriorDelta(
+    _ before: [HeaderPixel], _ after: [HeaderPixel], width: Int
+  ) -> CGFloat {
+    let scale = CGFloat(width) / 64
+    let center = CGFloat(width) / 2
+    return zip(before, after).enumerated().reduce(CGFloat(0)) { delta, item in
+      let x = CGFloat(item.offset % width) - center
+      let y = CGFloat(item.offset / width) - center
+      guard x * x + y * y < 64 * scale * scale else { return delta }
+      return max(delta, headerDistance(item.element.0, item.element.1))
     }
   }
 

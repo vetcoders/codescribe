@@ -24,11 +24,14 @@ struct OverlayHeaderControlChrome: ViewModifier {
   let title: String
   let accent: OverlayHeaderAccent?
   let palette: OverlayAppearancePalette
+  var selected = false
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
 
   func body(content: Content) -> some View {
-    let hoverTint: Color? = hovered ? accent?.color(in: palette) : nil
+    let hoverTint: Color? =
+      selected || hovered
+      ? accent?.color(in: palette).opacity(selected ? 1 : 0.8) : nil
     content
       .overlay {
         if let hoverTint {

@@ -39,6 +39,7 @@ struct AgentChatView: View {
     .developerPowerCorner(padding: 8)
     .background(AgentWindowCapabilities(isPinned: isPinned))
     .frame(
+      minWidth: AgentWindowMetrics.minWidth,
       idealWidth: AgentWindowMetrics.idealWidth,
       minHeight: AgentWindowMetrics.minHeight,
       idealHeight: AgentWindowMetrics.idealHeight
@@ -105,9 +106,8 @@ private struct MaxPermissionPresentation: View {
 
 /// Desktop-utility window floor for Agent. Named so the split-view rail
 /// (expanded min 267) plus a usable detail column stay a single invariant:
-/// `AgentWindowChrome` sets it as the window's content minimum, expanded or
-/// collapsed, and the expanded columns fill it exactly. Never a minimum on
-/// the root view.
+/// The root layout and the AppKit window agree on this floor, including when
+/// SwiftUI recomputes its window constraints after the sidebar collapses.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
@@ -123,7 +123,7 @@ enum AgentWindowMetrics {
 /// column.
 enum AgentSidebarMetrics {
   static let minimumWidth: CGFloat = 267
-  static let idealWidth: CGFloat = 280
+  static let idealWidth: CGFloat = 267
   static let maximumWidth: CGFloat = 360
 }
 
@@ -206,6 +206,7 @@ private struct AgentIntegratedChrome: ViewModifier {
   func body(content: Content) -> some View {
     content
       .toolbar { agentToolbar }
+      .modifier(CSWindowHeaderChrome())
       .alert("Rename thread", isPresented: $isRenaming) {
         TextField("Thread title", text: $renameText)
         Button("Rename") {
@@ -237,26 +238,26 @@ private struct AgentIntegratedChrome: ViewModifier {
       }
   }
 
-  /// The wordmark is a brand mark, not a control: it stands without the
-  /// shared glass, as it does in Settings. Thread identity and the actions
-  /// keep the system's shared glass so they stay legible over turns that
-  /// scroll beneath the toolbar.
+  /// Brand, identity and actions occupy one native bar, without separate
+  /// glass capsules. The bar stays visible as the turns scroll beneath it.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
     if #available(macOS 26.0, *) {
-      ToolbarItem(placement: .navigation) { wordmark }
+      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
         .sharedBackgroundVisibility(.hidden)
-      ToolbarItem(placement: .principal) { identityCluster }
-      ToolbarItem(placement: .primaryAction) { trailingCluster }
+      ToolbarItem(placement: .principal) { CSWindowHeaderItem { identityCluster } }
+        .sharedBackgroundVisibility(.hidden)
+      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
+        .sharedBackgroundVisibility(.hidden)
     } else {
-      ToolbarItem(placement: .navigation) { wordmark }
-      ToolbarItem(placement: .principal) { identityCluster }
-      ToolbarItem(placement: .primaryAction) { trailingCluster }
+      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
+      ToolbarItem(placement: .principal) { CSWindowHeaderItem { identityCluster } }
+      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
     }
   }
 
   private var wordmark: some View {
-    Wordmark(size: 13)
+    Wordmark(size: 16)
       .fixedSize(horizontal: true, vertical: false)
   }
 
@@ -496,10 +497,11 @@ private struct ThreadDetail: View {
         speechUnavailableReason: store.speechUnavailableReason,
         speakingMessageID: store.speakingMessageID,
         onSpeak: { message in Task { await store.speak(message) } },
-        onStopSpeaking: { store.stopSpeaking() }
-      ) { messageID in
-        store.toggleRenderMode(messageID: messageID, in: thread.id)
-      }
+        onStopSpeaking: { store.stopSpeaking() },
+        onToggleRenderMode: { messageID in
+          store.toggleRenderMode(messageID: messageID, in: thread.id)
+        }
+      )
     } else {
       Color.clear
     }

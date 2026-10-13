@@ -9,16 +9,16 @@ final class ThreadRailNativeTests: XCTestCase {
   func testNativeSearchFiltersWhileTypingAndEscapeRestoresList() throws {
     let rows = [ChatThread(title: "Atlas", meta: ""), ChatThread(title: "Lena", meta: "")]
     let store = AgentChatStore(engine: nil, threads: rows)
-    let host = NSHostingView(rootView: ThreadRail(store: store))
-    let window = NSWindow(
-      contentRect: NSRect(x: 60, y: 60, width: 300, height: 500),
-      styleMask: [.titled], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = host
-    window.makeKeyAndOrderFront(nil)
-    defer { window.close() }
+    let previous = UserDefaults.standard.object(forKey: "AgentChat.sidebarExpanded.v1")
+    UserDefaults.standard.set(true, forKey: "AgentChat.sidebarExpanded.v1")
+    let (window, host) = mount(store)
+    defer {
+      window.close()
+      restoreSidebar(previous)
+    }
     settle(host)
-    let field = try XCTUnwrap(find(NSSearchField.self, in: host))
+    let windowRoot = try XCTUnwrap(window.contentView?.superview)
+    let field = try XCTUnwrap(find(NSSearchField.self, in: windowRoot))
     let table = try XCTUnwrap(find(NSTableView.self, in: host), "System List must own the rows")
     let initialCount = table.numberOfRows
     XCTAssertGreaterThanOrEqual(initialCount, 2)
@@ -29,19 +29,19 @@ final class ThreadRailNativeTests: XCTestCase {
     XCTAssertEqual(field.stringValue, "Atlas")
     XCTAssertLessThan(table.numberOfRows, initialCount, "Search must filter before Return")
     XCTAssertGreaterThan(table.numberOfRows, 0)
-    editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+    try press(53, characters: "\u{1b}", in: window)
     settle(host)
     XCTAssertEqual(field.stringValue, "")
     XCTAssertEqual(table.numberOfRows, initialCount)
     XCTAssertTrue(window.firstResponder === editor, "First Escape clears; it keeps search focus")
-    editor.doCommand(by: #selector(NSResponder.moveDown(_:)))
+    try press(125, characters: "\u{f701}", in: window)
     settle(host)
     XCTAssertEqual(store.selectedThreadID, rows[1].id)
-    editor.doCommand(by: #selector(NSResponder.moveDown(_:)))
+    try press(125, characters: "\u{f701}", in: window)
     settle(host)
     XCTAssertEqual(store.selectedThreadID, rows[1].id, "Down at the end must not wrap")
     let request = store.composerFocusRequest
-    editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+    try press(53, characters: "\u{1b}", in: window)
     settle(host)
     XCTAssertNotEqual(store.composerFocusRequest, request, "Second Escape returns to the composer")
   }
@@ -49,14 +49,13 @@ final class ThreadRailNativeTests: XCTestCase {
   func testNativeListSelectionOpensThreadAndExternalSelectionReturns() throws {
     let rows = [ChatThread(title: "Atlas", meta: ""), ChatThread(title: "Lena", meta: "")]
     let store = AgentChatStore(engine: nil, threads: rows)
-    let host = NSHostingView(rootView: ThreadRail(store: store))
-    let window = NSWindow(
-      contentRect: NSRect(x: 60, y: 60, width: 300, height: 500),
-      styleMask: [.titled], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = host
-    window.orderFrontRegardless()
-    defer { window.close() }
+    let previous = UserDefaults.standard.object(forKey: "AgentChat.sidebarExpanded.v1")
+    UserDefaults.standard.set(true, forKey: "AgentChat.sidebarExpanded.v1")
+    let (window, host) = mount(store)
+    defer {
+      window.close()
+      restoreSidebar(previous)
+    }
     settle(host)
     let table = try XCTUnwrap(find(NSTableView.self, in: host))
     let initialSelection = store.selectedThreadID
@@ -72,6 +71,54 @@ final class ThreadRailNativeTests: XCTestCase {
     store.select(try XCTUnwrap(initialSelection))
     settle(host)
     XCTAssertEqual(table.selectedRow, initialRow)
+  }
+
+  func testSearchKeysLeaveImeAndModifiedNavigationNative() {
+    for key in [UInt16(53), 125] {
+      XCTAssertEqual(
+        ThreadSearchKeyDisposition.resolve(
+          keyCode: key, modifiers: [], hasMarkedText: true, queryIsEmpty: false), .native)
+      for flag in [NSEvent.ModifierFlags.command, .control, .option, .shift] {
+        XCTAssertEqual(
+          ThreadSearchKeyDisposition.resolve(
+            keyCode: key, modifiers: flag, hasMarkedText: false, queryIsEmpty: false), .native)
+      }
+    }
+    XCTAssertEqual(
+      ThreadSearchKeyDisposition.resolve(
+        keyCode: 36, modifiers: [], hasMarkedText: false, queryIsEmpty: false), .native)
+  }
+
+  private func mount(_ store: AgentChatStore) -> (NSWindow, NSView) {
+    let controller = NSHostingController(rootView: AgentChatView(store: store))
+    let window = NSWindow(contentViewController: controller)
+    window.isReleasedWhenClosed = false
+    window.styleMask.formUnion([.titled, .closable, .resizable, .fullSizeContentView])
+    window.setContentSize(NSSize(width: 840, height: 600))
+    window.makeKeyAndOrderFront(nil)
+    return (window, controller.view)
+  }
+
+  private func press(_ key: UInt16, characters: String, in window: NSWindow) throws {
+    let event = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: window.windowNumber, context: nil, characters: characters,
+        charactersIgnoringModifiers: characters, isARepeat: false, keyCode: key))
+    NSApp.postEvent(event, atStart: true)
+    let next = try XCTUnwrap(
+      NSApp.nextEvent(
+        matching: .keyDown, until: Date().addingTimeInterval(0.1),
+        inMode: .default, dequeue: true))
+    NSApp.sendEvent(next)
+  }
+
+  private func restoreSidebar(_ previous: Any?) {
+    if let previous {
+      UserDefaults.standard.set(previous, forKey: "AgentChat.sidebarExpanded.v1")
+    } else {
+      UserDefaults.standard.removeObject(forKey: "AgentChat.sidebarExpanded.v1")
+    }
   }
 
   private func settle(_ host: NSView) {

@@ -23,7 +23,7 @@ struct ThreadRail: View {
       .modifier(AgentScrollBottomBar { newThreadFooter })
       // On the List, not a stack around it: the list runs through the
       // titlebar, so the material does too.
-      .background(SettingsSidebarMaterial())
+      .background { SettingsSidebarMaterial().ignoresSafeArea() }
       .background {
         ThreadSearchKeyRouter(
           onMoveDown: { handleSearchMoveDown() },

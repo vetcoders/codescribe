@@ -3,6 +3,34 @@ import SwiftUI
 
 // Reusable glass primitives shared by every screen. Build once, consume everywhere.
 
+/// One continuous native window bar. A line above and below the information
+/// row gives Agent and Settings the same rhythm without individual title pills.
+struct CSWindowHeaderItem<Content: View>: View {
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    content
+      .frame(height: 18)
+      .padding(.vertical, 17)
+      .padding(.horizontal, 12)
+  }
+}
+
+struct CSWindowHeaderChrome: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 15.0, *) {
+      content
+        .toolbarBackground(.bar, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+    } else {
+      content
+        .toolbarBackground(.bar, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
+    }
+  }
+}
+
 /// App-wide focus policy: pointer interaction releases keyboard focus after the
 /// clicked control handles its event, while keyboard navigation and text entry
 /// keep AppKit's native focus behavior and visible accessibility affordances.

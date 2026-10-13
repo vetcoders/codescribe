@@ -63,10 +63,14 @@ struct OnboardingReadinessUnavailable: LocalizedError {
 
 extension OnboardingEngine {
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
-    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: [], revision: 0)
+    CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: [],
+      revision: 0)
   }
   func providerAccessRevision() -> UInt64 { 0 }
-  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try setApiKey(account: account, secret: secret)
+  }
   func dictationLane() -> DictationLane { .appleOnly }
   func admissionReadiness() async throws -> CsAdmissionReadiness {
     throw OnboardingReadinessUnavailable()
@@ -101,7 +105,9 @@ final class RealOnboardingEngine: OnboardingEngine {
   }
   func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
   func setApiKeyAsync(account: String, secret: String) async throws {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().setApiKey(account: account, secret: secret)
+    }
   }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func setApiKey(account: String, secret: String) throws {

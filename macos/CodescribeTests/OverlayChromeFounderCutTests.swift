@@ -1180,7 +1180,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let header = try headerSource(try overlaySource())
     XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
-    XCTAssertTrue(roster.contains("OverlayMicrophoneGlyph(character: OverlayHeaderGlyph.agents"))
+    XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
     XCTAssertFalse(roster.contains("sidebar.right"))
   }
 

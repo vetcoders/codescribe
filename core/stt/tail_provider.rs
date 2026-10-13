@@ -1342,8 +1342,11 @@ impl TailProvider for RemoteTailProvider {
         let started = Instant::now();
         // Transport first: an endpoint the client would refuse never reaches
         // OAuth resolution, credential headers or the encoded window.
-        let RemoteTailTransport { client, url, auth } =
-            RemoteTailTransport::for_endpoint(&self.endpoint)?;
+        let RemoteTailTransport {
+            client,
+            url,
+            auth: transport_auth,
+        } = RemoteTailTransport::for_endpoint(&self.endpoint)?;
         let wav = pcm16_wav(pcm, request.sample_rate)?;
         let language = request.language.as_deref().unwrap_or("pl");
         let model = crate::llm::client::stt_model(
@@ -1389,7 +1392,7 @@ impl TailProvider for RemoteTailProvider {
             form = form.text(field, value.to_string());
         }
         let http_request = client.post(url);
-        let http_request = match auth {
+        let http_request = match transport_auth {
             SttAuthMode::Unauthenticated => http_request,
             SttAuthMode::Bearer => http_request.bearer_auth(bearer),
             SttAuthMode::ApiKey => http_request.header("x-api-key", &self.api_key),
@@ -1797,6 +1800,138 @@ pub(crate) fn transcribe_selected_controlled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_transport_rejects_plaintext_and_userinfo_before_a_request() {
+        for endpoint in [
+            "http://stt.example.test/upload",
+            "https://user:secret@stt.example.test/upload",
+        ] {
+            assert!(RemoteTailProvider::new(endpoint, "fixture-key").is_err());
+            assert!(RemoteTailTransport::for_endpoint(endpoint).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_transport_client_refuses_cleartext_for_every_authenticated_owner() {
+        let trap = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        trap.set_nonblocking(true).unwrap();
+        for endpoint in [
+            "https://api.openai.com/v1/audio/transcriptions",
+            "https://api.libraxis.cloud/v1/audio/transcriptions",
+            "https://api.x.ai/v1/stt",
+            "https://stt.example.test/upload",
+        ] {
+            let transport = RemoteTailTransport::for_endpoint(endpoint).unwrap();
+            assert_ne!(transport.auth, SttAuthMode::Unauthenticated);
+            // Exercise the actual connection policy, even if a future caller
+            // passes a different URL after endpoint validation.
+            let result = transport
+                .client
+                .post(format!("http://{}/leak", trap.local_addr().unwrap()))
+                .body("fixture audio and credential")
+                .send();
+            assert!(result.is_err(), "HTTPS-only transport accepted {endpoint}");
+            assert_eq!(
+                trap.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    fn receive_tail_upload(
+        listener: TcpListener,
+        response: String,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "upload never connected");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("upload accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut bytes = [0; 4096];
+                let count = stream.read(&mut bytes).unwrap();
+                assert_ne!(count, 0, "upload ended before its body");
+                request.extend_from_slice(&bytes[..count]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                    let length: usize = header
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .expect("bounded multipart has a known size")
+                        .parse()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        })
+    }
+
+    #[test]
+    fn remote_loopback_upload_carries_audio_without_configured_credentials() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = format!("http://{}/upload", listener.local_addr().unwrap());
+        let body = r#"{"text":"","segments":[]}"#;
+        let server = receive_tail_upload(
+            listener,
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        let request = cloud_window(0, 1600);
+        let provider = RemoteTailProvider::new(endpoint, "must-stay-private").unwrap();
+        let result = provider.transcribe(&request, &vec![0.0; 1600]);
+        let wire = server.join().unwrap();
+        result.unwrap();
+        let text = String::from_utf8_lossy(&wire).to_lowercase();
+        assert!(text.contains("tail-window.wav"));
+        assert!(wire.windows(4).any(|bytes| bytes == b"RIFF"));
+        assert!(!text.contains("authorization:"));
+        assert!(!text.contains("x-api-key:"));
+        assert!(!text.contains("must-stay-private"));
+    }
+
+    #[test]
+    fn remote_loopback_redirect_never_replays_audio_or_credentials() {
+        let trap = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        trap.set_nonblocking(true).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = format!("http://{}/upload", listener.local_addr().unwrap());
+        let server = receive_tail_upload(
+            listener,
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{}/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                trap.local_addr().unwrap()
+            ),
+        );
+        let provider = RemoteTailProvider::new(endpoint, "must-stay-private").unwrap();
+        let result = provider.transcribe(&cloud_window(0, 1600), &vec![0.0; 1600]);
+        let first_request = server.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("307"));
+        assert!(first_request.windows(4).any(|bytes| bytes == b"RIFF"));
+        assert_eq!(
+            trap.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     #[test]
     fn stt_auth_mode_follows_endpoint_owner() {

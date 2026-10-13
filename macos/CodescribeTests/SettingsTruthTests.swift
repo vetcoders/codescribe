@@ -2272,7 +2272,9 @@ final class SettingsTruthTests: XCTestCase {
     let applyWrite: (String, String) -> Void = { key, value in
       writes.append((key, value))
       switch key {
-      case "CODESCRIBE_ASR_MODE": persisted.asrMode = value
+      case "CODESCRIBE_ASR_MODE":
+        persisted.asrMode = value
+        persisted.resolvedAsrMode = value
       case "CODESCRIBE_CLOUD_CONSENT": persisted.cloudConsent = value
       case "CODESCRIBE_LAYERED_TRANSCRIPTION": persisted.layeredTranscription = value
       case "CODESCRIBE_ASR_GATEWAY_URL": persisted.asrGatewayUrl = value
@@ -2326,6 +2328,7 @@ final class SettingsTruthTests: XCTestCase {
   func testModeSelectionPreservesDiagnosticEnvOverrideWithoutWritingIt() {
     var persisted = CsSettings.sample
     persisted.asrMode = "local_power"
+    persisted.resolvedAsrMode = "local_power"
     persisted.layeredTranscription = "off"
     var writes: [String] = []
     let model = SettingsViewModel(
@@ -2494,6 +2497,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   func testSttModelRowShowsLocalSelectionOnlyInLocalPower() {
     var persisted = CsSettings.sample
     persisted.asrMode = "local_power"
+    persisted.resolvedAsrMode = "local_power"
     let engine = MockSettingsEngine(settingsLoader: { persisted })
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     XCTAssertEqual(model.asrModeId, "local_power")
@@ -2505,8 +2509,10 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       model.sttModelRow?.value, CsWhisperModelCatalog.sample.configured,
       "once the catalog is loaded the effective selection wins")
 
+    persisted.resolvedAsrMode = "apple_only"
     model.setAsrMode("apple_only")
     XCTAssertNil(model.sttModelRow)
+    persisted.resolvedAsrMode = "cloud"
     model.setAsrMode("cloud")
     XCTAssertNil(model.sttModelRow, "Cloud has no runtime model preference to promise")
   }

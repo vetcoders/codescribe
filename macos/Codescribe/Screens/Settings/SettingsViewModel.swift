@@ -263,7 +263,8 @@ extension CsPasteMode {
     switch self {
     case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
     case .comfort:
-      return String(localized: "Comfort", comment: "Paste policy: includes terminals without AX text fields")
+      return String(
+        localized: "Comfort", comment: "Paste policy: includes terminals without AX text fields")
     case .off:
       return String(
         localized: "settings.paste.policy.off", defaultValue: "Off",
@@ -3015,7 +3016,7 @@ final class SettingsViewModel: ObservableObject {
 
   /// Product ASR lane shown in Dictation: the lane the core resolved on the
   /// loaded snapshot, never a Swift re-derivation of the raw mode. Cloud never
-  /// displays without consent; a legacy local choice displays as Local power.
+  /// displays without consent; a saved local choice displays as Local power.
   /// `setAsrMode` writes intent and reloads, so the picker follows the core.
   var asrModeId: String {
     DictationLane(resolvedAsrMode: settings.resolvedAsrMode).rawValue

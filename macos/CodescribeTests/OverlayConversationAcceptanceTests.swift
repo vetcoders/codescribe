@@ -86,7 +86,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             draft: .constant(""), sending: false, sendError: nil, onSend: {})
           let host = NSHostingView(
             rootView: view.messageFooter(message)
-              .environment(\.csTextScale, scale).frame(width: width))
+              .environment(\.csTextScale, scale).frame(width: width).background(Color.black))
           let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: 120),
             styleMask: .borderless, backing: .buffered, defer: false)
@@ -101,6 +101,32 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           XCTAssertLessThanOrEqual(
             host.fittingSize.height, max(24, 16 * scale) + 2,
             "Playback and copy need one compact row: state=\(state) width=\(width) scale=\(scale)")
+          let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+          host.cacheDisplay(in: host.bounds, to: bitmap)
+          let pixelsPerPoint = CGFloat(bitmap.pixelsWide) / host.bounds.width
+          var runs: [ClosedRange<Int>] = []
+          var start: Int?
+          for x in 0..<bitmap.pixelsWide {
+            let ink = (0..<bitmap.pixelsHigh).contains { y in
+              guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else {
+                return false
+              }
+              return color.alphaComponent > 0.8
+                && max(color.redComponent, color.greenComponent, color.blueComponent) > 0.15
+            }
+            if ink, start == nil { start = x }
+            if !ink, let beginning = start {
+              runs.append(beginning...(x - 1))
+              start = nil
+            }
+          }
+          XCTAssertGreaterThanOrEqual(runs.count, 2, "playback glyph and status must render")
+          if runs.count >= 2 {
+            let gap = CGFloat(runs[1].lowerBound - runs[0].upperBound - 1) / pixelsPerPoint
+            XCTAssertGreaterThanOrEqual(gap, 2 * scale)
+            XCTAssertLessThanOrEqual(
+              gap, 6 * scale, "status stays within one character of the glyph")
+          }
         }
       }
     }
@@ -1227,6 +1253,86 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         XCTAssertEqual(state.selectedConversation?.messages, conversation.messages)
         XCTAssertEqual(state.conversationDrafts[conversation.id], "Retained unsent draft")
       }
+    }
+  }
+
+  @MainActor
+  func testRepeatedAgentSwitchPaintsLatestBubbleWithoutInputAndKeepsComposer() throws {
+    let conversations = [173, 1, 35].enumerated().map { agent, count in
+      OverlayConversation(
+        id: "switch-agent-\(agent)", channel: "0", name: "Agent \(agent)", owner: nil,
+        messages: (0..<count).map { index in
+          OverlayConversationMessage(
+            id: "reply:switch-\(agent)-\(index)", kind: .reply,
+            text: index == count - 1
+              ? "VISIBLE AGENT \(agent)"
+              : String(repeating: "Retained multiline conversation.\n\n", count: 5),
+            order: UInt64(index), emittedAt: "2026-10-13T07:00:00Z", owner: nil,
+            recipients: [], deliveryID: nil, replyTo: nil, unsolicited: false,
+            playback: nil, busPath: "")
+        })
+    }
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
+    for conversation in conversations {
+      state.conversationDrafts[conversation.id] = "Draft for \(conversation.id)"
+    }
+    state.selectConversation(conversations[0].id)
+    let host = NSHostingView(rootView: DictationOverlayView(state: state))
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 800, y: 300, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = host
+    panel.setPresentationMode(.expanded)
+    panel.orderFrontRegardless()
+    defer { panel.close() }
+
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.isEditable,
+        text.accessibilityLabel() == String(localized: "Send to everyone")
+      {
+        return text
+      }
+      return root.subviews.lazy.compactMap(editor).first
+    }
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.35))
+    let originalEditor = try XCTUnwrap(editor(host))
+    for index in [1, 0, 2, 1, 2, 0, 1, 0] {
+      let target = conversations[index]
+      let loading = OverlayConversation(
+        id: target.id, channel: target.channel, name: target.name, owner: target.owner,
+        messages: [], historyLoaded: false)
+      state.applyConversationSnapshot(
+        .init(
+          deliveries: [], conversations: conversations.map { $0.id == target.id ? loading : $0 }))
+      state.selectConversation(conversations[index].id)
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
+      // No wheel, typing, reselect, explicit layout or forced redraw.
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.35))
+      let viewport = panel.convertToScreen(host.bounds).insetBy(dx: 20, dy: 90)
+      let bubbles = elements(host).filter {
+        $0.accessibilityRole() == .staticText
+          && (($0.accessibilityValue() as? String ?? "").contains("VISIBLE AGENT \(index)")
+            || ($0.accessibilityLabel() ?? "").contains("VISIBLE AGENT \(index)"))
+      }
+      XCTAssertTrue(
+        bubbles.contains {
+          !$0.accessibilityFrame().isEmpty && viewport.intersects($0.accessibilityFrame())
+        },
+        "agent \(index) has no painted latest bubble after switching")
+      XCTAssertTrue(
+        try XCTUnwrap(editor(host)) === originalEditor, "switch must not recreate input")
+      XCTAssertEqual(originalEditor.string, "Draft for \(conversations[index].id)")
+      XCTAssertEqual(state.selectedConversation?.messages, conversations[index].messages)
     }
   }
 
