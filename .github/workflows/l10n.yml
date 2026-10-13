@@ -1,0 +1,83 @@
+# Localization gate
+# Created by Vetcoders (c)2026
+#
+# Why this exists separately from rust.yml. That workflow runs `on: push` and
+# `on: pull_request` for `[main, develop]` only, so a push to an integration
+# branch — the branch several cuts land on before anybody opens a pull request —
+# ran no localization check at all. English prose could cross the bridge, a
+# Polish unit could carry the English words back, and the first gate to see it
+# was the pull request into main, by which time the branch was the shape people
+# were reviewing. A gate that a branch can route around is a convention.
+#
+# This workflow runs on every branch and on every pull request, whatever its
+# base. It duplicates rust.yml's localization steps on a pull request into main,
+# which is deliberate: the existing required status keeps its teeth and its job
+# name, and nothing here is load-bearing for it.
+#
+# The steps are rust.yml's, one for one, with one addition — the prose ratchet
+# needs the base branch in the clone to compare against, and actions/checkout
+# fetches one ref. The fetch below is shallow and may fail (a base branch
+# deleted mid-review); the census then says on stderr that the ratchet is not
+# enforced for that run rather than passing it over in silence.
+#
+# `make verify-l10n-sync` and `make test-l10n-sync` need a real Debug build of
+# the Swift target, which is why they live here and not in .pre-commit-config.yaml.
+
+name: Localization gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  l10n:
+    name: Localization
+    # Preview image with Xcode 27 on macOS 27 (actions/runner-images#14404);
+    # the Swift localization build below does not compile on Xcode 26.
+    # This is a public repository: it never runs on a self-hosted runner
+    # (decision 2026-10-13).
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Show the Xcode this image selected
+        run: xcodebuild -version
+
+      - name: Fetch the base the prose ratchet measures against
+        run: |
+          base="${{ github.base_ref || 'main' }}"
+          echo "L10N_BASE=origin/$base" >> "$GITHUB_ENV"
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/$base:refs/remotes/origin/$base" \
+            || echo "::warning::could not fetch origin/$base; the census will say the ratchet is unenforced"
+
+      - name: Verify catalog localization contracts
+        run: make verify-l10n-catalog
+
+      - name: Verify every bridge String is classified and the prose list has not grown
+        run: make verify-l10n-bridge
+
+      - name: Prepare compiler localization extraction
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          # Fresh per run; never read cached extraction.
+          echo "L10N_DERIVED=$(mktemp -d "$RUNNER_TEMP/codescribe-l10n.XXXXXX")" >> "$GITHUB_ENV"
+          echo "L10N_CONFIG=Debug" >> "$GITHUB_ENV"
+
+      - name: Build Debug Swift localization data (no Rust build or executable link)
+        run: |
+          make l10n-build
+          # A future Xcode sync-on-build must not let CI check a repaired catalog.
+          git diff --exit-code -- macos/Codescribe/Resources/Localization
+
+      - name: Verify Swift strings match the committed catalog
+        run: make verify-l10n-sync
+
+      - name: Test localization gate positive and negative controls
+        run: make test-l10n-sync
