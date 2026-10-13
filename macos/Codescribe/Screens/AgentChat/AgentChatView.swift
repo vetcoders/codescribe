@@ -28,9 +28,9 @@ struct AgentChatView: View {
         )
     } detail: {
       ThreadDetail(store: store, maxPermissions: maxPermissions)
-        // The columns carry the window floor, as in Settings. A minimum on
-        // the whole split view makes an opening sidebar slide to half its
-        // width and then jump.
+        // Sized so the expanded columns fit the window floor exactly; the
+        // floor itself belongs to the window. A minimum on the whole split
+        // view makes an opening sidebar slide to half its width and jump.
         .frame(minWidth: AgentWindowMetrics.detailMinWidth)
     }
     .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
@@ -105,7 +105,9 @@ private struct MaxPermissionPresentation: View {
 
 /// Desktop-utility window floor for Agent. Named so the split-view rail
 /// (expanded min 267) plus a usable detail column stay a single invariant:
-/// the columns carry it, never a minimum on the root view.
+/// `AgentWindowChrome` sets it as the window's content minimum, expanded or
+/// collapsed, and the expanded columns fill it exactly. Never a minimum on
+/// the root view.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
@@ -143,6 +145,13 @@ enum AgentWindowChrome {
     window.backgroundColor = .clear
     window.toolbarStyle = .unified
     window.titlebarSeparatorStyle = .automatic
+    // The window owns the floor. The columns alone would let a collapsed
+    // window shrink to the detail column, and a minimum on the split view
+    // makes an opening sidebar slide and jump.
+    window.contentMinSize = NSSize(
+      width: AgentWindowMetrics.minWidth,
+      height: AgentWindowMetrics.minHeight
+    )
   }
 }
 
