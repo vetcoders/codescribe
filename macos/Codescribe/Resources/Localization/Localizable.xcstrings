@@ -11478,24 +11478,13 @@
         }
       }
     },
-    "Pin to keep the overlay visible between takes" : {
+    "Pin overlay" : {
       "comment" : "Tooltip on the overlay pin while the overlay leaves after each take",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przypnij, aby nakładka pozostała widoczna między nagraniami"
-          }
-        }
-      }
-    },
-    "Pinned: stays visible between takes. Click to unpin." : {
-      "comment" : "Tooltip on the overlay pin while it keeps the overlay between takes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przypięte: pozostaje widoczne między nagraniami. Kliknij, aby odpiąć."
+            "value" : "Przypnij nakładkę"
           }
         }
       }
@@ -17192,6 +17181,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odepnij"
+          }
+        }
+      }
+    },
+    "Unpin overlay" : {
+      "comment" : "Tooltip on the overlay pin while it keeps the overlay between takes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odepnij nakładkę"
           }
         }
       }

@@ -173,10 +173,10 @@ struct OverlayPinButton: View {
   private var help: String {
     pinned
       ? String(
-        localized: "Pinned: stays visible between takes. Click to unpin.",
+        localized: "Unpin overlay",
         comment: "Tooltip on the overlay pin while it keeps the overlay between takes")
       : String(
-        localized: "Pin to keep the overlay visible between takes",
+        localized: "Pin overlay",
         comment: "Tooltip on the overlay pin while the overlay leaves after each take")
   }
 }
