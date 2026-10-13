@@ -42,6 +42,13 @@ means nothing was read: inspect `codescribe_status` and connect again with the s
 name and channel. A `codescribe_wait_idle` notice after six silent hours only
 re-arms: end the turn. `codescribe_status` reports `native_wake_armed`.
 
+A message can also reach you **inside a running turn**: the plugin's
+`PostToolUse` hook probes the mailbox after every tool call and, when a delivery
+is unannounced, adds the same `codescribe_mailbox_ready` notice as context. Treat
+it exactly like a wake: read, ACK the exact IDs, act on it, then continue the
+current work. The probe prints nothing while the mailbox is silent and never
+reads, ACKs or replies; the Stop waiter does not announce a probed delivery again.
+
 Use `codescribe_wait` in Claude Code only when the Founder asks you to hold an
 active listening turn: it blocks typed prompts until it returns, at most 15 min,
 with a `wait_idle` receipt. Without the plugin hook, use the CLI lane of the

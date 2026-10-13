@@ -1002,6 +1002,80 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.assert_not_acknowledged()
 
 
+class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
+    """PostToolUse probe: mid-turn surfacing with the same ledger as the Stop waiter."""
+
+    def probe(self, environ=None):
+        out = io.StringIO()
+        with patch.object(sys, "stdout", out):
+            code = MCP.claude_code_probe(DEMUX, self.root, None, {"session_id": self.session},
+                                         self.environ if environ is None else environ)
+        text = out.getvalue()
+        if not text:
+            return code, None
+        context = json.loads(text)["hookSpecificOutput"]
+        self.assertEqual(context["hookEventName"], "PostToolUse")
+        return code, parse_wake_notice(context["additionalContext"])
+
+    def test_probe_surfaces_each_unread_delivery_once_and_is_silent_afterwards(self):
+        code, notice = self.probe()
+        self.assertEqual(code, 0)
+        self.assertEqual((notice["kind"], notice["new_delivery_ids"], notice["pending_count"]),
+                         ("codescribe_mailbox_ready", self.ids, 5))
+        self.assertEqual((notice["provider"], notice["channel"], notice["name"]), ("claude-code", "7", "fable"))
+        self.assertEqual(self.probe(), (0, None), "An announced delivery is not surfaced after every tool call")
+        self.pending.append(self.envelope("f" * 24))
+        self.save()
+        code, notice = self.probe()
+        self.assertEqual((notice["new_delivery_ids"], notice["pending_count"]), (["f" * 24], 6))
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
+    def test_probed_delivery_does_not_wake_the_turn_end_again(self):
+        self.probe()
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.call("read")
+        self.call("ack", {"delivery_ids": self.ids[:1]})
+        self.pending.append(self.envelope("e" * 24))
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(notice["new_delivery_ids"], ["e" * 24])
+        self.assertEqual(DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])["announced"],
+                         sorted(self.ids[1:] + ["e" * 24]))
+
+    def test_probe_is_silent_for_other_sessions_unbound_channels_and_empty_mailboxes(self):
+        for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "another-claude-session"}):
+            with self.subTest(environ=environ):
+                self.assertEqual(self.probe(environ=environ), (0, None))
+        self.pending = []
+        self.save()
+        self.assertEqual(self.probe(), (0, None))
+        self.assertFalse(MCP.wake_paths(self.root, self.lease)[1].exists(), "Silence writes no ledger")
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings.pop("7")
+        self.pending = [self.envelope(self.ids[0])]
+        self.save()
+        self.assertEqual(self.probe(), (0, None))
+
+    def test_plugin_post_tool_use_command_prints_context_only_for_a_new_delivery(self):
+        entry = json.loads(self.HOOK.read_text())["hooks"]["PostToolUse"][0]["hooks"][0]
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                (self.root / "runtime" / "native-wake").mkdir(parents=True, exist_ok=True)
+                for path in (self.root / "runtime" / "native-wake").iterdir():
+                    path.unlink()
+                result = self.hook(shell, command=entry["command"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("new message(s) for fable on channel 7", context)
+                again = self.hook(shell, command=entry["command"])
+                self.assertEqual((again.returncode, again.stdout), (0, ""))
+                junie = self.hook(shell, command=entry["command"], environ={})
+                self.assertEqual((junie.returncode, junie.stdout), (0, ""))
+        self.assert_not_acknowledged()
+
+
 class PluginContractTests(unittest.TestCase):
     PLUGIN = SCRIPTS.parent / "plugins/codescribe"
 
@@ -1014,14 +1088,21 @@ class PluginContractTests(unittest.TestCase):
         shared = json.dumps(self.load("hooks/hooks.json"))
         self.assertNotIn("asyncRewake", shared)
         claude = self.load("hooks/claude-code.json")["hooks"]
-        self.assertEqual(set(claude), {"SessionStart", "Stop"})
-        for event, groups in claude.items():
-            entry = groups[0]["hooks"][0]
+        self.assertEqual(set(claude), {"SessionStart", "Stop", "PostToolUse"})
+        for event in ("SessionStart", "Stop"):
+            entry = claude[event][0]["hooks"][0]
             with self.subTest(event=event):
                 self.assertTrue(entry["asyncRewake"])
                 self.assertGreater(entry["timeout"], MCP.WAKE_SECONDS)
                 self.assertIn(f'-eq {MCP.WAKE_EXIT} ]; then exit 2', entry["command"])
                 self.assertNotIn("status=", entry["command"])  # read-only in zsh
+        # The mid-turn probe is synchronous and can never wake or block a turn:
+        # it ends with exit 0 whatever the helper returned.
+        probe = claude["PostToolUse"][0]["hooks"][0]
+        self.assertNotIn("asyncRewake", probe)
+        self.assertLessEqual(probe["timeout"], 10)
+        self.assertIn("--claude-code-probe", probe["command"])
+        self.assertTrue(probe["command"].rstrip().endswith("exit 0"))
 
     def test_wait_windows_stay_below_measured_client_deadlines(self):
         self.assertLess(MCP.WAIT_SECONDS["junie"], 180)
