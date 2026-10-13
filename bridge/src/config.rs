@@ -188,6 +188,11 @@ pub struct CsSettings {
     /// Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
     /// `"local_power"` | `"cloud"`. Written back via `update_config`.
     pub asr_mode: Option<String>,
+    /// Lane this snapshot actually runs, `AsrProductMode::as_str()`:
+    /// `UserSettings::resolved_asr_mode()` over the persisted mode, the consent
+    /// record and the legacy `use_local_stt` choice of the same seal. Read-only;
+    /// Swift shows and gates on it and never re-derives it from `asr_mode`.
+    pub resolved_asr_mode: String,
     /// Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
     /// `"denied"`. Cloud without `granted` resolves to Apple-only.
     pub cloud_consent: Option<String>,
@@ -286,6 +291,8 @@ impl CsSettings {
             buffered_interim_sec: settings.buffered_interim_sec,
             backend_max_upload_mb: settings.backend_max_upload_mb,
             asr_mode: setting_string(settings.asr_mode.clone()),
+            // The session factory reads the same resolver on the same seal.
+            resolved_asr_mode: settings.resolved_asr_mode().mode.as_str().to_string(),
             cloud_consent: setting_string(settings.cloud_consent.clone()),
             asr_gateway_url: setting_string(settings.asr_gateway_url.clone()),
         }

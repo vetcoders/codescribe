@@ -75,6 +75,17 @@ struct WhisperDownloadView: View {
         if let error = store.error {
           Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
+        } else if store.interruption == .cancelled {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Download stopped. The model is not installed.", locale: locale,
+                comment: "The user cancelled the Whisper download; the partial file is removed"))
+          )
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("whisper-download-stopped")
         }
         Button(downloadTitle) { confirmingDownload = true }
           .csAction(prominent: true)

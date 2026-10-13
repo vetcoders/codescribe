@@ -14,6 +14,14 @@ extension CsWhisperModelStatus {
   )
 }
 
+/// How the last transfer of this process ended without installing the model.
+enum WhisperDownloadInterruption: Equatable, Sendable {
+  /// The user stopped it; Rust removed the partial file.
+  case cancelled
+  /// The transfer failed, or returned without usable weights.
+  case failed
+}
+
 private enum WhisperDownloadEvent: Sendable {
   /// `at` is stamped where the callback arrives from the transfer thread, not
   /// where the main actor finally paints it, so a rate computed from two events
@@ -86,6 +94,21 @@ final class WhisperDownloadStore: ObservableObject {
   @Published private(set) var fraction: Double?
   @Published private(set) var detail: String?
   @Published private(set) var error: String?
+  /// Set when the last transfer stopped without installing the model, so a
+  /// stopped download never reads as one that was never started. Cleared by
+  /// the next start and by weights that are present.
+  @Published private(set) var interruption: WhisperDownloadInterruption?
+
+  /// The one reading setup and Settings take of the local model.
+  var readiness: LocalModelReadiness {
+    if status.available { return .installed }
+    if inFlight { return .downloading }
+    switch interruption {
+    case .cancelled: return .cancelled
+    case .failed: return .failed
+    case nil: return .notInstalled
+    }
+  }
 
   private let statusProvider: StatusProvider
   private let download: Download
@@ -120,6 +143,7 @@ final class WhisperDownloadStore: ObservableObject {
   func refresh() {
     guard !inFlight else { return }
     status = statusProvider()
+    if status.available { interruption = nil }
   }
 
   func start() {
@@ -133,6 +157,7 @@ final class WhisperDownloadStore: ObservableObject {
     fraction = nil
     detail = String(localized: "Starting download…", comment: "Whisper download starting status")
     error = nil
+    interruption = nil
     rateSamples.removeAll()
     sampledFile = nil
     // Keep only the newest progress: the main actor repaints the whole window
@@ -192,17 +217,21 @@ final class WhisperDownloadStore: ObservableObject {
             comment: "Whisper download returned without usable weights")
         fraction = installed.available ? 1 : nil
         if !installed.available { error = detail }
+        interruption = installed.available ? nil : .failed
       case .failure where cancelling:
         // A stop is not a failure: Rust removed the partial file, so the step
         // goes back to offering the download instead of reporting an error.
+        // It is still not an install: `interruption` keeps that visible.
         status = statusProvider()
         detail = nil
         fraction = nil
         error = nil
+        interruption = status.available ? nil : .cancelled
       case .failure(let failure):
         error = failure.userFacingMessage
         detail = String(localized: "Download failed", comment: "Whisper download failed status")
         fraction = nil
+        interruption = .failed
       }
       inFlight = false
       cancelling = false

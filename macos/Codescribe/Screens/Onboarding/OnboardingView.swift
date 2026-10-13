@@ -119,12 +119,33 @@ struct OnboardingView: View {
             comment: "Setup chapter subtitle"))
       )
     case .done:
+      // The heading states the verdict; it never celebrates ahead of it.
+      if model.dictationReadiness.isReady {
+        return (
+          String(
+            localized: LocalizedStringResource(
+              "Codescribe is ready.", locale: model.interfaceLocale,
+              comment: "Setup chapter heading")),
+          "checkmark",
+          nil
+        )
+      }
+      if model.dictationReadinessChecking {
+        return (
+          String(
+            localized: LocalizedStringResource(
+              "Checking your setup…", locale: model.interfaceLocale,
+              comment: "Setup chapter heading while the recording readiness verdict loads")),
+          "hourglass",
+          nil
+        )
+      }
       return (
         String(
           localized: LocalizedStringResource(
-            "Codescribe is ready.", locale: model.interfaceLocale,
-            comment: "Setup chapter heading")),
-        "checkmark",
+            "Codescribe is not ready yet.", locale: model.interfaceLocale,
+            comment: "Setup chapter heading when something required for transcription is missing")),
+        "exclamationmark.circle",
         nil
       )
     }
@@ -181,7 +202,7 @@ struct OnboardingView: View {
     case .agenticReadiness:
       AgenticReadinessStepView(model: model)
     case .done:
-      DoneStepView(model: model)
+      DoneStepView(model: model, downloads: model.whisperDownloadStore)
     }
   }
 
@@ -199,7 +220,11 @@ struct OnboardingView: View {
       }
       Button(model.primaryLabel) {
         model.primaryAction()
-      }.csAction(prominent: true)
+      }
+      .csAction(prominent: true)
+      // Finish writes `setup_done`; it waits for a ready verdict.
+      .disabled(model.isDone && !model.canFinish)
+      .accessibilityIdentifier("onboarding-primary")
     }
     .disabled(model.providerMutationPending || model.applyingInterfaceLanguage)
     .padding(.horizontal, CSSpace.page)

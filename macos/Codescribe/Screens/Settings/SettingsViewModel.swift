@@ -571,7 +571,8 @@ func healthState(
   agent: Bool?,
   formatting: Bool? = nil,
   formattingRequired: Bool = true,
-  licenseReadState: LicenseService.ReadState = .available
+  licenseReadState: LicenseService.ReadState = .available,
+  setupPermissionsMissing: Bool = false
 ) -> SettingsHealthState {
   if stt == false {
     return SettingsHealthState(
@@ -591,6 +592,18 @@ func healthState(
         comment: "Settings health footer, sentence case"
       ),
       targetSection: .audio
+    )
+  }
+  // The grants setup requires (`PermissionKind.isRequiredForSetup`): the same
+  // rows Setup's Finish waits for, repaired on the Creator page.
+  if setupPermissionsMissing {
+    return SettingsHealthState(
+      level: .offline,
+      message: String(
+        localized: "Permissions need setup",
+        comment: "Settings health footer, sentence case"
+      ),
+      targetSection: .creator
     )
   }
   if licenseReadState == .unavailable {
@@ -1150,6 +1163,8 @@ final class SettingsViewModel: ObservableObject {
   }
 
   @Published private(set) var permissions: PermissionSnapshot
+  /// Scopes requested in-app or opened in System Settings in this process.
+  @Published private(set) var requestedPermissions: Set<PermissionKind> = []
   @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
   @Published private(set) var creatorAgentBridgeError: String?
   @Published private(set) var creatorAgentBridgeNotice: String?
@@ -1532,6 +1547,18 @@ final class SettingsViewModel: ObservableObject {
       refreshProviderAccess()
     }
     if section == .license { refreshLicense() }
+    refreshDictationReadiness()
+  }
+
+  /// A grant made in System Settings, or a calibration or download finished
+  /// elsewhere, lands when the window comes back: the native probe, the shared
+  /// model store and the controller's admission are read again. No prompt,
+  /// no credential read.
+  func refreshDictationReadiness() {
+    refreshPermissions()
+    refreshWhisperModelStatus()
+    guard engine != nil else { return }
+    Task { @MainActor [weak self] in await self?.refreshAdmission() }
   }
 
   func refreshPermissions() {
@@ -1540,6 +1567,17 @@ final class SettingsViewModel: ObservableObject {
     // "Open System Settings") should bring hotkeys live without an app
     // restart. Idempotent bridge call — a no-op once the tap is already armed.
     hotkeys?.rearmAfterPermissionGrant()
+  }
+
+  func notePermissionRequested(_ kind: PermissionKind) {
+    requestedPermissions.insert(kind)
+  }
+
+  /// The same sentence Setup shows under the same row.
+  func permissionRepairNote(for kind: PermissionKind) -> String? {
+    kind.repairNote(
+      for: permissions.state(kind), requested: requestedPermissions.contains(kind),
+      locale: InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations).locale)
   }
 
   func refreshLicense() { licenseService.refresh() }
@@ -2265,9 +2303,22 @@ final class SettingsViewModel: ObservableObject {
     return keyAvailable ? .available : .missing
   }
 
+  /// The selected path's verdict — the projection Setup's Finish reads, over
+  /// the same owners (admission, shared download store, native probe).
+  var dictationReadiness: DictationReadiness {
+    evaluateDictationReadiness(
+      lane: DictationLane(resolvedAsrMode: settings.resolvedAsrMode),
+      permissions: permissions,
+      localModel: whisperDownloadStore.readiness,
+      admission: admission, admissionError: admissionReadError)
+  }
+
   var settingsHealth: SettingsHealthState {
-    healthState(
-      stt: sttHealthy,
+    let readiness = dictationReadiness
+    return healthState(
+      // Local power cannot transcribe without its weights, whatever the saved
+      // model id says; the other lanes keep the configuration estimate.
+      stt: readiness.localModelBlocker == nil && sttHealthy,
       recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
       agent: providerAccessResolved && providerAccessError == nil && assistiveKeyState != .unknown
@@ -2275,7 +2326,8 @@ final class SettingsViewModel: ObservableObject {
       formatting: providerAccessResolved && providerAccessError == nil
         ? llmLane(.formatting).runtime.available : nil,
       formattingRequired: cloudFormattingRequired,
-      licenseReadState: licenseReadState
+      licenseReadState: licenseReadState,
+      setupPermissionsMissing: !readiness.missingPermissions.isEmpty
     )
   }
 
@@ -2961,17 +3013,12 @@ final class SettingsViewModel: ObservableObject {
 
   // MARK: - ASR mode
 
-  /// Product ASR lane shown in Dictation. Cloud never displays without granted consent.
+  /// Product ASR lane shown in Dictation: the lane the core resolved on the
+  /// loaded snapshot, never a Swift re-derivation of the raw mode. Cloud never
+  /// displays without consent; a legacy local choice displays as Local power.
+  /// `setAsrMode` writes intent and reloads, so the picker follows the core.
   var asrModeId: String {
-    let raw = (settings.asrMode ?? "apple_only").lowercased()
-    switch raw {
-    case "local_power":
-      return "local_power"
-    case "cloud":
-      return cloudConsentGranted ? "cloud" : "apple_only"
-    default:
-      return "apple_only"
-    }
+    DictationLane(resolvedAsrMode: settings.resolvedAsrMode).rawValue
   }
 
   var asrModeLabel: String {
