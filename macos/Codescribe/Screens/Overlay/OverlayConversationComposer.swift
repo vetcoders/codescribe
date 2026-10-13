@@ -36,10 +36,11 @@ struct OverlayConversationComposer: View {
   }
 
   private var composerContent: some View {
-    HStack(alignment: .bottom, spacing: 8) {
+    HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
       ConversationMessageField(
         text: $draft, height: $editorHeight,
-        textColor: palette.primaryText.nsColor, fontSize: 14 * textScale,
+        textColor: palette.primaryText.nsColor,
+        fontSize: ComposerControlMetrics.textSize * textScale,
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
@@ -54,25 +55,27 @@ struct OverlayConversationComposer: View {
       .overlay(alignment: .topLeading) {
         if draft.isEmpty {
           Text(verbatim: placeholder)
-            .font(.system(size: 14 * textScale))
+            .font(.system(size: ComposerControlMetrics.textSize * textScale))
             .foregroundStyle(palette.mutedText.color)
-            .padding(.top, 5)
+            .padding(.top, ComposerControlMetrics.textVerticalInset)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
       }
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)
         .labelStyle(.iconOnly)
-        .font(.system(size: 16, weight: .semibold))
+        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
         .foregroundStyle(CSColor.terracotta)
-        .frame(width: 28, height: 28)
+        .frame(
+          width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+        )
         .contentShape(Circle())
         .buttonStyle(.plain)
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
+    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
+    .padding(.vertical, ComposerControlMetrics.verticalPadding)
   }
 }
 
@@ -110,7 +113,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     let font = NSFont.systemFont(ofSize: fontSize)
     editor.font = font
     editor.typingAttributes[.font] = font
-    editor.textContainerInset = NSSize(width: 0, height: 5)
+    editor.textContainerInset = NSSize(width: 0, height: ComposerControlMetrics.textVerticalInset)
     editor.textContainer?.lineFragmentPadding = 0
     editor.textContainer?.widthTracksTextView = true
     editor.isHorizontallyResizable = false

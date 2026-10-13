@@ -44,7 +44,7 @@ final class ComposerTextViewTests: XCTestCase {
 
     XCTAssertEqual(
       ComposerTextLayout.resolve(contentHeight: 1, lineHeight: lineHeight),
-      ComposerTextLayout(height: 26, isVerticallyScrollable: false)
+      ComposerTextLayout(height: 30, isVerticallyScrollable: false)
     )
     XCTAssertEqual(
       ComposerTextLayout.resolve(contentHeight: 86, lineHeight: lineHeight),
@@ -52,7 +52,7 @@ final class ComposerTextViewTests: XCTestCase {
     )
     XCTAssertEqual(
       ComposerTextLayout.resolve(contentHeight: 300, lineHeight: lineHeight),
-      ComposerTextLayout(height: 166, isVerticallyScrollable: true)
+      ComposerTextLayout(height: 170, isVerticallyScrollable: true)
     )
   }
 

@@ -26,6 +26,7 @@ struct AgentChatView: View {
       },
       detail: ThreadDetail(store: store)
     )
+    .ignoresSafeArea(.container, edges: .top)
     .modifier(
       AgentIntegratedChrome(
         store: store,
@@ -105,7 +106,10 @@ enum AgentWindowChrome {
   static func apply(_ window: NSWindow) {
     window.title = title()
     window.titleVisibility = .hidden
-    window.titlebarAppearsTransparent = false
+    window.titlebarAppearsTransparent = true
+    window.styleMask.insert(.fullSizeContentView)
+    window.isOpaque = false
+    window.backgroundColor = .clear
     window.toolbarStyle = .unified
     window.titlebarSeparatorStyle = .automatic
   }
@@ -156,10 +160,9 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
     rail.minimumThickness = AgentSidebarMetrics.minimumWidth
     rail.maximumThickness = sidebarMaximumWidth
     rail.canCollapse = false
-    // Below the unified toolbar, so the divider meets the header instead of
-    // running under a second painted title row. The host stays unlayered so
-    // the sidebar material can sample the window.
-    rail.allowsFullHeightLayout = false
+    // Let AppKit carry the sidebar material through the titlebar, as in Settings.
+    // The conversation and toolbar retain their native safe-area layout.
+    rail.allowsFullHeightLayout = true
     controller.addSplitViewItem(rail)
     let conversation = NSSplitViewItem(
       viewController: NSHostingController(
@@ -182,7 +185,7 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
         controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
       }
     }
-    rail.allowsFullHeightLayout = false
+    rail.allowsFullHeightLayout = true
     controller.splitViewItems[1].allowsFullHeightLayout = false
     rail.isCollapsed = !sidebarExpanded
   }

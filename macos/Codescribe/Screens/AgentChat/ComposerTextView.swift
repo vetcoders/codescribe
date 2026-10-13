@@ -64,7 +64,7 @@ struct ComposerDraftHistoryState: Equatable {
 struct ComposerTextLayout: Equatable {
   static let minimumLines = 1
   static let maximumLines = 8
-  static let verticalPadding: CGFloat = 6
+  static let verticalPadding: CGFloat = ComposerControlMetrics.textVerticalInset * 2
 
   let height: CGFloat
   let isVerticallyScrollable: Bool
@@ -107,7 +107,7 @@ struct ComposerTextLayout: Equatable {
         height: CGFloat.greatestFiniteMagnitude
       )
     )
-    container.lineFragmentPadding = 5
+    container.lineFragmentPadding = 0
     container.widthTracksTextView = false
     storage.addAttribute(
       .font,
@@ -169,8 +169,8 @@ struct ComposerTextView: NSViewRepresentable {
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true
     textView.autoresizingMask = [.width]
-    textView.textContainerInset = NSSize(width: 0, height: 3)
-    textView.textContainer?.lineFragmentPadding = 5
+    textView.textContainerInset = NSSize(width: 0, height: ComposerControlMetrics.textVerticalInset)
+    textView.textContainer?.lineFragmentPadding = 0
     textView.textContainer?.widthTracksTextView = true
     textView.textContainer?.containerSize = NSSize(
       width: 0,
@@ -178,7 +178,8 @@ struct ComposerTextView: NSViewRepresentable {
     )
     textView.string = text
     textView.placeholder = String(localized: "Type a message…", comment: "Composer placeholder")
-    textView.font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
+    textView.font = ComposerTextLayout.composerFont(
+      size: ComposerControlMetrics.textSize * textScale)
     textView.textColor = .labelColor
     textView.insertionPointColor = NSColor(CSColor.terracotta)
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
@@ -210,7 +211,7 @@ struct ComposerTextView: NSViewRepresentable {
       coordinator?.handleFocusChange(active)
     }
 
-    let font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
+    let font = ComposerTextLayout.composerFont(size: ComposerControlMetrics.textSize * textScale)
     if textView.font != font {
       textView.font = font
       textView.typingAttributes[.font] = font

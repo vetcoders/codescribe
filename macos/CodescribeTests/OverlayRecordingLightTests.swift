@@ -436,8 +436,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(copy.sentence.contains("or prove that a recovery pass is running"))
   }
 
-  /// The header icon's hint and VoiceOver value are the same sentence.
-  func testHeaderWarningIconCarriesTheSentenceAsTooltip() throws {
+  /// Header hints name the action; detailed diagnostics stay in VoiceOver value.
+  func testHeaderHintStaysAnActionWhileVoiceOverRetainsDiagnostics() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -446,7 +446,11 @@ final class OverlayRecordingLightTests: XCTestCase {
       encoding: .utf8)
     XCTAssertTrue(source.contains("title: transcriptPreviewHelp, accent: .transcription"))
     XCTAssertTrue(
-      source.contains(".accessibilityValue(transcriptPreviewHelp)"))
+      source.contains(".accessibilityValue(transcriptPreviewAccessibilityValue)"))
+    let help = source.components(separatedBy: "private var transcriptPreviewHelp: String {")[1]
+      .components(separatedBy: "private var transcriptPreviewAccessibilityValue")[0]
+    XCTAssertTrue(help.contains("String(localized: \"Show transcription\")"))
+    XCTAssertFalse(help.contains("sentence"), "Action tooltip must not append diagnostic prose")
     XCTAssertTrue(source.contains("OverlayWarningCopy.liveTranscriptBehind.sentence"))
     XCTAssertFalse(source.contains("OverlayRecordingLightView("))
     XCTAssertTrue(source.contains("recordingLight: state.recordingLight"))

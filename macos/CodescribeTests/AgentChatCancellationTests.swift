@@ -276,10 +276,10 @@ final class AgentChatCancellationTests: XCTestCase {
     XCTAssertEqual(ComposerActionAccessibility.identifier, "agent-composer-primary-action")
   }
 
-  func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
-    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).icon.systemName, "arrow.up.circle.fill")
-    XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
-    XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
+  func testComposerSendUsesOverlayPaperplaneAndSharedControlGeometry() {
+    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).systemImage, "paperplane.fill")
+    XCTAssertEqual(ComposerControlMetrics.glyphSize, 16)
+    XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 28)
   }
 
   func testVoiceStopRoutesOnlyToVoiceAdapterPreservesPartialAndRecovers() throws {
