@@ -44,6 +44,88 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     })
   }
 
+  func testPeerReplyReachesItsFrozenRecipientAndSettlesOnThatLeasesAck() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    let sender: [String: Any] = [
+      "provider": "claude-code", "provider_session_id": "peer-session",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "klaudiusz", "channel": "2",
+    ]
+    var row: [String: Any] = [
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": "f5b17a3ac49b375c6fe6a182", "message_id": "f5b17a3ac49b375c6fe6a182",
+      "source_event_id": "f5b17a3ac49b375c6fe6a182", "association": "unsolicited",
+      "channel": "1", "peer_to": "james", "text": "Spec for james", "sender": sender,
+      "recipients": [fixture.recipient()],
+    ]
+    projection.consume(row)
+    row["reply_id"] = "0f0f0f0f0f0f0f0f0f0f0f0f"
+    row["message_id"] = row["reply_id"]
+    row["source_event_id"] = row["reply_id"]
+    row["peer_to"] = "nobody"
+    row["recipients"] = []
+    row["text"] = "Spec for an unbound name"
+    projection.consume(row)
+    // The same name now holds a later lease; the frozen recipient keeps the row.
+    let laterLease = "fedcba9876543210fedcba9876543210"
+    projection.observeLease(
+      [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": laterLease,
+        "provider": "codex", "provider_session_id": "agent-session", "bus": fixture.bus.path,
+        "pending": [],
+      ], channel: "1",
+      binding: ["audience": "james", "provider": "codex", "provider_session_id": "agent-session"])
+    let conversations = projection.conversations(busPath: fixture.bus.path)
+    let james = try XCTUnwrap(conversations.first { $0.owner?.leaseID == Fixture.leaseID })
+    XCTAssertEqual(james.messages.map(\.text), ["Spec for james"])
+    XCTAssertEqual(james.messages.first?.owner?.name, "klaudiusz")
+    // `_identity` in scripts/bus-demux.py for a peer message, which carries no audience.
+    let delivery = "131d4e4cd70bef347dab33e7"
+    XCTAssertEqual(
+      james.messages.first?.recipients.map {
+        "\($0.owner.name) \($0.deliveryID ?? "-") \($0.acknowledged)"
+      },
+      ["james \(delivery) false"], "The frozen owner lease names the demux delivery")
+    XCTAssertTrue(
+      conversations.first { $0.owner?.leaseID == laterLease }?.messages.isEmpty ?? false,
+      "A later lease of the same name inherits neither the row nor a delivery")
+    let klaudiusz = try XCTUnwrap(
+      conversations.first { $0.owner?.providerSessionID == "peer-session" })
+    XCTAssertEqual(klaudiusz.messages.map(\.text), ["Spec for james", "Spec for an unbound name"])
+    XCTAssertTrue(klaudiusz.messages.last?.recipients.isEmpty ?? false)
+    XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
+    XCTAssertEqual(
+      projection.receiptCoordinates().map { "\($0.0.leaseID) \($0.1)" },
+      ["\(Fixture.leaseID) \(delivery)"])
+    let envelope: [String: Any] = [
+      "kind": "message", "producer_schema": "codescribe.agent-reply.v1",
+      "message_id": "f5b17a3ac49b375c6fe6a182", "delivery_id": delivery,
+      "lease_id": Fixture.leaseID, "provider": "codex", "provider_session_id": "agent-session",
+      "bus": fixture.bus.path, "channel": "1",
+    ]
+    projection.observeAcknowledgment(
+      [
+        "lease_id": Fixture.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ],
+      owner: try XCTUnwrap(james.owner), delivery: delivery, busPath: fixture.bus.path)
+    // Replaying the published row keeps the settled recipient.
+    row["reply_id"] = "f5b17a3ac49b375c6fe6a182"
+    row["message_id"] = row["reply_id"]
+    row["source_event_id"] = row["reply_id"]
+    row["peer_to"] = "james"
+    row["recipients"] = [fixture.recipient()]
+    row["text"] = "Spec for james"
+    projection.consume(row)
+    let settled = try XCTUnwrap(
+      projection.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.leaseID == Fixture.leaseID
+      })
+    XCTAssertEqual(settled.messages.first?.recipients.map(\.acknowledged), [true])
+    XCTAssertTrue(projection.receiptCoordinates().isEmpty, "The marker settles polling")
+  }
+
   func testRestoredBroadcastOwnerRecoversCurrentThreadWithoutReplayingHistory() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
