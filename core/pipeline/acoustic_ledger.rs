@@ -78,6 +78,9 @@ pub mod word_adjudication;
 #[cfg(test)]
 #[path = "acoustic_ledger/word_adjudication_tests.rs"]
 pub(crate) mod word_adjudication_tests;
+#[cfg(test)]
+#[path = "acoustic_ledger/word_identity_energy_tests.rs"]
+mod word_identity_energy_tests;
 pub use slot_ops::{
     DictionarySlotRule, GroupSpeechCoverageReceipt, SlotOperationKind, SlotOperationReceipt,
     SlotOperationRefusal, SlotTarget, SpeechPinCoverage,
