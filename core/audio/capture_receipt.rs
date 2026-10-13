@@ -427,6 +427,49 @@ impl CaptureEnergyOwner {
         }
         (cursor >= sample_end).then_some(voiced)
     }
+
+    /// Every hop overlapping `[sample_start, sample_end)` with its own RMS,
+    /// clipped to the query. Same contiguity contract as
+    /// [`Self::voiced_hops_in`]: `None` when this owner cannot speak for the
+    /// whole range. The caller decides what is speech; no floor is applied.
+    pub fn hop_levels_in(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<Vec<(u64, u64, f32)>> {
+        if sample_end <= sample_start || !self.identity.matches(session, capture_epoch) {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0
+            || clock.first_invalid_sample.is_some()
+            || sample_end > clock.observed_samples
+        {
+            return None;
+        }
+        let mut cursor = sample_start;
+        let mut levels = Vec::new();
+        for hop in &clock.hops {
+            if hop.sample_end <= sample_start {
+                continue;
+            }
+            if hop.sample_start >= sample_end {
+                break;
+            }
+            let overlap_start = hop.sample_start.max(sample_start);
+            if overlap_start > cursor {
+                return None;
+            }
+            let end = hop.sample_end.min(sample_end);
+            if end > overlap_start {
+                levels.push((overlap_start, end, hop.rms));
+            }
+            cursor = cursor.max(end);
+        }
+        (cursor >= sample_end).then_some(levels)
+    }
 }
 
 fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
