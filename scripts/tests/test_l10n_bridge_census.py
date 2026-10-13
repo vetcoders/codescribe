@@ -1,9 +1,12 @@
 """Tests for scripts/l10n-bridge-census.py: the ratchet on English prose
 crossing the Rust -> Swift bridge."""
 
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "l10n-bridge-census.py"
 SPEC = importlib.util.spec_from_file_location("l10n_bridge_census", SCRIPT)
@@ -86,6 +89,89 @@ class CensusTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertGreater(counts["data"], 0)
         self.assertEqual(len(prose), counts["prose"])
+
+
+class RatchetTests(unittest.TestCase):
+    """`--base <ref>`: the prose list is a burn-down, so it may not grow."""
+
+    BASE = CLASSIFIED
+
+    def test_an_unchanged_list_passes_and_reports_the_base_count(self):
+        added, retired, before = census.ratchet(CLASSIFIED, self.BASE)
+        self.assertEqual((added, retired, before), ([], [], 3))
+
+    def test_retiring_a_seam_passes_and_the_departure_is_named(self):
+        shorter = CLASSIFIED.replace("prose CsError.Agent.msg\n", "data  CsError.Agent.msg\n")
+        added, retired, before = census.ratchet(shorter, self.BASE)
+        self.assertEqual(added, [])
+        self.assertEqual(retired, ["CsError.Agent.msg"])
+        self.assertEqual(before, 3)
+
+    def test_rewording_a_seam_under_a_new_name_is_not_growth(self):
+        renamed = CLASSIFIED.replace("prose CsError.Agent.msg", "prose CsError.Agent.detail")
+        added, retired, before = census.ratchet(renamed, self.BASE)
+        self.assertEqual(added, ["CsError.Agent.detail"])
+        self.assertEqual(retired, ["CsError.Agent.msg"])
+        self.assertEqual(len(census.prose_lines(renamed)), before)
+
+    def test_a_new_prose_line_is_growth_and_is_named(self):
+        grown = CLASSIFIED + "prose CsThread.summary\n"
+        added, retired, before = census.ratchet(grown, self.BASE)
+        self.assertEqual(added, ["CsThread.summary"])
+        self.assertEqual(retired, [])
+        self.assertGreater(len(census.prose_lines(grown)), before)
+
+    def test_a_field_reclassified_from_data_to_prose_is_growth(self):
+        grown = CLASSIFIED.replace("data  CsThread.title", "prose CsThread.title")
+        added, _, _ = census.ratchet(grown, self.BASE)
+        self.assertEqual(added, ["CsThread.title"])
+
+
+class BaseRefTests(unittest.TestCase):
+    def test_the_classification_is_read_out_of_a_real_git_ref(self):
+        text = census.base_classification("HEAD")
+        self.assertIsNotNone(text)
+        self.assertIn("prose ", text)
+
+    def test_a_ref_the_clone_does_not_have_is_absent_not_fatal(self):
+        self.assertIsNone(census.base_classification("no/such/ref-for-the-census-test"))
+
+
+class CommandLineTests(unittest.TestCase):
+    def test_the_base_ref_is_read_in_either_spelling(self):
+        self.assertEqual(census.parse(["--base", "origin/main"]), (False, "origin/main"))
+        self.assertEqual(census.parse(["--base=origin/main", "--report"]), (True, "origin/main"))
+        self.assertEqual(census.parse([]), (False, None))
+
+    def test_a_base_without_a_ref_or_an_unknown_flag_is_refused(self):
+        self.assertIsNone(census.parse(["--base"]))
+        self.assertIsNone(census.parse(["--base="]))
+        self.assertIsNone(census.parse(["--whatever"]))
+
+    def run_against(self, base: str | None) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(census, "base_classification", return_value=base):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = census.main(["l10n-bridge-census.py", "--base", "pretend/base"])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_shipped_tree_passes_against_its_own_classification(self):
+        code, out, err = self.run_against(census.CLASSIFICATION.read_text(encoding="utf-8"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("prose seams here", out)
+
+    def test_the_shipped_tree_fails_a_base_that_carried_one_seam_fewer(self):
+        shipped = census.CLASSIFICATION.read_text(encoding="utf-8")
+        first = next(line for line in shipped.splitlines() if line.startswith("prose "))
+        code, _, err = self.run_against(shipped.replace(first + "\n", "", 1))
+        self.assertEqual(code, 1)
+        self.assertIn("the prose list grew against", err)
+        self.assertIn(first.split()[1], err)
+
+    def test_an_unreachable_base_says_so_instead_of_passing_quietly(self):
+        code, _, err = self.run_against(None)
+        self.assertEqual(code, 0)
+        self.assertIn("the prose ratchet is NOT enforced", err)
 
 
 if __name__ == "__main__":

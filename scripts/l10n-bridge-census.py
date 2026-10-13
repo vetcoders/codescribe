@@ -18,13 +18,21 @@ codescribe_ffi.swift) must be classified in scripts/data/l10n-bridge-fields.txt:
          owns the sentence)
 
 A field the bindings carry and the file does not name fails the gate: the cut
-that added it classifies it, and a new `prose` line is a conscious decision to
-add debt (the ledger says why). A line the bindings no longer carry fails too,
+that added it classifies it, and a line the bindings no longer carry fails too,
 so the file stays an honest burn-down list. The counts are reported.
 
+Classifying a new field `prose` used to be enough to pass. It is not: the list
+is a burn-down, so `--base <git-ref>` reads the same file as that ref has it and
+refuses a tree whose `prose` lines outnumber the base's. The seams may be
+reworded, renamed or retired; they may not multiply. Removing one lowers the bar
+for everybody after. Where the ref is out of reach (a shallow clone, a fetch
+that never ran) the gate says so on stderr and checks the rest — it never passes
+the ratchet silently.
+
 Usage:
-  scripts/l10n-bridge-census.py            # validate (exit 1 on any failure)
-  scripts/l10n-bridge-census.py --report   # also list every prose seam
+  scripts/l10n-bridge-census.py                    # validate (exit 1 on any failure)
+  scripts/l10n-bridge-census.py --report           # also list every prose seam
+  scripts/l10n-bridge-census.py --base origin/main # also refuse a grown prose list
 
 Contract: docs/LOCALIZATION.md §2 and LOCALIZATION_LEDGER.md §4.
 
@@ -34,6 +42,7 @@ Created by Vetcoders (c)2026
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -102,12 +111,70 @@ def census(source: str, classification: str) -> tuple[list[str], list[str], dict
     return errors, prose, counts
 
 
+def prose_lines(text: str) -> set[str]:
+    """The fields one classification file calls `prose`, malformed lines aside."""
+    return {field for field, kind in read_classification(text, []).items() if kind == "prose"}
+
+
+def base_classification(ref: str) -> str | None:
+    """The classification file as `ref` has it, or None when the ref is out of reach.
+
+    Out of reach is ordinary, not exceptional: a shallow clone, a fork whose
+    upstream was never fetched, a local branch name CI does not have. The caller
+    says so out loud and checks what it still can.
+    """
+    path = CLASSIFICATION.relative_to(REPO).as_posix()
+    try:
+        done = subprocess.run(
+            ["git", "show", f"{ref}:{path}"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def ratchet(classification: str, base: str) -> tuple[list[str], list[str], int]:
+    """The prose seams this tree adds over the base, those it retires, and the base count.
+
+    Only the arrivals can fail the gate; the departures are the point of the
+    list and are reported so a cut gets credit for them.
+    """
+    before = prose_lines(base)
+    now = prose_lines(classification)
+    return sorted(now - before), sorted(before - now), len(before)
+
+
+def parse(argv: list[str]) -> tuple[bool, str | None] | None:
+    """`--report` and `--base <ref>` (or `--base=<ref>`), or None on anything else."""
+    verbose = False
+    base: str | None = None
+    rest = iter(argv)
+    for arg in rest:
+        if arg == "--report":
+            verbose = True
+        elif arg == "--base":
+            base = next(rest, None)
+            if base is None:
+                return None
+        elif arg.startswith("--base="):
+            base = arg.split("=", 1)[1]
+            if not base:
+                return None
+        else:
+            return None
+    return verbose, base
+
+
 def main(argv: list[str]) -> int:
-    verbose = "--report" in argv[1:]
-    unknown = [arg for arg in argv[1:] if arg != "--report"]
-    if unknown:
-        print("usage: scripts/l10n-bridge-census.py [--report]", file=sys.stderr)
+    parsed = parse(argv[1:])
+    if parsed is None:
+        print("usage: scripts/l10n-bridge-census.py [--report] [--base <git-ref>]", file=sys.stderr)
         return 2
+    verbose, base_ref = parsed
     try:
         source = BINDINGS.read_text(encoding="utf-8")
     except OSError as error:
@@ -126,6 +193,31 @@ def main(argv: list[str]) -> int:
     if verbose:
         for field in prose:
             print(f"  prose: {field}")
+    if base_ref is not None:
+        base = base_classification(base_ref)
+        if base is None:
+            print(
+                f"l10n-bridge-census: cannot read {CLASSIFICATION.relative_to(REPO)} at "
+                f"{base_ref!r}; the prose ratchet is NOT enforced in this run "
+                "(fetch the ref, or pass a --base the clone has)",
+                file=sys.stderr,
+            )
+        else:
+            added, retired, before = ratchet(classification, base)
+            print(
+                f"l10n-bridge-census: {len(prose)} prose seams here, {before} at {base_ref}"
+                + (f"; {len(retired)} retired" if retired else "")
+            )
+            for field in retired:
+                print(f"  retired: {field}")
+            if len(prose) > before:
+                errors.append(
+                    f"the prose list grew against {base_ref} ({before} -> {len(prose)}): "
+                    + ", ".join(added or ["(no new line, yet more prose than the base)"])
+                    + " - the list is a burn-down, not a ledger that fills up. Send a code "
+                    "from Rust and let Swift own the sentence (LOCALIZATION_LEDGER.md §4), "
+                    "or retire a seam of the same weight in this cut"
+                )
     if errors:
         for line in errors:
             print(f"l10n-bridge-census: {line}", file=sys.stderr)

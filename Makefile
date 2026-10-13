@@ -337,7 +337,7 @@ bump-major:
 # class=operator denotes a platform/tool requirement; ci=yes means the workflow
 # supplies it. The localization gates need Xcode but run in the required job.
 #
-# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census; executes ZERO tests
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census (with the L10N_BASE prose ratchet); executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (the runner's PATH loct is a dev build without release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; any host with a release loct on PATH runs the full surface.
@@ -346,7 +346,7 @@ bump-major:
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
 # gate: verify-l10n-catalog class=static ci=yes -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync); rust.yml invokes this target in required Clippy + Tests
-# gate: verify-l10n-bridge class=static ci=yes -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, so English prose composed in Rust cannot grow unnoticed (LOCALIZATION_LEDGER.md §4 burn-down); rust.yml invokes this target in required Clippy + Tests
+# gate: verify-l10n-bridge class=static ci=yes -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, and L10N_BASE (default origin/main) ratchets the list — a tree whose `prose` lines outnumber the base's is refused, so classifying a new seam `prose` no longer buys passage (LOCALIZATION_LEDGER.md §4 burn-down); a base ref the clone cannot read is reported on stderr and the ratchet is skipped for that run, never passed silently; rust.yml and l10n.yml invoke this target, the latter on every branch
 # gate: verify-l10n-sync class=operator ci=yes -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs compiler extraction from a current Debug build; missing/outdated data exits 2; rust.yml builds fresh Swift-only extraction and invokes this target in required Clippy + Tests
 # gate: test-l10n-sync class=operator ci=yes -- real Swift compiler and xcstringstool in a temporary source tree: synchronized catalog passes, new/changed Swift copy fails, missing/outdated extraction fails, checks never write the catalog; rust.yml runs this in required Clippy + Tests
 # gate: verify-install-bus class=operator ci=yes -- scripts/install-bus.sh --compile-only: real Swift 6 compiler, warnings as errors, over the two files `make install-bus` builds its installer from; stages and installs nothing; needs the Swift toolchain
@@ -456,8 +456,15 @@ verify-l10n-sync:
 verify-l10n-catalog:
 	@python3 scripts/l10n-lint.py
 
+# The census alone only asks that every bridged String be classified; writing
+# `prose` on a new one satisfies it. The ratchet is what makes the list a
+# burn-down: L10N_BASE names the ref the prose count may not exceed. Set it to
+# the branch a cut will merge into (CI passes the PR base); set it empty to
+# census without the ratchet. A ref the clone cannot read is reported, never
+# passed over in silence.
+L10N_BASE ?= origin/main
 verify-l10n-bridge:
-	@python3 scripts/l10n-bridge-census.py
+	@python3 scripts/l10n-bridge-census.py $(if $(L10N_BASE),--base $(L10N_BASE))
 
 test-l10n-sync:
 	@python3 -m unittest scripts/tests/test_l10n_sync.py
@@ -1074,7 +1081,7 @@ check:
 	@echo "=== Localization catalogs ==="
 	@python3 scripts/l10n-lint.py
 	@echo "=== Localization bridge census ==="
-	@python3 scripts/l10n-bridge-census.py
+	@python3 scripts/l10n-bridge-census.py $(if $(L10N_BASE),--base $(L10N_BASE))
 	@echo ""
 	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs, bridge census."
 	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
@@ -1313,7 +1320,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose, and the prose list may not grow past L10N_BASE (default origin/main)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-sync' 'String Catalog vs current Debug compiler extraction; required in CI'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-install-bus' 'Helper installer source compiles without the app target; required in CI'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-l10n-sync' 'Real-compiler positive/negative controls for the localization gate'
