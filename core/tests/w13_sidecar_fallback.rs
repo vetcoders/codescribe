@@ -43,6 +43,7 @@ fn fake_payload(request: &TailProviderRequest, text: &str) -> TailProviderPayloa
         elapsed_ms: 3,
         evidence: TailProviderEvidence {
             segment_grain: TailSegmentGrain::Phrase,
+            unaligned_words: Vec::new(),
             source: TailEvidenceSource::Whisper,
             revision: Some("fake-sidecar-r1".to_string()),
             stability: TailEvidenceStability::Final,

@@ -1127,20 +1127,29 @@ impl LocalWhisperEngine {
             self.captured_sample_len = 0;
             control.check()?;
             let mut words = match words {
-                Ok(Some(words)) => {
+                Ok(Some(aligned)) => {
                     // Alignment must account for the same decoded label. It
                     // may not silently replace a closed phrase with a subset
-                    // or add tokens outside its timestamp provenance.
-                    let measured_text = words
-                        .iter()
-                        .map(|word| word.text.as_str())
-                        .collect::<String>();
-                    if measured_text
+                    // or add tokens outside its timestamp provenance. The
+                    // label check counts unaligned words too.
+                    let measured_text = aligned.label_words().concat();
+                    let same_label = measured_text
                         .chars()
                         .filter(|ch| !ch.is_whitespace())
-                        .eq(transcript.text.chars().filter(|ch| !ch.is_whitespace()))
-                    {
-                        Some(words)
+                        .eq(transcript.text.chars().filter(|ch| !ch.is_whitespace()));
+                    if same_label && aligned.is_partial() {
+                        // Seam ownership in the long-file merge reads one
+                        // measured clock per word; a window with an unpinned
+                        // word keeps its timestamped phrase segments.
+                        tracing::warn!(
+                            window_start = start_sec,
+                            window_end = end_sec,
+                            unaligned_words = aligned.unaligned.len(),
+                            "file_word_times_partial: retaining timestamped phrase segments"
+                        );
+                        None
+                    } else if same_label {
+                        Some(aligned.pins)
                     } else {
                         tracing::warn!(
                             window_start = start_sec,
@@ -1789,10 +1798,7 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
         control: &crate::stt::LocalExecutionControl,
-    ) -> Result<(
-        RawTranscript,
-        Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
-    )> {
+    ) -> Result<(RawTranscript, Option<super::word_pins::AlignedWordPins>)> {
         control.check()?;
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         if samples.is_empty() {
@@ -1862,7 +1868,8 @@ impl LocalWhisperEngine {
             decode_ms,
             decode_scope = "tail_inference_after_resampling_before_alignment",
             align_ms = align_started.elapsed().as_millis() as u64,
-            word_pins = words.as_ref().map_or(0, Vec::len),
+            word_pins = words.as_ref().map_or(0, |words| words.pins.len()),
+            unaligned_words = words.as_ref().map_or(0, |words| words.unaligned.len()),
             "tail_window_latency"
         );
         self.captured_tokens.clear();
@@ -1873,10 +1880,12 @@ impl LocalWhisperEngine {
     }
 
     /// DTW word pins for the decode just captured. Failure keeps phrase grain.
+    /// A word the path could not place comes back in `unaligned`, with its
+    /// text and token span, while every measured neighbour keeps its pin.
     fn align_captured_words(
         &mut self,
         language: Option<&str>,
-    ) -> Result<Option<Vec<crate::pipeline::contracts::TranscriptSegment>>> {
+    ) -> Result<Option<super::word_pins::AlignedWordPins>> {
         if self.alignment_heads.is_empty() || self.captured_tokens.is_empty() {
             if self.alignment_heads.is_empty() {
                 tracing::info!("tail_word_pins_unavailable: checkpoint has no alignment_heads");
@@ -1996,34 +2005,54 @@ impl LocalWhisperEngine {
         super::word_pins::merge_word_punctuation(&mut words);
         let duration = self.captured_sample_len as f32 / whisper::SAMPLE_RATE as f32;
         let mut segments = Vec::with_capacity(words.len());
+        let mut unaligned = Vec::new();
         let mut previous_end = 0.0_f32;
         for (word_index, word) in words.into_iter().enumerate() {
-            if word.start_secs + 1.0e-3 < previous_end {
+            let Some(span) = word.span else {
+                // The alignment already named this word unmeasured. It stays
+                // in the hypothesis by ordinal; its neighbours keep their pins.
+                unaligned.push(super::word_pins::UnalignedWord {
+                    ordinal: word_index,
+                    text: word.text,
+                    token_start: word.token_start,
+                    token_len: word.token_len,
+                });
+                continue;
+            };
+            if span.start_secs + 1.0e-3 < previous_end {
                 tracing::info!(
                     reason = "nonmonotonic_merged_word",
                     word_index,
-                    start_secs = word.start_secs,
+                    start_secs = span.start_secs,
                     previous_end_secs = previous_end,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "tail_word_pin_alignment_unmeasured"
                 );
                 return Ok(None);
             }
-            let start = word.start_secs.clamp(0.0, duration);
-            let end = word.end_secs.min(duration);
+            let start = span.start_secs.clamp(0.0, duration);
+            let end = span.end_secs.min(duration);
             if end <= start {
+                // Clamping to the captured audio collapsed this word. Like a
+                // collapsed DTW pair, that is this word's failure alone.
                 tracing::info!(
                     reason = "nonpositive_clamped_word_duration",
                     word_index,
                     start_secs = start,
                     end_secs = end,
-                    source_start_secs = word.start_secs,
-                    source_end_secs = word.end_secs,
+                    source_start_secs = span.start_secs,
+                    source_end_secs = span.end_secs,
                     duration_secs = duration,
                     elapsed_ms = started.elapsed().as_millis() as u64,
-                    "tail_word_pin_alignment_unmeasured"
+                    "tail_word_pin_unaligned"
                 );
-                return Ok(None);
+                unaligned.push(super::word_pins::UnalignedWord {
+                    ordinal: word_index,
+                    text: word.text,
+                    token_start: word.token_start,
+                    token_len: word.token_len,
+                });
+                continue;
             }
             previous_end = end;
             let confidence = text_logprobs.as_ref().and_then(|logprobs| {
@@ -2047,12 +2076,25 @@ impl LocalWhisperEngine {
                 confidence,
             });
         }
+        if segments.is_empty() {
+            tracing::info!(
+                reason = "no_measured_word_after_clamp",
+                unaligned_words = unaligned.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "tail_word_pin_alignment_unmeasured"
+            );
+            return Ok(None);
+        }
         tracing::info!(
             words = segments.len(),
+            unaligned_words = unaligned.len(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             "tail_word_pin_alignment"
         );
-        Ok(Some(segments))
+        Ok(Some(super::word_pins::AlignedWordPins {
+            pins: segments,
+            unaligned,
+        }))
     }
 }
 

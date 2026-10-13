@@ -1915,6 +1915,10 @@ struct AppleSealState {
     windows_admitted: u64,
     /// Accepted windows built from more than one occurrence.
     windows_coalesced: u64,
+    /// Returned word-grain windows in which at least one decoded word
+    /// carried no measured pin. The label kept every word; only the
+    /// unpinned ones stay outside the pin set.
+    windows_partially_aligned: u64,
     /// Windows refused before a provider ever saw them, by reason code.
     windows_refused_before_inference: BTreeMap<String, u64>,
     /// Seals where Layer 1 recovered speech it could not place on the canvas
@@ -2430,6 +2434,7 @@ impl AppleSealState {
             unresolved_windows: 0,
             windows_admitted: 0,
             windows_coalesced: 0,
+            windows_partially_aligned: 0,
             windows_refused_before_inference: BTreeMap::new(),
             under_commit_escalations: 0,
             tail_patch: None,
@@ -4179,6 +4184,26 @@ impl AppleSealState {
         let identity = &returned.identity;
         let admit_sample_start = identity.range.sample_start;
         let admit_sample_end = identity.range.sample_end;
+        if fresh && returned.evidence.is_partial_alignment() {
+            // The provider named the words it could not pin. They are still
+            // in the window label; the ledger sees only the measured pins.
+            self.windows_partially_aligned = self.windows_partially_aligned.saturating_add(1);
+            info!(
+                request_id = identity.request_id,
+                sample_start = admit_sample_start,
+                sample_end = admit_sample_end,
+                word_pins = returned.segments.len(),
+                unaligned_words = returned.evidence.unaligned_words.len(),
+                unaligned_ordinals = ?returned
+                    .evidence
+                    .unaligned_words
+                    .iter()
+                    .map(|word| word.ordinal)
+                    .collect::<Vec<_>>(),
+                windows_partially_aligned = self.windows_partially_aligned,
+                "tail_patch_partial_alignment"
+            );
+        }
         let payload = Some(returned);
         let exact_open_members = self
             .unsealed_word_owners()
@@ -9588,6 +9613,7 @@ mod c13a_lifecycle_tests {
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("walkaround-755".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -10450,6 +10476,7 @@ mod c13a_lifecycle_tests {
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -10726,6 +10753,7 @@ mod layer1_frontier_contracts {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-test".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -12117,6 +12145,7 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -13678,6 +13707,7 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 0,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("rc-w2".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -14570,6 +14600,7 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 1,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("context-window".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -19722,6 +19753,7 @@ mod live_refinement_admission_tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-live-admission".into()),
                 stability: TailEvidenceStability::Final,
@@ -23020,6 +23052,7 @@ mod relay_l1_overlap_admission_tests {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain,
+                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("relay-l1-phrase-grain".into()),
                     stability: TailEvidenceStability::Final,
@@ -28943,6 +28976,7 @@ mod relay_l1_overlap_admission_tests {
             elapsed_ms: 1,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain,
+                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("relay-recovery".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -29365,6 +29399,7 @@ mod tc2_window_contract_tests {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain: grain,
+                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("tc2-real-geometry-synthetic-labels".into()),
                     stability: TailEvidenceStability::Final,
@@ -30906,6 +30941,7 @@ mod forensic_word_conservation_fixture {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain,
+                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("forensic-word-grain".into()),
                     stability: TailEvidenceStability::Final,
@@ -31213,6 +31249,7 @@ mod bounded_lexical_trial_tests {
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: None,
                 segment_grain: TailSegmentGrain::Word,
+                unaligned_words: Vec::new(),
             },
             segments: vec![TimedTailSegment {
                 text: "PNPM".into(),
