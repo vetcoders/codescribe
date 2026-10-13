@@ -65,9 +65,11 @@ cargo test --test e2e_round_trip -- --nocapture
 Current workflows in this repo:
 
 1. `rust.yml`
-2. `semgrep.yml`
-3. `release.yml`
-4. `pages.yml`
+2. `l10n.yml` — the localization gate; unlike the others it runs on **every**
+   branch and on every pull request whatever its base (`docs/LOCALIZATION.md`)
+3. `semgrep.yml`
+4. `release.yml`
+5. `pages.yml`
 
 Use the current workflows as the source of truth for CI and release behavior.
 
