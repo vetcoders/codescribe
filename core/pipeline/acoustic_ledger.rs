@@ -69,6 +69,8 @@ use crate::audio::capture_receipt::{
 use crate::quality::engine_contract::is_clock_lie;
 use crate::stt::tail_provider::TailSampleRange;
 
+#[path = "acoustic_ledger/sequence_normalization.rs"]
+mod sequence_normalization;
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
 #[path = "acoustic_ledger/word_adjudication.rs"]
@@ -1448,6 +1450,11 @@ impl AcousticLedger {
             }
             admissible_words.push(pin.clone());
         }
+        // Acoustic sequence normalisation (plan §2): a sequence that names the
+        // same measured speech as held words of another producer, one for
+        // one and in order, adopts the held geometry before any per-word
+        // matcher can read a timestamp shift as a second occurrence.
+        self.normalise_sequence_to_held_speech(observation, &mut admissible_words);
         let words = admissible_words.as_slice();
         // Routing may have proposed this owner's pins before admission. Keep
         // only admissible declarations; committed neighbours retain their own

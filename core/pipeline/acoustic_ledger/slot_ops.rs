@@ -438,7 +438,10 @@ impl AcousticLedger {
     }
 
     /// Authenticate the existing acoustic observer for a bounded PCM scope.
-    fn measured_speech_for(&self, source: &OccurrenceIdentity) -> Option<&AcousticSpeechEvidence> {
+    pub(super) fn measured_speech_for(
+        &self,
+        source: &OccurrenceIdentity,
+    ) -> Option<&AcousticSpeechEvidence> {
         use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
         use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
 
