@@ -36,6 +36,12 @@ pub struct LiveFenceHoldReceipt {
 const SPEECH_ABOVE_FLOOR_DB: f32 = 8.0;
 const BRIDGED_GAP_MS: u64 = 60;
 const MIN_HOPS_FOR_FLOOR: usize = 50;
+/// How far before its fence a live window may hold words. The next live
+/// window starts `window - step` before this fence (`CaptureWindowPlan`:
+/// 9 s windows every 3 s, so 6 s), and only words it covers have a later
+/// owner. A word on the open burst but earlier than that is delivered: a
+/// held word nobody can take is a lost word.
+const HOLD_REACH_SECS: u64 = 6;
 
 impl AcousticLedger {
     /// Start of the speech burst running through `fence`, or `None` when the
@@ -111,8 +117,11 @@ impl AcousticLedger {
         }
         let owner = &observation.occurrence;
         let burst_start = self.open_burst_start_at_fence(owner, window_start, fence)?;
-        let (held, kept): (Vec<WordPin>, Vec<WordPin>) =
-            pins.drain(..).partition(|pin| pin.sample_end > burst_start);
+        let reach = fence
+            .saturating_sub(u64::from(self.capture_rate_hz.unwrap_or(16_000)) * HOLD_REACH_SECS);
+        let (held, kept): (Vec<WordPin>, Vec<WordPin>) = pins
+            .drain(..)
+            .partition(|pin| pin.sample_end > burst_start && pin.sample_start >= reach);
         *pins = kept;
         if held.is_empty() {
             return None;
@@ -241,6 +250,33 @@ mod tests {
         assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
         assert_eq!(ledger.text_of(&owner), Some("a c"));
         assert!(ledger.live_fence_holds().is_empty());
+    }
+
+    #[test]
+    fn a_burst_longer_than_the_next_window_can_reach_holds_only_what_it_covers() {
+        // Speech from 2.0 s to the fence without a gap. The next live window
+        // starts 6 s before the fence (3.0 s): "a" at 2.0 s has no later
+        // owner and is delivered, "b" and "c" are held.
+        let pcm = synthetic_take(&[(2.0, 9.3)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let pins = window(
+            &[("a", 2.0, 2.5), ("b", 3.5, 4.0), ("c", 8.7, 9.0)],
+            (0.0, 9.0),
+        );
+        assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
+        assert_eq!(ledger.text_of(&owner), Some("a"));
+        let holds = ledger.live_fence_holds();
+        assert_eq!(holds.len(), 1);
+        assert_eq!(
+            holds[0]
+                .held
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        assert!(holds[0].burst_start <= 2 * SECOND + SECOND / 10);
     }
 
     #[test]
