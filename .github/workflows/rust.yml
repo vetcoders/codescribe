@@ -1,7 +1,11 @@
 # Rust Code Quality CI
 # Created by Vetcoders (c)2026
 #
-# Runs on self-hosted macOS runners (Swift 6.0 / CoreML / Metal available).
+# Runs on GitHub-hosted macOS runners. Rust-only jobs use `macos-latest`
+# (macOS 26 arm64); the job that compiles Swift for localization extraction uses
+# the `xcode-27` image, because the app requires Xcode 27 / the macOS 27 SDK
+# (docs/LOCALIZATION.md) and `macos-latest` ships Xcode 26.6. This is a public
+# repository: it never runs on a self-hosted runner (decision 2026-10-13).
 # format: cargo fmt --check
 # quality: fresh compiler localization extraction + strict catalog/bridge gates,
 # sync controls, helper installer compilation, cargo clippy -D warnings + `make verify`.
@@ -39,41 +43,50 @@ env:
 jobs:
   msrv:
     name: Rust 1.94 MSRV
-    runs-on: [self-hosted, macos-public]
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Ensure MSRV toolchain on PATH
-        run: |
-          rustup toolchain install 1.94.0 --profile minimal --no-self-update
-          dirname "$(rustup which --toolchain 1.94.0 rustc)" >> "$GITHUB_PATH"
+      # The real minimum from Cargo.toml `rust-version = "1.94"`, as a point release.
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.94.0
+
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
 
       - name: cargo check at MSRV
         run: cargo check --workspace --all-targets
 
   format:
     name: Format Check
-    runs-on: [self-hosted, macos-public]
+    runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Self-hosted runners carry a Homebrew rustup (RUSTUP_HOME=~/.rustup) and a
-      # runner-local CARGO_HOME (see runner .env) that holds NO rustc/cargo proxies,
-      # so any action that exposes "$CARGO_HOME/bin" on PATH resolves nothing.
-      # Put the actual toolchain bin dir on PATH instead.
-      - name: Ensure stable toolchain on PATH
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
-          dirname "$(rustup which --toolchain stable rustc)" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
   quality:
     name: Clippy + Tests
-    runs-on: [self-hosted, macos-public]
+    # Preview image with Xcode 27 on macOS 27 (actions/runner-images#14404);
+    # the Swift localization build below does not compile on Xcode 26.
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      # `make verify` would run the live Loctree throne rows wherever `loct` is on
+      # PATH. A hosted runner has none; say so explicitly instead of relying on it.
+      CODESCRIBE_SKIP_LIVE_THRONE: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Show the Xcode this image selected
+        run: xcodebuild -version
 
       - name: Verify catalog localization contracts
         run: make verify-l10n-catalog
@@ -84,7 +97,7 @@ jobs:
       - name: Prepare compiler localization extraction
         run: |
           command -v xcodegen >/dev/null || brew install xcodegen
-          # Fresh per run, even on a reused runner; never read cached extraction.
+          # Fresh per run; never read cached extraction.
           echo "L10N_DERIVED=$(mktemp -d "$RUNNER_TEMP/codescribe-l10n.XXXXXX")" >> "$GITHUB_ENV"
           echo "L10N_CONFIG=Debug" >> "$GITHUB_ENV"
 
@@ -103,11 +116,13 @@ jobs:
       - name: Verify the helper installer compiles without the app target
         run: make verify-install-bus
 
-      # Same PATH contract as the format job — Homebrew rustup, proxy-less CARGO_HOME.
-      - name: Ensure stable toolchain on PATH
-        run: |
-          rustup toolchain install stable --profile minimal --component clippy --no-self-update
-          dirname "$(rustup which --toolchain stable rustc)" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+
+      # A hosted runner starts cold on every run; the cache carries the registry
+      # and the target directory between runs of this job.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
