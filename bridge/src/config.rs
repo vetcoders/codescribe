@@ -190,7 +190,7 @@ pub struct CsSettings {
     pub asr_mode: Option<String>,
     /// Lane this snapshot actually runs, `AsrProductMode::as_str()`:
     /// `UserSettings::resolved_asr_mode()` over the persisted mode, the consent
-    /// record and the legacy `use_local_stt` choice of the same seal. Read-only;
+    /// record and the saved `use_local_stt` choice of the same seal. Read-only;
     /// Swift shows and gates on it and never re-derives it from `asr_mode`.
     pub resolved_asr_mode: String,
     /// Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
@@ -2826,6 +2826,44 @@ mod reset_tests {
     }
 
     use codescribe_core::test_isolation::EnvGuard;
+
+    #[test]
+    fn resolved_asr_projection_uses_the_same_seal_as_the_session_factory() {
+        use super::CsSettings;
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let cases = [
+            (None, None, None, "apple_only"),
+            (None, None, Some(true), "local_power"),
+            (None, None, Some(false), "cloud"),
+            (Some("apple_only"), None, Some(true), "apple_only"),
+            (Some("local_power"), None, None, "local_power"),
+            (Some("cloud"), None, None, "apple_only"),
+            (Some("cloud"), Some("denied"), None, "apple_only"),
+            (Some("cloud"), Some("granted"), None, "cloud"),
+        ];
+        for (mode, consent, local, expected) in cases {
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                std::path::PathBuf::from("/fixture/asr-projection"),
+                1_700_000_000_000,
+            );
+            input.user_settings.asr_mode = mode.map(str::to_owned);
+            input.user_settings.cloud_consent = consent.map(str::to_owned);
+            input.user_settings.use_local_stt = local;
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            let projected = CsSettings::from_runtime_snapshot(&snapshot);
+            assert_eq!(projected.resolved_asr_mode, expected);
+            assert_eq!(
+                projected.resolved_asr_mode,
+                snapshot.user_settings().resolved_asr_mode().mode.as_str()
+            );
+            assert_eq!(
+                projected.asr_mode.as_deref(),
+                mode,
+                "retain editable intent"
+            );
+        }
+    }
 
     /// Write a fixture file, creating its parents. Panics on failure: a fixture
     /// that did not materialize would make the assertions below meaningless.

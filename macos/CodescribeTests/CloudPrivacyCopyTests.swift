@@ -149,7 +149,10 @@ final class CloudPrivacyCopyTests: XCTestCase {
     persisted.cloudConsent = nil
     let applyWrite: (String, String) -> Void = { key, value in
       writes.append((key, value))
-      if key == "CODESCRIBE_ASR_MODE" { persisted.asrMode = value }
+      if key == "CODESCRIBE_ASR_MODE" {
+        persisted.asrMode = value
+        persisted.resolvedAsrMode = value
+      }
       if key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = value }
     }
     let model = SettingsViewModel(

@@ -139,6 +139,7 @@ struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
   private let mark: Mark
   let tint: Color
+  var plateOpacity: Double = 0.12
   static let diameter: CGFloat = 22
 
   private enum Mark {
@@ -147,9 +148,10 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color) {
+  init(symbol: String, tint: Color, plateOpacity: Double = 0.12) {
     mark = .symbol(symbol)
     self.tint = tint
+    self.plateOpacity = plateOpacity
   }
 
   init(character: String, tint: Color) {
@@ -161,7 +163,7 @@ struct OverlayMicrophoneGlyph: View {
     markView
       .foregroundStyle(tint)
       .frame(width: Self.diameter, height: Self.diameter)
-      .background { Circle().fill(tint.opacity(0.12)) }
+      .background { Circle().fill(tint.opacity(plateOpacity)) }
       .overlay {
         Circle()
           .strokeBorder(tint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
@@ -334,6 +336,7 @@ struct OverlayChannelStatusView: View {
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
   let onShowMonitor: (() -> Void)?
+  var headerSelected = false
   var mutedChannels: [String: Bool] = [:]
   var pendingMuteChannels: Set<String> = []
   var onTogglePlayback: ((String) -> Void)?
@@ -416,27 +419,32 @@ struct OverlayChannelStatusView: View {
 
   var body: some View {
     Button(action: showMonitor) {
-      OverlayMicrophoneGlyph(character: OverlayHeaderGlyph.agents, tint: palette.mutedText.color)
-        .contentShape(Circle())
-        .overlay(alignment: .topTrailing) {
-          if unreadCounts.values.contains(where: { $0 > 0 }) {
-            Circle()
-              .fill(palette.primaryText.color)
-              .frame(width: 5, height: 5)
-              .offset(x: 2, y: -2)
-              .accessibilityLabel("Unread replies")
-              .accessibilityIdentifier("overlay-unread-replies")
-          }
+      OverlayMicrophoneGlyph(
+        character: OverlayHeaderGlyph.agents,
+        tint: headerSelected ? Color(nsColor: .controlAccentColor) : palette.mutedText.color
+      )
+      .contentShape(Circle())
+      .overlay(alignment: .topTrailing) {
+        if unreadCounts.values.contains(where: { $0 > 0 }) {
+          Circle()
+            .fill(palette.primaryText.color)
+            .frame(width: 5, height: 5)
+            .offset(x: 2, y: -2)
+            .accessibilityLabel("Unread replies")
+            .accessibilityIdentifier("overlay-unread-replies")
         }
+      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .fixedSize()
     .modifier(
       OverlayHeaderControlChrome(
-        title: String(localized: "Agents"), accent: .agents, palette: palette)
+        title: String(localized: "Agents"), accent: .agents, palette: palette,
+        selected: headerSelected)
     )
     .accessibilityLabel("Agents")
+    .accessibilityAddTraits(headerSelected ? .isSelected : [])
     .accessibilityValue(glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
   }

@@ -1175,9 +1175,9 @@ struct DoneStepView: View {
       .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
       Button(calibrationTitle) { model.calibrateMicrophone() }
-      .csAction(prominent: true)
-      .disabled(!model.calibrationAvailable)
-      .accessibilityIdentifier("onboarding-done-calibrate")
+        .csAction(prominent: true)
+        .disabled(!model.calibrationAvailable)
+        .accessibilityIdentifier("onboarding-done-calibrate")
     }
   }
 

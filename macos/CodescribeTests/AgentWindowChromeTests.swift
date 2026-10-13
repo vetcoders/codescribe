@@ -28,8 +28,8 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertNotNil(theme, "width \(width) expanded \(expanded)")
 
         pump(window) {
-          window.toolbar?.items.compactMap(\.view).count == 3
-            && self.sidebarMaterial(in: window) != nil
+          (window.toolbar?.items.compactMap(\.view).count ?? 0) >= 3
+            && (!expanded || self.sidebarMaterial(in: window) != nil)
             && window.title == "Agent"
             && window.titleVisibility == .hidden
             && window.toolbarStyle == .unified
@@ -47,12 +47,8 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertEqual(
           sidebar?.minimumThickness, AgentSidebarMetrics.minimumWidth,
           "width \(width) expanded \(expanded)")
-        XCTAssertTrue(
-          sidebar?.allowsFullHeightLayout ?? false, "width \(width) expanded \(expanded)")
-        XCTAssertFalse(
-          controller?.splitViewItems.last?.allowsFullHeightLayout ?? true,
-          "width \(width) expanded \(expanded)")
         XCTAssertEqual(sidebar?.isCollapsed, !expanded, "width \(width) expanded \(expanded)")
+        XCTAssertEqual(window.contentMinSize.width, 640)
         if expanded, let sidebar {
           XCTAssertEqual(
             frame(sidebar.viewController.view).maxY, window.frame.height, accuracy: 1,
@@ -60,22 +56,29 @@ final class AgentWindowChromeTests: XCTestCase {
           XCTAssertEqual(
             frame(sidebar.viewController.view).minY, 0, accuracy: 1,
             "sidebar must reach the bottom edge at \(width)")
-          let search = try XCTUnwrap(
-            first(in: sidebar.viewController.view) { $0 is NSSearchField })
+          let search = try XCTUnwrap(first(in: try XCTUnwrap(theme)) { $0 is NSSearchField })
           XCTAssertLessThanOrEqual(
             frame(search).maxY, window.contentLayoutRect.maxY + 1,
             "full-height material must not move search under the toolbar")
         }
 
-        let material = sidebarMaterial(in: window)
-        XCTAssertEqual(material?.material, .sidebar, "width \(width) expanded \(expanded)")
-        XCTAssertEqual(material?.blendingMode, .behindWindow, "width \(width) expanded \(expanded)")
+        if expanded {
+          let material = try XCTUnwrap(sidebarMaterial(in: window))
+          XCTAssertEqual(material.material, .sidebar, "width \(width) expanded \(expanded)")
+          XCTAssertEqual(
+            material.blendingMode, .behindWindow, "width \(width) expanded \(expanded)")
+          XCTAssertEqual(frame(material).maxY, window.frame.height, accuracy: 1)
+          XCTAssertEqual(frame(material).minY, 0, accuracy: 1)
+        }
 
         // SwiftUI toolbar children are not projected through AppKit AX in
         // XCTest. Measure the public NSToolbarItem views instead of treating
         // absent AX children as absent production controls.
         let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-        XCTAssertEqual(controls.count, 3, "navigation, identity and actions clusters")
+        XCTAssertGreaterThanOrEqual(controls.count, 3, "system toggle joins the native clusters")
+        XCTAssertGreaterThanOrEqual(
+          controls.filter { frame($0).height >= 51 }.count, 3,
+          "brand, title and actions share the three-line native header rhythm")
         let bounds = NSRect(origin: .zero, size: window.frame.size)
         for control in controls {
           let rect = frame(control)
@@ -98,8 +101,8 @@ final class AgentWindowChromeTests: XCTestCase {
   func testSidebarMaterialFollowsReduceTransparencyAndIncreaseContrast() throws {
     for (reduced, contrast) in [(false, false), (true, false), (false, true)] {
       let host = NSHostingView(
-        rootView: AgentSidebarMaterial(
-          reduceTransparency: reduced, increaseContrast: contrast))
+        rootView: SettingsSidebarMaterial(
+          reduceTransparency: reduced, contrast: contrast ? .increased : .standard))
       let window = NSWindow(
         contentRect: NSRect(x: 80, y: 80, width: 300, height: 400),
         styleMask: [.titled], backing: .buffered, defer: false)
@@ -107,16 +110,58 @@ final class AgentWindowChromeTests: XCTestCase {
       window.contentView = host
       window.orderFrontRegardless()
       defer { window.close() }
-      pump(window) { self.sidebarMaterial(in: window) != nil }
-      let effect = try XCTUnwrap(sidebarMaterial(in: window))
-      XCTAssertEqual(effect.material, reduced ? .contentBackground : .sidebar)
-      XCTAssertEqual(effect.blendingMode, reduced ? .withinWindow : .behindWindow)
-      XCTAssertEqual(effect.isEmphasized, contrast)
+      pump(window) { host.fittingSize.height > 0 }
+      if reduced || contrast {
+        XCTAssertNil(sidebarMaterial(in: window), "shared policy uses an opaque system canvas")
+      } else {
+        let effect = try XCTUnwrap(sidebarMaterial(in: window))
+        XCTAssertEqual(effect.material, .sidebar)
+        XCTAssertEqual(effect.blendingMode, .behindWindow)
+        XCTAssertNil(effect.hitTest(NSPoint(x: 10, y: 10)))
+      }
     }
   }
 
-  private func mount(contentWidth: CGFloat) -> NSWindow {
-    let store = AgentChatStore(engine: nil)
+  func testMessagesExtendUnderTheFloatingComposer() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    let messages = (0..<30).map {
+      ChatMessage(
+        role: .assistant, timestamp: nil,
+        text: "Turn \($0). " + String(repeating: "words ", count: 25))
+    }
+    let store = AgentChatStore(
+      engine: nil, threads: [ChatThread(title: "Scroll fixture", meta: "", messages: messages)])
+    let window = mount(contentWidth: 1120, store: store)
+    defer { window.close() }
+    let root = try XCTUnwrap(window.contentView)
+    pump(window) {
+      self.first(in: root) {
+        ($0 as? NSTextView)?.accessibilityIdentifier() == "agent-composer-text"
+      }
+        != nil
+    }
+    let input = try XCTUnwrap(
+      first(in: root) { ($0 as? NSTextView)?.accessibilityIdentifier() == "agent-composer-text" })
+    let scroll = try XCTUnwrap(
+      first(in: root) { view in
+        guard let scroll = view as? NSScrollView, scroll.frame.height > 200 else { return false }
+        return self.first(in: scroll) { $0 is NSTableView } == nil
+      } as? NSScrollView)
+    XCTAssertGreaterThan(scroll.documentView?.bounds.height ?? 0, scroll.contentSize.height)
+    XCTAssertLessThan(
+      frame(scroll).minY, frame(input).maxY,
+      "conversation scroll surface must continue beneath the input, not stop above its strip")
+    XCTAssertGreaterThanOrEqual(
+      frame(scroll).maxY, window.contentLayoutRect.maxY,
+      "messages must continue under the native header")
+  }
+
+  private func mount(contentWidth: CGFloat, store: AgentChatStore? = nil)
+    -> NSWindow
+  {
+    let store = store ?? AgentChatStore(engine: nil)
     if let thread = store.currentThread {
       store.rename(thread, to: "Probe")
     }
@@ -159,8 +204,7 @@ final class AgentWindowChromeTests: XCTestCase {
   private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { view in
-      guard let effect = view as? NSVisualEffectView else { return false }
-      return effect.material == .sidebar || effect.material == .contentBackground
+      view is SettingsSidebarVisualEffectNSView
     } as? NSVisualEffectView
   }
 

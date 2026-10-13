@@ -305,6 +305,7 @@ final class WhisperDownloadStoreTests: XCTestCase {
     setup?.advance()
     XCTAssertEqual(setup?.step, .apiKey)
     setup?.finish()
+    await awaitCondition { finished }
     XCTAssertTrue(finished)
     XCTAssertFalse(engine.showOnboarding)
     XCTAssertTrue(store?.inFlight == true)
@@ -314,5 +315,36 @@ final class WhisperDownloadStoreTests: XCTestCase {
     XCTAssertEqual(transfer.starts, 1)
     transfer.finish()
     await awaitCondition { retainedStore == nil }
+  }
+
+  func testCancelledRequiredModelBlocksFinishUntilAValidModelessLaneIsChosen() async {
+    let transfer = PendingWhisperDownload()
+    let store = makeStore(transfer)
+    let engine = MockOnboardingEngine(progress: 8)
+    engine.lane = .localPower
+    let setup = OnboardingViewModel(
+      engine: engine, hotkeys: MockHotkeysEngine(), agentStatus: MockAgentStatusEngine(),
+      probe: MockPermissionProbe(.allGranted), whisperDownloadStore: store,
+      preferredLanguages: ["en"], processInterfaceLanguage: .english)
+    var finished = false
+    setup.onFinished = { finished = true }
+    store.start()
+    await awaitCondition { transfer.listener != nil }
+    store.cancel()
+    transfer.fail()
+    await awaitCondition { !store.inFlight }
+    XCTAssertEqual(store.readiness, .cancelled)
+    setup.finish()
+    await awaitCondition { !setup.finishPending }
+    XCTAssertEqual(setup.dictationReadiness.localModelBlocker, .cancelled)
+    XCTAssertFalse(finished)
+    XCTAssertTrue(engine.showOnboarding)
+
+    engine.lane = .appleOnly
+    setup.finish()
+    await awaitCondition { finished }
+    XCTAssertTrue(finished, "an explicit working lane does not require unused Whisper weights")
+    XCTAssertFalse(engine.showOnboarding)
+    XCTAssertEqual(store.readiness, .cancelled, "Finish never starts or substitutes a model")
   }
 }

@@ -32,7 +32,7 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
         .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
-        .background(SettingsSidebarMaterial())
+        .background { SettingsSidebarMaterial().ignoresSafeArea() }
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
@@ -41,10 +41,13 @@ struct SettingsView: View {
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
+        sectionToolbar.sharedBackgroundVisibility(.hidden)
       } else {
         brandToolbar
+        sectionToolbar
       }
     }
+    .modifier(CSWindowHeaderChrome())
     .csFocusPolicy()
     .controlSize(.regular)
     .frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
@@ -106,15 +109,26 @@ struct SettingsView: View {
 
   private var brandToolbar: some ToolbarContent {
     ToolbarItem(placement: .navigation) {
-      HStack(spacing: 16) {
-        Wordmark(size: 16)
-          .fixedSize(horizontal: true, vertical: false)
-        Text(verbatim: "v\(model.appVersion)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
+      CSWindowHeaderItem {
+        HStack(spacing: 16) {
+          Wordmark(size: 16)
+            .fixedSize(horizontal: true, vertical: false)
+          Text(verbatim: "v\(model.appVersion)")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+        }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
+    }
+  }
+
+  private var sectionToolbar: some ToolbarContent {
+    ToolbarItem(placement: .principal) {
+      CSWindowHeaderItem {
+        Text(model.currentTab?.title ?? model.section.title)
+          .font(CSFont.ui(14, .semibold))
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
     }
   }
 

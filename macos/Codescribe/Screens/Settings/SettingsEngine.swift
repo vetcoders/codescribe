@@ -23,15 +23,17 @@ import Foundation
 /// One physical executor for Settings and Setup credential operations. A view
 /// cancelling its task does not cancel or free a synchronous Security call.
 enum ProviderCredentialIO {
-  private static let queue = DispatchQueue(label: "codescribe.provider-credentials", qos: .userInitiated)
+  private static let queue = DispatchQueue(
+    label: "codescribe.provider-credentials", qos: .userInitiated)
 
   static func perform<T: Sendable>(
     _ operation: @escaping @Sendable () throws -> T
   ) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in
       queue.async {
-        do { continuation.resume(returning: try operation()) }
-        catch { continuation.resume(throwing: error) }
+        do { continuation.resume(returning: try operation()) } catch {
+          continuation.resume(throwing: error)
+        }
       }
     }
   }
@@ -100,7 +102,8 @@ protocol SettingsEngine {
   func setApiKeyAsync(account: String, secret: String) async throws
   func clearApiKeyAsync(account: String) async throws
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
   func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval
   func signOutAccountAsync(providerId: String) async throws
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption
@@ -145,16 +148,28 @@ protocol SettingsEngine {
 
 extension SettingsEngine {
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
-    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
+    CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
+      sttLanes: sttLanes(), revision: 0)
   }
   func providerAccessRevision() -> UInt64 { 0 }
   func composerModelCacheStamp() -> String? { nil }
-  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try setApiKey(account: account, secret: secret)
+  }
   func clearApiKeyAsync(account: String) async throws { try clearApiKey(account: account) }
-  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption { try addCustomProvider(draft: draft) }
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption { try updateCustomProvider(id: id, draft: draft) }
-  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval { try removeCustomProvider(id: id) }
-  func signOutAccountAsync(providerId: String) async throws { try signOutAccount(providerId: providerId) }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try addCustomProvider(draft: draft)
+  }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
+  { try updateCustomProvider(id: id, draft: draft) }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
+    try removeCustomProvider(id: id)
+  }
+  func signOutAccountAsync(providerId: String) async throws {
+    try signOutAccount(providerId: providerId)
+  }
 
   func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
     try teachDictionaryFromStore()
@@ -282,22 +297,32 @@ final class RealSettingsEngine: SettingsEngine {
   func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
   func composerModelCacheStamp() -> String? { config.composerModelCacheStamp() }
   func setApiKeyAsync(account: String, secret: String) async throws {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().setApiKey(account: account, secret: secret)
+    }
   }
   func clearApiKeyAsync(account: String) async throws {
     try await ProviderCredentialIO.perform { try CodescribeConfig().clearApiKey(account: account) }
   }
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().addCustomProvider(draft: draft) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().addCustomProvider(draft: draft)
+    }
   }
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().updateCustomProvider(id: id, draft: draft) }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
+  {
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().updateCustomProvider(id: id, draft: draft)
+    }
   }
   func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
     try await ProviderCredentialIO.perform { try CodescribeConfig().removeCustomProvider(id: id) }
   }
   func signOutAccountAsync(providerId: String) async throws {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().signOutAccount(providerId: providerId) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().signOutAccount(providerId: providerId)
+    }
   }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
@@ -1014,7 +1039,7 @@ extension CsSettings {
     bufferedInterimSec: nil,
     backendMaxUploadMb: nil,
     asrMode: nil,
-    // What the core resolves for no mode, no consent and no legacy choice.
+    // What the core resolves for no mode, no consent and no saved local choice.
     resolvedAsrMode: "apple_only",
     cloudConsent: nil,
     asrGatewayUrl: nil

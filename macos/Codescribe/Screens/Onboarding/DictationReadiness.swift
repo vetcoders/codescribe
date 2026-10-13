@@ -15,7 +15,7 @@ enum DictationLane: String, Equatable, Sendable {
   case cloud
 
   /// The core's own resolution (`resolve_asr_product_mode`: persisted mode,
-  /// consent record and the legacy `use_local_stt` choice) projected by the
+  /// consent record and the saved `use_local_stt` choice) projected by the
   /// bridge from the same snapshot as `CsSettings.resolvedAsrMode`. Swift reads
   /// it and never re-derives it from `asrMode` and `cloudConsent`. The bridge
   /// writes only these three values; anything else is a binding mismatch and

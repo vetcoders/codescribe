@@ -460,14 +460,14 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack(spacing: 8) {
+      HStack(spacing: 4) {
         if supportsPlayback {
           Button {
             onControl(active)
           } label: {
             Image(systemName: active ? "stop.fill" : "play.fill")
               .font(.system(size: 10 * textScale))
-              .frame(width: 24)
+              .frame(width: 24, alignment: .trailing)
               .contentShape(Rectangle())
           }
           .buttonStyle(.borderless)
@@ -479,6 +479,7 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
             Text(playbackLabel(playback.state, reason: playback.reason))
               .lineLimit(1)
               .help(playbackLabel(playback.state, reason: playback.reason))
+              .accessibilityIdentifier("overlay-playback-status-\(message.id)")
           } else if pending {
             Text("Requesting playback").lineLimit(1)
           }

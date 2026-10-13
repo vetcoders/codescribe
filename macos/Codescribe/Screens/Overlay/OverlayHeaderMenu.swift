@@ -136,8 +136,8 @@ struct OverlayHeaderMenu: View {
 }
 
 /// The header's one window control: an explicit Pin / Unpin. Pinned is the
-/// filled glyph on the strong plate, unpinned the outline on the muted one, so
-/// the state reads at a glance. Unpinning a resting panel lets it go after
+/// filled accent glyph and hairline, without lifting the circular background.
+/// Unpinning a resting panel lets it go after
 /// `OverlayState.pinReleaseDelaySeconds` with a fade, never at the click.
 @MainActor
 struct OverlayPinButton: View {
@@ -152,14 +152,17 @@ struct OverlayPinButton: View {
     } label: {
       OverlayMicrophoneGlyph(
         symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin,
-        tint: pinned ? palette.primaryText.color : palette.mutedText.color
+        tint: pinned ? Color(nsColor: .controlAccentColor) : palette.mutedText.color,
+        plateOpacity: 0
       )
       .contentShape(Circle())
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .fixedSize()
-    .modifier(OverlayHeaderControlChrome(title: help, accent: .state, palette: palette))
+    .modifier(
+      OverlayHeaderControlChrome(title: help, accent: .state, palette: palette, selected: pinned)
+    )
     .accessibilityLabel("Keep visible between takes")
     .accessibilityValue(
       pinned
@@ -167,6 +170,7 @@ struct OverlayPinButton: View {
         : String(localized: "Off", comment: "Toggle state")
     )
     .accessibilityAddTraits(.isToggle)
+    .accessibilityAddTraits(pinned ? .isSelected : [])
     .accessibilityIdentifier("overlay-pin")
   }
 

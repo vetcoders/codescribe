@@ -13556,6 +13556,13 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var asrMode: String?
     /**
+     * Lane this snapshot actually runs, `AsrProductMode::as_str()`:
+     * `UserSettings::resolved_asr_mode()` over the persisted mode, the consent
+     * record and the saved `use_local_stt` choice of the same seal. Read-only;
+     * Swift shows and gates on it and never re-derives it from `asr_mode`.
+     */
+    public var resolvedAsrMode: String
+    /**
      * Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
      * `"denied"`. Cloud without `granted` resolves to Apple-only.
      */
@@ -13625,6 +13632,12 @@ public struct CsSettings: Equatable, Hashable {
          * Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
          * `"local_power"` | `"cloud"`. Written back via `update_config`.
          */asrMode: String?,
+        /**
+         * Lane this snapshot actually runs, `AsrProductMode::as_str()`:
+         * `UserSettings::resolved_asr_mode()` over the persisted mode, the consent
+         * record and the saved `use_local_stt` choice of the same seal. Read-only;
+         * Swift shows and gates on it and never re-derives it from `asr_mode`.
+         */resolvedAsrMode: String,
         /**
          * Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
          * `"denied"`. Cloud without `granted` resolves to Apple-only.
@@ -13696,6 +13709,7 @@ public struct CsSettings: Equatable, Hashable {
         self.bufferedInterimSec = bufferedInterimSec
         self.backendMaxUploadMb = backendMaxUploadMb
         self.asrMode = asrMode
+        self.resolvedAsrMode = resolvedAsrMode
         self.cloudConsent = cloudConsent
         self.asrGatewayUrl = asrGatewayUrl
     }
@@ -13777,6 +13791,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 bufferedInterimSec: FfiConverterOptionFloat.read(from: &buf),
                 backendMaxUploadMb: FfiConverterOptionUInt64.read(from: &buf),
                 asrMode: FfiConverterOptionString.read(from: &buf),
+                resolvedAsrMode: FfiConverterString.read(from: &buf),
                 cloudConsent: FfiConverterOptionString.read(from: &buf),
                 asrGatewayUrl: FfiConverterOptionString.read(from: &buf)
         )
@@ -13846,6 +13861,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterOptionFloat.write(value.bufferedInterimSec, into: &buf)
         FfiConverterOptionUInt64.write(value.backendMaxUploadMb, into: &buf)
         FfiConverterOptionString.write(value.asrMode, into: &buf)
+        FfiConverterString.write(value.resolvedAsrMode, into: &buf)
         FfiConverterOptionString.write(value.cloudConsent, into: &buf)
         FfiConverterOptionString.write(value.asrGatewayUrl, into: &buf)
     }

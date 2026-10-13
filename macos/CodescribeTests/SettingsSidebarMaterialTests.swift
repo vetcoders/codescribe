@@ -177,6 +177,33 @@ final class SettingsSidebarMaterialTests: XCTestCase {
 
   // MARK: - Appearance Adaptation
 
+  func testSettingsHeaderKeepsTheSharedHeightAndFullSidebarMaterial() async throws {
+    let host = NSHostingController(rootView: SettingsView(model: .preview(.creator)))
+    let window = NSWindow(contentViewController: host)
+    window.isReleasedWhenClosed = false
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.orderFrontRegardless()
+    defer { window.close() }
+    for _ in 0..<5 {
+      await nextMainQueueTurn()
+      host.view.layoutSubtreeIfNeeded()
+    }
+    let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
+    XCTAssertGreaterThanOrEqual(
+      controls.filter { $0.frame.height >= 51 }.count, 2,
+      "Settings brand and pane title use the same header rhythm as Agent")
+    for view in controls {
+      let rect = view.convert(view.bounds, to: nil)
+      XCTAssertLessThanOrEqual(rect.maxY, window.frame.height)
+      XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY)
+    }
+    let material = try XCTUnwrap(
+      findView(of: SettingsSidebarVisualEffectNSView.self, in: host.view))
+    let frame = material.convert(material.bounds, to: nil)
+    XCTAssertEqual(frame.maxY, window.frame.height, accuracy: 1)
+    XCTAssertEqual(frame.minY, 0, accuracy: 1)
+  }
+
   func testSystemAppearanceAdaptationBetweenLightAndDark() {
     let aqua = NSAppearance(named: .aqua)!
     let darkAqua = NSAppearance(named: .darkAqua)!

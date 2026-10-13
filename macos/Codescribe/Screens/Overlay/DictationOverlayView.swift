@@ -830,18 +830,24 @@ struct DictationOverlayView: View {
         .allowsHitTesting(false)
 
       HStack(spacing: compact ? 4 : 8) {
+        let transcriptionSelected =
+          !state.isCollapsed && !state.showsAgentMonitor
+          && state.selectedConversationID == nil
         Button(action: state.showTranscription) {
           OverlayMicrophoneGlyph(
             character: OverlayHeaderGlyph.transcription,
-            tint: palette.mutedText.color)
+            tint: transcriptionSelected
+              ? Color(nsColor: .controlAccentColor) : palette.mutedText.color)
         }
         .buttonStyle(.plain)
         .csFocusOutline()
         .modifier(
           OverlayHeaderControlChrome(
-            title: transcriptPreviewHelp, accent: .transcription, palette: palette)
+            title: transcriptPreviewHelp, accent: .transcription, palette: palette,
+            selected: transcriptionSelected)
         )
         .accessibilityLabel("Show transcription")
+        .accessibilityAddTraits(transcriptionSelected ? .isSelected : [])
         .accessibilityValue(transcriptPreviewAccessibilityValue)
         .accessibilityIdentifier("overlay-transcription-preview")
         if let error = state.expansionPreferenceError {
@@ -884,6 +890,9 @@ struct DictationOverlayView: View {
       onShowMonitor: state.toggleAgentSidebar
     )
     view.mutedChannels = state.channelPlaybackMuted
+    view.headerSelected =
+      !state.isCollapsed
+      && (state.showsAgentMonitor || state.selectedConversationID != nil)
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
     view.onDismissMonitor = state.hideAgentSidebar
