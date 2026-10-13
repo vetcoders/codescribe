@@ -39,6 +39,35 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # Localization gates (pre-commit stage)
+  #
+  # Both read files and exit; neither builds anything, so they cost about a
+  # tenth of a second each and run on every commit rather than on a `files:`
+  # pattern. The channel matters: a Swift string, a Rust field, a catalog edit
+  # and a classification line live in four different places, and a gate that
+  # fires only for some of them is a gate with a door in it.
+  #
+  # `verify-l10n-sync` is deliberately absent: it compares the catalog with a
+  # real Debug build and belongs to CI (.github/workflows/l10n.yml), not to a
+  # commit.
+  - repo: local
+    hooks:
+      - id: verify-l10n-catalog
+        name: localization catalogs
+        entry: scripts/git-hooks/embargo-guard.sh verify-l10n-catalog -- make verify-l10n-catalog
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+
+      - id: verify-l10n-bridge
+        name: localization bridge census
+        entry: scripts/git-hooks/embargo-guard.sh verify-l10n-bridge -- env L10N_BASE=origin/main make verify-l10n-bridge
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+
   # Prettier for non-Rust files (pre-commit stage)
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v2.7.1
