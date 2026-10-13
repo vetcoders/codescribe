@@ -360,6 +360,41 @@ mod tests {
     }
 
     #[test]
+    fn recorded_36de5e98_two_windows_agree_on_the_dispute_and_disagree_at_a_cold_edge() {
+        // The full-take window and a cold window started at 7.5 s inside the
+        // word "z". Over the disputed PCM ("pumpy to" / "Computer Use.") and
+        // over each real word they count the same. Over the whole cold span
+        // they do not: the cold window hallucinated an extra word start at
+        // its cut edge ("As the" over the cut "z"). The ledger answers the
+        // first questions and refuses the last one.
+        let mut ledger = AcousticLedger::new();
+        ledger
+            .record_word_onset_evidence(recorded_window(
+                "parakeet_word_onsets_36de5e98.json",
+                "take-36de5e98-tail",
+            ))
+            .unwrap();
+        ledger
+            .record_word_onset_evidence(recorded_window(
+                "parakeet_word_onsets_36de5e98_from_7p5s.json",
+                "take-36de5e98-tail",
+            ))
+            .unwrap();
+        let dispute = OccurrenceIdentity::new("take-36de5e98-tail", 1, 385_920, 444_480);
+        assert_eq!(ledger.word_onset_count(&dispute), Some(2));
+        let to = OccurrenceIdentity::new("take-36de5e98-tail", 1, 410_880, 416_640);
+        assert_eq!(ledger.word_onset_count(&to), Some(0));
+        let computer = OccurrenceIdentity::new("take-36de5e98-tail", 1, 385_920, 412_800);
+        assert_eq!(ledger.word_onset_count(&computer), Some(1));
+        let cold_span = OccurrenceIdentity::new("take-36de5e98-tail", 1, 360_000, 480_000);
+        assert_eq!(
+            ledger.word_onset_count(&cold_span),
+            None,
+            "3 against 4 word starts over the cold window's span: unresolved, not averaged"
+        );
+    }
+
+    #[test]
     fn absence_of_the_witness_is_not_a_vote() {
         let mut ledger = AcousticLedger::new();
         let owner = OccurrenceIdentity::new("take", 1, 249_120, 370_560);

@@ -1,0 +1,61 @@
+{
+  "model_id": "mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c",
+  "weights_sha256": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592",
+  "input_sample_rate": 48000,
+  "frame_hop_samples": 3840,
+  "frame0_centre_sample": 360000,
+  "centre_uncertainty_samples": 1920,
+  "pcm_span": [360000, 480000],
+  "decode": "greedy_tdt",
+  "runtime": "parakeet-mlx 0.5.3 f32",
+  "events": [
+    {
+      "frame": 2,
+      "centre_sample": 367680,
+      "duration_frames": 1,
+      "token_id": 2405,
+      "word_start": true,
+      "confidence": 0.5086
+    },
+    {
+      "frame": 5,
+      "centre_sample": 379200,
+      "duration_frames": 1,
+      "token_id": 506,
+      "word_start": true,
+      "confidence": 0.6157
+    },
+    {
+      "frame": 9,
+      "centre_sample": 394560,
+      "duration_frames": 3,
+      "token_id": 1469,
+      "word_start": true,
+      "confidence": 0.9334
+    },
+    {
+      "frame": 12,
+      "centre_sample": 406080,
+      "duration_frames": 3,
+      "token_id": 5146,
+      "word_start": false,
+      "confidence": 0.9959
+    },
+    {
+      "frame": 18,
+      "centre_sample": 429120,
+      "duration_frames": 2,
+      "token_id": 5066,
+      "word_start": true,
+      "confidence": 0.9046
+    },
+    {
+      "frame": 27,
+      "centre_sample": 463680,
+      "duration_frames": 2,
+      "token_id": 7883,
+      "word_start": false,
+      "confidence": 0.4806
+    }
+  ]
+}
