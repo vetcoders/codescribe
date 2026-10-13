@@ -138,7 +138,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.tab.agentLanes",
-          defaultValue: "provider, model, endpoint, assistive, formatting",
+          defaultValue:
+            "provider, model, endpoint, assistive, formatting, bus, speech pause, silence",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

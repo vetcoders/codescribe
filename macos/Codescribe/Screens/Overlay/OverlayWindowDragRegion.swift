@@ -63,14 +63,14 @@ struct OverlayMenuCursorRegion: NSViewRepresentable {
 final class OverlayMenuCursorRegionView: NSView {
   private weak var owner: FloatingOverlayPanel?
   var onHover: ((Bool) -> Void)?
-  private var hovered = false
+  private(set) var hovered = false
   private var hoverArea: NSTrackingArea?
 
   func updateHover(at point: NSPoint?) {
     let inside =
       point.map {
         window != nil && !isHiddenOrHasHiddenAncestor
-          && visibleRect.contains(convert($0, from: nil))
+          && bounds.intersection(visibleRect).contains(convert($0, from: nil))
       } ?? false
     setHovered(inside)
   }
@@ -85,7 +85,7 @@ final class OverlayMenuCursorRegionView: NSView {
     super.updateTrackingAreas()
     if let hoverArea { removeTrackingArea(hoverArea) }
     let area = NSTrackingArea(
-      rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      rect: bounds.intersection(visibleRect), options: [.mouseEnteredAndExited, .activeAlways],
       owner: self, userInfo: nil)
     addTrackingArea(area)
     hoverArea = area

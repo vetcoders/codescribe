@@ -91,7 +91,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
       XCTAssertNotEqual(hover, palette.agentAccent.color)
-      XCTAssertEqual(hover, palette.listeningStatus.color)
+      XCTAssertEqual(hover, Color(nsColor: .controlAccentColor))
     }
   }
 
@@ -202,6 +202,89 @@ final class OverlayHeaderChromeTests: XCTestCase {
       80, "disabled roster row took a hover wash")
   }
 
+  /// Exercise sibling controls in one native panel. A per-control fixture cannot
+  /// catch stale hover left on an earlier button or a region spanning the group.
+  func testHeaderPointerTraversalHighlightsOnlyOneHairlineAndKeepsGlyphsNeutral() throws {
+    let pinned = OverlayState()
+    let controls = HStack(spacing: 8) {
+      HeaderHoverTranscription(palette: .dark)
+      HeaderHoverAgents(palette: .dark, unread: false)
+      OverlayPinButton(state: pinned, palette: .dark)
+      headerHoverControls(palette: .dark, microphone: true, preview: true)
+    }
+    .padding(12)
+    .background(OverlayAppearancePalette.dark.desktopBackground.color)
+    .preferredColorScheme(.dark)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 280, y: 460, width: 180, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.appearance = NSAppearance(named: .darkAqua)
+    let host = NSHostingView(rootView: controls)
+    host.frame = NSRect(x: 0, y: 0, width: 180, height: 46)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    headerSettle(host)
+    let regions = panel.menuCursorRegions.allObjects.compactMap {
+      $0 as? OverlayMenuCursorRegionView
+    }.filter { $0.onHover != nil }.sorted {
+      $0.convert($0.bounds, to: host).minX < $1.convert($1.bounds, to: host).minX
+    }
+    XCTAssertEqual(regions.count, 5)
+    try headerPointer(false, on: host)
+    headerSettle(host, seconds: 0.16)
+    let rest = headerRaster(host)
+    let scale = CGFloat(rest.width) / host.bounds.width
+    for target in regions {
+      let rect = target.convert(target.bounds, to: host)
+      XCTAssertLessThanOrEqual(rect.width, 22.1, "hover region must fit one button")
+      let location = target.convert(NSPoint(x: target.bounds.midX, y: target.bounds.midY), to: nil)
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved, location: location, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
+      panel.sendEvent(event)
+      headerSettle(host, seconds: 0.16)
+      XCTAssertEqual(regions.filter(\.hovered).count, 1, "hover must leave earlier controls")
+      XCTAssertTrue(target.hovered)
+      let current = headerPixels(host)
+      var ringChanges = 0
+      var interiorChanges = 0
+      var siblingChanges = 0
+      for other in regions {
+        let otherRect = other.convert(other.bounds, to: host)
+        let cx = otherRect.midX * scale
+        let cy = otherRect.midY * scale
+        for y in Int(otherRect.minY * scale)..<Int(otherRect.maxY * scale) {
+          for x in Int(otherRect.minX * scale)..<Int(otherRect.maxX * scale) {
+            let index = y * rest.width + x
+            guard rest.pixels.indices.contains(index), current.indices.contains(index) else {
+              continue
+            }
+            let a = rest.pixels[index]
+            let b = current[index]
+            let delta = abs(a.red - b.red) + abs(a.green - b.green) + abs(a.blue - b.blue)
+            guard delta > 0.12 else { continue }
+            if other !== target {
+              siblingChanges += 1
+            } else if hypot(CGFloat(x) + 0.5 - cx, CGFloat(y) + 0.5 - cy) < 8 * scale {
+              interiorChanges += 1
+            } else {
+              ringChanges += 1
+            }
+          }
+        }
+      }
+      XCTAssertGreaterThan(ringChanges, 5, "hover hairline must be visible")
+      XCTAssertEqual(interiorChanges, 0, "hover must not fill or recolor the glyph")
+      XCTAssertEqual(siblingChanges, 0, "hover must not paint sibling controls")
+    }
+    try headerPointer(false, on: host)
+    headerSettle(host, seconds: 0.16)
+    XCTAssertTrue(regions.allSatisfy { !$0.hovered })
+  }
+
   private func assertNeutralHover<V: View>(
     _ name: String, palette: OverlayAppearancePalette, view: V
   ) throws {
@@ -212,10 +295,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
         "\(name) rests on a role color")
     }
     XCTAssertGreaterThan(
-      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.04,
+      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.04,
       "\(name) hover did not move toward the shared accent")
     XCTAssertTrue(
-      headerContains(frames.hover, near: palette.listeningStatus, tolerance: 0.2),
+      headerContains(frames.hover, near: headerSystemAccent(palette), tolerance: 0.2),
       "\(name) hover has no shared accent pixel")
     XCTAssertLessThan(
       headerDelta(frames.rest, frames.leave), 0.08, "\(name) hover did not clear")
@@ -236,7 +319,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
       "\(name) microphone lost its recording color on hover")
     XCTAssertGreaterThan(
-      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.03,
+      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.03,
       "\(name) microphone hover ring did not appear")
     XCTAssertLessThan(
       headerDelta(frames.rest, frames.leave), 0.08, "\(name) microphone hover stuck")
@@ -251,7 +334,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         isFinalizing: true, recordingLight: .processing),
       palette: palette)
     XCTAssertLessThan(
-      headerShift(frames.rest, frames.hover, toward: palette.listeningStatus), 0.02,
+      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.02,
       "\(name) disabled microphone took the hover accent")
     XCTAssertLessThan(headerDelta(frames.rest, frames.hover), 0.08)
   }
@@ -308,10 +391,12 @@ final class OverlayHeaderChromeTests: XCTestCase {
         $0 as? OverlayMenuCursorRegionView
       }
       .filter {
-        $0.onHover != nil && $0.visibleRect.width >= minimumWidth && $0.visibleRect.height <= 120
+        $0.onHover != nil && $0.bounds.intersection($0.visibleRect).width >= minimumWidth
+          && $0.bounds.height <= 120
       }
       let row = try XCTUnwrap(rows.first, "Production drawer must mount a full-width hover region")
-      location = row.convert(NSPoint(x: row.visibleRect.midX, y: row.visibleRect.midY), to: nil)
+      let rect = row.bounds.intersection(row.visibleRect)
+      location = row.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
     }
     let event = try XCTUnwrap(
       NSEvent.mouseEvent(
@@ -427,6 +512,19 @@ final class OverlayHeaderChromeTests: XCTestCase {
     )
     if interactive { status.onShowTranscription = {} }
     return status.monitorBody(maximumHeight: 260)
+  }
+
+  private func headerSystemAccent(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    var color = NSColor.controlAccentColor
+    NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)?
+      .performAsCurrentDrawingAppearance {
+        color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
+      }
+    let hex =
+      UInt32((color.redComponent * 255).rounded()) << 16
+      | UInt32((color.greenComponent * 255).rounded()) << 8
+      | UInt32((color.blueComponent * 255).rounded())
+    return OverlayColorToken(hex)
   }
 
   private func headerContains(

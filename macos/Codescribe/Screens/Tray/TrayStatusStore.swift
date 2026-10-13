@@ -53,13 +53,14 @@ enum TrayStatusDotIcon {
 }
 
 /// Menu-bar image for one tray status. Idle and settled states stay the brand
-/// mark as a real template image, so the menu bar appearance tints it. A dot
-/// is only composited for live capture activity.
+/// mark and its indicator as a real template image. Live activity colors the
+/// indicator while the mark continues to follow the menu bar appearance.
 enum MenuBarStatusImage {
   static func make(base: NSImage, dot: NSColor?) -> NSImage {
     guard let dot else {
-      base.isTemplate = true
-      return base
+      let image = TrayStatusDotIcon.composite(base: base, dot: .black, glyphTint: .black)
+      image.isTemplate = true
+      return image
     }
     return TrayStatusDotIcon.composite(base: base, dot: dot, glyphTint: .labelColor)
   }
@@ -232,17 +233,15 @@ final class TrayStatusStore: ObservableObject {
     }
   }
 
-  /// Live-capture dot composited into the menu-bar mark. Idle, success,
-  /// starting, and attention states return nil so the button keeps a template
-  /// image. Listening is one recording color, including an assistive
-  /// attachment. Processing stays the working orange. Error, thermal, and
-  /// hotkey details stay in the tooltip and the menu status row.
+  /// Nil means a monochrome template indicator, never an absent indicator.
+  /// Recording and Agent recording keep their own activity colors; processing
+  /// stays orange. Other status details live in the tooltip and menu row.
   var menuBarDotColor: Color? {
     switch status.kind {
     case .starting, .idle, .success, .error, .thermal, .hotkeyConflict:
       return nil
     case .listening:
-      return CSColor.indicatorRecording
+      return status.indicatorMode == .assistive ? CSColor.modeAgent : CSColor.indicatorRecording
     case .processing:
       return CSColor.modeProcessing
     }

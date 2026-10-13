@@ -14,6 +14,20 @@ struct AgentLanesTab: View {
     VStack(alignment: .leading, spacing: 0) {
       LLMLanesSection(model: model)
 
+      SettingsSecondsSlider(
+        title: String(localized: "Pause before sending to Codescribe Bus"),
+        detail: String(
+          localized:
+            "Waits this long after you stop speaking before sending your message. Also sets the silence limit for hands-free dictation. Changes apply when you open a channel or start a recording."
+        ),
+        seconds: model.settings.toggleSilenceSec,
+        value: $model.toggleSilenceSlider,
+        range: 0.5...30,
+        step: 0.5
+      )
+      .padding(.top, CSSpace.section)
+      .accessibilityIdentifier("agent-bus-speech-pause")
+
       // Mirrors `OverlayState`: armed in Agent mode only, fires after
       // `autoHideDelaySeconds`, cancelled the moment the transcript is edited.
       // One label, not a section heading repeating the switch name (Founder

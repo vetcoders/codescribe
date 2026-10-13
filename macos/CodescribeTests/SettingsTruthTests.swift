@@ -910,6 +910,29 @@ final class SettingsTruthTests: XCTestCase {
       ])
   }
 
+  func testBusSpeechPauseSliderPersistsAcrossReloadWithoutEnablingAgentAutoSend() {
+    var stored = CsSettings.sample
+    stored.agentAutoSend = false
+    var writes: [(String, String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TOGGLE_SILENCE_SEC", let seconds = Float(value) {
+          stored.toggleSilenceSec = seconds
+        }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    for pause in [0.5, 10.0, 30.0] {
+      model.toggleSilenceSlider = pause
+      model.refresh()
+      XCTAssertEqual(model.toggleSilenceSlider, pause, accuracy: 0.001)
+      XCTAssertFalse(model.settings.agentAutoSend)
+    }
+    XCTAssertEqual(writes.map(\.0), Array(repeating: "TOGGLE_SILENCE_SEC", count: 3))
+    XCTAssertEqual(writes.map(\.1), ["0.5", "10.0", "30.0"])
+  }
+
   /// The Lab pickers write their exact promoted keys on a developer build and
   /// nothing at all on a production bundle.
   func testLabPickersWriteExactPromotedKeysOnlyOnTheDeveloperSurface() {

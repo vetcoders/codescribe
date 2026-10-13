@@ -203,14 +203,14 @@ struct OverlayRecordingControls: View {
   }
 
   private var recordingGlyph: some View {
-    OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint, adoptsHeaderHover: false)
+    OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
   }
 
   private var previewButton: some View {
     Button(action: togglePreview) {
       Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
-        .modifier(OverlayHeaderHoverForeground(resting: palette.mutedText.color))
+        .foregroundStyle(palette.mutedText.color)
         .frame(width: Self.controlDiameter, height: Self.controlDiameter)
         .contentShape(Circle())
         .overlay {

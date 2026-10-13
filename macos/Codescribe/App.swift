@@ -927,7 +927,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func applyStatusItemStatus() {
     guard let button = statusItem?.button else { return }
     // The glyph never changes with status. Idle and settled states stay a
-    // template image. Listening and processing composite an activity dot.
+    // template image, including the corner indicator. Listening and processing
+    // color that indicator.
     // Unread replies stay in the tooltip.
     button.imagePosition = .imageOnly
     button.title = ""
