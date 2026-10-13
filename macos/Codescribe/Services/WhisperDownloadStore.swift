@@ -15,7 +15,10 @@ extension CsWhisperModelStatus {
 }
 
 private enum WhisperDownloadEvent: Sendable {
-  case progress(file: String, bytesDone: UInt64, bytesTotal: Int64)
+  /// `at` is stamped where the callback arrives from the transfer thread, not
+  /// where the main actor finally paints it, so a rate computed from two events
+  /// measures the network instead of how far behind the UI has fallen.
+  case progress(file: String, bytesDone: UInt64, bytesTotal: Int64, at: Date)
   case complete(path: String)
 }
 
@@ -36,13 +39,19 @@ private final class CancellationFlag: @unchecked Sendable {
 final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
   private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
   private let cancellation = CancellationFlag()
+  private let clock: @Sendable () -> Date
 
-  fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
+  fileprivate init(
+    continuation: AsyncStream<WhisperDownloadEvent>.Continuation,
+    clock: @escaping @Sendable () -> Date
+  ) {
     self.continuation = continuation
+    self.clock = clock
   }
 
   func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
-    continuation.yield(.progress(file: file, bytesDone: bytesDone, bytesTotal: bytesTotal))
+    continuation.yield(
+      .progress(file: file, bytesDone: bytesDone, bytesTotal: bytesTotal, at: clock()))
   }
 
   func onComplete(path: String) {
@@ -80,7 +89,9 @@ final class WhisperDownloadStore: ObservableObject {
 
   private let statusProvider: StatusProvider
   private let download: Download
-  private let now: @MainActor () -> Date
+  /// Stamps progress events on the transfer thread; injected so a fixture can
+  /// hand-wind it.
+  private let now: @Sendable () -> Date
   private var downloadTask: Task<Void, Never>?
   private var sink: WhisperDownloadProgressSink?
   private var rateSamples: [(at: Date, bytes: UInt64)] = []
@@ -99,7 +110,7 @@ final class WhisperDownloadStore: ObservableObject {
     download: @escaping Download = { listener in
       try await downloadWhisperModel(listener: listener)
     },
-    now: @escaping @MainActor () -> Date = { Date() }
+    now: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.statusProvider = statusProvider
     self.download = download
@@ -124,16 +135,26 @@ final class WhisperDownloadStore: ObservableObject {
     error = nil
     rateSamples.removeAll()
     sampledFile = nil
-    let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
-    let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
+    // Keep only the newest progress: the main actor repaints the whole window
+    // per event and falls behind a fast transfer, and an unbounded backlog is
+    // then painted long after the bytes arrived. A `.complete` dropped by the
+    // same policy costs nothing — the terminal outcome comes from the awaited
+    // `download(sink)` result below, which sets detail and fraction itself.
+    let channel = AsyncStream<WhisperDownloadEvent>.makeStream(
+      bufferingPolicy: .bufferingNewest(1))
+    let sink = WhisperDownloadProgressSink(continuation: channel.continuation, clock: now)
     self.sink = sink
     let events = Task { @MainActor [self] in
       for await event in channel.stream {
         switch event {
-        case .progress(let file, let bytesDone, let bytesTotal):
+        case .progress(let file, let bytesDone, let bytesTotal, let at):
+          // Once a stop is asked for, the screen belongs to "Stopping the
+          // download…" until the terminal outcome. Events still in flight say
+          // nothing about a transfer the user has already ended.
+          guard !cancelling else { continue }
           detail = Self.progressLine(
             file: file, bytesDone: bytesDone, bytesTotal: bytesTotal,
-            bytesPerSecond: observedRate(file: file, bytesDone: bytesDone))
+            bytesPerSecond: observedRate(file: file, bytesDone: bytesDone, at: at))
           if bytesTotal > 0 {
             fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
           } else {
@@ -205,13 +226,12 @@ final class WhisperDownloadStore: ObservableObject {
 
   /// Transfer rate in bytes per second over the recent window, or `nil` while
   /// too little has been seen of the current file to say anything honest.
-  private func observedRate(file: String, bytesDone: UInt64) -> Double? {
+  private func observedRate(file: String, bytesDone: UInt64, at: Date) -> Double? {
     // Progress is reported per file, so a new file starts a new measurement.
     if file != sampledFile {
       sampledFile = file
       rateSamples.removeAll()
     }
-    let at = now()
     rateSamples.append((at: at, bytes: bytesDone))
     rateSamples.removeAll { at.timeIntervalSince($0.at) > Self.rateWindow }
     guard let first = rateSamples.first, let last = rateSamples.last else { return nil }
