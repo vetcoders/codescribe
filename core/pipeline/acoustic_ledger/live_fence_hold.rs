@@ -131,3 +131,126 @@ impl AcousticLedger {
         &self.live_fence_holds
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::word_adjudication_tests::measured_ledger_at_rate;
+
+    const RATE: u32 = 48_000;
+    const SECOND: u64 = RATE as u64;
+
+    /// Ten seconds of a quiet floor (about -95 dBFS, under the ladder's
+    /// absolute floor) with speech bursts (about -25 dBFS) over the given spans. Deterministic: no RNG.
+    fn synthetic_take(bursts: &[(f64, f64)]) -> Vec<f32> {
+        let total = 10 * SECOND as usize;
+        let mut state: u32 = 0x9e37_79b9;
+        let mut pcm = Vec::with_capacity(total);
+        for index in 0..total {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (state >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+            let seconds = index as f64 / RATE as f64;
+            let speaking = bursts
+                .iter()
+                .any(|(start, end)| seconds >= *start && seconds < *end);
+            let level = if speaking { 0.1 } else { 0.000_03 };
+            pcm.push(noise * level * 2.0);
+        }
+        pcm
+    }
+
+    fn window(words: &[(&str, f64, f64)], decode: (f64, f64)) -> Vec<WordPin> {
+        let at = |seconds: f64| (seconds * RATE as f64).round() as u64;
+        words
+            .iter()
+            .map(|(text, start, end)| {
+                WordPin::new(at(*start), at(*end), *text)
+                    .with_decode_window(at(decode.0), at(decode.1))
+            })
+            .collect()
+    }
+
+    fn ledger(pcm: &[f32]) -> (AcousticLedger, OccurrenceIdentity) {
+        let owner = OccurrenceIdentity::new("live-fence-hold", 1, 0, 10 * SECOND);
+        let mut ledger = measured_ledger_at_rate(&owner, pcm, RATE);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        (ledger, owner)
+    }
+
+    #[test]
+    fn a_burst_running_through_the_fence_holds_the_words_sitting_on_it() {
+        let pcm = synthetic_take(&[(1.0, 1.5), (2.0, 2.4), (8.7, 9.3)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let pins = window(
+            &[("a", 1.0, 1.5), ("b", 2.0, 2.4), ("c", 8.7, 9.0)],
+            (0.0, 9.0),
+        );
+        assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
+        assert_eq!(ledger.text_of(&owner), Some("a b"));
+        let holds = ledger.live_fence_holds();
+        assert_eq!(holds.len(), 1);
+        assert_eq!(holds[0].fence, 9 * SECOND);
+        assert_eq!(
+            holds[0]
+                .held
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c"]
+        );
+        assert!(
+            holds[0].burst_start >= 8 * SECOND + SECOND / 2 && holds[0].burst_start < 9 * SECOND
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(
+            ledger
+                .slot_alternatives
+                .iter()
+                .any(|alternative| alternative.candidate == "c"
+                    && alternative.reason == EDGE_CUT_OPEN_BURST)
+        );
+    }
+
+    #[test]
+    fn a_fence_closed_by_silence_holds_nothing() {
+        let pcm = synthetic_take(&[(1.0, 1.5), (2.0, 2.4), (8.0, 8.5)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let pins = window(
+            &[("a", 1.0, 1.5), ("b", 2.0, 2.4), ("c", 8.0, 8.5)],
+            (0.0, 9.0),
+        );
+        assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
+        assert_eq!(ledger.text_of(&owner), Some("a b c"));
+        assert!(ledger.live_fence_holds().is_empty());
+        assert!(!ledger.text_recovery_pending(&owner));
+    }
+
+    #[test]
+    fn a_fence_at_the_end_of_the_capture_never_holds() {
+        // Speech runs to the very end of the PCM: there is no later window,
+        // so the last words must reach delivery.
+        let pcm = synthetic_take(&[(1.0, 1.5), (9.6, 10.0)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let pins = window(&[("a", 1.0, 1.5), ("c", 9.6, 10.0)], (0.0, 10.0));
+        assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
+        assert_eq!(ledger.text_of(&owner), Some("a c"));
+        assert!(ledger.live_fence_holds().is_empty());
+    }
+
+    #[test]
+    fn only_whisper_windows_with_one_shared_fence_are_measured() {
+        let pcm = synthetic_take(&[(1.0, 1.5), (8.7, 9.3)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+        let mut pins = window(&[("a", 1.0, 1.5), ("c", 8.7, 9.0)], (0.0, 9.0));
+        assert!(ledger.hold_edge_cut_pins(&apple, &mut pins).is_none());
+        assert_eq!(pins.len(), 2);
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let mut unfenced = vec![WordPin::new(SECOND, SECOND + SECOND / 2, "a")];
+        assert!(ledger.hold_edge_cut_pins(&whisper, &mut unfenced).is_none());
+        assert_eq!(unfenced.len(), 1);
+    }
+}
