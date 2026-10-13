@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- The localization gate no longer has a door in it. A Polish string that was
+  still the English source counted as translated, so a catalog could report a
+  complete language and ship in English; that is refused now, in every language
+  and at every plural form, except where a key is identical on purpose and says
+  so in `scripts/data/l10n-identical-allowed.txt`. The census of English prose
+  Rust hands to Swift reads the callbacks and the returns as well as the
+  records — 407 strings where it used to see 338, seven of them sentences a
+  person already reads — and the list of them is ratchetted against the branch
+  being merged into, so a new one is refused rather than counted. Both checks
+  run on commit and on push, and the whole set now runs in CI on every branch
+  rather than only on `main` and `develop`, where a push to an integration
+  branch used to pass unexamined.
 - The overlay header speaks in marks: **✦** opens the **Agents** sidebar (it was a generic sidebar icon) and **✍︎** shows the transcription (it was a waveform with a magnifying glass). Both are text characters from the Dingbats family of the roster's ❖ that every macOS font cascade paints; the proposed Legacy Computing robots render only with a separately installed font and would show as empty boxes elsewhere. The position button is gone from the header: the six anchors, **Free motion** and **Show transcript by default** moved to a menu that a secondary click anywhere on the header opens, in mini, compact and expanded forms alike. In its place sits an explicit **Pin**, filled while it keeps the overlay between takes. Unpinning a resting overlay no longer leaves it to the five-second countdown that the pointer resting on the button held off: it stays three seconds, during which a second click pins it again, then fades out over 0.6 s. A pointer that comes back pauses the release, an uncommitted draft holds it, and a new take ends it. Every header control now answers the pointer: the action pill's hint appears just below it — in a click-through child window, because the mini and compact header is the whole 46-point panel and the native tooltip does not reliably appear on a non-activating panel — and a hairline ring takes the hue of what the control opens: olive for the transcription, the assistive violet for agents, terracotta for the pin and the recording controls. The floating conversation name pill, **0 · All** included, is now a button with the system's interactive glass that opens the **Agents** sidebar while the conversation stays selected, and the sidebar's clickable rows show the tray's faint hover wash (`docs/guide/chat-overlay.md`).
 - Cloud transcription works on the first dictation after launch. The recording controller was sealed before the app had read the Keychain, so a live key kept only there was missing from that first configuration and every take ran on Apple alone (`layer1_decision … reason="live_key_missing"`) until some Settings save happened to reseal it. Restoring saved provider access now reseals the controller too; a recording in progress keeps its own settings and picks the key up on the next take.
 
