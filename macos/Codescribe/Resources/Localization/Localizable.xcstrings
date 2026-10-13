@@ -3607,7 +3607,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Build %@"
+            "value" : "Kompilacja %@"
           }
         }
       }
