@@ -84,10 +84,10 @@ flowchart TB
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-### Codescribe plugin for Claude Code and Junie
+### Codescribe plugin for Claude Code, Junie and OMP
 
 One plugin, installed with the helpers by `make install-bus`, connects the
-conversation you are in to a named channel. Both clients add the same local
+conversation you are in to a named channel. All three clients add the same local
 marketplace at `~/.codescribe/agent-bridge/runtime/plugins`.
 
 - **Claude Code:** `/plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
@@ -99,6 +99,10 @@ marketplace at `~/.codescribe/agent-bridge/runtime/plugins`.
   messages into the same conversation during an active reception task. Junie
   release 26.10.5 limits each wait to three minutes; indefinite idle wakeup is not
   yet established there. See [Junie](docs/JUNIE_PLUGIN.md).
+- **OMP (oh-my-pi):** `omp plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins`,
+  `omp plugin install codescribe@codescribe`, then `/codescribe leon 4` inside `omp`. The
+  bundled extension holds `cs-bus --omp-wake` between turns and starts a turn for each
+  new message, with no model turn during silence. See [OMP](docs/OMP_PLUGIN.md).
 
 ## OpenAI Provider
 

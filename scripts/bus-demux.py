@@ -6069,6 +6069,10 @@ def main() -> int:
     native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
     native.add_argument("--claude-code-wake", action="store_true",
                         help="Claude Code plugin hook: read the hook payload on stdin and exit 75 when this attached session's mailbox has an unannounced message")
+    native.add_argument("--omp-wake", action="store_true",
+                        help="OMP extension waiter: with --provider omp --session ID [--host-pid PID], exit 75 when this attached session's mailbox has an unannounced message")
+    parser.add_argument("--host-pid", type=int, default=None,
+                        help="with --omp-wake: the OMP process whose exit ends the wait silently")
     parser.add_argument("--extensions-directory", type=Path, default=None,
                         help="with --install-junie-extension: override Junie's extensions directory")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
@@ -6263,12 +6267,18 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.mcp or args.install_junie_extension or args.claude_code_wake:
-        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "extensions_directory", "bridge_home", "bus", "entrypoint"}
+    if args.mcp or args.install_junie_extension or args.claude_code_wake or args.omp_wake:
+        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "omp_wake", "host_pid", "provider", "session",
+                   "extensions_directory", "bridge_home", "bus", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
             parser.error("native extension commands combine only with --bridge-home/--bus")
         if args.extensions_directory and not args.install_junie_extension:
             parser.error("--extensions-directory requires --install-junie-extension")
+        if args.omp_wake:
+            if args.provider != "omp" or not args.session:
+                parser.error("--omp-wake requires --provider omp and --session ID")
+        elif args.host_pid is not None or args.provider is not None or args.session is not None:
+            parser.error("--host-pid, --provider and --session combine only with --omp-wake here")
         import importlib.util
         spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
         module = importlib.util.module_from_spec(spec)
@@ -6280,6 +6290,8 @@ def main() -> int:
                 emit(module.install_extension(sys.modules[__name__], root, directory.expanduser()))
             elif args.claude_code_wake:
                 return module.claude_code_wake(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
+            elif args.omp_wake:
+                return module.omp_wake(sys.modules[__name__], root, args.bus, args.session, args.host_pid)
             else:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0
