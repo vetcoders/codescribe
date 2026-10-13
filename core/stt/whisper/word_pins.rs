@@ -46,6 +46,7 @@ pub struct MeasuredWord {
 }
 
 impl MeasuredWord {
+    #[cfg(test)]
     pub fn is_aligned(&self) -> bool {
         self.span.is_some()
     }

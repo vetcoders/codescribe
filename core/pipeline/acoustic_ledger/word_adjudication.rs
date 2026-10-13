@@ -1,6 +1,9 @@
 //! Local lexical evidence owned by AcousticLedger. PCM and SlotTarget identify
 //! a component; strings are compared only after that component is resolved.
 use super::*;
+
+/// One adopted pin range: (offered start, offered end) → (held start, held end).
+pub(super) type PinMove = ((u64, u64), (u64, u64));
 use serde::{Deserialize, Serialize};
 
 /// A repeated PCM frame cannot corroborate a trial. Replay rejects earlier
@@ -504,7 +507,7 @@ impl AcousticLedger {
     pub(super) fn rebase_word_evidence(
         &mut self,
         observation: &ObservationIdentity,
-        moves: &[((u64, u64), (u64, u64))],
+        moves: &[PinMove],
     ) {
         let Some(input) = self.word_adjudication.input.as_mut() else {
             return;
