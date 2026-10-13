@@ -3,90 +3,61 @@ import SwiftUI
 
 /// Thread list content hosted in the native split sidebar column.
 ///
-/// Uses native macOS sidebar List selection and NSSearchField idioms coherent
-/// with Settings, delegating row cards, selection fills, and focus outlines
-/// to the system list.
+/// The same composition as the Settings sidebar: a system sidebar List with
+/// sidebar search, the shared sidebar material behind the whole column, and
+/// system row selection, hover and focus.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
-  var onContentWidthChanged: (CGFloat) -> Void = { _ in }
   @State private var search: String = ""
   @State private var selectedThreadID: UUID?
   @State private var deleteCandidate: ChatThread?
   @State private var editingThreadID: UUID?
   @State private var renameDraft: String = ""
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @Environment(\.colorSchemeContrast) private var contrast
 
   var body: some View {
-    VStack(spacing: 0) {
-      searchHeader
-
-      threadList
-    }
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      newThreadFooter
-    }
-    .background {
-      AgentSidebarMaterial(
-        reduceTransparency: reduceTransparency,
-        increaseContrast: contrast == .increased
-      )
-    }
-    .onPreferenceChange(ThreadRailWidthPreference.self, perform: onContentWidthChanged)
-    .onAppear {
-      selectedThreadID = store.selectedThreadID
-    }
-    .onChange(of: store.selectedThreadID) { _, newID in
-      if selectedThreadID != newID {
-        selectedThreadID = newID
+    threadList
+      .searchable(text: $search, placement: .sidebar, prompt: "Search threads")
+      .onSubmit(of: .search) {
+        handleSearchCommit()
       }
-    }
-    .onChange(of: selectedThreadID) { _, newID in
-      guard let newID, newID != store.selectedThreadID else { return }
-      select(newID)
-    }
-    .onChange(of: search) { _, newValue in
-      store.searchThreads(newValue)
-    }
-    .onChange(of: store.threadSearchQuery) { _, newValue in
-      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
-        search = newValue
+      .modifier(AgentScrollBottomBar { newThreadFooter })
+      // On the List, not a stack around it: the list runs through the
+      // titlebar, so the material does too.
+      .background(SettingsSidebarMaterial())
+      .onAppear {
+        selectedThreadID = store.selectedThreadID
       }
-    }
-    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
-  }
-
-  private var searchHeader: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      NativeThreadSearchField(
-        text: $search,
-        prompt: String(localized: "Search threads"),
-        onCommit: {
-          handleSearchCommit()
-        },
-        onCancel: {
-          handleSearchCancel()
-        },
-        onMoveDown: {
-          handleSearchMoveDown()
+      .onChange(of: store.selectedThreadID) { _, newID in
+        if selectedThreadID != newID {
+          selectedThreadID = newID
         }
-      )
-
-      if let error = store.threadSearchError {
-        Text(error)
-          .font(.caption)
-          .foregroundStyle(Color.secondary)
-          .padding(.horizontal, 4)
-          .accessibilityLabel(error)
       }
-    }
-    .padding(.horizontal, 10)
-    .padding(.top, 10)
-    .padding(.bottom, 6)
+      .onChange(of: selectedThreadID) { _, newID in
+        guard let newID, newID != store.selectedThreadID else { return }
+        select(newID)
+      }
+      .onChange(of: search) { _, newValue in
+        store.searchThreads(newValue)
+      }
+      .onChange(of: store.threadSearchQuery) { _, newValue in
+        if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+          search = newValue
+        }
+      }
+      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
   }
 
   private var threadList: some View {
     List(selection: $selectedThreadID) {
+      // Untagged, so the system selection never lands on it.
+      if let error = store.threadSearchError {
+        Section {
+          Text(error)
+            .font(.caption)
+            .foregroundStyle(Color.secondary)
+            .accessibilityLabel(error)
+        }
+      }
       ForEach(sectionedThreads, id: \.section) { group in
         Section(group.section.title) {
           ForEach(group.threads) { thread in
@@ -114,18 +85,20 @@ struct ThreadRail: View {
     .accessibilityIdentifier("thread-rail-list")
   }
 
+  /// The system glass button, the same regular glass as the composer field,
+  /// floats over the list. Rows scroll beneath it under the bar's edge
+  /// effect; hover, focus, Reduce Transparency and Increase Contrast come
+  /// from the system style.
   private var newThreadFooter: some View {
-    VStack(spacing: 0) {
-      Divider()
-      Button(action: { store.newThread() }) {
-        Label("New thread", systemImage: "plus")
-          .frame(maxWidth: .infinity)
-      }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
-      .padding(8)
-      .accessibilityLabel("New thread")
+    Button(action: { store.newThread() }) {
+      Label("New thread", systemImage: "plus")
+        .frame(maxWidth: .infinity)
     }
+    .modifier(NewThreadButtonStyle())
+    .controlSize(.large)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .accessibilityLabel("New thread")
   }
 
   private var filteredThreads: [ChatThread] {
@@ -152,6 +125,8 @@ struct ThreadRail: View {
     }
   }
 
+  /// Return in the sidebar search opens the first hit when nothing is
+  /// selected, then hands typing back to the composer.
   private func handleSearchCommit() {
     if selectedThreadID == nil {
       if let first = sectionedThreads.flatMap(\.threads).first {
@@ -159,22 +134,6 @@ struct ThreadRail: View {
       }
     }
     store.requestComposerFocus()
-  }
-
-  private func handleSearchCancel() {
-    store.requestComposerFocus()
-  }
-
-  private func handleSearchMoveDown() {
-    let ordered = sectionedThreads.flatMap(\.threads)
-    guard !ordered.isEmpty else { return }
-    if let current = selectedThreadID, ordered.contains(where: { $0.id == current }) {
-      if let next = ThreadRailNavigation.adjacentThread(from: current, in: ordered, step: 1) {
-        select(next.id)
-      }
-    } else if let first = ordered.first {
-      select(first.id)
-    }
   }
 
   // MARK: - Rename (inline edit)
@@ -233,10 +192,16 @@ enum ThreadRowTitle {
   }
 }
 
-private struct ThreadRailWidthPreference: PreferenceKey {
-  static let defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = max(value, nextValue())
+/// The rail's New thread action on the system glass button style; macOS 14
+/// and 15 keep the bordered button over the bar material.
+private struct NewThreadButtonStyle: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.buttonStyle(.glass)
+    } else {
+      content.buttonStyle(.bordered)
+    }
   }
 }
 
@@ -263,21 +228,7 @@ private struct ThreadRow: View {
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
 
   var body: some View {
-    rowContent(measuring: false)
-      .background {
-        rowContent(measuring: true)
-          .fixedSize(horizontal: true, vertical: true)
-          .hidden()
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-          .background {
-            GeometryReader { probe in
-              Color.clear.preference(
-                key: ThreadRailWidthPreference.self,
-                value: probe.size.width + 44)
-            }
-          }
-      }
+    rowContent
       .padding(.vertical, 3)
       .contextMenu {
         Button("Rename") {
@@ -327,7 +278,7 @@ private struct ThreadRow: View {
       : String(localized: "Favorite thread")
   }
 
-  private func rowContent(measuring: Bool) -> some View {
+  private var rowContent: some View {
     VStack(alignment: .leading, spacing: 3) {
       HStack(spacing: 6) {
         if thread.isMaxConsultation {
@@ -336,7 +287,7 @@ private struct ThreadRow: View {
             .foregroundStyle(Color.secondary)
             .accessibilityLabel("Max consultation")
         }
-        if isEditing && !measuring {
+        if isEditing {
           TextField("", text: $renameDraft)
             .textFieldStyle(.plain)
             .font(.system(size: 13, weight: .semibold))
@@ -348,25 +299,17 @@ private struct ThreadRow: View {
               if !focused, isEditing { onCommitRename() }
             }
         } else {
-          if measuring {
-            titleLabel
-          } else {
-            titleLabel
-              .onTapGesture(count: 2) { onBeginRename() }
-          }
+          titleLabel
+            .onTapGesture(count: 2) { onBeginRename() }
         }
         Spacer(minLength: 4)
-        if measuring {
+        Button(action: onToggleFavorite) {
           favoriteLabel
-        } else {
-          Button(action: onToggleFavorite) {
-            favoriteLabel
-          }
-          .buttonStyle(.plain)
-          .opacity(thread.isFavorite ? 1 : 0.35)
-          .help(favoriteHelp)
-          .accessibilityLabel(favoriteHelp)
         }
+        .buttonStyle(.plain)
+        .opacity(thread.isFavorite ? 1 : 0.35)
+        .help(favoriteHelp)
+        .accessibilityLabel(favoriteHelp)
       }
 
       HStack(spacing: 5) {
@@ -403,124 +346,6 @@ private struct ThreadRow: View {
       .foregroundStyle(Color.secondary)
       .frame(width: 16, height: 16)
       .contentShape(Rectangle())
-  }
-}
-
-/// Native macOS search field control wrapping NSSearchField.
-///
-/// Manages live search without modifying bindings during updateNSView.
-/// Releasing Escape clears the search field or dismisses to composer.
-struct NativeThreadSearchField: NSViewRepresentable {
-  @Binding var text: String
-  var prompt: String = String(localized: "Search threads")
-  var onCommit: (() -> Void)? = nil
-  var onCancel: (() -> Void)? = nil
-  var onMoveDown: (() -> Void)? = nil
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(self)
-  }
-
-  func makeNSView(context: Context) -> NSSearchField {
-    let field = NSSearchField()
-    field.placeholderString = prompt
-    field.controlSize = .small
-    field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
-    field.focusRingType = .default
-    field.sendsSearchStringImmediately = true
-    field.sendsWholeSearchString = false
-    field.target = context.coordinator
-    field.action = #selector(Coordinator.searchAction(_:))
-    field.delegate = context.coordinator
-    field.setAccessibilityLabel(prompt)
-    field.setAccessibilityIdentifier("thread-rail-search-field")
-    field.setContentHuggingPriority(.defaultHigh, for: .vertical)
-    field.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
-    return field
-  }
-
-  func updateNSView(_ nsView: NSSearchField, context: Context) {
-    context.coordinator.parent = self
-    if nsView.stringValue != text {
-      nsView.stringValue = text
-    }
-  }
-
-  func sizeThatFits(
-    _ proposal: ProposedViewSize, nsView: NSSearchField, context: Context
-  ) -> CGSize? {
-    let size = nsView.fittingSize
-    let width = proposal.width ?? size.width
-    return CGSize(width: width, height: max(22, size.height))
-  }
-
-  @MainActor
-  final class Coordinator: NSObject, NSSearchFieldDelegate {
-    var parent: NativeThreadSearchField
-
-    init(_ parent: NativeThreadSearchField) {
-      self.parent = parent
-    }
-
-    @objc func searchAction(_ sender: NSSearchField) {
-      let string = sender.stringValue
-      if parent.text != string {
-        parent.text = string
-      }
-    }
-
-    func controlTextDidChange(_ obj: Notification) {
-      guard let field = obj.object as? NSSearchField else { return }
-      let string = field.stringValue
-      if parent.text != string {
-        parent.text = string
-      }
-    }
-
-    func control(
-      _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
-    ) -> Bool {
-      if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-        if !parent.text.isEmpty {
-          parent.text = ""
-          if let field = control as? NSSearchField {
-            field.stringValue = ""
-          }
-          return true
-        } else {
-          guard let onCancel = parent.onCancel else { return false }
-          onCancel()
-          return true
-        }
-      }
-      if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-        parent.onCommit?()
-        return true
-      }
-      if commandSelector == #selector(NSResponder.moveDown(_:)) {
-        if let onMoveDown = parent.onMoveDown {
-          onMoveDown()
-          return true
-        }
-      }
-      return false
-    }
-  }
-}
-
-// MARK: - Keyboard navigation (pure, unit-testable)
-
-enum ThreadRailNavigation {
-  /// The thread `step` rows away from `id` in the rail's visible order
-  /// (`+1` down, `-1` up). The ends do not wrap; an unknown `id` or an
-  /// out-of-range step yields `nil`.
-  static func adjacentThread(
-    from id: UUID, in ordered: [ChatThread], step: Int
-  ) -> ChatThread? {
-    guard let index = ordered.firstIndex(where: { $0.id == id }) else { return nil }
-    let target = index + step
-    guard ordered.indices.contains(target) else { return nil }
-    return ordered[target]
   }
 }
 
@@ -749,34 +574,5 @@ enum AgentSidebarSelection {
 
   static func strokeWidth(increaseContrast: Bool) -> CGFloat {
     increaseContrast ? 2 : 1
-  }
-}
-
-/// System sidebar glass. Reduce Transparency falls back to an opaque
-/// content background that still sits inside the window.
-struct AgentSidebarMaterial: NSViewRepresentable {
-  var reduceTransparency: Bool
-  var increaseContrast: Bool
-
-  func makeNSView(context: Context) -> NSVisualEffectView {
-    let view = NSVisualEffectView()
-    apply(to: view)
-    return view
-  }
-
-  func updateNSView(_ view: NSVisualEffectView, context: Context) {
-    apply(to: view)
-  }
-
-  private func apply(to view: NSVisualEffectView) {
-    if reduceTransparency {
-      view.material = .contentBackground
-      view.blendingMode = .withinWindow
-    } else {
-      view.material = .sidebar
-      view.blendingMode = .behindWindow
-    }
-    view.state = .followsWindowActiveState
-    view.isEmphasized = increaseContrast
   }
 }

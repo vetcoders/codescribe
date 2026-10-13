@@ -1,14 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// Agent Chat shell: native split between the thread rail and
-/// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
-/// streamed `streamReply` turn through the injected `AgentChatEngine`.
+/// Agent Chat shell: the same native `NavigationSplitView` composition as
+/// Settings — thread rail in the sidebar column, conversation in the detail.
+/// Turns render You / Tool-activity / Assistant; `send` routes a streamed
+/// `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
-  @State private var sidebarContentWidth = AgentSidebarMetrics.minimumWidth
   private let maxPermissions: SettingsViewModel?
-  /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
+  /// Persist only the user's expanded/collapsed choice; the split view owns
+  /// column geometry inside the fixed `AgentSidebarMetrics` bounds.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
 
@@ -18,32 +19,26 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    AgentColumns(
-      sidebarExpanded: sidebarExpanded,
-      sidebarMaximumWidth: AgentSidebarMetrics.boundedMaximum(sidebarContentWidth),
-      sidebar: ThreadRail(store: store) { width in
-        if width > 0 { sidebarContentWidth = width }
-      },
-      detail: ThreadDetail(store: store)
-    )
-    .ignoresSafeArea(.container, edges: .top)
-    .modifier(
-      AgentIntegratedChrome(
-        store: store,
-        sidebarExpanded: $sidebarExpanded,
-        isPinned: $isPinned
-      )
-    )
-    .safeAreaInset(edge: .bottom) {
-      if let maxPermissions {
-        MaxPermissionPresentation(model: maxPermissions)
-      }
+    NavigationSplitView(columnVisibility: columnVisibility) {
+      ThreadRail(store: store)
+        .navigationSplitViewColumnWidth(
+          min: AgentSidebarMetrics.minimumWidth,
+          ideal: AgentSidebarMetrics.idealWidth,
+          max: AgentSidebarMetrics.maximumWidth
+        )
+    } detail: {
+      ThreadDetail(store: store, maxPermissions: maxPermissions)
+        // The columns carry the window floor, as in Settings. A minimum on
+        // the whole split view makes an opening sidebar slide to half its
+        // width and then jump.
+        .frame(minWidth: AgentWindowMetrics.detailMinWidth)
     }
+    .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
+    .background { AgentSidebarShortcut(toggle: { toggleSidebar() }) }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
     .background(AgentWindowCapabilities(isPinned: isPinned))
     .frame(
-      minWidth: AgentWindowMetrics.minWidth,
       idealWidth: AgentWindowMetrics.idealWidth,
       minHeight: AgentWindowMetrics.minHeight,
       idealHeight: AgentWindowMetrics.idealHeight
@@ -54,6 +49,42 @@ struct AgentChatView: View {
       AgentPerf.logger.info("agent window shell rendered")
       store.startDemoStreamIfNeeded()
     }
+  }
+
+  /// The system sidebar toggle, a divider drag to collapse and ⌃⌘S all write
+  /// through here, so every path persists the same choice.
+  private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+    Binding(
+      get: { sidebarExpanded ? .all : .detailOnly },
+      set: { sidebarExpanded = $0 != .detailOnly }
+    )
+  }
+
+  private func toggleSidebar() {
+    withAnimation {
+      sidebarExpanded.toggle()
+    }
+  }
+}
+
+/// ⌃⌘S without a second visible toggle. The split view's own toolbar toggle
+/// sits in the sidebar column while it is open and on the detail's leading
+/// edge while it is collapsed; it carries no key equivalent, and the
+/// accessory app has no View menu to lend one, so this zero-size button holds
+/// the shortcut only.
+private struct AgentSidebarShortcut: View {
+  let toggle: () -> Void
+
+  var body: some View {
+    Button(action: toggle) {
+      EmptyView()
+    }
+    .buttonStyle(.plain)
+    .keyboardShortcut("s", modifiers: [.command, .control])
+    .frame(width: 0, height: 0)
+    .opacity(0)
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
   }
 }
 
@@ -73,25 +104,25 @@ private struct MaxPermissionPresentation: View {
 }
 
 /// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 267) plus a usable detail column stay a single invariant.
+/// (expanded min 267) plus a usable detail column stay a single invariant:
+/// the columns carry it, never a minimum on the root view.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
   static let idealWidth: CGFloat = 840
   static let idealHeight: CGFloat = 520
-  /// Measured width of the traffic-light cluster. The integrated toolbar is
-  /// already inset past those controls; this remains the clearance for any
-  /// content-view control that still sits under `fullSizeContentView`.
-  static let collapsedTrafficLightClearance: CGFloat = 70
+  /// Narrowest conversation column. With the rail at its minimum the window
+  /// lands exactly on `minWidth`.
+  static let detailMinWidth: CGFloat = minWidth - AgentSidebarMetrics.minimumWidth
 }
 
-/// Bounds enforced by the native sidebar item. Collapsing removes the whole column.
+/// Fixed bounds of the native sidebar column. Long thread titles truncate
+/// inside them; they never widen the column. Collapsing removes the whole
+/// column.
 enum AgentSidebarMetrics {
   static let minimumWidth: CGFloat = 267
+  static let idealWidth: CGFloat = 280
   static let maximumWidth: CGFloat = 360
-  static func boundedMaximum(_ contentWidth: CGFloat) -> CGFloat {
-    min(maximumWidth, max(minimumWidth, ceil(contentWidth)))
-  }
 }
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
@@ -143,62 +174,14 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 }
 
-/// One native owner for the divider's hard bounds and collapse state.
-private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
-  let sidebarExpanded: Bool
-  let sidebarMaximumWidth: CGFloat
-  let sidebar: Sidebar
-  let detail: Detail
-
-  func makeNSViewController(context: Context) -> NSSplitViewController {
-    let controller = NSSplitViewController()
-    controller.splitView.isVertical = true
-    controller.splitView.dividerStyle = .thin
-    let rail = NSSplitViewItem(
-      sidebarWithViewController: NSHostingController(
-        rootView: AnyView(sidebar.environment(\.self, context.environment))))
-    rail.minimumThickness = AgentSidebarMetrics.minimumWidth
-    rail.maximumThickness = sidebarMaximumWidth
-    rail.canCollapse = false
-    // Let AppKit carry the sidebar material through the titlebar, as in Settings.
-    // The conversation and toolbar retain their native safe-area layout.
-    rail.allowsFullHeightLayout = true
-    controller.addSplitViewItem(rail)
-    let conversation = NSSplitViewItem(
-      viewController: NSHostingController(
-        rootView: AnyView(detail.environment(\.self, context.environment))))
-    conversation.minimumThickness = 320
-    conversation.allowsFullHeightLayout = false
-    controller.addSplitViewItem(conversation)
-    return controller
-  }
-
-  func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
-    let rail = controller.splitViewItems[0]
-    (rail.viewController as? NSHostingController<AnyView>)?.rootView =
-      AnyView(sidebar.environment(\.self, context.environment))
-    (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
-      AnyView(detail.environment(\.self, context.environment))
-    if rail.maximumThickness != sidebarMaximumWidth {
-      rail.maximumThickness = sidebarMaximumWidth
-      if !rail.isCollapsed, rail.viewController.view.frame.width > sidebarMaximumWidth {
-        controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
-      }
-    }
-    rail.allowsFullHeightLayout = true
-    controller.splitViewItems[1].allowsFullHeightLayout = false
-    rail.isCollapsed = !sidebarExpanded
-  }
-}
-
 // MARK: - Integrated titlebar
 
-/// The window's only painted header. Sidebar toggle, wordmark, thread identity,
-/// and pin/menu share the native toolbar. Rename, delete, and export alerts
-/// stay on this modifier: alerts attached to a toolbar item do not present.
+/// The window's only painted header. The split view supplies the sidebar
+/// toggle; the wordmark, thread identity and pin/menu share the native
+/// toolbar. Rename, delete, and export alerts stay on this modifier: alerts
+/// attached to a toolbar item do not present.
 private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
-  @Binding var sidebarExpanded: Bool
   @Binding var isPinned: Bool
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
@@ -245,34 +228,27 @@ private struct AgentIntegratedChrome: ViewModifier {
       }
   }
 
+  /// The wordmark is a brand mark, not a control: it stands without the
+  /// shared glass, as it does in Settings. Thread identity and the actions
+  /// keep the system's shared glass so they stay legible over turns that
+  /// scroll beneath the toolbar.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
     if #available(macOS 26.0, *) {
-      ToolbarItem(placement: .navigation) { leadingCluster }
+      ToolbarItem(placement: .navigation) { wordmark }
         .sharedBackgroundVisibility(.hidden)
       ToolbarItem(placement: .principal) { identityCluster }
-        .sharedBackgroundVisibility(.hidden)
       ToolbarItem(placement: .primaryAction) { trailingCluster }
-        .sharedBackgroundVisibility(.hidden)
     } else {
-      ToolbarItem(placement: .navigation) { leadingCluster }
+      ToolbarItem(placement: .navigation) { wordmark }
       ToolbarItem(placement: .principal) { identityCluster }
       ToolbarItem(placement: .primaryAction) { trailingCluster }
     }
   }
 
-  /// Toggle stays in the toolbar so ⌃⌘S and the collapsed rail still reach it.
-  /// The wordmark sits here only while the sidebar is open; the rail does not
-  /// paint a second one.
-  private var leadingCluster: some View {
-    HStack(spacing: 8) {
-      sidebarToggle
-      if sidebarExpanded {
-        Wordmark(size: 13)
-          .fixedSize(horizontal: true, vertical: false)
-      }
-    }
-    .fixedSize()
+  private var wordmark: some View {
+    Wordmark(size: 13)
+      .fixedSize(horizontal: true, vertical: false)
   }
 
   private var identityCluster: some View {
@@ -313,33 +289,6 @@ private struct AgentIntegratedChrome: ViewModifier {
       threadMenu
     }
     .fixedSize()
-  }
-
-  private var sidebarToggle: some View {
-    Button(action: toggleSidebar) {
-      Image(systemName: "sidebar.leading")
-        .font(.system(size: 13, weight: .medium))
-    }
-    .buttonStyle(.borderless)
-    .csFocusRing()
-    .foregroundStyle(sidebarExpanded ? CSColor.chromeAccent : Color.secondary)
-    .keyboardShortcut("s", modifiers: [.command, .control])
-    .help(
-      sidebarExpanded
-        ? String(localized: "Collapse sidebar (⌃⌘S)")
-        : String(localized: "Expand sidebar (⌃⌘S)")
-    )
-    .accessibilityLabel("Toggle Sidebar")
-    .accessibilityValue(
-      sidebarExpanded
-        ? String(localized: "Expanded", comment: "Sidebar state")
-        : String(localized: "Compact", comment: "Sidebar state"))
-  }
-
-  private func toggleSidebar() {
-    withAnimation {
-      sidebarExpanded.toggle()
-    }
   }
 
   /// Always on top. This writes only the persisted flag; the window level is
@@ -502,27 +451,56 @@ private struct AgentIntegratedChrome: ViewModifier {
   }
 }
 
-// MARK: - Detail (messages · composer)
+// MARK: - Detail (messages under the composer dock)
 
+/// The conversation fills the whole column. Queued turns, approvals and the
+/// composer float above it in one bottom bar, so turns scroll beneath the
+/// toolbar and the composer glass instead of stopping at a separate strip.
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
+  let maxPermissions: SettingsViewModel?
 
   var body: some View {
-    VStack(spacing: 0) {
-      if let thread = store.currentThread {
-        MessageList(
-          threadID: thread.id,
-          messages: thread.messages,
-          speechUnavailableReason: store.speechUnavailableReason,
-          speakingMessageID: store.speakingMessageID,
-          onSpeak: { message in Task { await store.speak(message) } },
-          onStopSpeaking: { store.stopSpeaking() }
-        ) { messageID in
-          store.toggleRenderMode(messageID: messageID, in: thread.id)
-        }
-      } else {
-        Spacer()
+    conversation
+      .modifier(AgentScrollBottomBar { composerDock })
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(CSColor.windowCanvas)
+      .alert(
+        "Speech unavailable",
+        isPresented: Binding(
+          get: { store.speechError != nil },
+          set: { if !$0 { store.speechError = nil } }
+        )
+      ) {
+        Button("OK") { store.speechError = nil }
+      } message: {
+        Text(store.speechError ?? "")
       }
+  }
+
+  @ViewBuilder
+  private var conversation: some View {
+    if let thread = store.currentThread {
+      MessageList(
+        threadID: thread.id,
+        messages: thread.messages,
+        speechUnavailableReason: store.speechUnavailableReason,
+        speakingMessageID: store.speakingMessageID,
+        onSpeak: { message in Task { await store.speak(message) } },
+        onStopSpeaking: { store.stopSpeaking() }
+      ) { messageID in
+        store.toggleRenderMode(messageID: messageID, in: thread.id)
+      }
+    } else {
+      Color.clear
+    }
+  }
+
+  /// Everything that answers the selected turn sits directly above the field
+  /// it belongs to. Max approvals ride here too, so the sidebar keeps the
+  /// window's full height.
+  private var composerDock: some View {
+    VStack(spacing: 0) {
       if let thread = store.currentThread {
         ForEach(store.queuedTurns(in: thread.id)) { queued in
           QueuedTurnRow(
@@ -546,20 +524,36 @@ private struct ThreadDetail: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 6)
       }
+      if let maxPermissions {
+        MaxPermissionPresentation(model: maxPermissions)
+      }
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(CSColor.windowCanvas)
-    .alert(
-      "Speech unavailable",
-      isPresented: Binding(
-        get: { store.speechError != nil },
-        set: { if !$0 { store.speechError = nil } }
-      )
-    ) {
-      Button("OK") { store.speechError = nil }
-    } message: {
-      Text(store.speechError ?? "")
+  }
+}
+
+/// One bottom bar over a scrolling column, shared by the conversation's
+/// composer dock and the rail's New thread footer. On macOS 26 it is a
+/// safe-area bar: the scroll view runs beneath it under the system's soft
+/// edge effect, so nothing scrolled below reads as a row. Earlier systems
+/// inset it on the bar material.
+struct AgentScrollBottomBar<Bar: View>: ViewModifier {
+  private let barContent: Bar
+
+  init(@ViewBuilder _ barContent: () -> Bar) {
+    self.barContent = barContent()
+  }
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content
+        .safeAreaBar(edge: .bottom, spacing: 0) { barContent }
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
+    } else {
+      content.safeAreaInset(edge: .bottom, spacing: 0) {
+        barContent.background(.bar)
+      }
     }
   }
 }

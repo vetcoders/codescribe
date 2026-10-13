@@ -155,11 +155,11 @@ struct Composer: View {
         }
       }
     }
+    // No strip of its own: the Agent window floats this stack in a bottom
+    // bar over the conversation, and the turns scroll beneath the field's
+    // glass rather than stopping at a divider.
     .padding(.horizontal, 14)
     .padding(.vertical, 8)
-    .overlay(alignment: .top) {
-      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
-    }
     // Drag an image from Finder onto the composer to stage it (same path as
     // the 📎 picker). The whole bottom strip is the outer drop area — it
     // bootstraps the drag-over state and catches drops that miss the field;
