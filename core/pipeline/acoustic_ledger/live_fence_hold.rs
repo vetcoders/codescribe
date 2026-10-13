@@ -7,9 +7,9 @@
 //! to" for "Computer Use." on take 36de5e98, build 953). Those pins are held
 //! as alternatives (a receipt, never a refusal); the next window that covers
 //! the burst with a complete fence owns it. The hold does not open a text
-//! recovery debt: a seal is never refused because of it, the take keeps every
-//! word the next window brings and the held reading stays visible as an
-//! alternative. Nothing waits for Stop: a window
+//! recovery job: the hold itself blocks sealing until complete live evidence
+//! accounts for it, and the held reading stays visible as an alternative.
+//! Nothing waits for Stop: a window
 //! whose fence is the end of the captured PCM is never held, because no later
 //! window can exist and the last words of a take must reach delivery.
 //!
@@ -31,6 +31,8 @@ pub struct LiveFenceHoldReceipt {
     pub fence: u64,
     pub burst_start: u64,
     pub held: Vec<WordPin>,
+    /// A later complete window accounted for every held physical word.
+    pub settled: bool,
 }
 
 const SPEECH_ABOVE_FLOOR_DB: f32 = 8.0;
@@ -55,7 +57,13 @@ impl AcousticLedger {
         fence: u64,
     ) -> Option<u64> {
         let energy = self.decode_fence_energy.as_ref()?;
-        if fence <= window_start || energy.captured_samples <= fence {
+        if fence <= window_start
+            || energy.captured_samples < fence
+            || self
+                .exhausted_capture
+                .as_ref()
+                .is_some_and(|capture| capture.same_capture(owner) && capture.sample_end == fence)
+        {
             return None;
         }
         let hops =
@@ -97,8 +105,8 @@ impl AcousticLedger {
 
     /// Keep back the pins of a live window that sit on the burst running
     /// through its decode fence. Returns the receipt when anything was held.
-    /// The held pins become alternatives with no sources, so they are never a
-    /// retained refused source and never a pending text recovery.
+    /// The held pins remain in this receipt until a complete successor owns
+    /// them; no additional decoding job is scheduled by the hold.
     pub(super) fn hold_edge_cut_pins(
         &mut self,
         observation: &ObservationIdentity,
@@ -135,6 +143,7 @@ impl AcousticLedger {
             fence,
             burst_start,
             held,
+            settled: false,
         };
         self.live_fence_holds.push(receipt.clone());
         Some(receipt)
@@ -142,6 +151,65 @@ impl AcousticLedger {
 
     pub fn live_fence_holds(&self) -> &[LiveFenceHoldReceipt] {
         &self.live_fence_holds
+    }
+
+    /// A hold is unresolved speech, not permission to seal a shortened take.
+    /// Match only complete words from this accepted successor, one-to-one,
+    /// with original held PCM inside its decode window. Labels have no vote.
+    pub(super) fn settle_live_fence_holds(&mut self, observation: &ObservationIdentity) {
+        let Some((start, end)) = self.decoded_word_windows.get(observation).copied() else {
+            return;
+        };
+        if !self.word_pin_observations.contains(observation) {
+            return;
+        }
+        let owner = &observation.occurrence;
+        let slots = self.slots_of(owner).unwrap_or(&[]);
+        let settled = self
+            .live_fence_holds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, hold)| {
+                if hold.settled
+                    || hold.observation == *observation
+                    || hold.observation.occurrence != *owner
+                {
+                    return None;
+                }
+                let mut used = BTreeSet::new();
+                for pin in &hold.held {
+                    if start > pin.sample_start || end < pin.sample_end {
+                        return None;
+                    }
+                    let target = OccurrenceIdentity::new(
+                        &owner.session,
+                        owner.capture_epoch,
+                        pin.sample_start,
+                        pin.sample_end,
+                    );
+                    let matches = slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, slot)| {
+                            self.complete_word_source(slot)
+                                .is_some_and(|source| source.observation == *observation)
+                                && self.word_slot_targets_pin(slot, &target)
+                        })
+                        .map(|(i, _)| i)
+                        .collect::<Vec<_>>();
+                    let [matched] = matches.as_slice() else {
+                        return None;
+                    };
+                    if !used.insert(*matched) {
+                        return None;
+                    }
+                }
+                Some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in settled {
+            self.live_fence_holds[index].settled = true;
+        }
     }
 }
 
@@ -240,6 +308,44 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_live_successor_settles_the_hold_without_waiting_for_stop() {
+        let pcm = synthetic_take(&[(1.0, 1.5), (2.0, 2.4), (8.7, 9.3)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        ledger.admit_word_slots(
+            &first,
+            &window(
+                &[("a", 1.0, 1.5), ("b", 2.0, 2.4), ("clipped", 8.7, 9.0)],
+                (0.0, 9.0),
+            ),
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        let next = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        ledger.admit_word_slots(&next, &window(&[("complete", 8.7, 9.3)], (3.0, 10.0)));
+        assert_eq!(ledger.text_of(&owner), Some("a b complete"));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert!(ledger.live_fence_holds()[0].settled);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn the_live_capture_head_cannot_impersonate_stop() {
+        let pcm = synthetic_take(&[(1.0, 1.5), (9.6, 10.0)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        let pins = window(&[("a", 1.0, 1.5), ("c", 9.6, 10.0)], (0.0, 10.0));
+        ledger.admit_word_slots(&first, &pins);
+        assert_eq!(ledger.text_of(&owner), Some("a"));
+        assert!(ledger.text_recovery_pending(&owner));
+        ledger.record_exhausted_capture(&owner.session, owner.capture_epoch, pcm.len() as u64);
+        let terminal = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
+        ledger.admit_word_slots(&terminal, &pins);
+        assert_eq!(ledger.text_of(&owner), Some("a c"));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
     fn a_fence_at_the_end_of_the_capture_never_holds() {
         // Speech runs to the very end of the PCM: there is no later window,
         // so the last words must reach delivery.
@@ -247,6 +353,7 @@ mod tests {
         let (mut ledger, owner) = ledger(&pcm);
         let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
         let pins = window(&[("a", 1.0, 1.5), ("c", 9.6, 10.0)], (0.0, 10.0));
+        ledger.record_exhausted_capture(&owner.session, owner.capture_epoch, pcm.len() as u64);
         assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
         assert_eq!(ledger.text_of(&owner), Some("a c"));
         assert!(ledger.live_fence_holds().is_empty());

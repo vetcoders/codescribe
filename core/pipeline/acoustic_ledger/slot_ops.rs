@@ -583,6 +583,13 @@ impl AcousticLedger {
         if start >= end || word_start < start || word_start >= word_end || word_end > end {
             return true;
         }
+        if self
+            .exhausted_capture
+            .as_ref()
+            .is_some_and(|capture| capture.same_capture(owner) && capture.sample_end == end)
+        {
+            return false;
+        }
         let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
             .div_ceil(50)
             .saturating_add(1);
@@ -1770,6 +1777,21 @@ impl AcousticLedger {
             captured_samples,
             quiet_ranges,
         });
+    }
+
+    /// Only the capture drain can supply this terminal extent. Authenticate
+    /// the complete writer range before letting STOP close a voiced edge.
+    pub(crate) fn record_exhausted_capture(&mut self, session: &str, epoch: u64, end: u64) {
+        if self.decode_fence_energy.as_ref().is_some_and(|energy| {
+            end > 0
+                && energy.captured_samples == end
+                && energy
+                    .owner
+                    .voiced_hops_in(session, epoch, 0, end)
+                    .is_some()
+        }) {
+            self.exhausted_capture = Some(OccurrenceIdentity::new(session, epoch, 0, end));
+        }
     }
 
     /// One routed batch's original word geometry, before clipping at owner

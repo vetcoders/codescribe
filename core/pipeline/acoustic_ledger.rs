@@ -854,6 +854,8 @@ pub struct AcousticLedger {
     /// Shared capture observer and actual extent, used only to adjudicate a
     /// decoder fence. Cloning the handle does not create another observer.
     decode_fence_energy: Option<DecodeFenceEnergy>,
+    /// Actual exhausted capture, never inferred from the current live head.
+    exhausted_capture: Option<OccurrenceIdentity>,
     assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
     group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
@@ -1595,7 +1597,7 @@ impl AcousticLedger {
             self.record_assigned_word_pins(observation, &assignments);
         }
         self.record_word_decode_bounds(observation, words);
-        let recovery_pending = self.text_recovery_pending(owner);
+        let recovery_pending = self.pending_text_recovery.contains(owner);
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
         // Source completeness is checked at the resolved group/word boundary
         // below, so a rejected partition retains one complete alternative.
@@ -2044,8 +2046,9 @@ impl AcousticLedger {
                 return trace.finish(receipt, self);
             }
             let label = self.text_of(owner).unwrap_or("").to_string();
-            let recovery_pending = self.text_recovery_pending(owner);
+            let recovery_pending = self.pending_text_recovery.contains(owner);
             let receipt = self.admit(observation, &label);
+            self.settle_live_fence_holds(observation);
             // Echoing our retained label is not accepted recovery evidence.
             if recovery_pending {
                 self.pending_text_recovery.insert(owner.clone());
@@ -2060,6 +2063,7 @@ impl AcousticLedger {
         let label = compose_label(&slots);
         let operation_start = self.slot_operations.len();
         let receipt = self.admit_slot_batch(observation, &label, Some(slots), true, &resegments);
+        self.settle_live_fence_holds(observation);
         for operation in &mut self.slot_operations[operation_start..] {
             if let Some((_, _, rule_id)) = group_rules.iter().find(|(start, end, _)| {
                 operation
@@ -2117,7 +2121,7 @@ impl AcousticLedger {
                         && slot.producer.authority_rank() < observation.producer.authority_rank()
                 })
             });
-        if recovery_unresolved && (recovery_pending || self.text_recovery_pending(owner)) {
+        if recovery_unresolved && (recovery_pending || self.pending_text_recovery.contains(owner)) {
             self.pending_text_recovery.insert(owner.clone());
         }
         trace.finish(receipt, self)
@@ -2240,6 +2244,7 @@ impl AcousticLedger {
         self.evidence.is_empty()
             && self.committed.is_empty()
             && self.pending_text_recovery.is_empty()
+            && self.live_fence_holds.iter().all(|hold| hold.settled)
             && self.terminal_seals.is_empty()
             && self.latest_seal_coverage.is_none()
     }
@@ -2265,6 +2270,10 @@ impl AcousticLedger {
 
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
         self.pending_text_recovery.contains(occurrence)
+            || self
+                .live_fence_holds
+                .iter()
+                .any(|hold| !hold.settled && hold.observation.occurrence == *occurrence)
     }
 
     pub fn pending_text_recoveries(
@@ -2274,10 +2283,18 @@ impl AcousticLedger {
     ) -> Vec<OccurrenceIdentity> {
         self.pending_text_recovery
             .iter()
+            .chain(
+                self.live_fence_holds
+                    .iter()
+                    .filter(|hold| !hold.settled)
+                    .map(|hold| &hold.observation.occurrence),
+            )
             .filter(|occurrence| {
                 occurrence.session == session && occurrence.capture_epoch == capture_epoch
             })
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
