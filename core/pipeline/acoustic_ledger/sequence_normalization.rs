@@ -108,6 +108,7 @@ impl AcousticLedger {
             return;
         }
         let mut receipts = Vec::new();
+        let mut moves: Vec<((u64, u64), (u64, u64))> = Vec::new();
         for (range_index, _) in ranges.iter().enumerate() {
             let mut held_in_range = held
                 .iter()
@@ -164,6 +165,10 @@ impl AcousticLedger {
             let mut outputs = Vec::with_capacity(held_in_range.len());
             for (slot, (pin_index, _)) in held_in_range.iter().zip(&incoming_in_range) {
                 let pin = &mut pins[*pin_index];
+                moves.push((
+                    (pin.sample_start, pin.sample_end),
+                    (slot.sample_start, slot.sample_end),
+                ));
                 pin.sample_start = slot.sample_start;
                 pin.sample_end = slot.sample_end;
                 outputs.push(WordSlot {
@@ -199,6 +204,12 @@ impl AcousticLedger {
         }
         for receipt in receipts {
             self.record_slot_operation(receipt);
+        }
+        // The staged evidence was built from the pins as offered. Adopted
+        // words must keep their original label and decode fence under the
+        // held geometry, otherwise adjudication reads them as unpinned.
+        if !moves.is_empty() {
+            self.rebase_word_evidence(observation, &moves);
         }
     }
 }

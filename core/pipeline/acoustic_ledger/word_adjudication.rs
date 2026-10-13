@@ -497,6 +497,32 @@ impl AcousticLedger {
         });
     }
 
+    /// Sequence normalisation adopted held geometry for staged pins. The
+    /// staged evidence must name the same ranges the admitted words carry,
+    /// or the hypothesis built for an adopted word loses its original pin
+    /// and with it the producer's own decode fence and label.
+    pub(super) fn rebase_word_evidence(
+        &mut self,
+        observation: &ObservationIdentity,
+        moves: &[((u64, u64), (u64, u64))],
+    ) {
+        let Some(input) = self.word_adjudication.input.as_mut() else {
+            return;
+        };
+        if input.observation != *observation {
+            return;
+        }
+        for source in &mut input.words {
+            if let Some((_, (start, end))) = moves
+                .iter()
+                .find(|(from, _)| *from == (source.sample_start, source.sample_end))
+            {
+                source.sample_start = *start;
+                source.sample_end = *end;
+            }
+        }
+    }
+
     pub(crate) fn bind_word_provider(
         &mut self,
         payload: &crate::stt::tail_provider::TailProviderPayload,
