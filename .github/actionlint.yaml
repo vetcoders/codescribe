@@ -4,4 +4,3 @@
 self-hosted-runner:
   labels:
     - xcode-27
-    - macos-public

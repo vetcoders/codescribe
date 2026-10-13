@@ -118,8 +118,8 @@ Keep its DerivedData separate from the normal app build. A cold runner still
 resolves/builds the existing Swift packages.
 
 The current app requires Xcode 27 / the macOS 27 SDK (`LanguageModelError` in
-Foundation Models). The required CI job runs on `[self-hosted, macos-public]`
-with that toolchain. Rust-only jobs use the same runner pool. An older Xcode
+Foundation Models). The required CI job runs on the GitHub-hosted `xcode-27`
+image with that toolchain; Rust-only jobs use `macos-latest`. An older Xcode
 that cannot compile the app fails the gate; it never skips localization checks.
 
 The archive lane and ordinary Debug compilation were compared on 2026-10-05
