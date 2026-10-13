@@ -438,7 +438,7 @@ pub(crate) fn measured_ledger(owner: &OccurrenceIdentity, pcm: &[f32]) -> Acoust
     measured_ledger_at_rate(owner, pcm, 16_000)
 }
 
-fn measured_ledger_at_rate(
+pub(crate) fn measured_ledger_at_rate(
     owner: &OccurrenceIdentity,
     pcm: &[f32],
     sample_rate: u32,

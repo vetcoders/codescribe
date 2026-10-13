@@ -1,0 +1,188 @@
+{
+  "schema": "codescribe.real-take-fixture.v1",
+  "authored": "2026-10-13, integrator Ada (claude), from dragon ~/.codescribe/sessions/*.wav + *.trail.jsonl (decision-trail v3), Codescribe 0.17.0 build 953 b62bc3e17, EarPods, local_power + local_tail_patch",
+  "purpose": "Counterexamples for word identity. Each fixture carries both producers' claimed word ranges and the measured speech bursts of the microphone. The product contract: equal words on the same physical speech are one word; a window whose Stop fences are complete outranks an edge-cut live label; one zero-length word cannot void a whole window.",
+  "burst_method": "RMS per 20 ms hop over int16/32768, speech when > -50 dBFS, gaps < 60 ms merged, bursts >= 60 ms kept",
+  "fixtures": [
+    {
+      "file": "tests/fixtures/take_018e2177_apple_whisper_offset.wav",
+      "wav_sha256": "ab83b9260ec3b6384d877c314bda22efae04656e235852a5dc8f134cda5076af",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sample_format": "pcm_s16le",
+      "sample_count": 575488,
+      "origin": {
+        "session": "018e2177-6692-400c-b893-414dbba9a89e",
+        "capture_epoch": 1,
+        "recorded_utc": "2026-10-13T09:12:32Z",
+        "slice": "whole take, session samples == fixture samples"
+      },
+      "spoken": "Doprecyzuj jaki session ID Juni jest w tej chwili dopięty na kanale 7",
+      "delivered_by_build_953": "sesjon ID junii jest w tej Jest w tej chwili dopięty kanale 7.",
+      "occurrences": [
+        {
+          "producer": "Apple",
+          "sample_start": 29952,
+          "sample_end": 249120
+        },
+        {
+          "producer": "Apple",
+          "sample_start": 249120,
+          "sample_end": 370560
+        },
+        {
+          "producer": "Apple",
+          "sample_start": 370944,
+          "sample_end": 497760
+        }
+      ],
+      "disputed_occurrence": {
+        "sample_start": 249120,
+        "sample_end": 370560
+      },
+      "apple_words": {
+        "observation": "Apple request 2 generation 0, timing capture_word_pins, no decode window",
+        "words": [
+          ["Jest", 284640, 290400],
+          ["w", 290400, 291840],
+          ["tej", 291840, 296160],
+          ["chwili", 296160, 303360],
+          ["dopięty", 303360, 337920]
+        ]
+      },
+      "whisper_words": {
+        "observation": "Whisper request 1 generation 10001, Stop window decode [144000,575488), timing exact_sample_range",
+        "words": [
+          ["jest", 250560, 261120],
+          ["w", 261120, 276480],
+          ["tej", 276480, 284160],
+          ["chwili", 284160, 299520],
+          ["dopięty", 299520, 328320]
+        ]
+      },
+      "whisper_window_0": {
+        "decode": [0, 432000],
+        "text": "Doprecyzuj jaki session id Juni jest dopięty na konferencji.",
+        "word_pins": 0,
+        "refusal": "tail_word_pin_alignment_refused nonpositive_word_duration word_index=8, then measured_words_rejected: the whole window returned phrase-grain and was refused as overlap_without_word_pins"
+      },
+      "bursts_5_0_to_7_8_s": [
+        {
+          "sample_start": 240000,
+          "sample_end": 261120,
+          "seconds": [5.0, 5.44]
+        },
+        {
+          "sample_start": 280320,
+          "sample_end": 286080,
+          "seconds": [5.84, 5.96]
+        },
+        {
+          "sample_start": 292800,
+          "sample_end": 307200,
+          "seconds": [6.1, 6.4]
+        },
+        {
+          "sample_start": 312960,
+          "sample_end": 322560,
+          "seconds": [6.52, 6.72]
+        },
+        {
+          "sample_start": 327360,
+          "sample_end": 332160,
+          "seconds": [6.82, 6.92]
+        }
+      ],
+      "expected": {
+        "text_lowercase": "jest w tej chwili dopięty",
+        "slots": 5
+      }
+    },
+    {
+      "file": "tests/fixtures/take_36de5e98_stop_window_tail.wav",
+      "wav_sha256": "f679e8c3e6ec8a359833eec1838ad37fbae3dffbbcf7882ceba5b83cc82ed158",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sample_format": "pcm_s16le",
+      "sample_count": 593664,
+      "origin": {
+        "session": "agent-channel-3-36de5e98-a583-446a-af00-6e8d238fb282",
+        "capture_epoch": 1,
+        "recorded_utc": "2026-10-13T09:44:05Z",
+        "slice": "session samples [864000, 1457664); fixture sample = session sample - 864000"
+      },
+      "spoken_tail": "... przecież nie jest to pierwsza aplikacja, przy której się pracuje z computer use",
+      "delivered_by_build_953_tail": "przy, której się pracuje z pumpy to.",
+      "disputed_occurrence": {
+        "session": [946560, 1330560],
+        "fixture": [82560, 466560]
+      },
+      "live_window_6": {
+        "observation": "Whisper request 5 generation 2, decode session [864000,1296000) = fixture [0,432000), cut at 27.0 s inside the phrase",
+        "words_fixture": [
+          ["przecież", 94080, 117120],
+          ["nie", 117120, 150720],
+          ["jest", 150720, 166080],
+          ["to", 166080, 177600],
+          ["pierwsza", 177600, 195840],
+          ["aplikacja,", 195840, 238080],
+          ["przy", 238080, 283200],
+          ["której", 283200, 301440],
+          ["się", 301440, 314880],
+          ["pracuje", 314880, 341760],
+          ["z", 341760, 386880],
+          ["pumpy", 386880, 410880],
+          ["to", 410880, 416640]
+        ]
+      },
+      "apple_words": {
+        "observation": "Apple request 3, timing capture_word_pins, arrived after live window 6",
+        "words_fixture": [
+          ["bo", 88320, 95520],
+          ["przecież", 95520, 124320],
+          ["nie", 141600, 153120],
+          ["jest", 153120, 168960],
+          ["to", 168960, 180480],
+          ["pierwsza", 180480, 197760],
+          ["aplikacja", 197760, 233760],
+          ["przy", 275520, 287040],
+          ["której", 287040, 307200]
+        ]
+      },
+      "stop_window": {
+        "observation": "Whisper request 5 generation 7, decode session [1152000,1457664) = fixture [288000,593664), both fences complete (right fence = end of capture)",
+        "words_fixture": [
+          ["w", 288000, 291840],
+          ["której", 291840, 302400],
+          ["się", 302400, 314880],
+          ["pracuje", 314880, 343680],
+          ["z", 343680, 385920],
+          ["Computer", 385920, 412800],
+          ["Use.", 412800, 444480]
+        ]
+      },
+      "bursts_25_5_to_27_6_s_fixture": [
+        {
+          "sample_start": 384960,
+          "sample_end": 391680,
+          "seconds_session": [26.02, 26.16]
+        },
+        {
+          "sample_start": 398400,
+          "sample_end": 409920,
+          "seconds_session": [26.3, 26.54]
+        },
+        {
+          "sample_start": 417600,
+          "sample_end": 422400,
+          "seconds_session": [26.7, 26.8]
+        }
+      ],
+      "note": "'to' claimed at fixture [410880,416640) = session 26.56-26.68 s lies in the valley between the 'puter' burst and the 'use' burst; it has no speech of its own",
+      "expected": {
+        "text_lowercase_ends_with": "z computer use",
+        "no_slot_named": ["pumpy"]
+      }
+    }
+  ]
+}
