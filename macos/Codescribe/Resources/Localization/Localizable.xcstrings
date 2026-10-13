@@ -4415,7 +4415,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Wybierz funkcje, na które chcesz zezwolić"
+            "value" : "Wybierz funkcje, na które wyrażasz zgodę"
           }
         }
       }
@@ -7865,7 +7865,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jak chcesz rozpocząć nagrywanie?"
+            "value" : "Jak chcesz rozpoczynać nagrywanie?"
           }
         }
       }
@@ -13489,7 +13489,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Sprawdź swoją konfigurację."
+            "value" : "Sprawdź konfigurację."
           }
         }
       }
