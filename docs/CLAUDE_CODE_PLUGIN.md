@@ -61,6 +61,15 @@ hooks:
   `codescribe_wait_idle` only to re-arm. Detach or Claude Code exit ends it quietly.
 - The hook never reads, ACKs or replies. `codescribe_status` reports
   `native_wake_armed`.
+- Inside a running turn the `PostToolUse` hook runs `cs-bus --claude-code-probe`
+  after every tool call. With nothing unannounced it prints nothing and exits 0
+  (one lease read, no model cost). With an unannounced delivery it prints the
+  `codescribe_mailbox_ready` notice as `additionalContext`, so the model sees it
+  after the current tool call instead of after the whole turn, and records the ID
+  in the same announced ledger so the Stop waiter stays quiet about it. The
+  probe never waits, reads, ACKs or replies; mailbox problems remain the
+  waiter's to announce. The interruption lands after the running tool call
+  returns, so a long build still finishes first.
 
 `codescribe_wait` remains available for an explicitly requested listening turn. In
 Claude Code it blocks typed prompts until it returns and ends after at most
