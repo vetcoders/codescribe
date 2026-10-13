@@ -4980,6 +4980,7 @@
       }
     },
     "Collapse sidebar (⌃⌘S)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7144,6 +7145,7 @@
       }
     },
     "Expand sidebar (⌃⌘S)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7174,7 +7176,7 @@
       }
     },
     "Expanded" : {
-      "comment" : "Accessibility value: a disclosure row is open\nSidebar state",
+      "comment" : "Accessibility value: a disclosure row is open",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16813,6 +16815,7 @@
       }
     },
     "Toggle Sidebar" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
