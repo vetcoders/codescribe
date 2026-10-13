@@ -2307,7 +2307,7 @@ final class SettingsViewModel: ObservableObject {
   /// the same owners (admission, shared download store, native probe).
   var dictationReadiness: DictationReadiness {
     evaluateDictationReadiness(
-      lane: DictationLane(asrMode: settings.asrMode, cloudConsent: settings.cloudConsent),
+      lane: DictationLane(resolvedAsrMode: settings.resolvedAsrMode),
       permissions: permissions,
       localModel: whisperDownloadStore.readiness,
       admission: admission, admissionError: admissionReadError)
@@ -3013,9 +3013,12 @@ final class SettingsViewModel: ObservableObject {
 
   // MARK: - ASR mode
 
-  /// Product ASR lane shown in Dictation. Cloud never displays without granted consent.
+  /// Product ASR lane shown in Dictation: the lane the core resolved on the
+  /// loaded snapshot, never a Swift re-derivation of the raw mode. Cloud never
+  /// displays without consent; a legacy local choice displays as Local power.
+  /// `setAsrMode` writes intent and reloads, so the picker follows the core.
   var asrModeId: String {
-    DictationLane(asrMode: settings.asrMode, cloudConsent: settings.cloudConsent).rawValue
+    DictationLane(resolvedAsrMode: settings.resolvedAsrMode).rawValue
   }
 
   var asrModeLabel: String {

@@ -8,23 +8,20 @@ import Foundation
 // Settings health footer read this one result, so setup cannot report success
 // while Settings reports a blocker for the same path, and the reverse.
 
-/// Transcription lane chosen in Settings › Dictation. Mirrors the core's
-/// `resolve_asr_product_mode` for the values the bridge projects: an unset or
-/// unknown lane is Apple only, and Cloud without granted consent is Apple only.
+/// Transcription lane the runtime runs. Raw values are `AsrProductMode::as_str()`.
 enum DictationLane: String, Equatable, Sendable {
   case appleOnly = "apple_only"
   case localPower = "local_power"
   case cloud
 
-  init(asrMode: String?, cloudConsent: String?) {
-    switch (asrMode ?? Self.appleOnly.rawValue).lowercased() {
-    case Self.localPower.rawValue:
-      self = .localPower
-    case Self.cloud.rawValue:
-      self = cloudConsent?.lowercased() == "granted" ? .cloud : .appleOnly
-    default:
-      self = .appleOnly
-    }
+  /// The core's own resolution (`resolve_asr_product_mode`: persisted mode,
+  /// consent record and the legacy `use_local_stt` choice) projected by the
+  /// bridge from the same snapshot as `CsSettings.resolvedAsrMode`. Swift reads
+  /// it and never re-derives it from `asrMode` and `cloudConsent`. The bridge
+  /// writes only these three values; anything else is a binding mismatch and
+  /// lands where the core lands every refusal, Apple only.
+  init(resolvedAsrMode: String) {
+    self = DictationLane(rawValue: resolvedAsrMode) ?? .appleOnly
   }
 
   /// Only Local power transcribes with the downloaded Whisper weights. Apple
