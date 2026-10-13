@@ -65,6 +65,39 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     self == .screenRecording || self == .fullDiskAccess
   }
 
+  /// Grants setup cannot finish without. Mirrors `REQUIRED_SETUP_PERMISSIONS`
+  /// in app/os/onboarding.rs: a missing one removes `setup_done` on the next
+  /// launch, so setup reporting success without it would be undone at once.
+  var isRequiredForSetup: Bool { !isOptionalForSetup }
+
+  /// macOS can keep a running process untrusted for these scopes until it
+  /// reopens, even after the switch in System Settings is on. The probe stays
+  /// the truth; this only decides when to say so.
+  var grantMayNeedReopen: Bool {
+    self == .accessibility || self == .inputMonitoring || self == .screenRecording
+  }
+
+  /// One sentence for a missing grant the row's own button cannot fix: a
+  /// denial macOS never asks about again, or a grant requested in this process
+  /// that macOS may apply only after Codescribe reopens. `nil` otherwise.
+  func repairNote(for state: PermissionState, requested: Bool, locale: Locale) -> String? {
+    guard !state.isGranted else { return nil }
+    if state == .denied, self == .microphone || self == .speechRecognition {
+      return String(
+        localized: LocalizedStringResource(
+          "macOS will not ask again. Turn on Codescribe in System Settings.", locale: locale,
+          comment: "Denied Microphone or Speech Recognition; System Settings is the macOS app"))
+    }
+    if requested, grantMayNeedReopen {
+      return String(
+        localized: LocalizedStringResource(
+          "Already turned on? macOS may apply it only after you quit and reopen Codescribe.",
+          locale: locale,
+          comment: "Permission still missing after a request; macOS may need the app to restart"))
+    }
+    return nil
+  }
+
   /// Display name for the privacy scope. The identity (`rawValue`) is the
   /// System Settings pane name and must never reach the screen directly.
   var displayName: String {
