@@ -2901,6 +2901,17 @@
         }
       }
     },
+    "Already turned on? macOS may apply it only after you quit and reopen Codescribe." : {
+      "comment" : "Permission still missing after a request; macOS may need the app to restart",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu Codescribe."
+          }
+        }
+      }
+    },
     "Also heard · not committed" : {
       "comment" : "Tooltip over the unanchored-evidence chip",
       "localizations" : {
@@ -4075,6 +4086,17 @@
         }
       }
     },
+    "Change engine in Settings…" : {
+      "comment" : "Open Settings › Dictation to choose another transcription engine",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmień silnik w Ustawieniach…"
+          }
+        }
+      }
+    },
     "Changes" : {
       "comment" : "Tool risk class",
       "localizations" : {
@@ -4156,6 +4178,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź %@"
+          }
+        }
+      }
+    },
+    "Check again" : {
+      "comment" : "Setup: read the recording readiness verdict again",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdź ponownie"
           }
         }
       }
@@ -4292,6 +4325,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie katalogu modeli…"
+          }
+        }
+      }
+    },
+    "Checking your setup…" : {
+      "comment" : "Setup chapter heading while the recording readiness verdict loads",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie konfiguracji…"
           }
         }
       }
@@ -4761,6 +4805,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
+          }
+        }
+      }
+    },
+    "Codescribe is not ready yet." : {
+      "comment" : "Setup chapter heading when something required for transcription is missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe nie jest jeszcze gotowy."
           }
         }
       }
@@ -6725,6 +6780,17 @@
         }
       }
     },
+    "Download stopped. The model is not installed." : {
+      "comment" : "The user cancelled the Whisper download; the partial file is removed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobieranie zatrzymane. Model nie jest zainstalowany."
+          }
+        }
+      }
+    },
     "Download the Whisper model?" : {
       "comment" : "Confirmation before a multi-gigabyte transfer starts",
       "localizations" : {
@@ -7055,6 +7121,17 @@
         }
       }
     },
+    "Everything is ready for transcription (%@)." : {
+      "comment" : "Setup summary when ready; the placeholder is the dictation engine name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wszystko gotowe do transkrypcji (%@)."
+          }
+        }
+      }
+    },
     "Expand" : {
       "comment" : "Opens a closed section",
       "localizations" : {
@@ -7276,17 +7353,6 @@
         }
       }
     },
-    "Finish saves your choices. Features with missing permissions remain unavailable." : {
-      "comment" : "Finish closes setup without promising that every feature is ready",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Przycisk „Gotowe” zapisuje Twoje wybory. Funkcje bez wymaganych uprawnień pozostają niedostępne."
-          }
-        }
-      }
-    },
     "Finish setup above" : {
       "localizations" : {
         "pl" : {
@@ -7314,6 +7380,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poczekaj, aż bieżąca odpowiedź się zakończy, zanim zmienisz wyszukiwanie."
+          }
+        }
+      }
+    },
+    "Finish unlocks once each required item below is ready." : {
+      "comment" : "Setup summary while something required for transcription is missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przycisk „Gotowe” odblokuje się, gdy wszystkie wymagane elementy poniżej będą gotowe."
           }
         }
       }
@@ -8867,6 +8944,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb lokalny"
+          }
+        }
+      }
+    },
+    "Local power is selected, so setup finishes once this model is installed." : {
+      "comment" : "Local power is the engine name; setup waits for its Whisper model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybrano tryb lokalny, więc konfiguracja zakończy się po zainstalowaniu tego modelu."
           }
         }
       }
@@ -10876,6 +10964,17 @@
         }
       }
     },
+    "Open Audio settings" : {
+      "comment" : "Open Settings › Audio from setup to repair recording readiness",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia dźwięku"
+          }
+        }
+      }
+    },
     "Open Lab" : {
       "localizations" : {
         "pl" : {
@@ -11074,6 +11173,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalnie"
+          }
+        }
+      }
+    },
+    "Optional features" : {
+      "comment" : "Setup Done group: items that never block Finish",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funkcje opcjonalne"
           }
         }
       }
@@ -11441,6 +11551,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uprawnienia"
+          }
+        }
+      }
+    },
+    "Permissions need setup" : {
+      "comment" : "Settings health footer, sentence case",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uprawnienia wymagają konfiguracji"
           }
         }
       }
@@ -12495,6 +12616,17 @@
         }
       }
     },
+    "Recording readiness could not be checked." : {
+      "comment" : "Setup could not read the recording admission verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się sprawdzić gotowości do nagrywania."
+          }
+        }
+      }
+    },
     "Recording start sound" : {
       "localizations" : {
         "pl" : {
@@ -13138,6 +13270,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach Codescribe."
+          }
+        }
+      }
+    },
+    "Required for transcription" : {
+      "comment" : "Setup Done group: what Finish waits for",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wymagane do transkrypcji"
           }
         }
       }
@@ -14834,6 +14977,17 @@
     },
     "Speak in. Code out." : {
       "shouldTranslate" : false
+    },
+    "Speak normally for about ten seconds while Codescribe measures your microphone. The audio is not kept." : {
+      "comment" : "Setup calibration instruction shown with the Calibrate microphone button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mów normalnie przez około dziesięć sekund, a Codescribe zmierzy Twój mikrofon. Nagranie nie jest zachowywane."
+          }
+        }
+      }
     },
     "Speak this response. AI-generated voice." : {
       "localizations" : {
@@ -18156,6 +18310,17 @@
         }
       }
     },
+    "You can close this window. Setup resumes here the next time Codescribe starts." : {
+      "comment" : "Setup Done chapter while not ready: closing keeps setup unfinished",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Możesz zamknąć to okno. Konfiguracja wznowi się tutaj przy następnym uruchomieniu Codescribe."
+          }
+        }
+      }
+    },
     "You can continue without granting these permissions." : {
       "comment" : "Permissions never block Continue",
       "localizations" : {
@@ -19746,6 +19911,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "macOS nie przyznał jeszcze Codescribe dostępu do wybranego wejścia."
+          }
+        }
+      }
+    },
+    "macOS will not ask again. Turn on Codescribe in System Settings." : {
+      "comment" : "Denied Microphone or Speech Recognition; System Settings is the macOS app",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS nie zapyta ponownie. Włącz Codescribe w Ustawieniach systemowych."
           }
         }
       }

@@ -44,7 +44,10 @@ struct CreatorPanel: View {
           PermissionChecklistRow(
             kind: kind,
             state: model.permissions.state(kind),
-            onStateChanged: { model.refreshPermissions() }
+            note: model.permissionRepairNote(for: kind),
+            onRequested: { model.notePermissionRequested(kind) },
+            // A grant can change recording admission, not only this row.
+            onStateChanged: { model.refreshDictationReadiness() }
           )
           if kind != Self.permissionKinds.last {
             Divider().padding(.leading, 47)
@@ -473,6 +476,10 @@ private struct InterfaceLanguageRow: View {
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
+  /// Shown under the name when the row's own button cannot fix the scope.
+  var note: String? = nil
+  /// Records that this scope was asked for, so a later miss can explain itself.
+  var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
   var onStateChanged: (() -> Void)? = nil
 
@@ -482,16 +489,26 @@ private struct PermissionChecklistRow: View {
     HStack(spacing: 12) {
       statusBadge
       // A granted row says it with the badge; the status stays for VoiceOver.
-      Text(kind.displayName)
-        .font(CSFont.ui(13.5, .medium))
-        .foregroundStyle(Color.primary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityValue(state.label)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(kind.displayName)
+          .font(CSFont.ui(13.5, .medium))
+          .foregroundStyle(Color.primary)
+          .accessibilityValue(state.label)
+        if let note {
+          Text(note)
+            .font(.caption)
+            .foregroundStyle(CSColor.terracotta)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
       if !granted {
         let repair = kind.repair(for: state)
         if repair.requestsNatively {
           Button {
+            onRequested?()
             Task { @MainActor in
+              // The return value is not a grant; the following probe is.
               _ = await kind.requestInApp()
               onStateChanged?()
             }
@@ -504,6 +521,7 @@ private struct PermissionChecklistRow: View {
         }
         if repair.opensSettings {
           Button {
+            onRequested?()
             kind.openSystemSettings()
           } label: {
             Text("open System Settings")
