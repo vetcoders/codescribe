@@ -174,6 +174,20 @@ impl AcousticLedger {
         if !fences_allow {
             return;
         }
+        // A word-onset witness (Parakeet TDT), when one covers the union,
+        // must count exactly n words there. Absence is not a vote; a
+        // disagreeing count leaves the sequences to the per-word matchers
+        // with a recorded verdict instead of adopting a geometry the audio
+        // says holds a different number of words.
+        if !self.word_onsets_agree(
+            observation,
+            SEQUENCE_NORMALISATION_RULE,
+            union_start,
+            union_end,
+            held_sorted.len(),
+        ) {
+            return;
+        }
         let mut moves: Vec<((u64, u64), (u64, u64))> = Vec::new();
         let mut outputs = Vec::with_capacity(held_sorted.len());
         for (slot, (pin_index, _)) in held_sorted.iter().zip(&incoming_sorted) {

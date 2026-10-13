@@ -1228,10 +1228,12 @@ impl AcousticLedger {
             );
             return Some(false);
         }
+        // Owned: the word-onset witness below needs `&mut self` while the
+        // trial identity is still consulted further down.
         let trial = self
             .word_evidence_input(observation)
-            .and_then(|input| input.trial.as_ref());
-        let trial_matches = trial.is_some_and(|trial| {
+            .and_then(|input| input.trial.clone());
+        let trial_matches = trial.as_ref().is_some_and(|trial| {
             component.trial.as_ref() == Some(trial) && trial.targets == targets
         });
         let prior_support = component.support();
@@ -1322,6 +1324,34 @@ impl AcousticLedger {
                     .zip(raw)
                     .is_some_and(|(a, b)| !label_equal(a, b))
         });
+        // The same witness that counts words under a sequence (Parakeet word
+        // onsets) must agree with the candidate's word count over the
+        // disputed PCM before fence energy alone can settle the trial.
+        let dispute_span = {
+            let ranges = self.word_source_ranges(sources);
+            let start = ranges
+                .iter()
+                .map(|r| r.sample_start)
+                .chain(candidate.pins.iter().map(|p| p.sample_start))
+                .min();
+            let end = ranges
+                .iter()
+                .map(|r| r.sample_end)
+                .chain(candidate.pins.iter().map(|p| p.sample_end))
+                .max();
+            start.zip(end)
+        };
+        let onsets_agree = trial_matches
+            && incumbent_edge_cut
+            && dispute_span.is_some_and(|(start, end)| {
+                self.word_onsets_agree(
+                    observation,
+                    "trial_over_edge_cut_incumbent.v1",
+                    start,
+                    end,
+                    outputs.len(),
+                )
+            });
         let confirmed_trial = confirmed_trial
             || (trial_matches
                 && fresh
@@ -1329,7 +1359,8 @@ impl AcousticLedger {
                 && candidate.acoustic_boundaries_complete
                 && raw.is_some()
                 && incumbent_edge_cut
-                && !complete_witness_disagrees);
+                && !complete_witness_disagrees
+                && onsets_agree);
         let raw_disagrees = raw
             .zip(component.incumbent.original_text.as_deref())
             .is_some_and(|(a, b)| !label_equal(a, b));

@@ -71,6 +71,9 @@ use crate::stt::tail_provider::TailSampleRange;
 
 #[path = "acoustic_ledger/sequence_normalization.rs"]
 mod sequence_normalization;
+#[path = "acoustic_ledger/word_onset_evidence.rs"]
+pub mod word_onset_evidence;
+pub use word_onset_evidence::{WordOnsetEmission, WordOnsetEvidence, WordOnsetVerdict};
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
 #[path = "acoustic_ledger/word_adjudication.rs"]
@@ -839,6 +842,10 @@ pub struct AcousticLedger {
     /// receipt at all) costs every receipt of the take (2026-10-12).
     slot_operation_index: BTreeMap<OccurrenceIdentity, Vec<usize>>,
     pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
+    /// Word-onset windows from a token decoder with a word-start flag
+    /// (Parakeet TDT). Counts words under a span; never carries text.
+    word_onset_evidence: Vec<WordOnsetEvidence>,
+    word_onset_verdicts: Vec<WordOnsetVerdict>,
     /// Shared capture observer and actual extent, used only to adjudicate a
     /// decoder fence. Cloning the handle does not create another observer.
     decode_fence_energy: Option<DecodeFenceEnergy>,
