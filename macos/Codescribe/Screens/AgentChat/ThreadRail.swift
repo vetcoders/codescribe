@@ -24,6 +24,12 @@ struct ThreadRail: View {
       // On the List, not a stack around it: the list runs through the
       // titlebar, so the material does too.
       .background(SettingsSidebarMaterial())
+      .background {
+        ThreadSearchKeyRouter(
+          onMoveDown: { handleSearchMoveDown() },
+          onExit: { handleSearchCancel() }
+        )
+      }
       .onAppear {
         selectedThreadID = store.selectedThreadID
       }
@@ -134,6 +140,25 @@ struct ThreadRail: View {
       }
     }
     store.requestComposerFocus()
+  }
+
+  /// Escape on an empty search field hands typing back to the composer.
+  private func handleSearchCancel() {
+    store.requestComposerFocus()
+  }
+
+  /// Down in the search field opens the next visible thread, or the first
+  /// one when the selection is not among the results. Focus stays in search.
+  private func handleSearchMoveDown() {
+    let ordered = sectionedThreads.flatMap(\.threads)
+    guard !ordered.isEmpty else { return }
+    if let current = selectedThreadID, ordered.contains(where: { $0.id == current }) {
+      if let next = ThreadRailNavigation.adjacentThread(from: current, in: ordered, step: 1) {
+        select(next.id)
+      }
+    } else if let first = ordered.first {
+      select(first.id)
+    }
   }
 
   // MARK: - Rename (inline edit)
@@ -346,6 +371,124 @@ private struct ThreadRow: View {
       .foregroundStyle(Color.secondary)
       .frame(width: 16, height: 16)
       .contentShape(Rectangle())
+  }
+}
+
+// MARK: - Sidebar search keys
+
+/// What one key press in the rail's search field does. Pure, so the routing
+/// matrix is testable without a window. Composition (marked text) and
+/// modified keys stay native; Return is the search field's own submit.
+enum ThreadSearchKeyDisposition: Equatable {
+  case native
+  case moveDown
+  case clearQuery
+  case exitToComposer
+
+  static func resolve(
+    keyCode: UInt16,
+    modifiers: NSEvent.ModifierFlags,
+    hasMarkedText: Bool,
+    queryIsEmpty: Bool
+  ) -> ThreadSearchKeyDisposition {
+    guard !hasMarkedText else { return .native }
+    let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+    guard flags.isDisjoint(with: [.command, .control, .option, .shift]) else { return .native }
+    switch keyCode {
+    case 125: return .moveDown
+    case 53: return queryIsEmpty ? .exitToComposer : .clearQuery
+    default: return .native
+    }
+  }
+}
+
+/// Down and Escape for the system sidebar search. `searchable` exposes
+/// neither key to SwiftUI, so this zero-size view watches key-down events of
+/// its own window and acts only while that window's search field holds the
+/// keyboard. List arrows, rename, the composer and every other window pass
+/// through. The query keeps its single owner: clearing edits the field the
+/// way the user would, so the `searchable` binding hears it as typing.
+private struct ThreadSearchKeyRouter: NSViewRepresentable {
+  let onMoveDown: () -> Void
+  let onExit: () -> Void
+
+  func makeNSView(context: Context) -> ThreadSearchKeyRouterView {
+    let view = ThreadSearchKeyRouterView()
+    view.onMoveDown = onMoveDown
+    view.onExit = onExit
+    return view
+  }
+
+  func updateNSView(_ view: ThreadSearchKeyRouterView, context: Context) {
+    view.onMoveDown = onMoveDown
+    view.onExit = onExit
+  }
+}
+
+/// The monitor lives exactly as long as this view sits in a window: a
+/// collapsed sidebar or a closed window removes it.
+private final class ThreadSearchKeyRouterView: NSView {
+  var onMoveDown: () -> Void = {}
+  var onExit: () -> Void = {}
+  private var monitor: Any?
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window == nil {
+      if let monitor { NSEvent.removeMonitor(monitor) }
+      monitor = nil
+    } else if monitor == nil {
+      monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        guard let self, self.route(event) else { return event }
+        return nil
+      }
+    }
+  }
+
+  /// True when the event was this window's search field Down or Escape and
+  /// has been handled here.
+  private func route(_ event: NSEvent) -> Bool {
+    guard let window, event.window === window,
+      let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
+      editor.delegate is NSSearchField
+    else { return false }
+    switch ThreadSearchKeyDisposition.resolve(
+      keyCode: event.keyCode,
+      modifiers: event.modifierFlags,
+      hasMarkedText: editor.hasMarkedText(),
+      queryIsEmpty: editor.string.isEmpty
+    ) {
+    case .native:
+      return false
+    case .moveDown:
+      onMoveDown()
+      return true
+    case .clearQuery:
+      editor.selectAll(nil)
+      editor.deleteBackward(nil)
+      return true
+    case .exitToComposer:
+      onExit()
+      return true
+    }
+  }
+}
+
+// MARK: - Keyboard navigation (pure, unit-testable)
+
+enum ThreadRailNavigation {
+  /// The thread `step` rows away from `id` in the rail's visible order
+  /// (`+1` down, `-1` up). The ends do not wrap; an unknown `id` or an
+  /// out-of-range step yields `nil`.
+  static func adjacentThread(
+    from id: UUID, in ordered: [ChatThread], step: Int
+  ) -> ChatThread? {
+    guard let index = ordered.firstIndex(where: { $0.id == id }) else { return nil }
+    let target = index + step
+    guard ordered.indices.contains(target) else { return nil }
+    return ordered[target]
   }
 }
 
