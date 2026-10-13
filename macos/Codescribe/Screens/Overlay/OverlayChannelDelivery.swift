@@ -429,6 +429,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
           deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
         message.sourceChannel = (row["origin_channel"] as? String) ?? (row["channel"] as? String)
+        message.attachments = OverlayMessageAttachment.pointers(row["attachments"])
         store(message)
         return
       }
@@ -973,12 +974,54 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
   var sourceRevision: UInt64? = nil
+  /// File pointers the typed message carried; the bus never carries the bytes.
+  var attachments: [OverlayMessageAttachment]? = nil
   /// Capture lifecycle comes from bus terminals, independently of recipient ACKs.
   var captureState: CaptureState? = nil
   var showsDeliveryReceipts: Bool { captureState != .receiving }
   /// Canonical reply synthesis metadata, independent of playback outcome.
   var supportsSpeechPlayback = false
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
+  /// The bubble body. `cs-bus --send-text` appends one generated
+  /// `[attachment] name (type, bytes): /path` line per pointer to the published
+  /// text for agents; the bubble shows the pointers as chips and hides exactly
+  /// those generated lines. Anything the user typed, including a sentence that
+  /// starts with `[attachment]`, stays. The full text remains for copying.
+  var bodyText: String {
+    guard let attachments, !attachments.isEmpty else { return text }
+    let generated = Set(attachments.map(\.publishedLine))
+    var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    lines.removeAll { generated.contains($0) }
+    while lines.last?.isEmpty == true { lines.removeLast() }
+    return lines.joined(separator: "\n")
+  }
+}
+
+/// One file pointer of a typed message (`attachments` on
+/// `codescribe.agent-user-message.v1`): name, absolute path, media type, size.
+struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
+  let name: String
+  let path: String
+  let mediaType: String
+  let bytes: Int
+
+  /// The line `cs-bus --send-text` appends for this pointer, byte for byte.
+  var publishedLine: String { "[attachment] \(name) (\(mediaType), \(bytes) bytes): \(path)" }
+
+  static func pointers(_ value: Any?) -> [OverlayMessageAttachment]? {
+    guard let entries = value as? [[String: Any]] else { return nil }
+    let pointers = entries.compactMap { entry -> OverlayMessageAttachment? in
+      guard let path = entry["path"] as? String, path.hasPrefix("/"),
+        !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+      else { return nil }
+      let name = entry["name"] as? String
+      return OverlayMessageAttachment(
+        name: name?.isEmpty == false ? name! : (path as NSString).lastPathComponent,
+        path: path, mediaType: entry["media_type"] as? String ?? "",
+        bytes: (entry["bytes"] as? NSNumber)?.intValue ?? 0)
+    }
+    return pointers.isEmpty ? nil : pointers
+  }
 }
 
 struct OverlayConversation: Equatable, Identifiable, Sendable {
