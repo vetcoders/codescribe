@@ -5,8 +5,11 @@
 //! through that fence, the words sitting on that open burst are not words
 //! yet: the decoder completed clipped phonemes into plausible tokens ("pumpy
 //! to" for "Computer Use." on take 36de5e98, build 953). Those pins are held
-//! as alternatives with text recovery pending; the next window that covers
-//! the burst with a complete fence owns it. Nothing waits for Stop: a window
+//! as alternatives (a receipt, never a refusal); the next window that covers
+//! the burst with a complete fence owns it. The hold does not open a text
+//! recovery debt: a seal is never refused because of it, the take keeps every
+//! word the next window brings and the held reading stays visible as an
+//! alternative. Nothing waits for Stop: a window
 //! whose fence is the end of the captured PCM is never held, because no later
 //! window can exist and the last words of a take must reach delivery.
 //!
@@ -88,6 +91,8 @@ impl AcousticLedger {
 
     /// Keep back the pins of a live window that sit on the burst running
     /// through its decode fence. Returns the receipt when anything was held.
+    /// The held pins become alternatives with no sources, so they are never a
+    /// retained refused source and never a pending text recovery.
     pub(super) fn hold_edge_cut_pins(
         &mut self,
         observation: &ObservationIdentity,
@@ -115,7 +120,6 @@ impl AcousticLedger {
         for pin in &held {
             self.retain_slot_alternative(observation, &pin.text, Vec::new(), EDGE_CUT_OPEN_BURST);
         }
-        self.require_text_recovery(owner);
         let receipt = LiveFenceHoldReceipt {
             observation: observation.clone(),
             window_start,
@@ -224,7 +228,6 @@ mod tests {
         assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
         assert_eq!(ledger.text_of(&owner), Some("a b c"));
         assert!(ledger.live_fence_holds().is_empty());
-        assert!(!ledger.text_recovery_pending(&owner));
     }
 
     #[test]
