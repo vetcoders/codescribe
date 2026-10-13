@@ -288,7 +288,8 @@ fn overlapping_pad_occurrences_project_each_apple_word() {
             "committed occurrences still share PCM: {ranges:?}"
         );
     }
-    let conservation = SessionConservationReceipt::from_ledger(&ledger, 0, 0, 0, BTreeMap::new());
+    let conservation =
+        SessionConservationReceipt::from_ledger(&ledger, 0, 0, 0, 0, BTreeMap::new());
     assert_eq!(
         conservation.residue(),
         0,

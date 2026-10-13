@@ -3151,6 +3151,7 @@ impl AppleSealState {
             &ledger,
             self.windows_admitted,
             self.windows_coalesced,
+            self.windows_partially_aligned,
             self.unresolved_windows,
             self.windows_refused_before_inference.clone(),
         )

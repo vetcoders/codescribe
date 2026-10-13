@@ -1080,6 +1080,10 @@ pub struct SessionConservationReceipt {
     pub emitted: bool,
     pub windows_admitted: u64,
     pub windows_coalesced: u64,
+    /// Returned word-grain windows in which at least one decoded word had no
+    /// measured pin. The window label kept every word; the pin set did not.
+    #[serde(default)]
+    pub windows_partially_aligned: u64,
     pub windows_unresolved: u64,
     pub first_covered_sample: Option<u64>,
     pub last_covered_sample: Option<u64>,
@@ -1099,6 +1103,7 @@ impl SessionConservationReceipt {
         ledger: &AcousticLedger,
         windows_admitted: u64,
         windows_coalesced: u64,
+        windows_partially_aligned: u64,
         windows_unresolved: u64,
         windows_refused_before_inference: BTreeMap<String, u64>,
     ) -> Self {
@@ -1107,6 +1112,7 @@ impl SessionConservationReceipt {
             emitted: true,
             windows_admitted,
             windows_coalesced,
+            windows_partially_aligned,
             windows_unresolved,
             first_covered_sample: ledger.first_covered_sample(),
             last_covered_sample: ledger.last_covered_sample(),
@@ -1142,9 +1148,10 @@ impl SessionConservationReceipt {
 
     pub(crate) fn encode_fields(&self) -> String {
         format!(
-            "windows_admitted={} windows_coalesced={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={}",
+            "windows_admitted={} windows_coalesced={} windows_partially_aligned={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={}",
             self.windows_admitted,
             self.windows_coalesced,
+            self.windows_partially_aligned,
             self.windows_unresolved,
             encode_optional_u64(self.first_covered_sample),
             encode_optional_u64(self.last_covered_sample),
@@ -1167,6 +1174,7 @@ impl SessionConservationReceipt {
             emitted: true,
             windows_admitted: parse_u64(fields.get("windows_admitted").copied()),
             windows_coalesced: parse_u64(fields.get("windows_coalesced").copied()),
+            windows_partially_aligned: parse_u64(fields.get("windows_partially_aligned").copied()),
             windows_unresolved: parse_u64(fields.get("windows_unresolved").copied()),
             first_covered_sample: parse_optional_u64(fields.get("first_covered_sample").copied()),
             last_covered_sample: parse_optional_u64(fields.get("last_covered_sample").copied()),
