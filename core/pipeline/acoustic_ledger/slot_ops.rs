@@ -463,7 +463,12 @@ impl AcousticLedger {
         .then_some(speech)
     }
 
-    fn decode_fence_is_quiet(&self, owner: &OccurrenceIdentity, start: u64, end: u64) -> bool {
+    pub(super) fn decode_fence_is_quiet(
+        &self,
+        owner: &OccurrenceIdentity,
+        start: u64,
+        end: u64,
+    ) -> bool {
         let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
             .div_ceil(50)
             .saturating_add(1);
@@ -582,13 +587,6 @@ impl AcousticLedger {
     ) -> bool {
         if start >= end || word_start < start || word_start >= word_end || word_end > end {
             return true;
-        }
-        if self
-            .exhausted_capture
-            .as_ref()
-            .is_some_and(|capture| capture.same_capture(owner) && capture.sample_end == end)
-        {
-            return false;
         }
         let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
             .div_ceil(50)
