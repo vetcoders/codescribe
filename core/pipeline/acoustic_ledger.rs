@@ -69,10 +69,13 @@ use crate::audio::capture_receipt::{
 use crate::quality::engine_contract::is_clock_lie;
 use crate::stt::tail_provider::TailSampleRange;
 
+#[path = "acoustic_ledger/live_fence_hold.rs"]
+pub mod live_fence_hold;
 #[path = "acoustic_ledger/sequence_normalization.rs"]
 mod sequence_normalization;
 #[path = "acoustic_ledger/word_onset_evidence.rs"]
 pub mod word_onset_evidence;
+pub use live_fence_hold::LiveFenceHoldReceipt;
 pub use word_onset_evidence::{WordOnsetEmission, WordOnsetEvidence, WordOnsetVerdict};
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
@@ -846,6 +849,8 @@ pub struct AcousticLedger {
     /// (Parakeet TDT). Counts words under a span; never carries text.
     word_onset_evidence: Vec<WordOnsetEvidence>,
     word_onset_verdicts: Vec<WordOnsetVerdict>,
+    /// Live windows whose edge words were kept back for the next window.
+    live_fence_holds: Vec<LiveFenceHoldReceipt>,
     /// Shared capture observer and actual extent, used only to adjudicate a
     /// decoder fence. Cloning the handle does not create another observer.
     decode_fence_energy: Option<DecodeFenceEnergy>,
@@ -1465,6 +1470,11 @@ impl AcousticLedger {
         // one and in order, adopts the held geometry before any per-word
         // matcher can read a timestamp shift as a second occurrence.
         self.normalise_sequence_to_held_speech(observation, &mut admissible_words);
+        // Live-first (plan §4): words sitting on the speech burst that runs
+        // through this window's own decode fence are held for the next
+        // window, never delivered as a clipped reading. A fence at the end of
+        // the captured PCM never holds anything (no later window can exist).
+        self.hold_edge_cut_pins(observation, &mut admissible_words);
         let words = admissible_words.as_slice();
         // Routing may have proposed this owner's pins before admission. Keep
         // only admissible declarations; committed neighbours retain their own
