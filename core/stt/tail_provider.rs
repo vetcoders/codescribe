@@ -1288,6 +1288,46 @@ impl RemoteTailProvider {
     }
 }
 
+/// The one HTTP transport of a tail upload, fixed before any credential is
+/// resolved or the window leaves the process.
+///
+/// The endpoint passes the shared STT endpoint policy again
+/// (`validate_stt_endpoint`: plaintext only on loopback, no user-info), and
+/// the reqwest client then enforces the transport at the connection itself:
+/// - an authenticated endpoint (vendor bearer or custom `x-api-key`) gets an
+///   `https_only` client, which refuses any non-`https` URL before connecting,
+///   so neither the credential nor the audio can travel in cleartext;
+/// - a loopback endpoint carries no credential and bypasses every proxy, so
+///   host-local plaintext cannot leave the machine through `HTTP_PROXY` or the
+///   system proxy;
+/// - no client follows a redirect: a 3xx cannot re-send audio or credentials
+///   to another origin or downgrade the scheme, and fails as a non-success
+///   status. TLS verification stays the reqwest default.
+struct RemoteTailTransport {
+    client: Client,
+    url: Url,
+    auth: SttAuthMode,
+}
+
+impl RemoteTailTransport {
+    fn for_endpoint(endpoint: &str) -> Result<Self> {
+        let url = remote_endpoint_url(endpoint)?;
+        let auth = stt_auth_mode(url.as_str());
+        let builder = Client::builder()
+            .timeout(REMOTE_REQUEST_TIMEOUT)
+            .connect_timeout(SIDECAR_CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none());
+        let builder = match auth {
+            SttAuthMode::Unauthenticated => builder.no_proxy(),
+            SttAuthMode::Bearer | SttAuthMode::ApiKey => builder.https_only(true),
+        };
+        let client = builder
+            .build()
+            .context("remote tail HTTP client could not be built")?;
+        Ok(Self { client, url, auth })
+    }
+}
+
 impl TailProvider for RemoteTailProvider {
     fn provider_id(&self) -> TailProviderId {
         TailProviderId::Remote
@@ -1300,6 +1340,10 @@ impl TailProvider for RemoteTailProvider {
     ) -> Result<TailProviderPayload> {
         request.validate_pcm(pcm)?;
         let started = Instant::now();
+        // Transport first: an endpoint the client would refuse never reaches
+        // OAuth resolution, credential headers or the encoded window.
+        let RemoteTailTransport { client, url, auth } =
+            RemoteTailTransport::for_endpoint(&self.endpoint)?;
         let wav = pcm16_wav(pcm, request.sample_rate)?;
         let language = request.language.as_deref().unwrap_or("pl");
         let model = crate::llm::client::stt_model(
@@ -1344,12 +1388,8 @@ impl TailProvider for RemoteTailProvider {
         {
             form = form.text(field, value.to_string());
         }
-        let http_request = Client::builder()
-            .timeout(REMOTE_REQUEST_TIMEOUT)
-            .connect_timeout(SIDECAR_CONNECT_TIMEOUT)
-            .build()?
-            .post(&self.endpoint);
-        let http_request = match stt_auth_mode(&self.endpoint) {
+        let http_request = client.post(url);
+        let http_request = match auth {
             SttAuthMode::Unauthenticated => http_request,
             SttAuthMode::Bearer => http_request.bearer_auth(bearer),
             SttAuthMode::ApiKey => http_request.header("x-api-key", &self.api_key),
@@ -1588,8 +1628,14 @@ fn remote_tail_segments(
 }
 
 pub(crate) fn validate_remote_endpoint(endpoint: &str) -> Result<()> {
-    super::validate_stt_endpoint(super::SttLane::File, endpoint)?;
-    Ok(())
+    remote_endpoint_url(endpoint).map(|_| ())
+}
+
+/// Parsed form of an endpoint the shared STT policy accepts. The policy has
+/// one owner (`validate_stt_endpoint`); this only keeps its normalized URL.
+fn remote_endpoint_url(endpoint: &str) -> Result<Url> {
+    let normalized = super::validate_stt_endpoint(super::SttLane::File, endpoint)?;
+    Url::parse(&normalized).context("validated STT endpoint did not parse")
 }
 
 pub(crate) fn pcm16_wav(pcm: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
