@@ -29,8 +29,17 @@ wrong or missing string:
      A unit in state `needs_review` (a draft written with the code, owed a
      reviewer — scripts/l10n-sheet.py import --draft) counts as present here
      and is reported as awaiting review;
-  6. no string, in any language, spells the product other than `Codescribe`;
-  7. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
+  6. a translation that reads exactly as its English source is refused. A
+     `translated` or `needs_review` unit carrying the English words back is the
+     one way an untranslated string passes check 5: the state says somebody
+     handled it and the catalog looks complete while the interface is English.
+     A draft is allowed to be rough — it is not allowed to be English. Two
+     strings escape: one that carries no letter at all (`%@`, `100%%` — the
+     same in every language), and a key named in
+     scripts/data/l10n-identical-allowed.txt, where a proper noun, a borrowed
+     word or an identifier really is spelled the same, with the reason;
+  7. no string, in any language, spells the product other than `Codescribe`;
+  8. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
      for word, so the catalog cannot drift from the plist it overrides.
 
 It reports, without failing, translation coverage per language and count-bearing
@@ -69,6 +78,10 @@ SOURCE_LANGUAGE = "en"
 
 # Spellings no string may carry, in any language, with the reason.
 FORBIDDEN_SPELLINGS = {"CodeScribe": "the product is spelled Codescribe"}
+
+# Keys whose translation is allowed to read exactly as the English source: a
+# proper noun, a borrowed word, an identifier. Every line carries its reason.
+IDENTICAL_ALLOWED = REPO / "scripts" / "data" / "l10n-identical-allowed.txt"
 
 # Unicode CLDR cardinal plural rules, byte for byte as published in cldr-json
 # (cldr-core/supplemental/plurals.json). Provenance and licence: NOTICE.
@@ -234,6 +247,36 @@ def source_format(key: str, entry: dict) -> tuple[str, dict]:
     return key, {}
 
 
+def source_texts(key: str, entry: dict) -> dict[str, str]:
+    """The English text of every leaf of one key, by the same variation path the
+    translations are labelled with, so a translation can be held against the
+    words it was given rather than against the whole string."""
+    source = entry.get("localizations", {}).get(SOURCE_LANGUAGE, {})
+    texts = {label: unit.get("value", "") for label, unit in leaf_units(source)}
+    for name, rule in source.get("substitutions", {}).items():
+        for label, unit in leaf_units(rule):
+            texts[f"{name}.{label}"] = unit.get("value", "")
+    texts.setdefault("", source_format(key, entry)[0])
+    return texts
+
+
+def says_something(text: str) -> bool:
+    """Whether a string carries a word at all.
+
+    `%@`, `%1$lld/%2$lld`, `100%%` are the same in every language, so their
+    being identical to the source is no evidence that nobody translated them.
+    A string with a letter in it is.
+    """
+    return any(character.isalpha() for character in SPECIFIER.sub("", text.replace("%%", "")))
+
+
+@functools.lru_cache(maxsize=None)
+def identical_allowed() -> frozenset[str]:
+    """The keys whose translation may read exactly as the English source."""
+    lines = IDENTICAL_ALLOWED.read_text(encoding="utf-8").splitlines()
+    return frozenset(filter(None, (line.split("#", 1)[0].strip() for line in lines)))
+
+
 def lint_arguments(key: str, entry: dict, complain) -> None:
     """Check every string of every language against the arguments of the source."""
     source_text, source_rules = source_format(key, entry)
@@ -340,6 +383,7 @@ def lint_catalog(
     languages = set(languages) - {SOURCE_LANGUAGE}
     plural_candidates = []
     unruled = set()
+    allow_identical = identical_allowed()
 
     for key, entry in strings.items():
         if entry.get("extractionState") == "stale":
@@ -370,6 +414,7 @@ def lint_catalog(
             errors.append(f"{name}: {language}{where}: {problem} for {key!r}")
 
         lint_arguments(key, entry, complain)
+        english = source_texts(key, entry)
 
         for language, localization in localizations.items():
             units = leaf_units(localization)
@@ -387,6 +432,23 @@ def lint_catalog(
                 absent = [case for case in required or () if case not in plural]
                 if absent:
                     complain(language, where, f"plural forms missing ({', '.join(absent)})")
+            if language != SOURCE_LANGUAGE and key not in allow_identical:
+                for label, unit in units:
+                    if unit.get("state") not in COVERED_STATES:
+                        continue  # an untranslated unit is check 5's business
+                    value = unit.get("value", "")
+                    source_value = english.get(label, english.get("", ""))
+                    if value.strip() != source_value.strip() or not says_something(value):
+                        continue
+                    complain(
+                        language,
+                        label,
+                        f"reads exactly as the English source ({value.strip()!r}) while its "
+                        f"state is '{unit.get('state')}' — an untranslated string counts as "
+                        "covered that way and the bundle looks complete in English "
+                        f"(translate it, or name the key in {IDENTICAL_ALLOWED.relative_to(REPO)} "
+                        "with the reason it is the same word in this language)",
+                    )
             if language != SOURCE_LANGUAGE:
                 if units and all(unit.get("state") in COVERED_STATES for _, unit in units):
                     translated[language] += 1
@@ -470,6 +532,13 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError, KeyError, AttributeError) as error:
         rules = PLURAL_RULES.relative_to(REPO)
         print(f"l10n-lint: cannot read the plural rules in {rules}: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        identical_allowed()
+    except OSError as error:
+        allowed = IDENTICAL_ALLOWED.relative_to(REPO)
+        print(f"l10n-lint: cannot read the identity allowlist in {allowed}: {error}", file=sys.stderr)
         return 1
 
     errors: list[str] = []
