@@ -1835,7 +1835,8 @@ final class OverlayState {
     !showsSessionTimer || captureEndedAtUptime != nil
   }
 
-  /// Exact engine text shared by the canvas, sizing, copy, and delivery.
+  /// Committed engine text shared by copy and delivery. Live canvas paint
+  /// does not grant document or delivery authority.
   var activeText: String {
     archivedTranscript?.text ?? formattedText
   }
@@ -1863,14 +1864,17 @@ final class OverlayState {
     latestTranscriptProjection != nil && !revisionDraft.utf8.elementsEqual(formattedText.utf8)
   }
 
-  /// Bytes painted on the canvas: the local draft while a completed take is
-  /// under review or awaiting its ledger projection, the Rust projection
-  /// otherwise. Delivery never reads this; it reads `activeText`.
+  /// Bytes painted on the canvas: a reviewed draft, capture-bound live paint,
+  /// or the committed Rust document. Delivery reads only `activeText`.
   var canvasText: String {
     if let archivedTranscript {
       return isRevisionDraftDirty ? archiveDraft : archivedTranscript.text
     }
-    return isRevisionDraftDirty ? revisionDraft : formattedText
+    if isRevisionDraftDirty { return revisionDraft }
+    if !terminal, !finalized, recording || transcribing, let compactProjection {
+      return compactProjection.text
+    }
+    return formattedText
   }
 
   /// Uncertain words painted on the canvas. The spans index into
@@ -1879,7 +1883,9 @@ final class OverlayState {
   /// rather than color the wrong bytes. `coverage_refused` / `degraded` never
   /// create spans upstream, so they can never create color here.
   var canvasUncertainWords: [OverlayUncertainWord] {
-    guard archivedTranscript == nil, !isRevisionDraftDirty else { return [] }
+    guard archivedTranscript == nil, !isRevisionDraftDirty,
+      canvasText.utf8.elementsEqual(formattedText.utf8)
+    else { return [] }
     return OverlayUncertainWordProjection.project(spans: uncertainSpans, text: formattedText)
   }
 
