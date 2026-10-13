@@ -529,11 +529,33 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           row["association"] as? String == "addressed"
           && row["delivery_id"] is String
         let order = messages[key]?.order ?? nextOrder()
+        // Peer text freezes its recipients at publication (`send_peer_command`
+        // in bus-demux.py): the owner lease the sender's demux resolved, never
+        // a later lease of the same name. Each entry observes the delivery
+        // identity the recipient's demux derives for a message with no
+        // audience, so that agent's ACK marker settles it. A replayed row keeps
+        // the recipients it already has.
+        var recipients = messages[key]?.recipients ?? []
+        if row["peer_to"] is String, let frozen = row["recipients"] as? [[String: Any]] {
+          for recipient in frozen.compactMap(OverlayConversationOwner.init(row:))
+          where recipient.id != owner.id
+            && !recipients.contains(where: { $0.owner.id == recipient.id })
+          {
+            historicalOwners[recipient.id] = historicalOwners[recipient.id] ?? recipient
+            recipients.append(
+              OverlayConversationRecipient(
+                owner: recipient,
+                deliveryID: Self.identity([
+                  "native_bus_demux", recipient.leaseID, replyID, "message", "",
+                ]), queued: false, accepted: false, acknowledged: false))
+          }
+        }
         var message = OverlayConversationMessage(
           id: key, kind: .reply,
           text: text, order: order,
           emittedAt: row["emitted_at"] as? String ?? "", owner: historicalOwners[owner.id],
-          recipients: [], deliveryID: addressed ? row["delivery_id"] as? String : nil,
+          recipients: recipients,
+          deliveryID: addressed ? row["delivery_id"] as? String : nil,
           replyTo: addressed ? row["delivery_id"] as? String : nil,
           unsolicited: !addressed, playback: playbackByReply[replyID], busPath: "")
         message.supportsSpeechPlayback =
