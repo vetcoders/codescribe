@@ -42,6 +42,23 @@ protocol OnboardingEngine {
   func setApiKeyAsync(account: String, secret: String) async throws
   func setApiKey(account: String, secret: String) throws
   func updateConfig(key: String, value: String) throws
+
+  // Done chapter: the lane chosen in Settings › Dictation, and the
+  // controller's own admission verdict and guided calibration — the same
+  // bridge calls Settings › Audio makes. Setup never derives readiness itself.
+  func dictationLane() -> DictationLane
+  func admissionReadiness() async throws -> CsAdmissionReadiness
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport
+}
+
+/// An engine without the admission seam cannot prove readiness, so setup
+/// cannot finish through it. Never a stand-in verdict.
+struct OnboardingReadinessUnavailable: LocalizedError {
+  var errorDescription: String? {
+    String(
+      localized: "Recording readiness could not be checked.",
+      comment: "Setup could not read the recording admission verdict")
+  }
 }
 
 extension OnboardingEngine {
@@ -50,6 +67,13 @@ extension OnboardingEngine {
   }
   func providerAccessRevision() -> UInt64 { 0 }
   func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func dictationLane() -> DictationLane { .appleOnly }
+  func admissionReadiness() async throws -> CsAdmissionReadiness {
+    throw OnboardingReadinessUnavailable()
+  }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    throw OnboardingReadinessUnavailable()
+  }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -59,6 +83,7 @@ extension OnboardingEngine {
 /// Keychain). Injected by App.swift for the live app.
 final class RealOnboardingEngine: OnboardingEngine {
   private let config = CodescribeConfig()
+  private let hotkeys = CodescribeHotkeys()
 
   func shouldShowOnboarding() -> Bool { config.shouldShowOnboarding() }
   func onboardingProgress() -> UInt32 { config.onboardingProgress() }
@@ -85,6 +110,17 @@ final class RealOnboardingEngine: OnboardingEngine {
   func updateConfig(key: String, value: String) throws {
     try config.updateConfig(key: key, value: value)
   }
+
+  func dictationLane() -> DictationLane {
+    let settings = config.loadSettings()
+    return DictationLane(asrMode: settings.asrMode, cloudConsent: settings.cloudConsent)
+  }
+  func admissionReadiness() async throws -> CsAdmissionReadiness {
+    try await hotkeys.admissionReadiness()
+  }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    try await hotkeys.calibrateEnergy(seconds: seconds)
+  }
 }
 
 // MARK: - Mock engine (previews)
@@ -98,6 +134,9 @@ final class MockOnboardingEngine: OnboardingEngine {
   var mode: String?
   var language: CsLanguage = .auto
   var savedProvider: String?
+  var lane: DictationLane = .appleOnly
+  /// Preview verdict; `nil` answers like an engine without the admission seam.
+  var admission: CsAdmissionReadiness? = .sampleGranted
 
   init(progress: UInt32 = 0) { self.progress = progress }
 
@@ -115,4 +154,9 @@ final class MockOnboardingEngine: OnboardingEngine {
   func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
   func setApiKey(account: String, secret: String) throws {}
   func updateConfig(key: String, value: String) throws {}
+  func dictationLane() -> DictationLane { lane }
+  func admissionReadiness() async throws -> CsAdmissionReadiness {
+    guard let admission else { throw OnboardingReadinessUnavailable() }
+    return admission
+  }
 }
