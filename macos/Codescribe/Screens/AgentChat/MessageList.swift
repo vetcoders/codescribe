@@ -309,7 +309,6 @@ struct MessageList: View {
             }
           )
         }
-        .coordinateSpace(name: scrollSpace)
         .scrollContentBackground(.hidden)
         // The document height is exact (see `emptyStateHeight`), so this only
         // absorbs sub-point layout rounding: a content height that fits never
@@ -361,6 +360,11 @@ struct MessageList: View {
         }
       }
     }
+    // The visible region names the space, not the scroll view: the scroll
+    // view runs beneath the toolbar and the composer bar, while this reader
+    // stays inside them. The live edge is then the reader's bottom, and the
+    // follow-tail test keeps comparing against `viewport.size.height`.
+    .coordinateSpace(name: scrollSpace)
   }
 
   private func perform(
