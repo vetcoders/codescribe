@@ -1328,6 +1328,7 @@ mod local_execution_tests {
                 .is_empty()
         );
         assert_eq!(receipt.conservation.energy_lookups_without_voiced_hop, 0);
+        assert_eq!(receipt.conservation.live_fence_holds, 0);
         assert_eq!(receipt.conservation.residue(), 0);
         assert_eq!(ledger.conservation().residue(), 0);
         assert_eq!(
@@ -1365,6 +1366,7 @@ mod local_execution_tests {
             "observations_refused_by_reason",
             "windows_refused_before_inference",
             "energy_lookups_without_voiced_hop",
+            "live_fence_holds",
         ] {
             assert!(object.contains_key(key), "receipt missing {key}");
             assert!(schema.contains(key), "schema missing {key}");

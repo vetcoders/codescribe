@@ -19,7 +19,8 @@
     "observations_unanchored",
     "observations_refused_by_reason",
     "windows_refused_before_inference",
-    "energy_lookups_without_voiced_hop"
+    "energy_lookups_without_voiced_hop",
+    "live_fence_holds"
   ],
   "properties": {
     "schema": { "const": "codescribe-session-conservation/v1" },
@@ -46,6 +47,7 @@
       "type": "object",
       "additionalProperties": { "type": "integer", "minimum": 0 }
     },
-    "energy_lookups_without_voiced_hop": { "type": "integer", "minimum": 0 }
+    "energy_lookups_without_voiced_hop": { "type": "integer", "minimum": 0 },
+    "live_fence_holds": { "type": "integer", "minimum": 0 }
   }
 }
