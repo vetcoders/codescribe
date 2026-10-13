@@ -31,19 +31,16 @@ struct OverlayTooltipChip: View {
 
   var body: some View {
     Text(title)
-      .font(CSFont.ui(10, .medium))
+      .font(CSFont.ui(10))
       .foregroundStyle(palette.primaryText.color)
       .lineLimit(4)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 4)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 2)
       .background {
         if filled {
           RoundedRectangle(cornerRadius: CSRadius.chip).fill(.regularMaterial)
         }
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(palette.border.color)
       }
       .accessibilityHidden(true)
   }

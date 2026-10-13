@@ -157,7 +157,7 @@ final class OverlayHintPanel {
       defer: true)
     panel.isOpaque = false
     panel.backgroundColor = .clear
-    panel.hasShadow = true
+    panel.hasShadow = false
     panel.ignoresMouseEvents = true
     panel.isReleasedWhenClosed = false
     panel.hidesOnDeactivate = false

@@ -56,6 +56,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
     XCTAssertTrue(hint.parent === parent)
     XCTAssertTrue(hint.ignoresMouseEvents)
+    XCTAssertLessThanOrEqual(
+      hint.frame.height, 18, "A one-line hint must stay subordinate to its 22 pt control")
+    XCTAssertFalse(hint.hasShadow, "A hint must not cast a second floating-card shadow")
     XCTAssertFalse(hint.canBecomeKey)
     let controlOnScreen = parent.convertToScreen(control.convert(control.bounds, to: nil))
     XCTAssertEqual(hint.frame.maxY, controlOnScreen.minY - OverlayHintPanel.gap, accuracy: 0.5)
