@@ -1014,6 +1014,8 @@ extension CsSettings {
     bufferedInterimSec: nil,
     backendMaxUploadMb: nil,
     asrMode: nil,
+    // What the core resolves for no mode, no consent and no legacy choice.
+    resolvedAsrMode: "apple_only",
     cloudConsent: nil,
     asrGatewayUrl: nil
   )

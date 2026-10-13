@@ -112,8 +112,7 @@ final class RealOnboardingEngine: OnboardingEngine {
   }
 
   func dictationLane() -> DictationLane {
-    let settings = config.loadSettings()
-    return DictationLane(asrMode: settings.asrMode, cloudConsent: settings.cloudConsent)
+    DictationLane(resolvedAsrMode: config.loadSettings().resolvedAsrMode)
   }
   func admissionReadiness() async throws -> CsAdmissionReadiness {
     try await hotkeys.admissionReadiness()
