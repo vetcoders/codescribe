@@ -1095,6 +1095,10 @@ pub struct SessionConservationReceipt {
     pub observations_refused_by_reason: BTreeMap<String, u64>,
     pub windows_refused_before_inference: BTreeMap<String, u64>,
     pub energy_lookups_without_voiced_hop: u64,
+    /// Live windows that held words sitting on a speech burst running through
+    /// their decode fence, instead of delivering an edge-cut label.
+    #[serde(default)]
+    pub live_fence_holds: u64,
 }
 
 impl SessionConservationReceipt {
@@ -1128,6 +1132,7 @@ impl SessionConservationReceipt {
                 .collect(),
             windows_refused_before_inference,
             energy_lookups_without_voiced_hop: ledger.energy_lookups_without_voiced_hop(),
+            live_fence_holds: ledger.live_fence_holds().len() as u64,
         }
     }
 
@@ -1148,7 +1153,7 @@ impl SessionConservationReceipt {
 
     pub(crate) fn encode_fields(&self) -> String {
         format!(
-            "windows_admitted={} windows_coalesced={} windows_partially_aligned={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={}",
+            "windows_admitted={} windows_coalesced={} windows_partially_aligned={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={} live_fence_holds={}",
             self.windows_admitted,
             self.windows_coalesced,
             self.windows_partially_aligned,
@@ -1163,6 +1168,7 @@ impl SessionConservationReceipt {
             encode_reason_map(&self.observations_refused_by_reason),
             encode_reason_map(&self.windows_refused_before_inference),
             self.energy_lookups_without_voiced_hop,
+            self.live_fence_holds,
         )
     }
 
@@ -1194,6 +1200,7 @@ impl SessionConservationReceipt {
             energy_lookups_without_voiced_hop: parse_u64(
                 fields.get("energy_lookups_without_voiced_hop").copied(),
             ),
+            live_fence_holds: parse_u64(fields.get("live_fence_holds").copied()),
         }
     }
 }
