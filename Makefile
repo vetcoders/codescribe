@@ -1248,7 +1248,7 @@ hooks:
 	@echo "Installing pre-commit hooks..."
 	@command -v pre-commit >/dev/null 2>&1 || { echo "Install pre-commit: pipx install pre-commit"; exit 1; }
 	@pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
-	@echo "Hooks installed: pre-commit (check+fmt) + pre-push (clippy+semgrep) + commit-msg (provenance)"
+	@echo "Hooks installed: pre-commit (check+fmt+l10n) + pre-push (clippy+semgrep+l10n) + commit-msg (provenance)"
 
 # ============================================================================
 # Cleanup
