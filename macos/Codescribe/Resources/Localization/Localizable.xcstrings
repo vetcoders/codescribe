@@ -4979,17 +4979,6 @@
         }
       }
     },
-    "Collapse sidebar (⌃⌘S)" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zwiń pasek boczny (⌃⌘S)"
-          }
-        }
-      }
-    },
     "Collapse widget" : {
       "localizations" : {
         "pl" : {
@@ -7140,17 +7129,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Rozwiń"
-          }
-        }
-      }
-    },
-    "Expand sidebar (⌃⌘S)" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozwiń pasek boczny (⌃⌘S)"
           }
         }
       }
@@ -16810,17 +16788,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dzisiaj"
-          }
-        }
-      }
-    },
-    "Toggle Sidebar" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż/ukryj pasek boczny"
           }
         }
       }
