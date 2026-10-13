@@ -66,6 +66,16 @@ impl AcousticLedger {
         {
             return None;
         }
+        // Exact quiet PCM outranks a hop containing both the preceding word
+        // and its trailing pause. A complete repetition must not be held.
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000)).div_ceil(50) + 1;
+        if self.decode_fence_is_quiet(
+            owner,
+            fence.saturating_sub(resolution).max(window_start),
+            fence,
+        ) {
+            return None;
+        }
         let hops =
             energy
                 .owner
@@ -124,6 +134,9 @@ impl AcousticLedger {
             return None;
         }
         let owner = &observation.occurrence;
+        if !self.is_qualified(owner) {
+            return None;
+        }
         let burst_start = self.open_burst_start_at_fence(owner, window_start, fence)?;
         let reach = fence
             .saturating_sub(u64::from(self.capture_rate_hz.unwrap_or(16_000)) * HOLD_REACH_SECS);
@@ -340,19 +353,45 @@ mod tests {
         ledger.record_exhausted_capture(&owner.session, owner.capture_epoch, pcm.len() as u64);
         let terminal = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
         ledger.admit_word_slots(&terminal, &pins);
-        assert_eq!(ledger.text_of(&owner), Some("a c"));
-        assert!(!ledger.text_recovery_pending(&owner));
+        // Ending capture supplies no missing phonemes at a voiced cut.
+        assert_eq!(ledger.text_of(&owner), Some("a"));
+        assert!(ledger.text_recovery_pending(&owner));
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
+    fn a_hold_cannot_create_capture_facts_without_qualification() {
+        let pcm = synthetic_take(&[(8.7, 9.3)]);
+        let (mut ledger, owner) = ledger(&pcm);
+        ledger.evidence.clear();
+        let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner);
+        let mut pins = window(&[("cut", 8.7, 9.0)], (0.0, 9.0));
+        assert!(ledger.hold_edge_cut_pins(&observation, &mut pins).is_none());
+        assert!(ledger.live_fence_holds().is_empty());
+        assert!(ledger.has_no_capture_facts());
+    }
+
+    #[test]
     fn a_fence_at_the_end_of_the_capture_never_holds() {
-        // Speech runs to the very end of the PCM: there is no later window,
-        // so the last words must reach delivery.
-        let pcm = synthetic_take(&[(1.0, 1.5), (9.6, 10.0)]);
+        // The final word has measured quiet at its fence. Capture exhaustion
+        // cannot replace that independent acoustic proof.
+        let pcm = synthetic_take(&[(1.0, 1.5), (9.6, 9.97)]);
         let (mut ledger, owner) = ledger(&pcm);
         let live = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
         let pins = window(&[("a", 1.0, 1.5), ("c", 9.6, 10.0)], (0.0, 10.0));
+        let energy = ledger.decode_fence_energy.as_ref().unwrap().owner.clone();
+        let end = pcm.len() as u64;
+        let edge = OccurrenceIdentity::new(
+            &owner.session,
+            owner.capture_epoch,
+            end - (SECOND / 50 + 1),
+            end,
+        );
+        ledger.record_decode_fence_energy(
+            &energy,
+            end,
+            [None, Some((&edge, &pcm[edge.sample_start as usize..]))],
+        );
         ledger.record_exhausted_capture(&owner.session, owner.capture_epoch, pcm.len() as u64);
         assert!(ledger.admit_word_slots(&live, &pins).grants_mutation());
         assert_eq!(ledger.text_of(&owner), Some("a c"));

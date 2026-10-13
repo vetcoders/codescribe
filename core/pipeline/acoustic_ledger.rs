@@ -2244,7 +2244,6 @@ impl AcousticLedger {
         self.evidence.is_empty()
             && self.committed.is_empty()
             && self.pending_text_recovery.is_empty()
-            && self.live_fence_holds.iter().all(|hold| hold.settled)
             && self.terminal_seals.is_empty()
             && self.latest_seal_coverage.is_none()
     }
