@@ -1292,6 +1292,7 @@ mod local_execution_tests {
             0,
             0,
             0,
+            0,
             std::collections::BTreeMap::new(),
         );
         let receipt =
@@ -1299,6 +1300,7 @@ mod local_execution_tests {
         assert!(receipt.conservation.emitted);
         assert_eq!(receipt.conservation.windows_admitted, 0);
         assert_eq!(receipt.conservation.windows_coalesced, 0);
+        assert_eq!(receipt.conservation.windows_partially_aligned, 0);
         assert_eq!(receipt.conservation.windows_unresolved, 0);
         assert!(
             receipt
@@ -1351,6 +1353,7 @@ mod local_execution_tests {
         for key in [
             "windows_admitted",
             "windows_coalesced",
+            "windows_partially_aligned",
             "windows_unresolved",
             "first_covered_sample",
             "last_covered_sample",
