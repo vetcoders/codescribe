@@ -24,7 +24,8 @@ struct Composer: View {
   /// icons) keeps its intrinsic size.
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openWindow) private var openWindow
-  @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
+  @State private var fieldHeight = ComposerTextLayout.minimumHeight(
+    fontSize: ComposerControlMetrics.textSize)
   @State private var previewAttachment: PendingAttachment?
 
   // ⌘V interception. The native text editor consumes `paste:` before any
@@ -63,7 +64,7 @@ struct Composer: View {
 
       liveAgentCapture
 
-      HStack(alignment: .bottom, spacing: 10) {
+      HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
         // Attach images (NSOpenPanel → staged chips → vision FFI on send).
         Button(action: pickAttachments) {
           CSIconView(
@@ -94,12 +95,9 @@ struct Composer: View {
 
         Button(action: performPrimaryAction) {
           ZStack {
-            CSIconView(
-              icon: primaryAction.icon,
-              size: ComposerControlMetrics.glyphSize,
-              weight: primaryAction.iconWeight,
-              color: CSColor.chromeAccent
-            )
+            Image(systemName: primaryAction.systemImage)
+              .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+              .foregroundStyle(primaryAction.isSend ? CSColor.terracotta : CSColor.chromeAccent)
             if primaryAction == .stopping {
               ProgressView()
                 .controlSize(.small)
@@ -121,21 +119,17 @@ struct Composer: View {
         .accessibilityIdentifier(ComposerActionAccessibility.identifier)
         .accessibilityLabel(Text(primaryAction.accessibilityLabel))
       }
-      .padding(.leading, 13)
-      .padding(.trailing, 11)
-      .padding(.vertical, 6)
-      .background(Color.primary.opacity(isDragging ? 0.07 : 0.04))
-      .overlay(
-        // 0.14, not 0.09: in an empty thread the composer is the second
-        // point of gravity, and the old border sank into the canvas
-        // (Founder brief 2026-10-10).
-        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(
-            isDragging ? CSColor.chromeAccent : Color.primary.opacity(0.14),
-            lineWidth: isDragging ? 1.5 : 1
-          )
-      )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
+      .buttonStyle(.plain)
+      .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
+      .padding(.vertical, ComposerControlMetrics.verticalPadding)
+      .modifier(OverlayControlGlass())
+      .overlay {
+        if isDragging {
+          RoundedRectangle(cornerRadius: 20)
+            .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
+            .allowsHitTesting(false)
+        }
+      }
       // Sits above the NSTextField and swallows a drop that lands *on* the
       // field, so the field editor never pastes the path as text. Only
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
@@ -765,8 +759,13 @@ struct Composer: View {
 }
 
 enum ComposerControlMetrics {
-  static let glyphSize: CGFloat = 15
-  static let hitTargetSize: CGFloat = 22
+  static let glyphSize: CGFloat = 16
+  static let hitTargetSize: CGFloat = 28
+  static let textSize: CGFloat = 14
+  static let textVerticalInset: CGFloat = 5
+  static let spacing: CGFloat = 8
+  static let horizontalPadding: CGFloat = 12
+  static let verticalPadding: CGFloat = 8
 }
 
 enum ComposerActionAccessibility {
@@ -803,19 +802,12 @@ enum ComposerActionVisualState: Equatable {
     }
   }
 
-  var icon: CSIcon {
-    switch self {
-    case .send: return .send
-    case .stop, .stopping: return .stop
-    }
+  var isSend: Bool {
+    if case .send = self { return true }
+    return false
   }
 
-  var iconWeight: CSIconWeight {
-    switch self {
-    case .send: return .semibold
-    case .stop, .stopping: return .fill
-    }
-  }
+  var systemImage: String { isSend ? "paperplane.fill" : "stop.fill" }
 }
 
 /// Minimal probe reporting the `NSWindow` that hosts a SwiftUI hierarchy. The

@@ -6,8 +6,8 @@ import XCTest
 
 /// Mounts the real Agent window composition. Symbols here exist on the
 /// baseline, so root can run this file there: hidden title, unified toolbar,
-/// sidebar material, and the divider stopping at the header all fail before
-/// this cut. Geometry is measured on the live window, not from constants.
+/// full-height sidebar material and clear titlebar are measured on the live
+/// window, with toolbar controls still clear of the traffic lights.
 @MainActor
 final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
@@ -37,7 +37,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
         XCTAssertEqual(window.title, "Agent", "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.titleVisibility, .hidden, "width \(width) expanded \(expanded)")
-        XCTAssertFalse(window.titlebarAppearsTransparent, "width \(width) expanded \(expanded)")
+        XCTAssertTrue(window.titlebarAppearsTransparent, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.toolbarStyle, .unified, "width \(width) expanded \(expanded)")
 
         let split = splitView(in: window)
@@ -47,17 +47,24 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertEqual(
           sidebar?.minimumThickness, AgentSidebarMetrics.minimumWidth,
           "width \(width) expanded \(expanded)")
-        XCTAssertFalse(
-          sidebar?.allowsFullHeightLayout ?? true, "width \(width) expanded \(expanded)")
+        XCTAssertTrue(
+          sidebar?.allowsFullHeightLayout ?? false, "width \(width) expanded \(expanded)")
         XCTAssertFalse(
           controller?.splitViewItems.last?.allowsFullHeightLayout ?? true,
           "width \(width) expanded \(expanded)")
         XCTAssertEqual(sidebar?.isCollapsed, !expanded, "width \(width) expanded \(expanded)")
-        if let split {
+        if expanded, let sidebar {
+          XCTAssertEqual(
+            frame(sidebar.viewController.view).maxY, window.frame.height, accuracy: 1,
+            "sidebar must extend through the titlebar at \(width)")
+          XCTAssertEqual(
+            frame(sidebar.viewController.view).minY, 0, accuracy: 1,
+            "sidebar must reach the bottom edge at \(width)")
+          let search = try XCTUnwrap(
+            first(in: sidebar.viewController.view) { $0 is NSSearchField })
           XCTAssertLessThanOrEqual(
-            frame(split).maxY,
-            window.contentLayoutRect.maxY + 1,
-            "divider runs through the titlebar at \(width) expanded \(expanded)")
+            frame(search).maxY, window.contentLayoutRect.maxY + 1,
+            "full-height material must not move search under the toolbar")
         }
 
         let material = sidebarMaterial(in: window)

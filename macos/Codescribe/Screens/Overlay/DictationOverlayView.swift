@@ -842,7 +842,7 @@ struct DictationOverlayView: View {
             title: transcriptPreviewHelp, accent: .transcription, palette: palette)
         )
         .accessibilityLabel("Show transcription")
-        .accessibilityValue(transcriptPreviewHelp)
+        .accessibilityValue(transcriptPreviewAccessibilityValue)
         .accessibilityIdentifier("overlay-transcription-preview")
         if let error = state.expansionPreferenceError {
           OverlayMicrophoneGlyph(
@@ -901,9 +901,12 @@ struct DictationOverlayView: View {
   }
 
   private var transcriptPreviewHelp: String {
-    let action = String(localized: "Show transcription")
-    return showsDiagnostics && state.compactProjection?.degraded == true
-      ? action + ". " + OverlayWarningCopy.liveTranscriptBehind.sentence : action
+    String(localized: "Show transcription")
+  }
+
+  private var transcriptPreviewAccessibilityValue: String {
+    showsDiagnostics && state.compactProjection?.degraded == true
+      ? OverlayWarningCopy.liveTranscriptBehind.sentence : ""
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM

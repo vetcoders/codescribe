@@ -226,6 +226,43 @@ final class ComposerFocusAppearanceTests: XCTestCase {
     )
   }
 
+  func testAgentInputMatchesOverlayNativeTextMetricsAtBothTextScales() throws {
+    for scale: CGFloat in [1, 1.6] {
+      for width: CGFloat in [320, 600] {
+        let store = AgentChatStore(engine: nil)
+        let agent = NSHostingView(
+          rootView: Composer(store: store, overlay: OverlayState())
+            .environment(\.csTextScale, scale))
+        let overlay = NSHostingView(
+          rootView: OverlayConversationComposer(
+            palette: .dark, draft: .constant(""), sending: false, onSubmit: {}
+          )
+          .environment(\.csTextScale, scale))
+        let hosts: [NSView] = [agent, overlay]
+        let windows = hosts.map { host in
+          host.frame = NSRect(x: 0, y: 0, width: width, height: 160)
+          let window = TestWindow(frame: host.frame)
+          window.contentView = host
+          window.orderFrontRegardless()
+          settle(host)
+          return window
+        }
+        defer {
+          for window in windows { window.close() }
+        }
+        let agentEditor = try XCTUnwrap(findEditableTextView(in: agent))
+        let overlayEditor = try XCTUnwrap(findEditableTextView(in: overlay))
+        XCTAssertEqual(
+          agentEditor.font?.pointSize ?? 0, overlayEditor.font?.pointSize ?? 0, accuracy: 0.01,
+          "Typography must match at width \(width), scale \(scale)")
+        XCTAssertEqual(agentEditor.textContainerInset, overlayEditor.textContainerInset)
+        XCTAssertEqual(
+          agentEditor.textContainer?.lineFragmentPadding,
+          overlayEditor.textContainer?.lineFragmentPadding)
+      }
+    }
+  }
+
   // MARK: - Helpers
 
   private func settle(_ host: NSView) {
