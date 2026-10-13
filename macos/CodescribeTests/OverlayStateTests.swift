@@ -1717,8 +1717,11 @@ final class OverlayStateTests: XCTestCase {
         text: "Zatwierdzony dokument Iwo Iwo Iwo Iwo Iwo", degraded: true,
         evidence: evidence))
     XCTAssertEqual(state.liveEvidence, evidence)
-    XCTAssertEqual(state.canvasText, "Zatwierdzony dokument")
+    XCTAssertEqual(state.canvasText, "Zatwierdzony dokument Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertEqual(
+      state.activeText, "Zatwierdzony dokument", "live paint is not delivery authority")
     projectText("Zatwierdzony dokument", to: state, terminal: true, sessionId: "five-word-review")
+    XCTAssertEqual(state.canvasText, "Zatwierdzony dokument")
     XCTAssertEqual(state.liveEvidence, evidence, "Stop cannot settle five separate refusals")
     XCTAssertEqual(state.activeText, "Zatwierdzony dokument", "review is not delivery authority")
   }
@@ -3633,6 +3636,70 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.isTranscriptEditable)
     XCTAssertEqual(state.revisionDraft, "sealed words", "the seal seeds the draft")
     XCTAssertEqual(state.canvasText, "sealed words")
+  }
+
+  func testLivePreviewPaintDoesNotBecomeDocumentOrSurviveItsTerminal() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "preview-only", captureEpoch: 1, sequence: 1,
+        text: "Iwo Iwo Iwo Iwo Iwo", degraded: false, evidence: []))
+    XCTAssertEqual(state.canvasText, "Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertEqual(state.activeText, "")
+    XCTAssertFalse(state.isRevisionDraftDirty)
+    XCTAssertFalse(state.isTranscriptEditable)
+    XCTAssertFalse(state.canPaste)
+    XCTAssertFalse(state.canInsert)
+    XCTAssertFalse(state.canSendToAgent)
+
+    state.handleRecordingFinalising()
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "preview-only", captureEpoch: 1, sequence: 2,
+        text: "Iwo Iwo Iwo Iwo Iwo. Koniec.", degraded: false, evidence: []))
+    XCTAssertEqual(state.canvasText, "Iwo Iwo Iwo Iwo Iwo. Koniec.")
+    XCTAssertEqual(state.activeText, "")
+
+    projectText("Przyjęty tekst", to: state, terminal: true, sessionId: "preview-only")
+    XCTAssertEqual(state.canvasText, "Przyjęty tekst")
+    XCTAssertEqual(state.activeText, "Przyjęty tekst")
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Moja poprawka")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "preview-only", captureEpoch: 1, sequence: 3,
+        text: "Późny podgląd", degraded: false, evidence: []))
+    XCTAssertEqual(state.canvasText, "Moja poprawka")
+    XCTAssertEqual(state.activeText, "Przyjęty tekst")
+    state.discardRevisionDraft()
+    state.endTranscriptEdit()
+  }
+
+  func testLivePreviewDoesNotBorrowUncertainSpansFromDifferentDocumentBytes() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1, emittedAt: "2026-10-13T05:00:00Z", sessionId: "preview-spans",
+        renderedText: "Iwo Iwo Iwo", phase: "listening", terminal: false,
+        reducerAction: "record_ledger_projection",
+        uncertainSpans: [a6Span(utf16Start: 0, utf16End: 3)]))
+    XCTAssertEqual(state.canvasUncertainWords.count, 1)
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "preview-spans", captureEpoch: 1, sequence: 1,
+        text: "Nowe Iwo Iwo Iwo", degraded: false, evidence: []))
+    XCTAssertEqual(state.canvasText, "Nowe Iwo Iwo Iwo")
+    XCTAssertTrue(state.canvasUncertainWords.isEmpty, "document spans cannot index preview bytes")
+    XCTAssertEqual(state.activeText, "Iwo Iwo Iwo")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "preview-spans", captureEpoch: 1, sequence: 2,
+        text: "Iwo Iwo Iwo", degraded: false, evidence: []))
+    XCTAssertEqual(state.canvasUncertainWords.count, 1)
   }
 
   func testEditingAndDirtyDraftHoldAutoHide() {
