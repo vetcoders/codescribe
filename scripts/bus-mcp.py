@@ -264,6 +264,11 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
                 except (OSError, ValueError) as error:
                     rows, problem = [], f"mailbox_refused: {error}"
                 unread = [row["delivery_id"] for row in rows]
+                # A PostToolUse probe may have surfaced a delivery mid-turn; its
+                # ledger entry keeps this waiter from announcing it again.
+                probed = (demux.read_json(record) or {}).get("announced")
+                if isinstance(probed, list):
+                    seen |= set(probed)
                 fresh = [identity for identity in unread if identity not in seen]
                 # After this pass every unread delivery is announced; an ACKed
                 # delivery or a resolved problem leaves the set.
@@ -288,6 +293,47 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
             trigger.close()
     finally:
         os.close(descriptor)
+
+
+def claude_code_probe(demux, root, bus, payload, environ):
+    """Claude Code PostToolUse hook: surface an unannounced delivery mid-turn.
+
+    Runs after every tool call of the conversation, so while the mailbox is
+    silent it costs one lease read and prints nothing. It never reads, ACKs,
+    replies or waits. A surfaced delivery joins the announced ledger the Stop
+    waiter keeps, so the end of the turn does not announce it again; the
+    ledger drops an ID once it is acknowledged. Mailbox problems stay with the
+    waiter, which announces them once.
+    """
+    session = payload.get("session_id") if isinstance(payload, dict) else None
+    if not isinstance(session, str) or not session or environ.get("CLAUDE_CODE_SESSION_ID") != session:
+        return 0
+    provider = "claude-code"
+    channel, name = bound_channel(demux, root, provider, session)
+    if channel is None:
+        return 0
+    lease_id = demux.lease_identifier(provider, session)
+    _lock, record = wake_paths(root, lease_id)
+    args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
+                           bus=bus, bus_overridden=bus is not None)
+    try:
+        _state, rows = demux.unread_pending(args)
+    except (OSError, ValueError):
+        return 0
+    unread = [row["delivery_id"] for row in rows]
+    saved = (demux.read_json(record) or {}).get("announced")
+    seen = set(saved) if isinstance(saved, list) else set()
+    fresh = [identity for identity in unread if identity not in seen]
+    if not fresh:
+        return 0
+    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
+    notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
+              "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": describe_wake(notice, provider, session, channel, name)}}) + "\n")
+    return 0
 
 
 class Mailbox:
