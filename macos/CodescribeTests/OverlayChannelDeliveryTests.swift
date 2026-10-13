@@ -126,6 +126,55 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(projection.receiptCoordinates().isEmpty, "The marker settles polling")
   }
 
+  func testTypedMessagePointersBecomeChipsAndLeaveTheBubbleBody() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    let path = "/Users/founder/.codescribe/assets/inline_0549d6ff.png"
+    let text =
+      "Dodaj do listy\n[attachment] w prozie zostaje, to tekst Foundera\n"
+      + "[attachment] inline_0549d6ff.png (image/png, 31113 bytes): \(path)"
+    projection.consume([
+      "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+      "message_id": Fixture.firstID, "source_event_id": Fixture.firstID, "source": "typed",
+      "audience": "james", "text": text, "recipients": [fixture.recipient()],
+      "attachments": [
+        [
+          "name": "inline_0549d6ff.png", "path": path, "media_type": "image/png",
+          "bytes": 31113, "sha256": "0549d6ff",
+        ],
+        ["name": "relative.png", "path": "relative.png"],
+      ],
+    ])
+    let message = try XCTUnwrap(
+      projection.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.providerSessionID == "agent-session"
+      }?.messages.first)
+    XCTAssertEqual(
+      message.attachments,
+      [
+        OverlayMessageAttachment(
+          name: "inline_0549d6ff.png", path: path, mediaType: "image/png", bytes: 31113)
+      ], "Only absolute pointers become chips")
+    XCTAssertEqual(
+      message.bodyText, "Dodaj do listy\n[attachment] w prozie zostaje, to tekst Foundera",
+      "Only the generated pointer line leaves the body; typed text stays")
+    XCTAssertEqual(message.text, text, "The published text stays intact for copying and agents")
+    var plain = projection
+    plain.consume([
+      "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+      "message_id": "0a0a0a0a0a0a0a0a0a0a0a0a", "source_event_id": "0a0a0a0a0a0a0a0a0a0a0a0a",
+      "source": "typed", "audience": "james", "text": "[attachment] in prose stays",
+      "recipients": [fixture.recipient()],
+    ])
+    let prose = try XCTUnwrap(
+      plain.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.providerSessionID == "agent-session"
+      }?.messages.last)
+    XCTAssertNil(prose.attachments)
+    XCTAssertEqual(prose.bodyText, prose.text, "Without pointers no line is removed")
+  }
+
   func testRestoredBroadcastOwnerRecoversCurrentThreadWithoutReplayingHistory() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

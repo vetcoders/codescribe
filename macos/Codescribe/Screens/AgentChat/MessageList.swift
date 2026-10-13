@@ -848,7 +848,7 @@ private struct ContextChip: View {
 /// back to a photo glyph. Loaded once on appear so scrolling doesn't re-decode.
 /// Click opens an in-app preview sheet (metadata + zoom + Reveal/Copy path);
 /// restored turns with a nil URL surface an honest missing-asset state.
-private struct AttachmentChip: View {
+struct AttachmentChip: View {
   let attachment: MessageAttachment
   @State private var thumbnail: NSImage?
   @State private var showPreview = false
