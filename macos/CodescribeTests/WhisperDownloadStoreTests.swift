@@ -33,12 +33,16 @@ private final class PendingWhisperDownload {
 }
 
 /// Hand-wound clock, so a transfer rate is a fact of the fixture rather than
-/// of how fast the test machine happened to run.
-@MainActor
-private final class StoppedClock {
-  var date = Date(timeIntervalSince1970: 1_000_000)
+/// of how fast the test machine happened to run. The store hands it to the
+/// progress sink, which stamps events off the main actor, so it is locked
+/// rather than isolated.
+private final class StoppedClock: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored = Date(timeIntervalSince1970: 1_000_000)
 
-  func advance(_ seconds: TimeInterval) { date += seconds }
+  var date: Date { lock.withLock { stored } }
+
+  func advance(_ seconds: TimeInterval) { lock.withLock { stored += seconds } }
 }
 
 @MainActor
@@ -179,6 +183,61 @@ final class WhisperDownloadStoreTests: XCTestCase {
     XCTAssertFalse(
       try XCTUnwrap(transfer.listener).isCancelled(),
       "a cancelled generation cannot stop the one started after it")
+  }
+
+  func testProgressArrivingAfterCancelLeavesTheStoppingMessageAlone() async throws {
+    let transfer = PendingWhisperDownload()
+    let store = makeStore(transfer)
+    store.start()
+    await awaitCondition { transfer.listener != nil }
+    let listener = try XCTUnwrap(transfer.listener)
+    listener.onProgress(file: "weights.safetensors", bytesDone: 25, bytesTotal: 100)
+    await awaitCondition { store.fraction == 0.25 }
+
+    store.cancel()
+    let stopping = try XCTUnwrap(store.detail)
+    XCTAssertNil(store.fraction, "the bar goes indeterminate the moment a stop is asked for")
+
+    // Callbacks the transfer thread had already queued, plus anything it emits
+    // before it notices the flag, must not repaint a download the user ended.
+    listener.onProgress(file: "weights.safetensors", bytesDone: 60, bytesTotal: 100)
+    listener.onProgress(file: "weights.safetensors", bytesDone: 95, bytesTotal: 100)
+    for _ in 0..<50 { await Task.yield() }
+    XCTAssertEqual(store.detail, stopping, "the stop message owns the line until the outcome")
+    XCTAssertNil(store.fraction)
+
+    transfer.fail()
+    await awaitCondition { !store.inFlight }
+    XCTAssertNil(store.detail)
+    XCTAssertNil(store.error)
+  }
+
+  func testRateIsMeasuredFromEventTimestampsNotFromWhenTheUiCatchesUp() async throws {
+    let transfer = PendingWhisperDownload()
+    let clock = StoppedClock()
+    let store = makeStore(transfer, clock: clock)
+    store.start()
+    await awaitCondition { transfer.listener != nil }
+    let listener = try XCTUnwrap(transfer.listener)
+
+    listener.onProgress(
+      file: "tokenizer.json", bytesDone: 1_048_576, bytesTotal: Self.weightsBytes)
+    await awaitCondition { store.detail?.contains("1 / 1539 MB") == true }
+
+    // One megabyte one second later: 1 MB/s, whatever the main actor is doing.
+    clock.advance(1)
+    listener.onProgress(
+      file: "tokenizer.json", bytesDone: 2 * 1_048_576, bytesTotal: Self.weightsBytes)
+    // The repaint lands three seconds late. Nothing between the callback and
+    // here awaits, so the consumer cannot have run yet.
+    clock.advance(3)
+
+    await awaitCondition { store.detail?.contains("MB/s") == true }
+    let detail = try XCTUnwrap(store.detail)
+    let rate = 1.0.formatted(.number.precision(.fractionLength(1)).grouping(.never))
+    XCTAssertTrue(
+      detail.hasPrefix("tokenizer.json · 2 / 1539 MB · \(rate) MB/s · about "),
+      "consumption time would have read 1 MB over four seconds, got: \(detail)")
   }
 
   func testCancelIsANoOpWhileNoTransferIsRunning() {
