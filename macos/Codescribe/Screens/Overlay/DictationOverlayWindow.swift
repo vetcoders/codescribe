@@ -70,6 +70,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   ) {
     if isUserResizing {
       pendingResizePresentation = (mode, animated)
+      OverlayPresentationTrace.shared.record(
+        .frameTransitionDeferredByResize, from: presentationMode, mode: mode, animated: animated,
+        frame: frame)
       return
     }
     guard mode != presentationMode || settleResize else { return }
@@ -122,6 +125,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
     isFrameTransitioning = animated
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
+      target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
     NSAnimationContext.runAnimationGroup { context in
       context.duration = animated ? DictationOverlayWindow.presentationDuration : 0
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -144,7 +150,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   private func completeFrameTransition(generation: UInt64) {
-    guard generation == frameTransitionGeneration, frameTransitionTarget != nil else { return }
+    guard generation == frameTransitionGeneration, let target = frameTransitionTarget else {
+      return
+    }
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionCompleted, mode: presentationMode, frame: frame, target: target,
+      generation: generation, note: frame == target ? nil : "frame≠target")
     isFrameTransitioning = false
     frameTransitionTarget = nil
     transitionTop = nil
@@ -153,7 +164,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     minSize = DictationOverlayWindow.minimumSize(for: presentationMode)
     contentMinSize = minSize
     if presentationMode != .mini { styleMask.insert(.resizable) }
-    if let contentView { invalidateCursorRects(for: contentView) }
+    if let contentView {
+      invalidateCursorRects(for: contentView)
+      OverlayPresentationTrace.shared.record(.cursorRectsInvalidated, mode: presentationMode)
+    }
     if presentationMode == .expanded {
       expandedSize = nil
       miniFrame = nil
@@ -163,6 +177,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func settleFrameTransition() {
     guard let target = frameTransitionTarget else { return }
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionSettled, mode: presentationMode, frame: frame, target: target,
+      generation: frameTransitionGeneration)
     NSAnimationContext.runAnimationGroup { context in
       context.duration = 0
       animator().setFrame(target, display: true)
@@ -362,6 +379,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     resizeStart = (point, frame, edge)
     requestedResizeSize = frame.size
+    OverlayPresentationTrace.shared.record(
+      .userResizeBegan, mode: presentationMode, frame: frame, note: "edge=\(edge)")
     onUserResize?()
     return true
   }
@@ -412,6 +431,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     requestedResizeSize = nil
     let pending = pendingResizePresentation
     pendingResizePresentation = nil
+    OverlayPresentationTrace.shared.record(
+      .userResizeEnded, mode: presentationMode, frame: frame,
+      note: pending.map { "pending=\($0.mode)" } ?? (changed ? "changed" : "unchanged"))
     if let pending {
       setPresentationMode(pending.mode, animated: pending.animated, settleResize: changed)
     }
@@ -515,6 +537,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func windowDidMove(_ notification: Notification) {
+    OverlayPresentationTrace.shared.record(
+      .windowMoved, mode: presentationMode, frame: frame,
+      note: isFrameTransitioning
+        ? "transitioning" : OverlayController.isApplyingFrame ? "programmatic" : "user")
     guard !isFrameTransitioning else { return }
     if !OverlayController.isApplyingFrame, presentationMode != .midi {
       resetPresentationPosition()
@@ -523,6 +549,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func windowDidResize(_ notification: Notification) {
+    // Animator steps land here too: the ledger holds the painted trajectory.
+    OverlayPresentationTrace.shared.record(
+      .windowResized, mode: presentationMode, frame: frame,
+      generation: isFrameTransitioning ? frameTransitionGeneration : nil,
+      note: isFrameTransitioning
+        ? "transitioning"
+        : isUserResizing ? "user" : OverlayController.isApplyingFrame ? "programmatic" : "idle")
     guard !isFrameTransitioning else { return }
     onUserResize?()
   }

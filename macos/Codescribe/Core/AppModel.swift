@@ -459,10 +459,14 @@ final class OverlayController: ObservableObject {
     guard let panel else { return }
     if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
       placementAfterUserResize = true
+      OverlayPresentationTrace.shared.record(
+        .placementDeferred, mode: state.presentationMode, frame: panel.frame, note: "user_resize")
       return
     }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else {
       placementAfterTransition = true
+      OverlayPresentationTrace.shared.record(
+        .placementDeferred, mode: state.presentationMode, frame: panel.frame, note: "transition")
       return
     }
     Self.isApplyingFrame = true
@@ -490,10 +494,16 @@ final class OverlayController: ObservableObject {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
     guard let origin else {
+      OverlayPresentationTrace.shared.record(
+        .placementApplied, mode: state.presentationMode, frame: panel.frame,
+        target: NSRect(origin: panel.frame.origin, size: size), note: "content_size_only")
       panel.setContentSize(size)
       return
     }
     let frame = NSRect(origin: origin, size: size)
+    OverlayPresentationTrace.shared.record(
+      .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
+      note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")
     panel.setFrame(frame, display: false)
   }
 
@@ -565,7 +575,11 @@ final class OverlayController: ObservableObject {
         OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
         ?? NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight)
     }
-    panel.setFrame(NSRect(origin: origin, size: size), display: true)
+    let grown = NSRect(origin: origin, size: size)
+    OverlayPresentationTrace.shared.record(
+      .contentResize, mode: state.presentationMode, frame: panel.frame, target: grown,
+      note: String(format: "height %.0f→%.0f", panel.frame.height, targetHeight))
+    panel.setFrame(grown, display: true)
   }
 
   func markStopped() {
