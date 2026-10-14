@@ -902,6 +902,10 @@ impl RecordingController {
                     }))
                     .with_cursor_observer(Arc::new(move |projection| {
                         hold_badge::update_voice_state(cursor_token, projection.voice);
+                        crate::os::tray_status::set_tray_voice_for_take(
+                            cursor_token,
+                            projection.voice,
+                        );
                         if projection.text.trim().is_empty() {
                             return;
                         }
