@@ -1035,6 +1035,11 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand: ((OverlayConversationOwner) async throws -> Void)?
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
+  /// Saved-conversation search in the agent drawer. Owned here because the
+  /// drawer value is rebuilt on every overlay body pass and only its
+  /// `monitorBody(...)` is installed, so view-local `@State` never persisted
+  /// and the query vanished whenever a channel status ticked.
+  @ObservationIgnored let savedConversationSearch = OverlayConversationSearchModel()
   @ObservationIgnored var onAgentSidebarPresented: (() -> Void)?
   private(set) var globalPlaybackMuted: Bool?
   private(set) var globalPlaybackPending = false
