@@ -123,6 +123,64 @@ class AgentArchiveTests(unittest.TestCase):
         self.assertIn("7", DEMUX.read_json(self.binding)["bindings"])
         self.assert_history_preserved()
 
+    def test_release_reader_stops_only_a_verified_live_follower_then_archives(self):
+        """Founder's drawer click on a live-but-silent agent (2026-10-14)."""
+        before = self.binding.read_bytes()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: child.poll() is None and (child.kill(), child.wait()))
+        state = DEMUX.read_json(self.lease)
+        state["pid"] = child.pid
+        DEMUX.atomic_json(self.lease, state)
+        original_lease = self.lease.read_bytes()
+        release = argparse.Namespace(**vars(self.arguments), release_reader=True)
+
+        # An unverifiable reader is never signalled: identity first, then SIGTERM.
+        with mock.patch.object(DEMUX, "verified_follower", return_value=False):
+            with mock.patch.object(os, "kill", wraps=os.kill) as signaling:
+                with self.assertRaisesRegex(ValueError, "could not be verified"):
+                    DEMUX.archive_agent(release)
+                self.assertTrue(all(call.args[1] == 0 for call in signaling.call_args_list))
+        self.assertIsNone(child.poll())
+        self.assertEqual(self.binding.read_bytes(), before)
+        self.assertFalse(self.archive.exists())
+
+        # Without the flag the live reader still wins, exactly as before.
+        with mock.patch.object(DEMUX, "verified_follower", return_value=True):
+            with self.assertRaisesRegex(ValueError, "alive"):
+                DEMUX.archive_agent(self.arguments)
+            self.assertIsNone(child.poll())
+
+            receipt = DEMUX.archive_agent(release)
+        self.assertIsNotNone(child.wait(timeout=5), "the verified follower was stopped")
+        self.assertTrue(receipt["released"])
+        self.assertNotIn(self.channel, DEMUX.read_json(self.binding)["bindings"])
+        self.assertEqual(DEMUX.read_json(self.archive), receipt)
+        # The lease keeps its backlog and pid record; only the binding changed.
+        self.assertEqual(self.lease.read_bytes(), original_lease)
+        self.assertEqual(self.bus.read_bytes(), self.original_bus)
+        self.assertFalse((self.root / "acknowledgments").exists())
+
+    def test_release_reader_stale_click_refuses_before_signalling(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: child.poll() is None and (child.kill(), child.wait()))
+        state = DEMUX.read_json(self.lease)
+        state["pid"] = child.pid
+        DEMUX.atomic_json(self.lease, state)
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings[self.channel]["provider_session_id"] = "replacement"
+        release = argparse.Namespace(**vars(self.arguments), release_reader=True)
+        with mock.patch.object(DEMUX, "verified_follower", return_value=True):
+            with self.assertRaisesRegex(ValueError, "owner changed"):
+                DEMUX.archive_agent(release)
+        self.assertIsNone(child.poll(), "a replacement owner's reader is never touched")
+
+    def test_release_reader_requires_archive_agent(self):
+        result = subprocess.run([sys.executable, str(HELPER), "--release-reader",
+            "--provider", self.provider, "--session", self.session, "--bridge-home", str(self.root)],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--release-reader is only valid with --archive-agent", result.stderr)
+
     def test_contradictory_commands_refuse_before_any_side_effect(self):
         before = self.binding.read_bytes()
         for extra in [["--version"], ["--detach"], ["--ack", "1" * 24]]:

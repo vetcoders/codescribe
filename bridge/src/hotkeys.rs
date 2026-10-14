@@ -1749,6 +1749,11 @@ pub struct CsChannelRosterState {
     pub autoseal_deadline_unix_ms: Option<i64>,
     /// `None` = the snapshot made no liveness claim for this row.
     pub follower_alive: Option<bool>,
+    /// Milliseconds since the Unix epoch of the live follower's oldest
+    /// unacknowledged delivery; `None` = no backlog or no follower. The
+    /// overlay's "alive but not reading" layer: a process heartbeat proves
+    /// the reader, not the conversation behind it.
+    pub unread_since_unix_ms: Option<i64>,
 }
 
 /// Frozen owner and verified helper paths supplied by the app's archive action.
@@ -1761,6 +1766,9 @@ pub struct CsAgentArchiveRequest {
     pub bus: String,
     pub executable: String,
     pub bridge_home: String,
+    /// Stop the owner's own live follower first (drawer click on an agent
+    /// that is alive but no longer reads); off keeps the live-reader refusal.
+    pub release_reader: bool,
 }
 
 #[uniffi::export]
@@ -1785,6 +1793,7 @@ impl CodescribeHotkeys {
                     bus: request.bus.into(),
                     executable: request.executable.into(),
                     bridge_home: request.bridge_home.into(),
+                    release_reader: request.release_reader,
                 })
                 .await
                 .map_err(|error| CsError::Recording {
@@ -1839,6 +1848,12 @@ impl CodescribeHotkeys {
                             .map(|since| since.as_millis() as i64)
                     }),
                     follower_alive: state.follower_alive,
+                    unread_since_unix_ms: state.unread_since.and_then(|since| {
+                        since
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|epoch| epoch.as_millis() as i64)
+                    }),
                 })
                 .collect()
         })
