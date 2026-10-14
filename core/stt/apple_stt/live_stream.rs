@@ -141,6 +141,7 @@ impl LiveStreamSession {
             contextual_strings: vocabulary.apple_contextual_strings(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
             deadline_policy: None,
+            backend: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
