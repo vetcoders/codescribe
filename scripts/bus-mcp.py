@@ -120,14 +120,29 @@ def local_clock(stamp):
         return "--:--:--"
 
 
+def addressing(row):
+    """Where a delivery was said and to whom. A take on channel 0 is said to
+    every bound agent; a take on a numbered channel, or a peer's direct
+    message, to this agent alone. Until 2026-10-14 the wake named only the
+    channel this agent is bound to, so a channel 0 broadcast read as a private
+    message (Maciej: "Czy masz rozróżnienie, że wiadomość przyszła na channel
+    0, czy wszystko jest w jednym worze?")."""
+    channel = row.get("channel")
+    if channel is None:
+        return "an unrecorded channel"
+    to = "every agent" if str(channel) == "0" or row.get("audience") == "*" else "you"
+    return f"channel {channel}, to {to}"
+
+
 def describe_delivery(row):
     """One pending message as the lines an agent needs: who, where, when, the
     whole text, attachment paths and the id it must ACK. A Founder take carries
     no sender field; a peer message names its sender."""
-    who = row.get("sender") or "Founder"
+    sender = row.get("sender")
+    who = (sender.get("name") if isinstance(sender, dict) else sender) or "Founder"
     kind = "draft" if row.get("kind") == "revised" else str(row.get("kind") or "message")
     note = " · acoustic coverage refused (diagnostic, not a gate)" if row.get("coverage") == "refused" else ""
-    lines = [f"Message from {who} on channel {row.get('channel')} ({kind}, {local_clock(row.get('emitted_at'))}{note}):",
+    lines = [f"Message from {who} on {addressing(row)} ({kind}, {local_clock(row.get('emitted_at'))}{note}):",
              str(row.get("text") or "")]
     for item in row.get("attachments") or []:
         if isinstance(item, dict):
@@ -208,16 +223,24 @@ def describe(result):
 
 
 def describe_wake(notice, provider, session, channel, name):
-    where = f"for {name} on channel {channel} ({provider} session {session})"
+    where = f"for {name}, connected on channel {channel} ({provider} session {session})"
     kind = notice.get("kind")
     if kind == "codescribe_listener_problem":
         return f"Codescribe: listener problem {notice.get('problem')} {where}. {notice.get('instructions')}"
     if kind == "codescribe_wait_idle":
         return f"Codescribe: no message {where} in {notice.get('waited_seconds')} s. {notice.get('instructions')}"
     ids = notice.get("new_delivery_ids") or []
+    said = notice.get("addressed") or {}
     problem = f"; problem: {notice['problem']}" if notice.get("problem") else ""
+    listed = ", ".join(f"{identity} [{said[identity]}]" if identity in said else identity for identity in ids)
     return (f"Codescribe: {len(ids)} new message(s) {where}; pending {notice.get('pending_count')}"
-            f"{problem}; new delivery ids: {', '.join(ids)}. {notice.get('instructions')}")
+            f"{problem}; new delivery ids: {listed}. {notice.get('instructions')}")
+
+
+def addressed(rows, ids):
+    """Each announced delivery's channel and audience, keyed by its id."""
+    by_id = {row.get("delivery_id"): row for row in rows}
+    return {identity: addressing(by_id[identity]) for identity in ids if identity in by_id}
 
 
 def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS, interval=1.0):
@@ -275,7 +298,8 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
                 prior, seen = seen, set(unread) | ({problem} if problem else set())
                 if fresh:
                     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
-                              "new_delivery_ids": fresh, **({"problem": problem} if problem else {}),
+                              "new_delivery_ids": fresh, "addressed": addressed(rows, fresh),
+                              **({"problem": problem} if problem else {}),
                               "instructions": "Read every pending message (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
                 elif problem and problem not in prior:
                     notice = {"kind": "codescribe_listener_problem", "problem": problem,
@@ -329,6 +353,7 @@ def claude_code_probe(demux, root, bus, payload, environ):
     record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
+              "addressed": addressed(rows, fresh),
               "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
