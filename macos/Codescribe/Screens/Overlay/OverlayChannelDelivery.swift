@@ -243,8 +243,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         acknowledged: false)
     }
 
-    mutating func receiptCoordinates() -> [(OverlayConversationOwner, String)] {
-      var result: [(OverlayConversationOwner, String)] = []
+    /// Unacknowledged recipients still worth a receipt poll. The third
+    /// element says whether provider acceptance was already observed, so the
+    /// reader can skip the wakeup receipt and only watch for the acknowledgment.
+    mutating func receiptCoordinates() -> [(OverlayConversationOwner, String, Bool)] {
+      var result: [(OverlayConversationOwner, String, Bool)] = []
       var seen: Set<String> = []
       for id in messageOrder {
         guard let message = messages[id] else { continue }
@@ -254,7 +257,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           if let delivery = recipient.deliveryID, !recipient.acknowledged,
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
-            result.append((recipient.owner, delivery))
+            result.append((recipient.owner, delivery, recipient.accepted))
           }
         }
       }

@@ -270,15 +270,24 @@ actor OverlayChannelDeliveryReader {
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
       for owner in verifiedOwners { cursor.projection.reconcileOwner(owner) }
-      for (owner, delivery) in cursor.projection.receiptCoordinates() {
+      // Up to 128 coordinates per bus and tick. Paths are built from strings:
+      // `appendingPathComponent(_:)` without `isDirectory:` asks the file
+      // system (getattrlist) on every call, six times per coordinate here,
+      // and that was the hottest frame of the 500 ms poll (sample 2026-10-14).
+      let wakeups = root.path + "/wakeups/"
+      let acknowledgments = root.path + "/acknowledgments/"
+      for (owner, delivery, accepted) in cursor.projection.receiptCoordinates() {
         guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
           continue
         }
-        let wakeup = root.appendingPathComponent("wakeups").appendingPathComponent(owner.leaseID)
-          .appendingPathComponent(delivery + ".json")
-        if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
-        let acknowledgment = root.appendingPathComponent("acknowledgments")
-          .appendingPathComponent(owner.leaseID).appendingPathComponent(delivery + ".json")
+        if !accepted {
+          let wakeup = URL(
+            fileURLWithPath: wakeups + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
+          if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+        }
+        let acknowledgment = URL(
+          fileURLWithPath: acknowledgments + owner.leaseID + "/" + delivery + ".json",
+          isDirectory: false)
         if let receipt = try? object(at: acknowledgment) {
           cursor.projection.observeAcknowledgment(
             receipt, owner: owner, delivery: delivery, busPath: bus.path)
