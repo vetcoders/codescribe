@@ -36,7 +36,7 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        .modifier(CSScrollHeaderEdge())
+        .modifier(CSDetailHeaderGlass())
         .background(CSColor.windowCanvas)
     }
     .toolbar {
