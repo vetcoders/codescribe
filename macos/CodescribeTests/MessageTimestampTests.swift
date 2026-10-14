@@ -56,6 +56,45 @@ final class MessageTimestampTests: XCTestCase {
       "Yesterday 02:30")
   }
 
+  /// Every conversation bubble labels its time on each layout pass, and a live
+  /// resize lays the whole list out on every step. Building the ICU formatters
+  /// per call cost 24 ms per pass for 60 bubbles (2026-10-14), more than a frame.
+  func testRepeatedLayoutPassesReuseParsersAndClocks() {
+    let stamps = (0..<60).map { i in
+      i.isMultiple(of: 2)
+        ? String(format: "2026-10-14T16:%02d:41.624831Z", i)
+        : String(format: "2026-10-13T09:%02d:14Z", i)
+    }
+    let now = instant("2026-10-14T18:00:00Z")
+    func pass() -> [String] {
+      stamps.map {
+        MessageTimestamp.label(
+          for: MessageTimestamp.date(fromISO8601: $0), now: now, calendar: calendar(),
+          locale: Locale(identifier: "en_GB"), yesterday: "Yesterday")
+      }
+    }
+    let first = pass()
+    XCTAssertEqual(first[0], "18:00")
+    XCTAssertEqual(first[1], "Yesterday 11:01")
+    let start = ContinuousClock.now
+    for _ in 0..<20 { XCTAssertEqual(pass(), first) }
+    let perPass = (ContinuousClock.now - start) / 20
+    XCTAssertLessThan(perPass, .milliseconds(4), "60 bubbles took \(perPass) per layout pass")
+  }
+
+  func testRememberedInstantsMatchAFreshParseAndInvalidStaysNil() {
+    let value = "2026-10-14T16:42:41.624831Z"
+    let fresh = ISO8601DateFormatter()
+    fresh.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let expected = fresh.date(from: value)
+    XCTAssertNotNil(expected)
+    XCTAssertEqual(MessageTimestamp.date(fromISO8601: value), expected)
+    XCTAssertEqual(
+      MessageTimestamp.date(fromISO8601: value), expected, "the memo returns the parse")
+    XCTAssertNil(MessageTimestamp.date(fromISO8601: "still not a timestamp"))
+    XCTAssertNil(MessageTimestamp.date(fromISO8601: "still not a timestamp"))
+  }
+
   func testUTCInstantCanBeTodayInAnotherSystemTimeZone() {
     let date = instant("2026-10-10T23:30:00Z")
     let now = instant("2026-10-11T00:30:00Z")
