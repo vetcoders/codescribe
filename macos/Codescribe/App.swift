@@ -295,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // `applicationDidFinishLaunching` (line ~179), already behind the guard.
   private lazy var model = AppModel.shared
   private lazy var trayStatus = TrayStatusStore()
+  private let dockMenu = DockMenu()
   private lazy var hotkeys = CodescribeHotkeys()
   // Stateless bridge handles backing the tray's app-level actions (notes,
   // config paths, transcript history). Each call reads/writes live on-disk truth.
@@ -382,6 +383,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     -> Bool
   {
     false
+  }
+
+  /// The Dock menu offers the tray panel's four primary actions above the
+  /// Show All Windows / Hide / Quit items AppKit appends (Founder, 2026-10-14:
+  /// Agent, the widget, the microphone and Settings straight from the Dock).
+  /// AppKit asks on every Dock click, so the dictation wording follows the
+  /// state at that moment.
+  func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+    guard !Self.isRunningTests else { return nil }
+    let tray = model.tray
+    let state = DockMenuState(
+      agentAvailable: tray.agentAvailable,
+      isStartingDictation: tray.isStartingDictation,
+      isRecording: tray.isRecording,
+      assistiveRecording: trayStatus.status.assistive,
+      startInAssistive: tray.startInAssistive)
+    return dockMenu.menu(
+      for: state,
+      handlers: [
+        .agent: { [weak self] in self?.showAgent() },
+        .widget: { [weak self] in self?.model.overlay.showWidget() },
+        .dictation: { [weak self] in self?.model.tray.toggleDictation() },
+        .settings: { [weak self] in self?.presentSettingsFromDock() },
+      ])
+  }
+
+  /// Settings is a SwiftUI `Window` scene that opens only through
+  /// `OpenWindowAction.presentSettings`, an environment action the Dock menu
+  /// cannot reach. The ⌘, command in the main menu performs exactly that
+  /// action, so the Dock entry performs the command item instead of growing a
+  /// second opening path.
+  private func presentSettingsFromDock() {
+    let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
+    guard
+      let item = items.first(where: {
+        $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == [.command]
+      }),
+      let menu = item.menu
+    else {
+      appLogger.error("dock_settings: the ⌘, Settings command is not in the main menu")
+      return
+    }
+    menu.performActionForItem(at: menu.index(of: item))
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
