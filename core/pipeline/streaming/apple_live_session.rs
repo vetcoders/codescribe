@@ -7294,10 +7294,17 @@ fn run_terminal_dictation_witness(
     let windows: Vec<(u64, u64)> = clusters
         .iter()
         .map(|&(first_start, last_end)| {
-            (
-                first_start.saturating_sub(context),
-                last_end.saturating_add(context).min(capture_samples),
-            )
+            let window_start = first_start.saturating_sub(context);
+            // A single oversized target must not widen the window past the
+            // cap either: the witness reads from the target's leading edge —
+            // the lost-beginning failure mode — and whatever does not fit
+            // stays honestly unresolved instead of silently exceeding the
+            // per-request PCM bound.
+            let window_end = last_end
+                .saturating_add(context)
+                .min(capture_samples)
+                .min(window_start.saturating_add(max_window));
+            (window_start, window_end)
         })
         .filter(|&(start, end)| end > start)
         .collect();
@@ -7305,9 +7312,11 @@ fn run_terminal_dictation_witness(
     let budget_start = Instant::now();
     let mut requests_issued = 0usize;
     for (ordinal, (window_start, window_end)) in windows.iter().copied().enumerate() {
-        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS
-            || budget_start.elapsed() >= DICTATION_WITNESS_TOTAL_BUDGET
-        {
+        // The total budget binds every request, including the one in flight:
+        // its deadline is clipped to what the budget still owns, so a late
+        // request cannot overrun the terminal phase past the declared cap.
+        let remaining = DICTATION_WITNESS_TOTAL_BUDGET.saturating_sub(budget_start.elapsed());
+        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS || remaining < Duration::from_secs(1) {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "dictation_witness_budget_exhausted".into(),
                 message: format!(
@@ -7317,6 +7326,7 @@ fn run_terminal_dictation_witness(
             });
             break;
         }
+        let request_timeout = DICTATION_WITNESS_REQUEST_TIMEOUT.min(remaining);
         let Some(window) = state
             .terminal_pcm
             .as_ref()
@@ -7343,7 +7353,7 @@ fn run_terminal_dictation_witness(
             &window.samples,
             state.sample_rate,
             language,
-            DICTATION_WITNESS_REQUEST_TIMEOUT,
+            request_timeout,
         ) {
             Ok(payload) => payload,
             Err(error) => {
