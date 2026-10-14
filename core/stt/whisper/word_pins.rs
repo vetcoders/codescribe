@@ -52,11 +52,10 @@ pub struct MeasuredWord {
 /// `len(sot_sequence)` and does not include `no_timestamps`. `content_frames`
 /// trims padded encoder frames (`num_frames // 2` in the reference).
 ///
-/// A word with no measured frames (nonpositive duration) keeps its text and
-/// tokens inside the nearest measured word: the following one, or the last
-/// one for a trailing run. Returns `None` when the inputs are inconsistent or
-/// no word has a positive measured range. Callers keep the utterance-grain
-/// span in that case.
+/// A lexical word without measured frames receives no word pin. Other measured
+/// words survive; the caller retains the independent raw transcript. Zero-duration
+/// punctuation may attach to a measured word. Returns `None` if no measured
+/// word remains or the alignment inputs are inconsistent.
 pub fn align_measured_words(
     head_qk: &[Vec<Vec<f32>>],
     sot_prefix_len: usize,
@@ -209,12 +208,10 @@ pub fn align_measured_words(
         return None;
     }
 
-    // A word whose path jumps coincide, or whose first jump is the predictive
-    // onset past its end, has no measured frames of its own. Its text and
-    // tokens join the following measured word in reading order, under that
-    // word's own range: the lexical content survives and no duration is
-    // invented. Closing punctuation and a trailing unmeasured run join the
-    // previous measured word instead.
+    // Coincident path jumps do not measure a lexical word. The raw transcript
+    // remains independent of these pins, so keep the measured subset without
+    // manufacturing a compound pin from an arbitrarily long decoder loop.
+    // Only punctuation can share a neighbouring word's range.
     let mut words: Vec<MeasuredWord> = Vec::with_capacity(word_texts.len());
     let mut unmeasured: Vec<MeasuredWord> = Vec::new();
     for (index, text) in word_texts.iter().enumerate() {
@@ -240,6 +237,23 @@ pub fn align_measured_words(
             token_len: end_index - boundaries[index],
         };
         if end <= start {
+            let punctuation_only = text.chars().all(|ch| {
+                PREPENDED_PUNCTUATION.contains(&ch)
+                    || APPENDED_PUNCTUATION.iter().any(|mark| mark.starts_with(ch))
+            });
+            if !punctuation_only {
+                tracing::info!(
+                    reason = "nonpositive_lexical_word_duration",
+                    word_index = index,
+                    token_start = word.token_start,
+                    token_len = word.token_len,
+                    start_secs = start,
+                    end_secs = end,
+                    "tail_word_pin_lexical_position_unmeasured"
+                );
+                unmeasured.clear();
+                continue;
+            }
             tracing::info!(
                 reason = "nonpositive_word_duration",
                 word_index = index,
@@ -252,6 +266,7 @@ pub fn align_measured_words(
             if APPENDED_PUNCTUATION.contains(&text)
                 && unmeasured.is_empty()
                 && let Some(last) = words.last_mut()
+                && last.token_start + last.token_len == word.token_start
             {
                 last.text = join_word_text(&last.text, &word.text);
                 last.token_len = word.token_start + word.token_len - last.token_start;
@@ -281,11 +296,13 @@ pub fn align_measured_words(
             return None;
         };
         for carried in unmeasured.drain(..) {
-            last.text = join_word_text(&last.text, &carried.text);
-            last.token_len = carried.token_start + carried.token_len - last.token_start;
+            if last.token_start + last.token_len == carried.token_start {
+                last.text = join_word_text(&last.text, &carried.text);
+                last.token_len += carried.token_len;
+            }
         }
     }
-    Some(words)
+    (!words.is_empty()).then_some(words)
 }
 
 /// Join two adjacent word texts in reading order. Opening punctuation binds
@@ -645,6 +662,45 @@ mod tests {
         assert_eq!(words[0].token_start, 0);
         assert_eq!(words[1].token_start, 1);
         assert!(words[0].end_secs > words[0].start_secs);
+    }
+
+    #[test]
+    fn unmeasured_lexical_word_cannot_borrow_its_neighbours_range() {
+        let heads = spike(4, 40, &[(0, 0), (1, 2), (2, 30)]);
+        let words = align_measured_words(&heads, 0, &[1, 1], &["omen", "omen"], 40)
+            .expect("the measured neighbour must survive");
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["omen"],
+            "an unmeasured lexical position must not become part of a compound word pin"
+        );
+        assert_eq!((words[0].token_start, words[0].token_len), (1, 1));
+    }
+
+    #[test]
+    fn five_measured_repetitions_keep_five_distinct_word_pins() {
+        let heads = spike(
+            7,
+            120,
+            &[(0, 10), (1, 25), (2, 40), (3, 55), (4, 70), (5, 85)],
+        );
+        let words = align_measured_words(&heads, 0, &[1; 5], &["Iwo"; 5], 120)
+            .expect("five positive attention ranges");
+        assert_eq!(words.len(), 5);
+        assert!(
+            words
+                .iter()
+                .all(|word| word.text == "Iwo" && word.end_secs > word.start_secs)
+        );
+        assert!(
+            words
+                .windows(2)
+                .all(|pair| pair[0].end_secs <= pair[1].start_secs)
+        );
+        assert_eq!(words.iter().map(|word| word.token_len).sum::<usize>(), 5);
     }
 
     #[test]

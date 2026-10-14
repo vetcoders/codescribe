@@ -156,9 +156,12 @@ fn oracle_overlapping_predictive_jumps_drop_only_the_zero_duration_word() {
             .iter()
             .map(|word| word.text.as_str())
             .collect::<Vec<_>>(),
-        ["raz dwa"],
-        "the measured neighbour retains its own frames and the unaligned word's text"
+        ["dwa"],
+        "only the measured neighbour owns a word pin; the caller retains the independent raw hypothesis"
     );
-    assert_eq!(words[0].token_start, 0);
-    assert_eq!(words[0].token_len, 2, "the complete token span survives");
+    assert_eq!(words[0].token_start, 1);
+    assert_eq!(
+        words[0].token_len, 1,
+        "unaligned tokens cannot inherit measured confidence"
+    );
 }
