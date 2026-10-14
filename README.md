@@ -1,6 +1,7 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.17.0-6a9bcc)](Cargo.toml)
+[![Source version](https://img.shields.io/badge/version-0.17.0-6a9bcc)](Cargo.toml)
+[![Latest release](https://img.shields.io/github/v/release/vetcoders/codescribe?label=release&color=788c5d)](https://github.com/vetcoders/codescribe/releases/latest)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Website](https://img.shields.io/badge/site-codescribe.vetcoders.io-788c5d)](https://codescribe.vetcoders.io/)
@@ -79,8 +80,10 @@ flowchart TB
 > it, behind an explicit audio-egress consent, and full-file Retranscribe is
 > its own deliberate action.
 
-> **Release status:** source is at `0.17.0`; the latest published DMG is
-> [`v0.15.2`](https://github.com/vetcoders/codescribe/releases).
+> **Release status:** source is at `0.17.0`. Published builds are listed on
+> [GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest);
+> the [website download](https://codescribe.vetcoders.io/#install) always
+> serves the newest one.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -142,7 +145,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 - **Agent voice channels** — nine numbered channels deliver spoken takes into live agent sessions (Claude Code, Codex, and friends) over a local bus; agents reply in their own TTS voices
 - **Whisper Live** — streaming transcription happens _during recording_ (bounded windows + overlap on one PCM clock), so `stop()` is near-instant
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — Standard (daily) embeds Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for fully offline installs.
+- **Slim DMG** — Published releases embed Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. A `_full` build that also embeds Whisper for fully offline installs is a local build option (`make release-full`), not a published download.
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **IPC Server** — Stable runtime interface for GUI/clients
 - **Quality Loop + Report** — Automated quality scoring and batch reports
@@ -176,7 +179,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, or later)
-- **Rust Toolchain** (1.94+; the workspace declares this MSRV)
+- **Rust Toolchain** (1.94+; the workspace declares this MSRV) — source builds only
 
 ### Install from Source
 
@@ -200,14 +203,29 @@ make version
 
 ### Install via Release DMG
 
-Tagged builds publish DMGs through GitHub Releases:
+No toolchain needed. Download the newest published build from
+[codescribe.vetcoders.io](https://codescribe.vetcoders.io/#install) or
+[GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest):
 
-1. Open [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
-3. Drag `Codescribe.app` into `Applications`
+1. Download `Codescribe.dmg`. Each release also carries the same bytes as
+   `Codescribe_<version>-<builddate>-<sha>.dmg`, plus `.sha256` checksums.
+2. Drag `Codescribe.app` into `Applications`.
+3. Follow the first-launch setup; the
+   [user guide](https://codescribe.vetcoders.io/guide/) covers permissions,
+   the widget and agent channels.
+4. Dictation works without a license key. The built-in Agent chat needs one:
+   get a free open-beta key at
+   [codescribe.vetcoders.io/license](https://codescribe.vetcoders.io/license/)
+   and paste it into **Settings → License**. Nothing is sold today.
 
-> Every published DMG is Developer ID signed, notarized, stapled, and passes
-> the fail-closed `verify-dmg` payload check before it reaches the Releases page.
+Installed copies update in-app through Sparkle from
+`https://codescribe.vetcoders.io/appcast.xml`.
+
+> The release pipeline signs each DMG with Developer ID, notarizes and
+> staples it, and runs the fail-closed `verify-dmg` payload check before
+> upload. To check a download yourself, compare `shasum -a 256 Codescribe.dmg`
+> with the digest in `Codescribe.dmg.sha256`, then run
+> `spctl -a -t open --context context:primary-signature -v Codescribe.dmg`.
 
 ### Build Options
 

@@ -49,8 +49,11 @@ All download buttons share this build snapshot, including without JavaScript.
 
 Production is `https://codescribe.vetcoders.io`, served by Caddy from
 `/srv/codescribe-landing` on `libraxis-vm`. This host also serves the signed
-`/appcast.xml` used by the installed application. Use the site redeploy commands
-in [the deployment contract](../services/license-issuer/README.md#deployment-ops-vps-same-box-as-pensievevetcodersio).
+`/appcast.xml` used by the installed application. That feed is a release
+artifact, not website source: `public/` must never contain an `appcast.xml`
+(`npm run test:release` enforces this), and the site redeploy excludes it from
+`rsync --delete`. Use the site redeploy and feed commands in
+[the deployment contract](../services/license-issuer/README.md#deployment-ops-vps-same-box-as-pensievevetcodersio).
 
 - `astro.config.mjs` defaults to `site: 'https://codescribe.vetcoders.io'` and `base: '/'`.
 - `.github/workflows/pages.yml` publishes a separate copy at
@@ -61,8 +64,11 @@ in [the deployment contract](../services/license-issuer/README.md#deployment-ops
 - After production deployment, verify all download links and the signed
   enclosure at the canonical domain against the published GitHub release.
 - A published GitHub release also triggers the Pages rebuild using current
-  `main` website source. This updates the GitHub Pages copy; the canonical Caddy
-  site still requires the production redeploy described above.
+  `main` website source. The `release` event fires before the release job
+  finishes uploading, so the workflow first waits until that release's
+  `Codescribe.dmg` is `uploaded`; the build refuses a release without it. This
+  updates the GitHub Pages copy; the canonical Caddy site still requires the
+  production redeploy described above.
 
 Route every `public/` asset through `src/lib/asset.ts`:
 

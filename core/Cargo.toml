@@ -7,8 +7,8 @@ authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
 description = "Core library for Codescribe (audio, STT, quality pipeline)"
 repository = "https://github.com/vetcoders/codescribe"
-homepage = "https://vetcoders.github.io/codescribe/"
-documentation = "https://vetcoders.github.io/codescribe/quickstart/"
+homepage = "https://codescribe.vetcoders.io/"
+documentation = "https://codescribe.vetcoders.io/guide/"
 keywords = ["speech-to-text", "whisper", "audio", "transcription", "stt"]
 categories = ["multimedia::audio", "multimedia::encoding"]
 
