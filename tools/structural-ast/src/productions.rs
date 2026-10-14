@@ -71,6 +71,9 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
     // Closures here are exact predicate productions, not generic opaque calls.
     g.sequence(body, vec![
         (parse_quote!(let config = self.get_config().await;), "read config before target observation"),
+        (parse_quote!(let paste_text = crate::controller::delivery_route::writer_quotes_for_paste(
+            &paste_text, config.whisper_language.as_str(),
+        );), "derive writer quotes from the payload and captured language before target observation"),
         (parse_quote!(let focus_confirmed = target_app.as_deref().map(str::trim)
             .filter(|name| !name.is_empty()).is_some_and(|name| {
                 is_codescribe_app(name) || (crate::os::selection::activate_app_by_name(name)
