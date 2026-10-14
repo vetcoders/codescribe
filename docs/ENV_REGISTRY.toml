@@ -708,7 +708,7 @@ default = "0"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
+description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Also arms the bounded terminal DT witness: at Stop, unresolved recovery debt and material speech gaps may be decoded once from the recorder-owned archive through the bridge's pinned DT lane (docs/STT_CONTRACT.md, 2026-10-14). Not a shipped default — flipping it is an operator decision"
 
 [vars.STT_FILE_ENDPOINT]
 default = ""
