@@ -629,10 +629,14 @@ impl AcousticLedger {
                 // Inside continuous speech the fence cuts the word that
                 // reaches it, never an interior word that happens to be the
                 // only one offered.
-                let fills_window = range.sample_start <= start.saturating_add(quiet)
-                    && range.sample_end >= end.saturating_sub(quiet);
+                let continuous_beyond_window = (range.sample_start <= start.saturating_add(quiet)
+                    && range.sample_end >= end.saturating_sub(quiet))
+                    || range.sample_end.saturating_sub(range.sample_start)
+                        > end.saturating_sub(start);
                 let owns_open_edge = native_cut
-                    || (!fills_window && range.sample_start >= start && range.sample_end >= end)
+                    || (!continuous_beyond_window
+                        && range.sample_start >= start
+                        && range.sample_end >= end)
                     || (pin_index == 0
                         && range.sample_start <= start
                         && pin.sample_start <= start.saturating_add(quiet))
@@ -654,10 +658,19 @@ impl AcousticLedger {
                 continue;
             };
             deferred = true;
-            let fills_window = anchor.range.sample_start <= start.saturating_add(quiet)
-                && anchor.range.sample_end >= end.saturating_sub(quiet);
+            // A leading quiet prefix must not make a component longer than
+            // the decode window behave like one short edge-cut word. No
+            // equal-sized later window can cover that component in full.
+            let continuous_beyond_window = (anchor.range.sample_start
+                <= start.saturating_add(quiet)
+                && anchor.range.sample_end >= end.saturating_sub(quiet))
+                || anchor
+                    .range
+                    .sample_end
+                    .saturating_sub(anchor.range.sample_start)
+                    > end.saturating_sub(start);
             let mut held_speech = anchor.range.clone();
-            if fills_window {
+            if continuous_beyond_window {
                 // This is a lexical position within continuous speech, not the
                 // entire long burst. The next overlapping live window must be
                 // able to cover it without reaching back to capture start.

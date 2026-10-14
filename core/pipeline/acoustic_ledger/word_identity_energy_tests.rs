@@ -12,6 +12,79 @@ use super::*;
 
 const RATE: u32 = 48_000;
 
+#[test]
+fn recorded_530be03a_first_window_keeps_interior_words_of_a_long_open_burst() {
+    // Native div0 request1 decoded all eight opening words correctly, then
+    // live_edge_cut_pending held the whole callback. Recorded coordinates;
+    // synthetic continuous PCM isolates the observed open-burst geometry.
+    let mut pcm = vec![0.0; 616_800];
+    pcm[19_200..].fill(0.1);
+    let owner = OccurrenceIdentity::new("prefix-530be03a", 1, 13_056, 605_184);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    let words = decoded(
+        &[
+            ("Wiesz", 39_360, 48_000),
+            ("co?", 48_000, 67_200),
+            ("Ja", 67_200, 76_800),
+            ("bym", 76_800, 88_320),
+            ("się", 88_320, 97_920),
+            ("wstrzymał,", 97_920, 121_920),
+            ("bo", 121_920, 126_720),
+            ("widzę,", 126_720, 160_320),
+            ("urwane", 431_040, 432_000),
+        ],
+        (0, 432_000),
+    );
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    assert!(anchors.iter().any(|anchor| {
+        anchor.range.sample_start == 19_200 && anchor.range.sample_end > 432_000
+    }));
+    let closed = ledger.defer_edge_cut_words(&observation, &words, &anchors);
+    assert_eq!(
+        closed
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Wiesz",
+            "co?",
+            "Ja",
+            "bym",
+            "się",
+            "wstrzymał,",
+            "bo",
+            "widzę,"
+        ],
+        "an open acoustic component longer than the decode window cannot make every interior word edge-cut"
+    );
+    assert!(
+        ledger
+            .word_finality(&owner)
+            .iter()
+            .any(|word| { word.unresolved && word.selected.surface == "urwane" })
+    );
+    assert!(
+        ledger
+            .admit_word_slots(&observation, &words)
+            .grants_mutation()
+    );
+    assert_eq!(
+        lowercase_tokens(ledger.text_of(&owner).unwrap()),
+        [
+            "wiesz",
+            "co",
+            "ja",
+            "bym",
+            "się",
+            "wstrzymał",
+            "bo",
+            "widzę"
+        ]
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
 /// Native build 973, decision 213: a later Whisper window moved `jednak`
 /// by 400 ms and minted `jednak Jednak`. Preserve the recorded capture clock.
 #[test]
