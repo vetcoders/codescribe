@@ -2282,10 +2282,12 @@ impl AppleSealState {
             self.speech_progress.phase(self.sample_rate)
         };
         let debt_ms = self.speech_progress.debt_ms(self.sample_rate);
+        let speech_live = self.speech_progress.speech_live();
         if self.last_integrity.as_ref().is_some_and(|previous| {
             previous.phase == phase
                 && previous.pending_occurrences == debts.len() as u64
                 && previous.acoustic_speech_ms_since_text_advance / 100 == debt_ms / 100
+                && previous.speech_live == speech_live
         }) {
             return;
         }
@@ -2299,6 +2301,7 @@ impl AppleSealState {
             acoustic_speech_ms_since_text_advance: debt_ms,
             pending_occurrences: debts.len() as u64,
             phase,
+            speech_live,
         };
         self.last_integrity = Some(evidence.clone());
         let _ = ev_tx.send(EngineEvent::SpeechIntegrity { evidence });
