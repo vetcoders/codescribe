@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Agents › the cross is on every listed agent, not only a dead one. A live reader is stopped by `cs-bus --archive-agent … --release-reader` before the digit is released; an open channel is refused with "hang up first"; every refusal names the helper's reason instead of a bare "Couldn't archive agent". The lease, its backlog and the bus stay on disk in every case.
+- Agents › liveness has two layers now. A follower whose process heartbeats but whose oldest unacknowledged message is older than 10 minutes shows as **Not reading · nothing read for N min** with a `zzz` mark (the Founder's closed Claude Code conversation on dragon kept "alive" for days).
+- Dock menu: Agent, Show widget, Start/Stop transcription (worded like the tray row) and Settings… above the system items; AppKit rebuilds it on every Dock click so the dictation entry follows the live state.
 - Agents › a typed message with files shows each file as a chip (name, thumbnail, preview on click) under the text instead of the raw `[attachment] … : /path` lines. Agents still receive the full text with the paths.
 - Claude Code plugin: a Codescribe message now reaches the agent during its running turn, after the current tool call, instead of only after the turn ends. A `PostToolUse` probe stays silent while the mailbox is empty, and the end-of-turn waiter no longer repeats a message the probe already surfaced.
 - Agents › a peer message addressed to an agent by name (`cs-bus --send --to NAME`) now appears in that agent's conversation with the author's name and its read receipt. The overlay used to file it only under the sender, so the recipient's chat showed the Founder's messages and the agent's replies but never what another agent sent it, and the agent's ACK marker had nothing to settle.

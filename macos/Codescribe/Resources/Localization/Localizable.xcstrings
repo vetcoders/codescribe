@@ -348,6 +348,23 @@
         }
       }
     },
+    "%@ · nothing read for %lld min" : {
+      "comment" : "Channel row; first placeholder is the delivery state, second the whole minutes since the oldest unread message",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · nothing read for %2$lld min"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · nic nie odczytane od %lld min"
+          }
+        }
+      }
+    },
     "%@ — can send requests" : {
       "comment" : "Placeholder is the provider name; a request may go out under the credentials that exist now (a key-optional provider counts), no request was made",
       "localizations" : {
@@ -5826,18 +5843,30 @@
         }
       }
     },
-    "Couldn't archive agent. The channel and conversation are retained." : {
+    "Couldn't archive %@: %@. The channel and conversation are retained." : {
+      "comment" : "First placeholder is the agent name, second the helper's refusal sentence",
       "localizations" : {
         "en" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Couldn't archive agent. The channel and conversation are retained."
+            "state" : "new",
+            "value" : "Couldn't archive %1$@: %2$@. The channel and conversation are retained."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się przenieść agenta do archiwum. Kanał i rozmowa zostały zachowane."
+            "value" : "Nie udało się przenieść %@ do archiwum: %@. Kanał i rozmowa zostały zachowane."
+          }
+        }
+      }
+    },
+    "Couldn't archive %@: its channel is open. Hang up first; the conversation is retained." : {
+      "comment" : "Drawer cross pressed while the agent's microphone channel is open",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się przenieść %@ do archiwum: kanał jest otwarty. Najpierw go rozłącz; rozmowa została zachowana."
           }
         }
       }
@@ -7822,6 +7851,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez przytrzymywania"
+          }
+        }
+      }
+    },
+    "Hang up the channel first, then remove the agent from the list" : {
+      "comment" : "Drawer cross on an agent whose microphone channel is open",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpierw rozłącz kanał, potem usuń agenta z listy"
           }
         }
       }
@@ -10573,6 +10613,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Jeszcze nie załadowany · załaduje się przy następnym nagraniu"
+          }
+        }
+      }
+    },
+    "Not reading" : {
+      "comment" : "Agent alive, backlog unread for long",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie odczytuje"
           }
         }
       }
@@ -15573,6 +15624,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ mówienie do wszystkich (Control–0)"
+          }
+        }
+      }
+    },
+    "Stop the agent's reader, remove from list and move to archive" : {
+      "comment" : "Drawer cross on an agent whose reader process is still alive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatrzymaj czytnik agenta, usuń z listy i przenieś do archiwum"
           }
         }
       }
@@ -21812,6 +21874,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brakuje znacznika zarządzania Codescribe lub nie pasuje on do tej aplikacji agenta i lokalizacji Agent Bridge."
+          }
+        }
+      }
+    },
+    "the agent's lease no longer matches this owner" : {
+      "comment" : "Archive refusal reason: lease identity mismatch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "dzierżawa agenta nie pasuje już do tego właściciela"
+          }
+        }
+      }
+    },
+    "the cs-bus helper is not installed" : {
+      "comment" : "Archive refusal reason: managed helper missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "helper cs-bus nie jest zainstalowany"
+          }
+        }
+      }
+    },
+    "the helper returned no valid receipt" : {
+      "comment" : "Archive refusal reason: unknown failure",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "helper nie zwrócił poprawnego pokwitowania"
           }
         }
       }

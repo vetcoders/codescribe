@@ -5106,11 +5106,56 @@ def channel_bindings(root: Path) -> Iterator[dict[str, Any]]:
                 ) from error
 
 
+def release_live_reader(root: Path, lease_id: str, session: str) -> int | None:
+    """Stop this owner's own verified follower so its channel can be archived.
+
+    The Founder's drawer click names the exact owner; a reader that is alive
+    but whose session no longer reads its mailbox (a closed Claude Code
+    conversation, a machine that went to sleep) keeps the digit occupied
+    forever otherwise. Only a follower whose recorded process identity still
+    matches is signalled; an unverifiable pid is left alone and refused.
+    Returns the stopped pid, or None when nothing was running.
+    """
+    import signal
+
+    pid = live_follower_pid(root, lease_id)
+    if pid is None:
+        return None
+    if not verified_follower(root, lease_id, session, pid):
+        raise ValueError(
+            f"agent reader pid {pid} could not be verified as this owner's follower; "
+            "channel retained"
+        )
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return None
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not process_is_alive(pid):
+            return pid
+        try:
+            # A follower this process spawned is a zombie until reaped, and a
+            # zombie still answers signal 0. Reap without blocking; a reader
+            # owned by another process raises and falls back to the pid probe.
+            reaped, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
+                return pid
+        except ChildProcessError:
+            pass
+        time.sleep(0.1)
+    raise ValueError(f"agent reader pid {pid} did not stop within 5 s; channel retained")
+
+
 def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
-    """Release one exact dead owner; retain its mailbox and conversation sources.
+    """Release one exact owner; retain its mailbox and conversation sources.
 
     Lock order matches attachment: binding first, lease second. A stale UI
-    click cannot release a replacement session or stop a living reader.
+    click cannot release a replacement session. A living reader is refused
+    unless ``--release-reader`` names it: then the owner's own verified
+    follower is stopped first (same signal the takeover path sends) and the
+    archive proceeds under the freed lease lock. The lease, its backlog and
+    the bus stay on disk either way.
     """
     root: Path = args.bridge_home
     provider = args.provider.casefold()
@@ -5120,6 +5165,16 @@ def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
     channel = args.archive_agent
     archive_path = root / "archives" / f"{lease_id}-{channel}.json"
     bus = str(args.bus.expanduser().resolve(strict=False))
+    if getattr(args, "release_reader", False):
+        # Outside the binding lock: the follower's exit path writes its lease
+        # and pidfile, never the binding, and the locked block below re-checks
+        # the owner before anything is released.
+        current = (read_json(root / AUDIENCE_BINDING_FILENAME) or {}).get("bindings", {})
+        entry = current.get(channel) if isinstance(current, dict) else None
+        if (not isinstance(entry, dict) or entry.get("provider") != provider
+                or entry.get("provider_session_id") != args.session):
+            raise ValueError("channel owner changed; nothing archived or released")
+        release_live_reader(root, lease_id, args.session)
     with contextlib.ExitStack() as holds, channel_bindings(root) as bindings:
         current = bindings.get(channel)
         previous = read_json(archive_path)
@@ -6163,6 +6218,13 @@ def main() -> int:
         help="release this session's channels, stop its own follower, print a "
         "detach receipt, and exit; the lease and its backlog stay",
     )
+    parser.add_argument(
+        "--release-reader",
+        action="store_true",
+        help="with --archive-agent: stop the owner's own verified follower first "
+        "(SIGTERM, 5 s) instead of refusing a live reader; the lease and its "
+        "backlog stay",
+    )
     parser.add_argument("--archive-agent", metavar="CHANNEL",
                         help="archive one disconnected exact --provider/--session/--lease/--bus owner and release its channel")
     parser.add_argument(
@@ -6305,6 +6367,8 @@ def main() -> int:
             return 3
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
+    if args.release_reader and args.archive_agent is None:
+        parser.error("--release-reader is only valid with --archive-agent")
     if args.archive_agent is not None and (
         args.archive_agent not in tuple(str(n) for n in range(1, 10))
         or not args.provider or not args.session or not args.lease or args.bus is None

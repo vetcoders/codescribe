@@ -3,7 +3,7 @@
 //! The lease writer remains `scripts/bus-demux.py`. STT only consumes a bounded,
 //! expiring snapshot: no helper process, lock, deletion, or heartbeat mutation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -38,7 +38,28 @@ struct SessionLease {
     provider: Option<String>,
     #[serde(default)]
     provider_session_id: Option<String>,
+    #[serde(default)]
+    lease_id: Option<String>,
+    /// The follower's mailbox. Acknowledged envelopes linger here until its
+    /// next sweep, so this list alone overstates the backlog; the marker
+    /// store under `acknowledgments/<lease_id>/` is the receipt truth.
+    #[serde(default)]
+    pending: Vec<PendingDelivery>,
 }
+
+#[derive(Debug, Deserialize)]
+struct PendingDelivery {
+    #[serde(default)]
+    delivery_id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    emitted_at: Option<String>,
+}
+
+/// Envelope kinds that wait for a reader: sealed takes and typed messages.
+/// Draft revisions are not deliveries (the helper's `TERMINAL_KINDS`).
+const TERMINAL_KINDS: [&str; 2] = ["seal", "message"];
 
 #[derive(Default)]
 struct NameCache {
@@ -146,6 +167,62 @@ pub fn live_follower_sessions_at(
         }
     });
     sessions
+}
+
+/// For every live follower session, when its oldest unacknowledged delivery
+/// was emitted (Unix seconds). A session with no backlog is absent. This is
+/// the second liveness layer the overlay shows: a follower process can be
+/// alive and heartbeating while the conversation behind it reads nothing
+/// (Founder, 2026-10-14: "mogę do niego napisać, ale on nie odbiera").
+/// Unacknowledged = no marker file for the delivery id; the helper's deeper
+/// marker verification is receipt truth, this is a display hint.
+pub fn unread_backlog_since_at(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+) -> HashMap<(String, String), f64> {
+    let mut oldest = HashMap::new();
+    for_each_fresh_lease(root, now, ttl_seconds, |lease| {
+        let (Some(provider), Some(session), Some(lease_id)) = (
+            lease.provider.as_deref().map(str::trim),
+            lease.provider_session_id.as_deref().map(str::trim),
+            lease.lease_id.as_deref().map(str::trim),
+        ) else {
+            return;
+        };
+        if provider.is_empty() || session.is_empty() || lease_id.is_empty() {
+            return;
+        }
+        let markers = root.join("acknowledgments").join(lease_id);
+        let since = lease
+            .pending
+            .iter()
+            .filter(|entry| {
+                entry
+                    .kind
+                    .as_deref()
+                    .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
+            })
+            .filter(|entry| {
+                entry
+                    .delivery_id
+                    .as_deref()
+                    .is_some_and(|id| !markers.join(format!("{id}.json")).is_file())
+            })
+            .filter_map(|entry| entry.emitted_at.as_deref())
+            .filter_map(|stamp| {
+                chrono::DateTime::parse_from_rfc3339(stamp)
+                    .ok()
+                    .map(|time| time.timestamp_millis() as f64 / 1000.0)
+            })
+            .fold(None, |oldest: Option<f64>, stamp| {
+                Some(oldest.map_or(stamp, |current| current.min(stamp)))
+            });
+        if let Some(since) = since {
+            oldest.insert((provider.to_lowercase(), session.to_string()), since);
+        }
+    });
+    oldest
 }
 
 /// Bounded scan of the lease directory, invoking `visit` for every lease that
@@ -343,6 +420,69 @@ mod tests {
 
         assert!(live_follower_sessions_at(temp.path(), 1_000.0, 120.0).is_empty());
         assert!(read_active_names_at(temp.path(), 1_000.0, 120.0).is_empty());
+    }
+
+    /// A live follower whose conversation stopped reading: the oldest
+    /// unacknowledged seal or message dates the backlog. Acknowledged rows
+    /// still listed in `pending`, draft revisions and dead leases never count.
+    #[test]
+    fn unread_backlog_dates_the_oldest_unacknowledged_delivery_of_a_live_follower() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        let lease = |file: &str, session: &str, heartbeat: f64, pending: serde_json::Value| {
+            fs::write(
+                dir.join(file),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": LEASE_SCHEMA,
+                    "lease_id": session,
+                    "name": "iwo",
+                    "active": true,
+                    "heartbeat_unix": heartbeat,
+                    "provider": "Claude-Code",
+                    "provider_session_id": session,
+                    "pending": pending,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        lease(
+            "stalled.json",
+            "sess-stalled",
+            990.0,
+            serde_json::json!([
+                {"kind": "seal", "delivery_id": "a".repeat(24), "emitted_at": "2026-10-14T13:00:00Z"},
+                {"kind": "message", "delivery_id": "b".repeat(24), "emitted_at": "2026-10-14T12:30:00Z"},
+                {"kind": "seal", "delivery_id": "c".repeat(24), "emitted_at": "2026-10-14T12:00:00Z"},
+                {"kind": "draft", "delivery_id": "d".repeat(24), "emitted_at": "2026-10-14T11:00:00Z"},
+                {"kind": "seal", "delivery_id": "e".repeat(24), "emitted_at": "garbage"}
+            ]),
+        );
+        let markers = temp.path().join("acknowledgments/sess-stalled");
+        fs::create_dir_all(&markers).unwrap();
+        fs::write(markers.join(format!("{}.json", "c".repeat(24))), b"{}").unwrap();
+        lease("drained.json", "sess-drained", 995.0, serde_json::json!([]));
+        lease(
+            "dead.json",
+            "sess-dead",
+            800.0,
+            serde_json::json!([
+                {"kind": "seal", "delivery_id": "f".repeat(24), "emitted_at": "2026-10-14T10:00:00Z"}
+            ]),
+        );
+
+        let since = unread_backlog_since_at(temp.path(), 1_000.0, 120.0);
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-10-14T12:30:00Z")
+            .unwrap()
+            .timestamp() as f64;
+        assert_eq!(
+            since,
+            HashMap::from([(
+                ("claude-code".to_string(), "sess-stalled".to_string()),
+                expected
+            )])
+        );
     }
 
     #[test]

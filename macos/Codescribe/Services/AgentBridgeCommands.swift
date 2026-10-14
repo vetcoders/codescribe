@@ -80,10 +80,13 @@ private struct GlobalPlaybackMuteReceipt: Decodable, Sendable {
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
 extension RealAgentBridgeInstaller {
-  /// Archive one dead, frozen owner through the binding file's only writer.
+  /// Archive one frozen owner through the binding file's only writer.
+  /// `releaseReader` asks the helper to stop the owner's own live follower
+  /// first; without it a live reader is refused with a reason.
   @MainActor
   static func archiveBusAgent(
     owner: OverlayConversationOwner,
+    releaseReader: Bool = false,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller(),
     archive: @escaping @MainActor @Sendable (CsAgentArchiveRequest) async throws -> String
   ) async throws {
@@ -110,7 +113,8 @@ extension RealAgentBridgeInstaller {
     }.value
     let request = CsAgentArchiveRequest(
       channel: channel, provider: owner.provider, providerSessionId: owner.providerSessionID,
-      leaseId: owner.leaseID, bus: bus, executable: executable.path, bridgeHome: root.path)
+      leaseId: owner.leaseID, bus: bus, executable: executable.path, bridgeHome: root.path,
+      releaseReader: releaseReader)
     let receiptText = try await archive(request)
     let data = Data(receiptText.utf8)
     guard data.count <= 65536,

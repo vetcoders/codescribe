@@ -397,7 +397,8 @@ final class OverlayStateTests: XCTestCase {
   ) -> CsChannelRosterState {
     .init(
       channel: channel, audience: "Lena", provider: "codex", providerSessionId: session,
-      open: open, loud: open, autosealDeadlineUnixMs: nil, followerAlive: true)
+      open: open, loud: open, autosealDeadlineUnixMs: nil, followerAlive: true,
+      unreadSinceUnixMs: nil)
   }
 
   private func replyFocusConversation(
@@ -1431,12 +1432,14 @@ final class OverlayStateTests: XCTestCase {
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let closed = CsChannelRosterState(
       channel: "0", audience: "*", provider: "", providerSessionId: "",
-      open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false)
+      open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false,
+      unreadSinceUnixMs: nil)
     state.applyChannelRoster([closed])
     engine.rosterSnapshot = [
       CsChannelRosterState(
         channel: "0", audience: "*", provider: "", providerSessionId: "",
-        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false)
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: false,
+        unreadSinceUnixMs: nil)
     ]
     XCTAssertTrue(state.canToggleConversationMicrophone(broadcast))
     await state.toggleConversationMicrophone(broadcast)
@@ -1460,7 +1463,7 @@ final class OverlayStateTests: XCTestCase {
       .init(
         channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
         open: true, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true)
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
     ]
 
     await state.toggleAgentChannel(2)
@@ -1497,7 +1500,8 @@ final class OverlayStateTests: XCTestCase {
     engine.rosterSnapshot = [
       .init(
         channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
-        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ]
     let state = OverlayState()
     state.engine = engine
@@ -1523,7 +1527,8 @@ final class OverlayStateTests: XCTestCase {
     let mode = state.mode
     let roster = CsChannelRosterState(
       channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
-      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+      unreadSinceUnixMs: nil)
     state.applyChannelRoster([roster])
     XCTAssertFalse(state.recording)
     XCTAssertTrue(state.audioCaptureActive)
@@ -1550,7 +1555,8 @@ final class OverlayStateTests: XCTestCase {
     state.applyChannelRoster([
       .init(
         channel: "3", audience: "astra", provider: "codex", providerSessionId: "session",
-        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ])
     state.applyAudioLevel(0.03)
     let gain = state.levelMeter.gain
@@ -1571,11 +1577,11 @@ final class OverlayStateTests: XCTestCase {
       .init(
         channel: "1", audience: "klaudiusz", provider: "claude",
         providerSessionId: "klaudiusz-session", open: false, loud: false,
-        autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
+        autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false, unreadSinceUnixMs: nil),
       .init(
         channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
         open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: nil),
+        autosealDeadlineUnixMs: nil, followerAlive: nil, unreadSinceUnixMs: nil),
     ])
 
     XCTAssertEqual(state.channelHudStates["1"]?.followerAlive, false)
