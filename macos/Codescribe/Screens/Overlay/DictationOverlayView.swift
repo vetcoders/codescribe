@@ -988,6 +988,11 @@ struct DictationOverlayView: View {
     if state.formatterCommitPending { return String(localized: "Formatting revision…") }
     if state.revisionCommitPending { return String(localized: "Committing revision…") }
     if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
+    if let seconds = state.agentSendCountdownSeconds {
+      return String(
+        localized: "To Agent in \(seconds) s · edit to hold",
+        comment: "Overlay footer countdown while an armed Agent take waits to send itself")
+    }
     if let notice = state.toast { return notice }
     if let origin = state.archivedTranscriptOrigin { return origin }
     if let status = state.presentationStatus { return status.headline }

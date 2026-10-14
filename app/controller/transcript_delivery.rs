@@ -39,19 +39,25 @@ impl TranscriptDeliveryTagger {
     /// output, hands-free paste) contains no bucket context-marker literal.
     /// The bucket and Bus retain markers; the Agent route keeps them so it can
     /// resolve their captured context. This is the shared outward boundary.
+    ///
+    /// The transcript tag is for text that leaves Codescribe (a paste into
+    /// another app, the clipboard). The Agent route stays inside the product:
+    /// its turn carries the spoken words and the bucket markers only, never
+    /// the configured `<codescribe …>` envelope (Maciej, 2026-10-14).
     pub(super) fn render(
         &self,
         text: &str,
         config: &Config,
         mode_override: Option<&'static str>,
     ) -> String {
-        let outward = if mode_override == Some("agent") {
+        let to_agent = mode_override == Some("agent");
+        let outward = if to_agent {
             text.to_string()
         } else {
             strip_markers_for_delivery(text)
         };
         let trimmed = outward.trim();
-        if trimmed.is_empty() || !config.transcript_tagging_enabled {
+        if trimmed.is_empty() || to_agent || !config.transcript_tagging_enabled {
             return trimmed.to_string();
         }
         let metadata = self
@@ -168,6 +174,28 @@ mod tests {
         assert_eq!(
             tagger.render("body", &config, None),
             "[dictation|pl|low|possible_hallucination_logprob] body"
+        );
+    }
+
+    #[test]
+    fn agent_route_never_wraps_the_turn_in_the_transcript_tag() {
+        let tagger = TranscriptDeliveryTagger::default();
+        tagger.begin("agent", "pl");
+        tagger.on_event(&final_event(Some(-0.2), Vec::new()));
+        let config = Config {
+            transcript_tagging_enabled: true,
+            transcript_tag_template:
+                "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            tagger.render("  {selection_1} zrób to  ", &config, Some("agent")),
+            "{selection_1} zrób to"
+        );
+        // The same session still tags an outward paste.
+        assert_eq!(
+            tagger.render("zrób to", &config, Some("dictation")),
+            "<codescribe mode=\"dictation\" lang=\"pl\">\nzrób to\n</codescribe>"
         );
     }
 

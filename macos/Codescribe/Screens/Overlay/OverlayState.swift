@@ -961,6 +961,12 @@ final class OverlayState {
   // MARK: Activity-anchored auto-hide for terminal outcomes
   private var autoHideTask: Task<Void, Never>?
   private(set) var autoHideDeadline: TimeInterval?
+  /// Whole seconds until an armed, untouched Agent take sends itself. The
+  /// footer shows it; `nil` while no such countdown runs (auto-send off, the
+  /// take under edit, delivery started). An edit cancels the deadline, so the
+  /// countdown disappears with it and returns when the revision is committed.
+  private(set) var agentSendCountdownSeconds: Int?
+  @ObservationIgnored private var agentCountdownTask: Task<Void, Never>?
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
@@ -3171,6 +3177,58 @@ final class OverlayState {
       guard !Task.isCancelled else { return }
       self?.evaluateAutoHideDeadline(rescheduleIfEarly: true, generation: generation)
     }
+    startAgentSendCountdownIfArmed(generation: generation)
+  }
+
+  /// The deadline that sends an armed Agent take is visible, never silent: a
+  /// one-second ticker keeps `agentSendCountdownSeconds` honest while the
+  /// deadline stands (Maciej, 2026-10-14: "odliczanie musi być jawne").
+  private func startAgentSendCountdownIfArmed(generation: UInt64) {
+    agentCountdownTask?.cancel()
+    agentCountdownTask = nil
+    guard agentSessionArmed, agentFinalTranscriptAppeared, !agentAutoSendCancelled,
+      !agentDeliveryStarted, autoSendEnabled(), autoHideDeadline != nil
+    else {
+      agentSendCountdownSeconds = nil
+      return
+    }
+    refreshAgentSendCountdown()
+    agentCountdownTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard let self, generation == self.captureGeneration, let deadline = self.autoHideDeadline
+        else { return }
+        let remaining = deadline - self.nowProvider()
+        guard remaining > 0 else { return }
+        // Wake on the next whole second so the shown value flips on time.
+        let fraction = remaining - remaining.rounded(.down)
+        let wait = fraction > 0.02 ? fraction : 1
+        try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        guard !Task.isCancelled else { return }
+        self.refreshAgentSendCountdown()
+      }
+    }
+  }
+
+  /// Recompute the shown countdown from the clock. The ticker calls it every
+  /// second; tests call it after advancing their injected clock.
+  func refreshAgentSendCountdown() {
+    guard let deadline = autoHideDeadline, agentSessionArmed, agentFinalTranscriptAppeared,
+      !agentAutoSendCancelled, !agentDeliveryStarted, autoSendEnabled()
+    else {
+      agentSendCountdownSeconds = nil
+      return
+    }
+    agentSendCountdownSeconds = Self.countdownSeconds(until: deadline, now: nowProvider())
+  }
+
+  static func countdownSeconds(until deadline: TimeInterval, now: TimeInterval) -> Int {
+    max(0, Int((deadline - now).rounded(.up)))
+  }
+
+  private func stopAgentSendCountdown() {
+    agentCountdownTask?.cancel()
+    agentCountdownTask = nil
+    agentSendCountdownSeconds = nil
   }
 
   /// The terminal outcome of the take named by `generation` may close its own
@@ -3267,6 +3325,7 @@ final class OverlayState {
     autoHideTask = nil
     autoHideDeadline = nil
     autoHideAwaitingCollapse = nil
+    stopAgentSendCountdown()
   }
 
   /// Whether a terminal hide that came due is waiting for the automatic

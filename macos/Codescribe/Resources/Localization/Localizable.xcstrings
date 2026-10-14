@@ -16826,6 +16826,17 @@
         }
       }
     },
+    "To Agent in %lld s · edit to hold" : {
+      "comment" : "Overlay footer countdown while an armed Agent take waits to send itself",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do Agenta za %lld s · edytuj, by wstrzymać"
+          }
+        }
+      }
+    },
     "To use the level from Settings, remove %@ from the launch environment or from %@, then restart Codescribe." : {
       "comment" : "About panel: how to drop the override; the key and the file path stay verbatim",
       "localizations" : {
