@@ -572,13 +572,41 @@ impl AcousticLedger {
         // For fence completeness a 60 ms valley is not authenticated quiet:
         // neighbouring anchor pieces may belong to one multi-syllable word.
         let mut fence_components: Vec<crate::audio::capture_receipt::SpeechAnchor> = Vec::new();
+        // Each component's measured extent before the owner clip. Whether
+        // speech continues across the whole decode window is a fact of the
+        // capture, not of this owner: a short owner inside one long burst
+        // (take 4804e41e: owner 33024..450240 inside anchor 0..646080, window
+        // 0..432000) made the clipped burst look like a phrase opening inside
+        // the window, and every interior word inherited the window fence.
+        let mut fence_extents: Vec<(u64, u64)> = Vec::new();
         let quiet = u64::from(self.capture_rate_hz.unwrap_or(16_000)) * 60 / 1000;
+        let continuous_beyond = |extent: (u64, u64), start: u64, end: u64| {
+            (extent.0 <= start.saturating_add(quiet) && extent.1 >= end.saturating_sub(quiet))
+                || extent.1.saturating_sub(extent.0) > end.saturating_sub(start)
+        };
         for measured in anchors {
             if measured.range.session != owner.session
                 || measured.range.capture_epoch != owner.capture_epoch
             {
                 continue;
             }
+            // The owner-clipped component's physical burst, as measured over
+            // the whole capture before `measured_word_anchors` clipped it.
+            let extent = self
+                .speech_anchors
+                .as_ref()
+                .and_then(|evidence| {
+                    evidence.anchors.iter().find(|physical| {
+                        physical.range.session == measured.range.session
+                            && physical.range.capture_epoch == measured.range.capture_epoch
+                            && physical.range.sample_start <= measured.range.sample_start
+                            && measured.range.sample_end <= physical.range.sample_end
+                    })
+                })
+                .map_or(
+                    (measured.range.sample_start, measured.range.sample_end),
+                    |physical| (physical.range.sample_start, physical.range.sample_end),
+                );
             let mut measured = measured.clone();
             measured.range.sample_start = measured.range.sample_start.max(owner.sample_start);
             measured.range.sample_end = measured.range.sample_end.min(owner.sample_end);
@@ -594,8 +622,12 @@ impl AcousticLedger {
             {
                 last.range.sample_end = measured.range.sample_end;
                 last.open_at_end = measured.open_at_end;
+                if let Some(merged) = fence_extents.last_mut() {
+                    *merged = (merged.0.min(extent.0), merged.1.max(extent.1));
+                }
             } else {
                 fence_components.push(measured);
+                fence_extents.push(extent);
             }
         }
         let mut closed = Vec::with_capacity(words.len());
@@ -617,43 +649,43 @@ impl AcousticLedger {
                     pin.sample_start,
                     pin.sample_end,
                 );
-            let cut = fence_components.iter().find(|anchor| {
-                let range = &anchor.range;
-                let centre = range
-                    .sample_start
-                    .saturating_add(range.sample_end.saturating_sub(range.sample_start) / 2);
-                // A continuous burst can contain many words and span more
-                // than one decode window. Its interior lexical positions must
-                // not all wait for an impossible whole-burst window. Only the
-                // first/last offered position can inherit that open fence.
-                // Inside continuous speech the fence cuts the word that
-                // reaches it, never an interior word that happens to be the
-                // only one offered.
-                let continuous_beyond_window = (range.sample_start <= start.saturating_add(quiet)
-                    && range.sample_end >= end.saturating_sub(quiet))
-                    || range.sample_end.saturating_sub(range.sample_start)
-                        > end.saturating_sub(start);
-                let owns_open_edge = native_cut
-                    || (!continuous_beyond_window
-                        && range.sample_start >= start
-                        && range.sample_end >= end)
-                    || (pin_index == 0
-                        && range.sample_start <= start
-                        && pin.sample_start <= start.saturating_add(quiet))
-                    || (pin_index + 1 == words.len()
-                        && range.sample_end >= end
-                        && pin.sample_end.saturating_add(quiet) >= end);
-                owns_open_edge
-                    && range.session == owner.session
-                    && range.capture_epoch == owner.capture_epoch
-                    && ((pin.sample_start <= centre && centre < pin.sample_end)
-                        || (range.sample_start <= midpoint && midpoint < range.sample_end))
-                    && (native_cut
-                        || (range.sample_start < start && start < range.sample_end)
-                        || (range.sample_start < end && end < range.sample_end)
-                        || (range.sample_end == end && anchor.open_at_end))
-            });
-            let Some(anchor) = cut else {
+            let cut = fence_components
+                .iter()
+                .zip(&fence_extents)
+                .find(|(anchor, extent)| {
+                    let range = &anchor.range;
+                    let centre = range
+                        .sample_start
+                        .saturating_add(range.sample_end.saturating_sub(range.sample_start) / 2);
+                    // A continuous burst can contain many words and span more
+                    // than one decode window. Its interior lexical positions must
+                    // not all wait for an impossible whole-burst window. Only the
+                    // first/last offered position can inherit that open fence.
+                    // Inside continuous speech the fence cuts the word that
+                    // reaches it, never an interior word that happens to be the
+                    // only one offered.
+                    let continuous_beyond_window = continuous_beyond(**extent, start, end);
+                    let owns_open_edge = native_cut
+                        || (!continuous_beyond_window
+                            && range.sample_start >= start
+                            && range.sample_end >= end)
+                        || (pin_index == 0
+                            && range.sample_start <= start
+                            && pin.sample_start <= start.saturating_add(quiet))
+                        || (pin_index + 1 == words.len()
+                            && range.sample_end >= end
+                            && pin.sample_end.saturating_add(quiet) >= end);
+                    owns_open_edge
+                        && range.session == owner.session
+                        && range.capture_epoch == owner.capture_epoch
+                        && ((pin.sample_start <= centre && centre < pin.sample_end)
+                            || (range.sample_start <= midpoint && midpoint < range.sample_end))
+                        && (native_cut
+                            || (range.sample_start < start && start < range.sample_end)
+                            || (range.sample_start < end && end < range.sample_end)
+                            || (range.sample_end == end && anchor.open_at_end))
+                });
+            let Some((anchor, extent)) = cut else {
                 closed.push(pin.clone());
                 continue;
             };
@@ -661,14 +693,7 @@ impl AcousticLedger {
             // A leading quiet prefix must not make a component longer than
             // the decode window behave like one short edge-cut word. No
             // equal-sized later window can cover that component in full.
-            let continuous_beyond_window = (anchor.range.sample_start
-                <= start.saturating_add(quiet)
-                && anchor.range.sample_end >= end.saturating_sub(quiet))
-                || anchor
-                    .range
-                    .sample_end
-                    .saturating_sub(anchor.range.sample_start)
-                    > end.saturating_sub(start);
+            let continuous_beyond_window = continuous_beyond(*extent, start, end);
             let mut held_speech = anchor.range.clone();
             if continuous_beyond_window {
                 // This is a lexical position within continuous speech, not the

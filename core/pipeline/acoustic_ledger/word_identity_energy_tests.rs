@@ -85,6 +85,116 @@ fn recorded_530be03a_first_window_keeps_interior_words_of_a_long_open_burst() {
     assert_eq!(ledger.conservation().residue(), 0);
 }
 
+#[test]
+fn recorded_4804_open_owner_keeps_interior_prefix_before_window_fence() {
+    // Recorded request1/owner/pin coordinates. Synthetic continuously voiced
+    // PCM isolates the observed anchor [0,646080), without replaying a model.
+    // Clipping that anchor to this short owner must not turn interior words
+    // into edge cuts merely because the owner crosses the decode fence.
+    let pcm = vec![0.1; 646_080];
+    let owner = OccurrenceIdentity::new("prefix-4804", 1, 33_024, 450_240);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    let words = decoded(
+        &[
+            ("Lena,", 42_240, 62_400),
+            ("skup", 62_400, 96_000),
+            ("się", 96_000, 102_720),
+            ("na", 102_720, 109_440),
+            ("swoim,", 109_440, 131_520),
+            ("nie", 131_520, 142_080),
+            ("zamykaj", 142_080, 199_680),
+            ("jakby", 199_680, 249_600),
+            ("swojego", 249_600, 324_480),
+        ],
+        (0, 432_000),
+    );
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    let closed = ledger.defer_edge_cut_words(&observation, &words, &anchors);
+    assert_eq!(
+        closed
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Lena,", "skup", "się", "na", "swoim,", "nie", "zamykaj", "jakby", "swojego"
+        ],
+        "complete interior pins cannot all inherit a short owner's open window fence"
+    );
+    assert!(
+        ledger
+            .admit_word_slots(&observation, &words)
+            .grants_mutation()
+    );
+    assert_eq!(
+        lowercase_tokens(ledger.text_of(&owner).unwrap()),
+        [
+            "lena", "skup", "się", "na", "swoim", "nie", "zamykaj", "jakby", "swojego"
+        ]
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn recorded_4804_next_window_does_not_duplicate_the_admitted_prefix() {
+    // Request 2 of the same take: window 144000..576000 over the same owner,
+    // "nie" cut at the window onset and "zamykaj" overlapping request 1.
+    // Once request 1 keeps its interior words, the overlap must re-observe
+    // them, never mint a second copy.
+    let pcm = vec![0.1; 646_080];
+    let owner = OccurrenceIdentity::new("prefix-4804-next", 1, 33_024, 450_240);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    let first_words = decoded(
+        &[
+            ("Lena,", 42_240, 62_400),
+            ("skup", 62_400, 96_000),
+            ("się", 96_000, 102_720),
+            ("na", 102_720, 109_440),
+            ("swoim,", 109_440, 131_520),
+            ("nie", 131_520, 142_080),
+            ("zamykaj", 142_080, 199_680),
+            ("jakby", 199_680, 249_600),
+            ("swojego", 249_600, 324_480),
+        ],
+        (0, 432_000),
+    );
+    assert!(
+        ledger
+            .admit_word_slots(&first, &first_words)
+            .grants_mutation()
+    );
+    let second = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+    let second_words = decoded(
+        &[
+            ("nie", 144_000, 152_640),
+            ("zamykaj", 152_640, 199_680),
+            ("jakby", 199_680, 249_600),
+            ("swojego", 249_600, 323_520),
+            ("metarozumu", 323_520, 535_680),
+        ],
+        (144_000, 576_000),
+    );
+    let _ = ledger.admit_word_slots(&second, &second_words);
+    assert_eq!(
+        lowercase_tokens(ledger.text_of(&owner).unwrap()),
+        [
+            "lena",
+            "skup",
+            "się",
+            "na",
+            "swoim",
+            "nie",
+            "zamykaj",
+            "jakby",
+            "swojego",
+            "metarozumu"
+        ],
+        "the overlapping window re-observes the kept prefix and adds only the new word"
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
 /// Native build 973, decision 213: a later Whisper window moved `jednak`
 /// by 400 ms and minted `jednak Jednak`. Preserve the recorded capture clock.
 #[test]
