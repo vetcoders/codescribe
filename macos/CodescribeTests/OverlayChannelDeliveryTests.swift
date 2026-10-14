@@ -513,6 +513,59 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       initial.conversations.first?.messages.map(\.text))
   }
 
+  /// Screen recording 2026-10-13 09:46: a test host reading the live agent
+  /// bridge drew a second overlay with the real conversations during a take.
+  func testTestHostNeverResolvesTheLiveRuntime() throws {
+    let live = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".codescribe", isDirectory: true).standardizedFileURL.path
+    let environment = ProcessInfo.processInfo.environment
+    let bridge = try XCTUnwrap(environment[QualityCaptureHost.agentBridgeHomeVariable])
+    let data = try XCTUnwrap(environment[QualityCaptureHost.dataDirectoryVariable])
+    for path in [
+      bridge, data, OverlayChannelDeliveryReader.productionRoot().path,
+      agentConversationBusPath(),
+    ] {
+      let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+      XCTAssertFalse(
+        resolved == live || resolved.hasPrefix(live + "/"), "\(resolved) is the live runtime")
+    }
+  }
+
+  func testIsolationFallsBackToAPerProcessRootWithoutTheRunner() throws {
+    let dataVariable = QualityCaptureHost.dataDirectoryVariable
+    let bridgeVariable = QualityCaptureHost.agentBridgeHomeVariable
+    let temp = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+    var assigned: [String: String] = [:]
+    XCTAssertNil(
+      QualityCaptureHost.isolateFromLiveRuntime(
+        runningTests: false, environment: [:], temporaryDirectory: temp, processID: 42,
+        setVariable: { assigned[$0] = $1 }))
+    XCTAssertTrue(assigned.isEmpty, "The product never rewrites its environment")
+
+    let homes = try XCTUnwrap(
+      QualityCaptureHost.isolateFromLiveRuntime(
+        runningTests: true, environment: [:], temporaryDirectory: temp, processID: 42,
+        setVariable: { assigned[$0] = $1 }))
+    XCTAssertEqual(homes.data.path, temp.appendingPathComponent("codescribe-test-host-42").path)
+    XCTAssertEqual(homes.agentBridge.path, homes.data.appendingPathComponent("agent-bridge").path)
+    XCTAssertEqual(
+      assigned, [dataVariable: homes.data.path, bridgeVariable: homes.agentBridge.path])
+    XCTAssertTrue(FileManager.default.fileExists(atPath: homes.agentBridge.path))
+
+    assigned = [:]
+    let runnerData = temp.appendingPathComponent("runner-data").path
+    let runner = try XCTUnwrap(
+      QualityCaptureHost.isolateFromLiveRuntime(
+        runningTests: true, environment: [dataVariable: runnerData],
+        temporaryDirectory: temp, processID: 42, setVariable: { assigned[$0] = $1 }))
+    XCTAssertEqual(runner.data.path, runnerData)
+    XCTAssertEqual(runner.agentBridge.path, runnerData + "/agent-bridge")
+    XCTAssertEqual(
+      assigned, [bridgeVariable: runnerData + "/agent-bridge"], "A runner's data dir is kept")
+  }
+
   /// A sample of build 1004 (2026-10-14) had two reader threads at ~55 % of a
   /// core rebuilding and re-sorting unchanged conversations every 500 ms.
   func testIdlePollsReuseTheConversationListUntilAProjectionChanges() async throws {
