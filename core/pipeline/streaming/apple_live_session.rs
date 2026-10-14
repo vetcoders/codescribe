@@ -7256,7 +7256,10 @@ fn run_terminal_dictation_witness(
     let mut targets: Vec<(u64, u64)> = pending_owners
         .iter()
         .map(|owner| (owner.sample_start, owner.sample_end))
-        .chain(gaps.iter().map(|range| (range.sample_start, range.sample_end)))
+        .chain(
+            gaps.iter()
+                .map(|range| (range.sample_start, range.sample_end)),
+        )
         .filter(|(start, end)| *end > *start && *start < capture_samples)
         .map(|(start, end)| (start, end.min(capture_samples)))
         .collect();
@@ -7265,8 +7268,7 @@ fn run_terminal_dictation_witness(
 
     // Cluster targets into disjoint witness windows with bounded context.
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
-    let max_window =
-        u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
     let mut clusters: Vec<(u64, u64)> = Vec::new();
     for (start, end) in targets {
         let extend = match clusters.last() {
