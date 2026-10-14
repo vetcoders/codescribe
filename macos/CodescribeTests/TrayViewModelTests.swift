@@ -21,6 +21,26 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(preferenceChanges, 0)
   }
 
+  /// Maciej, 2026-10-14: after a start from the tray the panel stayed open over
+  /// the overlay it had just raised.
+  func testTrayStartAndStopCloseThePanelThatWouldCoverTheOverlay() async {
+    let engine = MockTrayEngine()
+    let model = TrayViewModel(engine: engine)
+    var events: [String] = []
+    model.onDictationStartRequested = { events.append("overlay") }
+    model.onIntent = { intent in
+      guard case .closeTray = intent else { return events.append("other") }
+      events.append("close")
+    }
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close"], "the overlay rises before the tray steps aside")
+    for _ in 0..<100 where model.isStartingDictation { await Task.yield() }
+    XCTAssertFalse(model.isStartingDictation)
+    XCTAssertTrue(engine.recording)
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close", "close"], "a stop uncovers it too")
+  }
+
   func testHoldBadgeCyclePersistsAndUpdatesTrayState() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
