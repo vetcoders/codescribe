@@ -208,8 +208,9 @@ struct CodescribeApp: App {
     }
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
-    // The window opens in the unified style it keeps; `adoptHostWindow` holds
-    // the same contract on the NSWindow and is what the chrome test measures.
+    // One unified header plane, as the Agent window has. The scene owns this
+    // value: SwiftUI's toolbar bridging rewrites `NSWindow.toolbarStyle` after
+    // `SettingsView.adoptHostWindow` runs, so only the scene modifier holds.
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .appSettings) {
