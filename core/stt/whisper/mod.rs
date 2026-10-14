@@ -28,6 +28,8 @@ pub mod embedded;
 pub mod energy;
 /// Local Candle Whisper engine implementation.
 mod engine;
+/// Log-mel front end: candle-identical frames without the 15 s of zero FFTs.
+mod mel;
 /// Encoder/decoder layer graph ported for local inference.
 mod model;
 /// Decoding hyperparameters (temperature, beam, language, …).

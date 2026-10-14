@@ -1343,7 +1343,7 @@ impl LocalWhisperEngine {
     }
 
     fn mel_tensor_16k(&self, samples_16k: &[f32]) -> Result<Tensor> {
-        let mel = whisper::audio::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
+        let mel = super::mel::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
         let mel_len = mel.len();
         Ok(Tensor::from_vec(
             mel,
@@ -2071,7 +2071,7 @@ fn file_level_log_mel(config: &Config, samples: &[f32], mel_filters: &[f32]) -> 
     let hop = whisper::HOP_LENGTH;
     let mut bins: Vec<Vec<f32>> = vec![Vec::new(); n_mels];
     for chunk in samples.chunks(whisper::N_SAMPLES) {
-        let padded = whisper::audio::pcm_to_mel(config, chunk, mel_filters);
+        let padded = super::mel::pcm_to_mel(config, chunk, mel_filters);
         let padded_frames = padded.len() / n_mels;
         if padded_frames == 0 {
             continue;
