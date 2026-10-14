@@ -961,9 +961,14 @@
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "required_code": [
                 "let owners = self.unsealed_word_owners();",
+                "let envelope_start = owners.iter().map(|(_, owner)| owner.sample_start).min().unwrap_or(0);",
+                "let envelope_end = owners.iter().map(|(_, owner)| owner.sample_end).max().unwrap_or(0);",
                 "self.retained_word_decodes",
-                "range_overlaps_occurrence(&payload.identity.range, owner)",
-                "replayed_window_owners",
+                "let range = &payload.identity.range;",
+                "range.sample_start < envelope_end",
+                "envelope_start < range.sample_end",
+                "range_overlaps_occurrence(range, owner)",
+                "self.replayed_window_owners.contains(&(payload.identity.request_id, owner.clone()))",
                 "for payload in returned {",
                 "self.admit_completed_window(ev_tx, &payload, false);"
               ],

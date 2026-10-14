@@ -2261,6 +2261,26 @@ class NeutralAstTests(unittest.TestCase):
                 contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
                 self.assertFalse(contract["accepted"], name)
 
+    def test_writer_quotes_preserve_payload_language_and_guarded_paste_sequence(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"],
+                        "mutants require an accepted current paste control")
+        cases = [
+            ("foreign_transform", "writer_quotes_for_paste(", "foreign_transform("),
+            ("foreign_payload", "&paste_text,\n            config.whisper_language.as_str(),",
+             '"foreign payload",\n            config.whisper_language.as_str(),'),
+            ("foreign_language", "config.whisper_language.as_str()", '"en"'),
+            ("identity_guard_removed", "target.matches_app_name(name)", "true"),
+            ("paste_mode_forged", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
+             "clipboard::paste_to_stop_target(&paste_text, &target, PasteMode::Comfort)"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("execute_clipboard_paste", old, new))
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "execute_clipboard_paste")
+                self.assertFalse(contract["accepted"], name)
+                self.assertFalse(evidence["accepted"], name)
+
     def test_refused_archive_link_requires_current_session_and_take(self):
         self.assertTrue(self.run_payload(self.payload)["accepted"])
         cases = [
@@ -2750,6 +2770,28 @@ class CurrentChainMutantTests(unittest.TestCase):
 
     def test_positive_current_chains_pass(self):
         self.assertEqual(self.positive_failures, [])
+
+    def test_replay_envelope_keeps_exact_owner_and_request_guards(self):
+        self.assertEqual(self.positive_failures, [], "mutants require an accepted replay control")
+        cases = [
+            ("foreign_decode_range", "let range = &payload.identity.range;",
+             "let range = &foreign.identity.range;"),
+            ("lower_bound_uses_maximum", ".min()", ".max()"),
+            ("upper_bound_uses_minimum", ".max()", ".min()"),
+            ("lower_envelope_removed", "range.sample_start < envelope_end", "true"),
+            ("upper_envelope_removed", "envelope_start < range.sample_end", "true"),
+            ("owner_overlap_removed", "range_overlaps_occurrence(range, owner)", "true"),
+            ("foreign_owner_receipt", ".contains(&(payload.identity.request_id, owner.clone()))",
+             ".contains(&(payload.identity.request_id, foreign_owner.clone()))"),
+            ("replay_claimed_fresh", "self.admit_completed_window(ev_tx, &payload, false);",
+             "self.admit_completed_window(ev_tx, &payload, true);"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated("replay_completed_windows",
+                    "core/pipeline/streaming/apple_live_session.rs", old, new)
+                self.assertTrue(any("replay_completed_windows" in row for row in failures),
+                                (name, failures))
 
     def test_captured_input_chain_bypasses_are_rejected(self):
         cases = [
