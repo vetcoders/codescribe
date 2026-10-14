@@ -956,17 +956,46 @@ impl AcousticLedger {
             .iter()
             .map(|output| {
                 self.word_anchor_source(output)
-                    .map(|(pin, position)| SourceWord {
-                        lexical_position: Some(position),
-                        sample_start: pin.sample_start,
-                        sample_end: pin.sample_end,
-                        original_text: (!pin.surface_rewritten)
-                            .then(|| pin.text.split_whitespace().nth(position).map(str::to_owned))
-                            .flatten(),
-                        surface: output.text.clone(),
-                        confidence: output.confidence,
-                        surface_rewritten: pin.surface_rewritten,
-                        decode: pin.decode_sample_start.zip(pin.decode_sample_end),
+                    .map(|(pin, position)| {
+                        let decode = pin.decode_sample_start.zip(pin.decode_sample_end);
+                        // Anchor normalization retains the rewritten surface.
+                        // Recover its raw spelling only from this observation's
+                        // unique original pin, with unchanged PCM and decode.
+                        let staged_original = input
+                            .filter(|_| output.observation == *observation)
+                            .and_then(|input| {
+                                let mut matching = input.words.iter().filter(|source| {
+                                    source.sample_start == pin.sample_start
+                                        && source.sample_end == pin.sample_end
+                                        && source.decode == decode
+                                        && source.surface == pin.text
+                                });
+                                let source = matching.next()?;
+                                matching.next().is_none().then_some(source)
+                            })
+                            .and_then(|source| source.original_text.as_deref())
+                            .filter(|raw| {
+                                raw.split_whitespace().count()
+                                    == pin.text.split_whitespace().count()
+                            })
+                            .and_then(|raw| raw.split_whitespace().nth(position))
+                            .map(str::to_owned);
+                        SourceWord {
+                            lexical_position: Some(position),
+                            sample_start: pin.sample_start,
+                            sample_end: pin.sample_end,
+                            original_text: staged_original.or_else(|| {
+                                (!pin.surface_rewritten)
+                                    .then(|| {
+                                        pin.text.split_whitespace().nth(position).map(str::to_owned)
+                                    })
+                                    .flatten()
+                            }),
+                            surface: output.text.clone(),
+                            confidence: output.confidence,
+                            surface_rewritten: pin.surface_rewritten,
+                            decode,
+                        }
                     })
                     .or_else(|| {
                         input
