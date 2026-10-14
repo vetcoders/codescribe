@@ -475,6 +475,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.model.overlay.showWidget()
       case .revealChat:
         self.revealAgentForDelivery()
+      case .closeTray:
+        self.trayPanel.dismiss()
       }
     }
     model.tray.onDictationStartRequested = { [model] in
