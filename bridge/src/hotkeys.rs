@@ -3696,6 +3696,7 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            voice: codescribe::presentation::emitter::CursorVoice::Lagging,
             evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
                 sample_start: 16_000,
                 sample_end: 32_000,

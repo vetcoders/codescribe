@@ -81,7 +81,7 @@ fn main() {
                 hold_badge::update_transcript(token, text);
             }))
             .with_cursor_observer(Arc::new(move |projection| {
-                hold_badge::update_warning_state(token, projection.degraded);
+                hold_badge::update_voice_state(token, projection.voice);
             }));
         emitter.on_capture_opened("native-preview", 1);
         let preview = |rev, text: &str| EngineEvent::Preview {
@@ -105,6 +105,7 @@ fn main() {
                 acoustic_speech_ms_since_text_advance: 2400,
                 pending_occurrences: 1,
                 phase: codescribe_core::pipeline::contracts::SpeechIntegrityPhase::Recovering,
+                speech_live: false,
             },
         });
         drain();
@@ -155,10 +156,10 @@ fn main() {
         hold_badge::show_hold_badge_with_config(config(BadgeMode::Hold));
         drain();
         let next_token = hold_badge::take_token();
-        hold_badge::update_warning_state(next_token, true);
+        hold_badge::update_voice_state(next_token, hold_badge::CursorVoice::Lagging);
         drain();
         emitter.on_event(&preview(4, "stale prior take"));
-        hold_badge::update_warning_state(token, false);
+        hold_badge::update_voice_state(token, hold_badge::CursorVoice::Speaking);
         drain();
         assert_eq!(
             text(visible_panel(app)),
