@@ -10,17 +10,6 @@
           }
         ]
       }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

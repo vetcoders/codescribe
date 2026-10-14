@@ -1087,6 +1087,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(manifest["hooks"], "./hooks/claude-code.json")
         shared = json.dumps(self.load("hooks/hooks.json"))
         self.assertNotIn("asyncRewake", shared)
+        self.assertEqual(set(self.load("hooks/hooks.json")["hooks"]), {"SessionStart"})
         claude = self.load("hooks/claude-code.json")["hooks"]
         self.assertEqual(set(claude), {"SessionStart", "Stop", "PostToolUse"})
         for event in ("SessionStart", "Stop"):
@@ -1114,11 +1115,11 @@ class PluginContractTests(unittest.TestCase):
 class SessionHookTests(unittest.TestCase):
     HOOK = SCRIPTS.parent / "plugins/codescribe/hooks/session.py"
 
-    def run_hook(self, event, session="2bb934cc-f1d9-48df-a456-1f5f8190f8ae", exported=None):
+    def run_hook(self, event, session="2bb934cc-f1d9-48df-a456-1f5f8190f8ae", exported=None, prompt=""):
         env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"}
         if exported is not None:
             env["CLAUDE_CODE_SESSION_ID"] = exported
-        payload = json.dumps({"session_id": session, "hook_event_name": event})
+        payload = json.dumps({"session_id": session, "hook_event_name": event, "prompt": prompt})
         return subprocess.run([sys.executable, str(self.HOOK)], input=payload, env=env,
                               capture_output=True, text=True, timeout=10)
 
@@ -1134,12 +1135,47 @@ class SessionHookTests(unittest.TestCase):
         quiet = self.run_hook("UserPromptSubmit", exported=session)
         self.assertEqual((quiet.returncode, quiet.stdout), (0, ""))
 
+    def test_junie_terminal_commands_are_not_changed_by_prompt_hook(self):
+        # Junie strips ! before this hook, then executes additionalContext as
+        # part of the Bash Task. The hook must be silent for every prompt.
+        commands = ("ls -d .", "command -v sh", "printf '%s\\n' 'one <two>'",
+                    "printf 'one\\n'\nprintf 'two\\n'")
+        for exported in (None, "the-parent-claude-session"):
+            for command in commands:
+                with self.subTest(exported=exported, command=command):
+                    hook = self.run_hook("UserPromptSubmit", session="session-261011-220514-1xgd",
+                                         exported=exported, prompt=command)
+                    self.assertEqual(hook.returncode, 0, hook.stderr)
+                    output = json.loads(hook.stdout) if hook.stdout else {}
+                    context = output.get("hookSpecificOutput", {}).get("additionalContext", "")
+                    request = f"<additional_context>\n{context}\n</additional_context>\n\n{command}" if context else command
+                    expected = subprocess.run(["/bin/bash", "-c", command], cwd=self.HOOK.parent,
+                                              capture_output=True, text=True, timeout=10)
+                    actual = subprocess.run(["/bin/bash", "-c", request], cwd=self.HOOK.parent,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                     (expected.returncode, expected.stdout, expected.stderr))
+                    self.assertEqual(hook.stdout, "")
+
+    def test_junie_session_start_does_not_emit_prompt_context(self):
+        result = self.run_hook("SessionStart", session="session-261011-220514-1xgd")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertNotIn("hookSpecificOutput", output)
+        self.assertIn("provider=junie session_id=session-261011-220514-1xgd", output["systemMessage"])
+
     def test_junie_keeps_its_identity_even_inside_a_claude_code_shell(self):
         for exported in (None, "the-parent-claude-session"):
             with self.subTest(exported=exported):
-                context = self.context(self.run_hook("UserPromptSubmit", session="session-261011-220514-1xgd",
-                                                     exported=exported))
-                self.assertIn("provider=junie session_id=session-261011-220514-1xgd", context)
+                result = self.run_hook("SessionStart", session="session-261011-220514-1xgd", exported=exported)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertNotIn("hookSpecificOutput", output)
+                self.assertIn("provider=junie session_id=session-261011-220514-1xgd", output["systemMessage"])
+
+    def test_prompt_hook_is_silent_even_without_identity(self):
+        result = self.run_hook("UserPromptSubmit", session="", prompt="ls")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_missing_identity_is_refused(self):
         result = self.run_hook("SessionStart", session="")
