@@ -783,6 +783,7 @@ dependencies = [
  "nnnoiseless",
  "ort",
  "rand 0.10.3",
+ "realfft",
  "regex",
  "reqwest",
  "security-framework",
