@@ -18,15 +18,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     row["channel"] = "0"
     row["sender"] = fixture.recipient()
     projection.consume(row)
-    let conversation = try XCTUnwrap(projection.conversations(busPath: fixture.bus.path).first {
-      $0.owner?.providerSessionID == "agent-session"
-    })
+    let conversation = try XCTUnwrap(
+      projection.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.providerSessionID == "agent-session"
+      })
     XCTAssertEqual(conversation.channel, "1", "Channel 0 is the route, not the author's slot")
     XCTAssertEqual(conversation.owner?.channel, "1")
     XCTAssertEqual(conversation.messages.first?.owner?.channel, "1")
     XCTAssertEqual(conversation.messages.map(\.text), ["Reply to everyone"])
-    XCTAssertTrue(projection.conversations(busPath: fixture.bus.path).first { $0.id == "0" }!
-      .messages.isEmpty, "An unsolicited peer reply must not invent a broadcast question")
+    XCTAssertTrue(
+      projection.conversations(busPath: fixture.bus.path).first { $0.id == "0" }!
+        .messages.isEmpty, "An unsolicited peer reply must not invent a broadcast question")
   }
 
   func testMalformedPeerSenderCannotBorrowTopLevelAuthor() throws {
@@ -39,9 +41,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     row["text"] = "Wrong attribution"
     row["sender"] = ["channel": "3"]
     projection.consume(row)
-    XCTAssertTrue(projection.conversations(busPath: fixture.bus.path).allSatisfy {
-      $0.messages.isEmpty
-    })
+    XCTAssertTrue(
+      projection.conversations(busPath: fixture.bus.path).allSatisfy {
+        $0.messages.isEmpty
+      })
   }
 
   func testPeerReplyReachesItsFrozenRecipientAndSettlesOnThatLeasesAck() throws {
@@ -219,20 +222,23 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
     let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: peer)
     let snapshot = try await reader.readSnapshot()
-    let current = try XCTUnwrap(snapshot.conversations.first {
-      $0.owner?.providerSessionID == "agent-session"
-    })
+    let current = try XCTUnwrap(
+      snapshot.conversations.first {
+        $0.owner?.providerSessionID == "agent-session"
+      })
     XCTAssertEqual(current.channel, "1")
     XCTAssertEqual(current.owner?.channel, "1")
     XCTAssertEqual(Set(current.messages.map(\.text)), ["Iwo", "Current reply"])
     XCTAssertEqual(current.messages.count, 2, "Peer copies must not duplicate the history")
-    let old = try XCTUnwrap(snapshot.conversations.first {
-      $0.owner?.providerSessionID == "previous-session"
-    })
+    let old = try XCTUnwrap(
+      snapshot.conversations.first {
+        $0.owner?.providerSessionID == "previous-session"
+      })
     XCTAssertEqual(old.messages.map(\.text), ["Previous reply"])
     XCTAssertEqual(old.owner?.leaseID, String(repeating: "a", count: 32))
     let consumed = await reader.consumedBytes
-    XCTAssertEqual(consumed, 0, "Repair metadata at the existing cursor; do not replay or delete history")
+    XCTAssertEqual(
+      consumed, 0, "Repair metadata at the existing cursor; do not replay or delete history")
     let hud = OverlayChannelHudProjection(
       open: false, loud: false, autosealDeadline: nil, followerAlive: true,
       provider: "codex", providerSessionID: "agent-session")
@@ -249,7 +255,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
       let owners = try XCTUnwrap(projection["historicalOwners"] as? [String: [String: Any]])
       for owner in owners.values where owner["providerSessionID"] as? String == "agent-session" {
-        XCTAssertEqual(owner["channel"] as? String, "1", "Persist the repaired metadata on every mirror")
+        XCTAssertEqual(
+          owner["channel"] as? String, "1", "Persist the repaired metadata on every mirror")
       }
     }
   }
@@ -514,6 +521,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let coordinate = try XCTUnwrap(projection.receiptCoordinates().first)
     let owner = coordinate.0
     let delivery = coordinate.1
+    XCTAssertEqual(coordinate.2, false, "No acceptance receipt observed yet")
     var envelope = fixture.recipient()
     envelope.merge([
       "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
@@ -535,6 +543,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "channel": owner.channel, "name": owner.name,
     ])
     XCTAssertEqual(projection.receiptCoordinates().count, 1, "Acceptance alone is not reading")
+    XCTAssertEqual(
+      projection.receiptCoordinates().first?.2, true,
+      "An accepted recipient tells the reader to poll only the acknowledgment")
     // Recreate monitor-only delivery: there is no provider-acceptance file.
     projection = OverlayChannelDelivery.Bus()
     projection.consume(fixture.seal(1))
