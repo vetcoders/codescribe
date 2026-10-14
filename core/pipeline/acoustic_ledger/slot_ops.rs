@@ -786,7 +786,9 @@ impl AcousticLedger {
             || !self.word_pin_observations.contains(observation)
             || !matches!(
                 observation.producer,
-                ObservationProducer::Whisper | ObservationProducer::CloudLive
+                ObservationProducer::Whisper
+                    | ObservationProducer::CloudLive
+                    | ObservationProducer::AppleDictation
             )
         {
             return false;
@@ -948,7 +950,9 @@ impl AcousticLedger {
         scope_returned
             && matches!(
                 observation.producer,
-                ObservationProducer::Whisper | ObservationProducer::CloudLive
+                ObservationProducer::Whisper
+                    | ObservationProducer::CloudLive
+                    | ObservationProducer::AppleDictation
             )
             && (self.word_pin_observations.contains(observation)
                 || self.successful_empty_decodes.contains(observation))

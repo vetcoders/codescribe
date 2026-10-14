@@ -19,6 +19,13 @@
 //! Original returns are shared with qualified owners through `AcousticLedger`;
 //! Conflicts may use one planner-budgeted bounded witness before their horizon
 //! closes. Stop cannot open work outside its last nine seconds or mutate a seal.
+//! One deliberate exception: the terminal DictationTranscriber witness. When
+//! the armed opt-in lane is available, Stop may run a bounded number of final
+//! DT decodes over the recorder-owned terminal archive, aimed only at ranges
+//! still unresolved after every retained replay (pending text recovery and
+//! material speech gaps). Its segments enter through the same occurrence
+//! admission as any producer; the whole-take DT text never replaces the
+//! document and never reopens a seal.
 //! Apple-only deliberately omits this lane; explicit off/invalid overrides in
 //! Local Power produce a typed degraded state.
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
@@ -85,8 +92,8 @@ use crate::pipeline::contracts::{
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
-    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
-    TimedTailSegment,
+    TailEvidenceSource, TailProviderPayload, TailProviderRequest, TailRequestIdentity,
+    TailSampleRange, TimedTailSegment,
 };
 
 use super::layer1_window::CaptureWindowPlan;
@@ -2017,6 +2024,11 @@ struct AppleSealState {
     cloud_live_lane_lost: u64,
     cloud_live_timed_out: u64,
     cloud_live_unmatched_final: u64,
+    /// Terminal DictationTranscriber witness arming, resolved ONCE at session
+    /// construction from the existing opt-in gate (`CODESCRIBE_APPLE_DICTATION_TRANSCRIBER`).
+    /// Nothing re-reads the environment mid-take; the bridge child inherits
+    /// this process environment, so one key arms both sides of the wire.
+    dictation_witness_armed: bool,
 }
 
 /// Capture-clock allowance for a final; the scheduled frontier is the hold.
@@ -2494,6 +2506,7 @@ impl AppleSealState {
             cloud_live_lane_lost: 0,
             cloud_live_timed_out: 0,
             cloud_live_unmatched_final: 0,
+            dictation_witness_armed: crate::stt::apple_stt::dictation_transcriber_enabled(),
         };
         state
             .acoustic_ledger
@@ -6342,8 +6355,8 @@ enum EnergyAdmission {
     /// Measure the owned capture window and qualify it through the calibration.
     QualifyFromOwnedPcm,
     /// A terminal final-pass job owns an uncovered measured speech range. It
-    /// qualifies that PCM and schedules only the Whisper observer that
-    /// actually ran; Apple/Lexicon never observed this occurrence.
+    /// qualifies that PCM and schedules only the observer whose evidence is
+    /// being admitted; Apple/Lexicon never observed this occurrence.
     QualifyFinalPassGap,
     /// Refuse unless the ledger already qualified this exact occurrence.
     RequireExistingQualification,
@@ -6456,6 +6469,7 @@ fn admit_ledger_label<'a>(
         LedgerObservationProducer::Lexicon
             | LedgerObservationProducer::Whisper
             | LedgerObservationProducer::CloudLive
+            | LedgerObservationProducer::AppleDictation
     ) {
         let (text, counts) = super::live_lexicon::rewrite(label, &state.lexicon_custom_path);
         state.lexicon_entries_custom = counts.custom;
@@ -6484,7 +6498,11 @@ fn admit_ledger_label<'a>(
     }
     if ledger.frontier_of(&occurrence).is_none() {
         let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
-            vec![LedgerObservationProducer::Whisper]
+            // A terminal gap qualifies only the observer whose evidence is
+            // being admitted: Whisper for a Whisper final pass, the DT witness
+            // for a DictationTranscriber return. Apple/Lexicon never observed
+            // this occurrence.
+            vec![producer]
         } else {
             let mut producers = vec![
                 LedgerObservationProducer::Apple,
@@ -6621,6 +6639,10 @@ fn admit_ledger_label<'a>(
 /// a committed Apple occurrence, so admitting its text against the whole gap
 /// would duplicate speech. Such a segment is diagnostic evidence only and the
 /// terminal coverage remains incomplete.
+///
+/// The observation producer follows the payload's own evidence source: a
+/// Whisper final pass names Whisper, a DictationTranscriber witness names
+/// AppleDictation. Nothing here may relabel one engine's return as another's.
 fn admit_full_pass_gap_segments(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -6629,6 +6651,17 @@ fn admit_full_pass_gap_segments(
     threshold_samples: u64,
     gap_energy: EnergyAdmission,
 ) -> usize {
+    let producer = match full_pass.evidence.source {
+        TailEvidenceSource::Whisper => LedgerObservationProducer::Whisper,
+        TailEvidenceSource::AppleDictation => LedgerObservationProducer::AppleDictation,
+        TailEvidenceSource::AppleSpeech => {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "seal_coverage_untrusted_producer".into(),
+                message: "gap evidence from a non-decoder source cannot qualify speech".into(),
+            });
+            return 0;
+        }
+    };
     let exact_timing = full_pass.evidence.timing_quality
         == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
         || (cfg!(test)
@@ -6671,7 +6704,7 @@ fn admit_full_pass_gap_segments(
         contained = contained.saturating_add(1);
 
         let observation = LedgerObservationIdentity::new(
-            LedgerObservationProducer::Whisper,
+            producer,
             full_pass.identity.request_id,
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
@@ -7046,39 +7079,13 @@ fn reconcile_terminal_coverage(
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut gaps = ledger
-                .assess_seal_coverage(
-                    &state.session_id,
-                    state.capture_epoch,
-                    &speech,
-                    threshold_samples,
-                )
-                .uncovered_speech_ranges;
-            for owner in ledger.qualified_occurrences() {
-                gaps = gaps
-                    .into_iter()
-                    .flat_map(|gap| {
-                        if !range_overlaps_occurrence(&gap, owner) {
-                            return vec![gap];
-                        }
-                        let mut remaining = Vec::new();
-                        if gap.sample_start < owner.sample_start {
-                            remaining.push(TailSampleRange {
-                                sample_end: owner.sample_start,
-                                ..gap.clone()
-                            });
-                        }
-                        if owner.sample_end < gap.sample_end {
-                            remaining.push(TailSampleRange {
-                                sample_start: owner.sample_end,
-                                ..gap
-                            });
-                        }
-                        remaining
-                    })
-                    .collect();
-            }
-            gaps
+            uncovered_gap_ranges(
+                &ledger,
+                &state.session_id,
+                state.capture_epoch,
+                &speech,
+                threshold_samples,
+            )
         };
         admit_full_pass_gap_segments(
             state,
@@ -7114,6 +7121,335 @@ fn reconcile_terminal_coverage(
         comparison: None,
     });
     receipt
+}
+
+/// Uncovered measured speech with every qualified owner's PCM subtracted.
+///
+/// This is the same gap arithmetic the terminal reconcile loop applies before
+/// admitting final-pass evidence: a pending owner still punches its own debt
+/// out of coverage inside `assess_seal_coverage`, so what remains here is
+/// speech no committed or debt-held range can account for.
+fn uncovered_gap_ranges(
+    ledger: &AcousticLedger,
+    session: &str,
+    capture_epoch: u64,
+    speech: &AcousticSpeechEvidence,
+    threshold_samples: u64,
+) -> Vec<TailSampleRange> {
+    let mut gaps = ledger
+        .assess_seal_coverage(session, capture_epoch, speech, threshold_samples)
+        .uncovered_speech_ranges;
+    for owner in ledger.qualified_occurrences() {
+        gaps = gaps
+            .into_iter()
+            .flat_map(|gap| {
+                if !range_overlaps_occurrence(&gap, owner) {
+                    return vec![gap];
+                }
+                let mut remaining = Vec::new();
+                if gap.sample_start < owner.sample_start {
+                    remaining.push(TailSampleRange {
+                        sample_end: owner.sample_start,
+                        ..gap.clone()
+                    });
+                }
+                if owner.sample_end < gap.sample_end {
+                    remaining.push(TailSampleRange {
+                        sample_start: owner.sample_end,
+                        ..gap
+                    });
+                }
+                remaining
+            })
+            .collect();
+    }
+    gaps
+}
+
+/// Closed-take context added on each side of a witness target. The read stays
+/// inside the recorder-owned archive; the wider window lets the decoder hear
+/// the phrase that contains the unresolved range.
+const DICTATION_WITNESS_CONTEXT_SECS: u64 = 3;
+/// One witness decode never reads more than this much capture PCM.
+const DICTATION_WITNESS_MAX_WINDOW_SECS: u64 = 30;
+/// One take issues at most this many witness decodes, in capture order.
+const DICTATION_WITNESS_MAX_REQUESTS: usize = 4;
+/// Per-request wall clock. The bridge child is killed and reaped past it.
+const DICTATION_WITNESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Whole terminal witness phase. Whatever is undecoded past it stays an
+/// explicit unresolved outcome; the take never parks on the witness.
+const DICTATION_WITNESS_TOTAL_BUDGET: Duration = Duration::from_secs(90);
+/// Request-id band for terminal witness decodes. The capture plan owns small
+/// ids and lexical trials live above `1 << 63`; this band keeps a witness
+/// return acoustically distinct from both.
+const DICTATION_WITNESS_REQUEST_BASE: u64 = 1 << 62;
+
+/// Run the bounded terminal DictationTranscriber witness over the take's
+/// remaining unresolved acoustic debt: committed owners whose text recovery is
+/// still pending, and material measured-speech gaps no qualified owner covers.
+///
+/// The witness reads only the recorder-owned terminal PCM on this take's
+/// session/epoch clock, decodes it through the bridge's pinned DT lane, and
+/// hands the result to the ordinary ledger admission corridors:
+///
+/// - a single-word segment whose midpoint sits inside an unsealed
+///   recovery-pending owner is offered to that owner as a measured word pin;
+/// - a segment wholly contained in a material gap is admitted through the
+///   same containment path a retained final pass uses;
+/// - everything else stays diagnostic payload text and never mutates the
+///   document. The witness never replaces a whole take and never reopens a
+///   sealed occurrence.
+///
+/// Every request is deduplicated by its acoustic window, executed under the
+/// process-wide bridge lock, bounded per request and in total. An unarmed
+/// lane, a missing archive, a bridge error or a timeout leaves the debt
+/// exactly as it was — the coverage receipt recomputed after this pass keeps
+/// reporting the gap.
+fn run_terminal_dictation_witness(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    language: Option<&str>,
+) {
+    if !state.dictation_witness_armed {
+        return;
+    }
+    let threshold_samples =
+        u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+    let (pending_owners, gaps) = {
+        let speech = coverage_speech_evidence(state);
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = ledger
+            .pending_text_recoveries(&state.session_id, state.capture_epoch)
+            .into_iter()
+            .filter(|owner| !ledger.is_sealed(owner))
+            .collect::<Vec<_>>();
+        let gaps = uncovered_gap_ranges(
+            &ledger,
+            &state.session_id,
+            state.capture_epoch,
+            &speech,
+            threshold_samples,
+        )
+        .into_iter()
+        .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
+        .collect::<Vec<_>>();
+        (pending, gaps)
+    };
+    if pending_owners.is_empty() && gaps.is_empty() {
+        return;
+    }
+    let capture_samples = state.audio.session_sample_end();
+    if state.terminal_pcm.is_none() {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "dictation_witness_pcm_unavailable".into(),
+            message: "terminal archive PCM is unavailable; witness targets stay unresolved".into(),
+        });
+        return;
+    }
+
+    // Witness targets on the capture clock: pending-recovery owners and
+    // material gaps, deduplicated and ordered. Two targets naming the same
+    // PCM are one question, not two witnesses.
+    let mut targets: Vec<(u64, u64)> = pending_owners
+        .iter()
+        .map(|owner| (owner.sample_start, owner.sample_end))
+        .chain(gaps.iter().map(|range| (range.sample_start, range.sample_end)))
+        .filter(|(start, end)| *end > *start && *start < capture_samples)
+        .map(|(start, end)| (start, end.min(capture_samples)))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+
+    // Cluster targets into disjoint witness windows with bounded context.
+    let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
+    let max_window =
+        u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let mut clusters: Vec<(u64, u64)> = Vec::new();
+    for (start, end) in targets {
+        let extend = match clusters.last() {
+            Some(&(first_start, last_end)) => {
+                start <= last_end.saturating_add(2 * context)
+                    && end
+                        .saturating_add(context)
+                        .saturating_sub(first_start.saturating_sub(context))
+                        <= max_window
+            }
+            None => false,
+        };
+        if extend {
+            let last_end = &mut clusters
+                .last_mut()
+                .expect("a cluster matched the extension check")
+                .1;
+            *last_end = (*last_end).max(end);
+        } else {
+            clusters.push((start, end));
+        }
+    }
+    let windows: Vec<(u64, u64)> = clusters
+        .iter()
+        .map(|&(first_start, last_end)| {
+            (
+                first_start.saturating_sub(context),
+                last_end.saturating_add(context).min(capture_samples),
+            )
+        })
+        .filter(|&(start, end)| end > start)
+        .collect();
+
+    let budget_start = Instant::now();
+    let mut requests_issued = 0usize;
+    for (ordinal, (window_start, window_end)) in windows.iter().copied().enumerate() {
+        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS
+            || budget_start.elapsed() >= DICTATION_WITNESS_TOTAL_BUDGET
+        {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "dictation_witness_budget_exhausted".into(),
+                message: format!(
+                    "{} witness window(s) stay unresolved beyond the terminal budget",
+                    windows.len() - ordinal
+                ),
+            });
+            break;
+        }
+        let Some(window) = state
+            .terminal_pcm
+            .as_ref()
+            .and_then(|pcm| pcm.window(window_start, window_end))
+        else {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "dictation_witness_pcm_unavailable".into(),
+                message: format!("window {window_start}..{window_end} is not in the owned archive"),
+            });
+            continue;
+        };
+        let identity = TailRequestIdentity {
+            request_id: DICTATION_WITNESS_REQUEST_BASE | ordinal as u64,
+            range: TailSampleRange {
+                session: state.session_id.clone(),
+                capture_epoch: state.capture_epoch,
+                sample_start: window.sample_start,
+                sample_end: window.sample_end,
+            },
+        };
+        requests_issued = requests_issued.saturating_add(1);
+        let payload = match crate::stt::apple_stt::transcribe_dictation_witness(
+            &identity,
+            &window.samples,
+            state.sample_rate,
+            language,
+            DICTATION_WITNESS_REQUEST_TIMEOUT,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "dictation_witness_unavailable".into(),
+                    message: format!(
+                        "window {}..{}: {error:#}",
+                        window.sample_start, window.sample_end
+                    ),
+                });
+                continue;
+            }
+        };
+        info!(
+            session = %state.session_id,
+            capture_epoch = state.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            segments = payload.segments.len(),
+            elapsed_ms = payload.elapsed_ms,
+            "dictation_witness_return"
+        );
+        admit_dictation_witness_payload(
+            state,
+            ev_tx,
+            &identity,
+            &payload,
+            &pending_owners,
+            &gaps,
+            threshold_samples,
+        );
+    }
+}
+
+/// Hand one returned witness payload to the ledger. Word pins go only to
+/// unsealed recovery-pending owners; gap segments go only where they are
+/// wholly contained. A pending owner an earlier window already settled is
+/// skipped — one question earns one answer.
+fn admit_dictation_witness_payload(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    identity: &TailRequestIdentity,
+    payload: &TailProviderPayload,
+    pending_owners: &[OccurrenceIdentity],
+    gaps: &[TailSampleRange],
+    threshold_samples: u64,
+) {
+    let decode_window = (identity.range.sample_start, identity.range.sample_end);
+    for owner in pending_owners {
+        if owner.sample_end <= identity.range.sample_start
+            || owner.sample_start >= identity.range.sample_end
+        {
+            continue;
+        }
+        let still_pending = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .text_recovery_pending(owner);
+        if !still_pending {
+            continue;
+        }
+        // Only a measured single-word span can be a word pin. A multi-word DT
+        // segment is honest phrase evidence, never divided into synthetic
+        // word timing.
+        let pins: Vec<RoutedPin> = payload
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| segment.text.split_whitespace().count() == 1)
+            .filter(|(_, segment)| {
+                let midpoint = segment
+                    .range
+                    .sample_start
+                    .saturating_add(segment.range.sample_len().unwrap_or(0) / 2);
+                owner.sample_start <= midpoint && midpoint < owner.sample_end
+            })
+            .map(|(index, segment)| RoutedPin {
+                index,
+                pin: OccurrenceIdentity::from(&segment.range),
+                text: segment.text.clone(),
+                confidence: segment.confidence,
+            })
+            .collect();
+        if pins.is_empty() {
+            continue;
+        }
+        let _ = state.admit_routed_words_with_decode_window(
+            ev_tx,
+            0,
+            owner,
+            (identity.request_id, Some(decode_window)),
+            RoutedWords {
+                pins: &pins,
+                neighbours: &[],
+            },
+            LedgerObservationProducer::AppleDictation,
+        );
+    }
+    admit_full_pass_gap_segments(
+        state,
+        ev_tx,
+        payload,
+        gaps,
+        threshold_samples,
+        EnergyAdmission::QualifyFinalPassGap,
+    );
 }
 
 /// Hand one sealed occurrence's committed label to the formatter as a text
@@ -8529,6 +8865,12 @@ fn apple_stream_worker(
     // clock is frozen at EOF and can sit milliseconds behind them.
     state.seal_remaining_at_session_end(&ev_tx);
     reconcile_terminal_coverage(&mut state, &ev_tx);
+    // Bounded terminal DictationTranscriber witness: one last evidence source
+    // for debt the retained replays left unresolved (lost take beginnings,
+    // negations, uncovered speech gaps). It reads only the recorder-owned
+    // terminal PCM and every returned segment enters through ordinary ledger
+    // admission; it never rewrites the document wholesale.
+    run_terminal_dictation_witness(&mut state, &ev_tx, language);
     if let Some(owner) = consultation.as_mut() {
         owner.settle(&state, &ev_tx, samples_seen);
     }

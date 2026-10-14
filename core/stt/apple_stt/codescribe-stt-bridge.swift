@@ -31,6 +31,11 @@ struct BridgeRequest: Codable {
     let contextualStrings: [String]?
     let allowDownload: Bool
     let deadlinePolicy: AppleDeadlinePolicy?
+    /// Explicit backend pin. Today the only honoured value is
+    /// `dictation_transcriber` (the terminal witness lane): the request is then
+    /// served by DT or fails honestly — it never falls through to ST/SF, which
+    /// would let foreign evidence masquerade as a DT witness result.
+    let backend: String?
 }
 
 enum AppleDeadlinePolicy: String, Codable {
@@ -238,7 +243,8 @@ private func readRequest() throws -> BridgeRequest {
             audioPath: nil,
             contextualStrings: nil,
             allowDownload: false,
-            deadlinePolicy: nil
+            deadlinePolicy: nil,
+            backend: nil
         )
     }
 
@@ -289,8 +295,28 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         guard let deadlinePolicy = request.deadlinePolicy else {
             throw BridgeError.runtime("transcribe requires deadline_policy")
         }
-        var transcription = try await transcribe(
-            audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
+        var transcription: TranscriptionPayload
+        if let forcedBackend = request.backend {
+            // A witness request names its producer. DictationTranscriber serves
+            // it or the call fails — ST/SFSpeech evidence must never be
+            // returned under a DT identity.
+            guard forcedBackend == AppleSttBackend.dictationTranscriber.rawValue else {
+                throw BridgeError.invalidInput("unsupported forced backend: \(forcedBackend)")
+            }
+            guard let dt = try await transcribeWithDictationTranscriberIfArmed(
+                audioPath: audioPath,
+                locale: locale,
+                requireFinalResults: deadlinePolicy == .wholeFile
+            ) else {
+                throw BridgeError.runtime(
+                    "dictation_transcriber_unavailable: lane unarmed or locale assets not installed"
+                )
+            }
+            transcription = dt
+        } else {
+            transcription = try await transcribe(
+                audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
+        }
         if transcription.fileError == nil && deadlinePolicy == .wholeFile {
             do {
                 let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
