@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
@@ -40,6 +40,29 @@ struct Cursor {
     /// history: without this the pass is O(file) and a long-lived bus pins a
     /// core (observed at 100% CPU on a 20 GB bus).
     bus_marks: BTreeMap<String, BusMark>,
+    /// Proof generation. Bumped whenever a new seal or pending delivery proof
+    /// is learned, so a directory mark recorded under an older epoch stops
+    /// being trusted: late proof must re-open an otherwise unchanged
+    /// acknowledgment directory.
+    proof_epoch: u64,
+    /// Last fully settled state per acknowledgment directory, keyed by lease
+    /// id. An unchanged directory at an unchanged proof epoch is skipped
+    /// whole: the 500 ms loop must not re-enumerate thousands of settled
+    /// markers (observed ~30% of a core on ~12k markers).
+    ack_dir_marks: BTreeMap<String, AckDirMark>,
+}
+
+/// Fingerprint of an acknowledgment directory taken before it was enumerated.
+/// Any marker written after the stat moves the directory mtime past the
+/// recorded one, so a matching mark proves the enumeration saw everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AckDirMark {
+    mtime: SystemTime,
+    /// Unix inode: a replaced directory invalidates the mark even when the
+    /// mtime happens to match.
+    ino: u64,
+    /// The proof epoch the directory was settled under.
+    proof_epoch: u64,
 }
 
 /// Where a bus file was last consumed, plus a fingerprint of its first bytes
@@ -94,6 +117,7 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             if let Some(id) = seal_delivery_id(row) {
                 let id = id.to_string();
                 if !cursor.emitted.contains(&id) && cursor.known_seals.insert(id) {
+                    cursor.proof_epoch += 1;
                     dirty = true;
                 }
             }
@@ -112,9 +136,14 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     }
     for lease in &leases {
         for pending in &lease.pending {
+            // An emitted delivery needs no further proof tracking; the bus
+            // fold applies the same guard. Without it a stale pending entry
+            // re-arms the proof epoch on every pass.
             if matches!(pending.kind.as_deref(), Some("seal" | "message"))
+                && !cursor.emitted.contains(&pending.id)
                 && cursor.known_seals.insert(pending.id.clone())
             {
+                cursor.proof_epoch += 1;
                 dirty = true;
             }
         }
@@ -137,6 +166,7 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
         .filter(|path| path.is_dir())
         .collect();
     dir_paths.sort();
+    let mut seen_dirs = BTreeSet::new();
     for dir in dir_paths {
         let Some(lease_id) = dir
             .file_name()
@@ -151,6 +181,22 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
         let Some(lease) = leases.iter().find(|lease| lease.lease_id == lease_id) else {
             continue;
         };
+        seen_dirs.insert(lease_id.clone());
+        // Stat BEFORE enumerating: a marker landing after this stat moves the
+        // directory mtime past the recorded one, so the next pass re-reads.
+        let observed = fs::metadata(&dir).ok().map(|meta| AckDirMark {
+            mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            ino: file_ino(&meta),
+            proof_epoch: cursor.proof_epoch,
+        });
+        if let (Some(observed), Some(stored)) = (observed, cursor.ack_dir_marks.get(&lease_id))
+            && *stored == observed
+            && dir_is_quiet(observed.mtime)
+        {
+            continue;
+        }
+        #[cfg(test)]
+        tests::ACK_DIR_ENUMS.with(|reads| reads.set(reads.get() + 1));
         let mut markers: Vec<PathBuf> = fs::read_dir(&dir)?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .collect();
@@ -211,11 +257,38 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             dirty = true;
             stats.appended += 1;
         }
+        // The directory was enumerated whole under the pre-stat fingerprint;
+        // record it so an untouched directory is skipped next pass.
+        if let Some(observed) = observed
+            && cursor.ack_dir_marks.get(&lease_id) != Some(&observed)
+        {
+            cursor.ack_dir_marks.insert(lease_id, observed);
+            dirty = true;
+        }
+    }
+    // A directory that vanished (or lost its lease) gives up its mark, so a
+    // returning lease starts from one full enumeration.
+    let marked = cursor.ack_dir_marks.len();
+    cursor
+        .ack_dir_marks
+        .retain(|lease, _| seen_dirs.contains(lease));
+    if cursor.ack_dir_marks.len() != marked {
+        dirty = true;
     }
     if dirty {
         write_cursor(bridge_home, &cursor)?;
     }
     Ok(stats)
+}
+
+/// Marker directories are trusted only once their last write is clearly in
+/// the past; same-instant writes on coarse-mtime filesystems cannot hide.
+const ACK_DIR_QUIET: Duration = Duration::from_secs(2);
+
+fn dir_is_quiet(mtime: SystemTime) -> bool {
+    SystemTime::now()
+        .duration_since(mtime)
+        .is_ok_and(|age| age >= ACK_DIR_QUIET)
 }
 
 pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
@@ -316,11 +389,41 @@ fn load_cursor(bridge_home: &Path) -> io::Result<Cursor> {
                 .collect()
         })
         .unwrap_or_default();
+    let ack_dir_marks = value
+        .get("ack_dir_marks")
+        .and_then(Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(lease, mark)| {
+                    let mtime_ns: u64 = mark
+                        .get("mtime_ns")
+                        .and_then(Value::as_str)?
+                        .parse::<u128>()
+                        .ok()
+                        .and_then(|nanos| u64::try_from(nanos).ok())?;
+                    Some((
+                        lease.clone(),
+                        AckDirMark {
+                            mtime: SystemTime::UNIX_EPOCH + Duration::from_nanos(mtime_ns),
+                            ino: mark.get("ino").and_then(Value::as_str)?.parse().ok()?,
+                            proof_epoch: mark.get("proof_epoch").and_then(Value::as_u64)?,
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Cursor {
         emitted: string_set(value.get("emitted")),
         known_seals: string_set(value.get("known_seals")),
         ducked_replies: string_list(value.get("ducked_replies")),
         bus_marks,
+        proof_epoch: value
+            .get("proof_epoch")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        ack_dir_marks,
     })
 }
 
@@ -343,6 +446,27 @@ fn write_cursor(bridge_home: &Path, cursor: &Cursor) -> io::Result<()> {
                         // u64 does not survive JSON floats; keep these textual.
                         "head_hash": mark.head_hash.to_string(),
                         "ino": mark.ino.to_string(),
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>(),
+        "proof_epoch": cursor.proof_epoch,
+        "ack_dir_marks": cursor
+            .ack_dir_marks
+            .iter()
+            .map(|(lease, mark)| {
+                (
+                    lease.clone(),
+                    json!({
+                        // Nanoseconds do not survive JSON floats; keep textual.
+                        "mtime_ns": mark
+                            .mtime
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos()
+                            .to_string(),
+                        "ino": mark.ino.to_string(),
+                        "proof_epoch": mark.proof_epoch,
                     }),
                 )
             })
@@ -972,6 +1096,7 @@ mod tests {
     thread_local! {
         pub(super) static MARKER_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         pub(super) static LEASE_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static ACK_DIR_ENUMS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     const SEAL_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1608,5 +1733,83 @@ mod tests {
         let third = load_leases(&bridge);
         assert_eq!(third[0].pending[0].id, DRAFT_ID);
         assert_eq!(LEASE_BODY_READS.with(|reads| reads.get()), 2);
+    }
+
+    /// Move a marker directory's mtime safely past the quiet window, the way
+    /// a settled directory looks between two 500 ms passes.
+    fn backdate_dir(dir: &Path) {
+        let past = SystemTime::now() - Duration::from_secs(10);
+        fs::File::open(dir)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_untouched_marker_directory_is_skipped_whole() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        let dir = bridge.join("acknowledgments").join(LEASE_ID);
+        backdate_dir(&dir);
+        // One pass under the quiet mtime records the directory mark.
+        ACK_DIR_ENUMS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(ACK_DIR_ENUMS.with(|reads| reads.get()), 1);
+        // The next pass trusts the mark and never enumerates the markers.
+        ACK_DIR_ENUMS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(
+            ACK_DIR_ENUMS.with(|reads| reads.get()),
+            0,
+            "an untouched directory at an unchanged proof epoch must be skipped whole"
+        );
+        // A new marker moves the directory mtime and re-opens it.
+        let late = format!("{:024x}", 7);
+        OpenOptions::new()
+            .append(true)
+            .open(&bus)
+            .unwrap()
+            .write_all(seal_row(&late).as_bytes())
+            .unwrap();
+        marker_for(&bridge, &late);
+        ACK_DIR_ENUMS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(ACK_DIR_ENUMS.with(|reads| reads.get()), 1);
+    }
+
+    #[test]
+    fn late_bus_proof_reopens_an_untouched_marker_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        // A second marker exists without any delivery proof yet.
+        marker_for(&bridge, DRAFT_ID);
+        let first = scan(&bridge, &bus).unwrap();
+        assert_eq!(first.appended, 1);
+        assert_eq!(first.skipped_unproven, 1);
+        let dir = bridge.join("acknowledgments").join(LEASE_ID);
+        backdate_dir(&dir);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        ACK_DIR_ENUMS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(ACK_DIR_ENUMS.with(|reads| reads.get()), 0);
+        // Proof arrives on the bus only; the directory itself never changes.
+        OpenOptions::new()
+            .append(true)
+            .open(&bus)
+            .unwrap()
+            .write_all(seal_row(DRAFT_ID).as_bytes())
+            .unwrap();
+        assert_eq!(
+            scan(&bridge, &bus).unwrap().appended,
+            1,
+            "bus-only proof must re-open the untouched directory"
+        );
     }
 }
