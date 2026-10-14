@@ -3524,6 +3524,13 @@ impl RecordingController {
         paste_mode: PasteMode,
     ) -> Result<OverlayPasteResult> {
         let config = self.get_config().await;
+        // Writer's quotes outside code for everything that lands in another
+        // app by paste (Founder, 2026-10-14: dictation pasted into `echo`
+        // breaks on straight quotes). Dictation language first, text second.
+        let paste_text = crate::controller::delivery_route::writer_quotes_for_paste(
+            &paste_text,
+            config.whisper_language.as_str(),
+        );
         let focus_confirmed = target_app
             .as_deref()
             .map(str::trim)
