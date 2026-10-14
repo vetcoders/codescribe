@@ -661,6 +661,9 @@ final class OverlayState {
     _ mode: OverlayPresentationMode, cause: OverlayPresentationCause
   ) {
     let automaticExpansion = cause == .automatic && mode == .expanded
+    OverlayPresentationTrace.shared.record(
+      .modeRequested, from: presentationMode, mode: mode,
+      note: (cause == .user ? "user" : "automatic") + (presentationMode == mode ? " same" : ""))
     if automaticExpansion {
       autoCollapse.noteAutomaticExpansion(from: presentationMode)
     } else {
