@@ -4423,6 +4423,51 @@ def stop_reply_command(args: argparse.Namespace) -> int:
     return 0
 
 
+POLISH_DIACRITICS = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
+
+
+def typographic_quotes(text: str) -> str:
+    """Paired straight double quotes become writer's quotes outside code.
+
+    Founder, 2026-10-14: agent replies are copied into terminal commands; a
+    straight ``"`` in prose breaks them. Inside backtick spans and fenced
+    blocks the quotes stay programmer's quotes. Polish „” when the text
+    carries Polish diacritics, “” otherwise. Single quotes are apostrophes
+    more often than quotes and are left alone; an unpaired ``"`` stays.
+    Mirrors ``core/util/typographic_quotes.rs``.
+    """
+    opening, closing = ("„", "”") if any(c in POLISH_DIACRITICS for c in text) else ("“", "”")
+    lines = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if in_fence:
+            lines.append(line)
+            continue
+        segments = line.split("`")
+        # Even indexes are prose, odd ones sit between backticks. The tail
+        # after an unbalanced backtick counts as code: unterminated code is
+        # still code (same choice as the Rust twin).
+        prose_indexes = [i for i in range(len(segments)) if i % 2 == 0]
+        total = sum(segments[i].count('"') for i in prose_indexes)
+        paired = total - total % 2
+        seen = 0
+        for i in prose_indexes:
+            out = []
+            for c in segments[i]:
+                if c == '"' and seen < paired:
+                    out.append(opening if seen % 2 == 0 else closing)
+                    seen += 1
+                else:
+                    out.append(c)
+            segments[i] = "".join(out)
+        lines.append("`".join(segments))
+    return "\n".join(lines)
+
+
 def say_reply(args: argparse.Namespace) -> int:
     """Durably publish reply text before attempting synthesis or playback."""
     bus, envelope = reply_delivery_envelope(args)
@@ -4443,7 +4488,8 @@ def say_reply(args: argparse.Namespace) -> int:
         "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "emitted_at": utc_now(),
         "reply_id": os.urandom(12).hex(), "name": name,
         "provider": args.provider.casefold(), "provider_session_id": args.session,
-        "lease_id": lease_identifier(args.provider, args.session), "text": args.say,
+        "lease_id": lease_identifier(args.provider, args.session),
+        "text": typographic_quotes(args.say),
         "voice": voice, "speed": speed, "tts_vendor": vendor, "spoken": False,
         "association": "addressed" if envelope else "unsolicited",
         "delivery_id": args.reply_to,
@@ -4621,7 +4667,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
     sender_name = lease.get("name")
     if not isinstance(sender_name, str) or not sender_name:
         raise ValueError("sender lease has no attached name")
-    text = args.send
+    text = typographic_quotes(args.send)
     if not text.strip():
         raise ValueError("empty message")
     if len(text.encode("utf-8")) > 65536:
