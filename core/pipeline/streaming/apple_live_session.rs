@@ -3323,16 +3323,36 @@ impl AppleSealState {
     /// original witness and replay it only into newly qualified owners.
     fn replay_completed_windows(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let owners = self.unsealed_word_owners();
+        if owners.is_empty() {
+            return;
+        }
+        // Retained decodes only grow during a take while the unsealed owners
+        // sit near the live edge. One pass over the owners' sample envelope
+        // lets most decodes skip the owner product entirely; the result is
+        // the same set the full product would return.
+        let envelope_start = owners
+            .iter()
+            .map(|(_, owner)| owner.sample_start)
+            .min()
+            .unwrap_or(0);
+        let envelope_end = owners
+            .iter()
+            .map(|(_, owner)| owner.sample_end)
+            .max()
+            .unwrap_or(0);
         let returned = self
             .retained_word_decodes
             .iter()
             .filter(|payload| {
-                owners.iter().any(|(_, owner)| {
-                    range_overlaps_occurrence(&payload.identity.range, owner)
-                        && !self
-                            .replayed_window_owners
-                            .contains(&(payload.identity.request_id, owner.clone()))
-                })
+                let range = &payload.identity.range;
+                range.sample_start < envelope_end
+                    && envelope_start < range.sample_end
+                    && owners.iter().any(|(_, owner)| {
+                        range_overlaps_occurrence(range, owner)
+                            && !self
+                                .replayed_window_owners
+                                .contains(&(payload.identity.request_id, owner.clone()))
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -6858,10 +6878,13 @@ fn sum_range_samples(ranges: &[TailSampleRange]) -> u64 {
 }
 
 fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIdentity) -> bool {
-    range.session == occurrence.session
-        && range.capture_epoch == occurrence.capture_epoch
-        && range.sample_start < occurrence.sample_end
+    // Integer tests first: this runs for every retained decode against every
+    // unsealed owner on each worker tick, and the session string compare was
+    // the hottest leaf of that product (CPU samples 2026-10-14, builds 982/983).
+    range.sample_start < occurrence.sample_end
         && occurrence.sample_start < range.sample_end
+        && range.capture_epoch == occurrence.capture_epoch
+        && range.session == occurrence.session
 }
 
 // Returned Word clocks can precede the first VAD owner or fall in an owner
