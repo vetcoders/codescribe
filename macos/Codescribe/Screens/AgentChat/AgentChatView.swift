@@ -473,6 +473,7 @@ private struct ThreadDetail: View {
   var body: some View {
     conversation
       .modifier(AgentScrollBottomBar { composerDock })
+      .modifier(CSScrollHeaderEdge())
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(CSColor.windowCanvas)
       .alert(

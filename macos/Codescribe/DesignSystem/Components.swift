@@ -37,6 +37,25 @@ struct CSWindowHeaderChrome: ViewModifier {
   }
 }
 
+/// The detail column's content scrolls beneath the window header the way the
+/// Agent conversation scrolls beneath its floating composer and the overlay's
+/// transcript beneath its header: the system's soft edge effect fades the
+/// rows out under the toolbar instead of letting them sit on the title row.
+/// Scoped to the detail column so the sidebar material still runs up through
+/// the titlebar untouched (Maciej, 2026-10-14: one header rhythm for Settings,
+/// Agent and the overlay). Earlier systems have no edge effect; the header
+/// stays as it was.
+struct CSScrollHeaderEdge: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.scrollEdgeEffectStyle(.soft, for: .top)
+    } else {
+      content
+    }
+  }
+}
+
 /// App-wide focus policy: pointer interaction releases keyboard focus after the
 /// clicked control handles its event, while keyboard navigation and text entry
 /// keep AppKit's native focus behavior and visible accessibility affordances.
