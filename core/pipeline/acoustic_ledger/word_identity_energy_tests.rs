@@ -175,7 +175,23 @@ fn recorded_4804_next_window_does_not_duplicate_the_admitted_prefix() {
         ],
         (144_000, 576_000),
     );
+    // No rejected word debt to reconcile later (Lena, 2026-10-14: a
+    // DT return of lower authority could not settle a rejected Whisper word).
+    assert!(
+        ledger
+            .rejected_word_pins
+            .get(&owner)
+            .is_none_or(Vec::is_empty)
+    );
+    assert!(!ledger.text_recovery_pending(&owner));
     let _ = ledger.admit_word_slots(&second, &second_words);
+    assert!(
+        ledger
+            .rejected_word_pins
+            .get(&owner)
+            .is_none_or(Vec::is_empty)
+    );
+    assert!(!ledger.text_recovery_pending(&owner));
     assert_eq!(
         lowercase_tokens(ledger.text_of(&owner).unwrap()),
         [
