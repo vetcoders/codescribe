@@ -10,6 +10,14 @@ import XCTest
 /// and the split view keeps a sidebar column with the system toggle.
 /// `SettingsChromeContractTests` reads source text; this one measures the
 /// mounted window, as `AgentWindowChromeTests` does for Agent.
+///
+/// What this mount cannot witness: the Settings window in the app is a SwiftUI
+/// `Window` scene, and only a scene paints a visible window-toolbar background
+/// as a strip across the whole titlebar width (the 2026-10-14 cut beneath the
+/// titlebar). A hosting-controller mount never paints that strip, with or
+/// without the background, and SwiftUI's toolbar bridging also rewrites
+/// `NSWindow.toolbarStyle` here after `adoptHostWindow`, so neither is
+/// asserted. The scene-side evidence is the probe in the 2026-10-14 report.
 @MainActor
 final class SettingsWindowChromeTests: XCTestCase {
   func testSidebarMaterialRunsThroughTheTitlebar() throws {
@@ -24,8 +32,6 @@ final class SettingsWindowChromeTests: XCTestCase {
       self.sidebarMaterial(in: window) != nil
         && (window.toolbar?.items.count ?? 0) >= 1
     }
-
-    XCTAssertEqual(window.toolbarStyle, .unified, "one unified header plane, as in Agent")
 
     let split = splitView(in: window)
     let controller = split?.delegate as? NSSplitViewController

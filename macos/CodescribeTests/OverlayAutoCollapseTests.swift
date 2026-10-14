@@ -392,7 +392,7 @@ final class OverlayAutoCollapseTests: XCTestCase {
         var row = CsChannelRosterState(
           channel: channel, audience: channel == "0" ? "*" : "nina", provider: "codex",
           providerSessionId: "channel-capture", open: true, loud: false,
-          autosealDeadlineUnixMs: nil, followerAlive: true)
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
         state.applyChannelRoster([row])
         XCTAssertTrue(state.channelAudioCaptureActive)
         XCTAssertFalse(state.recording, "channel capture has its own controller projection")
@@ -425,7 +425,7 @@ final class OverlayAutoCollapseTests: XCTestCase {
       CsChannelRosterState(
         channel: channel, audience: "agent-\(channel)", provider: "codex",
         providerSessionId: "session-\(channel)", open: true, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true)
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
     }
     state.applyChannelRoster(rows)
     oldWake.run()
@@ -463,7 +463,7 @@ final class OverlayAutoCollapseTests: XCTestCase {
       var roster = CsChannelRosterState(
         channel: channel, audience: channel == "0" ? "all" : "astra", provider: "codex",
         providerSessionId: "agent-capture", open: true, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true)
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
       state.applyChannelRoster([roster])
       XCTAssertFalse(state.recording, "agent capture must not change dictation lifecycle")
       XCTAssertTrue(state.audioCaptureActive)
@@ -492,10 +492,12 @@ final class OverlayAutoCollapseTests: XCTestCase {
     let predecessor = try XCTUnwrap(clock.wakes.last)
     var first = CsChannelRosterState(
       channel: "2", audience: "lena", provider: "codex", providerSessionId: "lena-session",
-      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+      unreadSinceUnixMs: nil)
     var second = CsChannelRosterState(
       channel: "3", audience: "astra", provider: "codex", providerSessionId: "astra-session",
-      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+      open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+      unreadSinceUnixMs: nil)
     state.applyChannelRoster([first, second])
     XCTAssertTrue(predecessor.cancelled)
     predecessor.run()

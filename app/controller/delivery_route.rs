@@ -723,8 +723,39 @@ pub fn format_delivery_route_line(
     )
 }
 
+/// The pasted form of a transcript: paired straight double quotes become the
+/// language's writer's quotes outside backticks and fenced code. The
+/// configured dictation language picks the pair („” for Polish, “” otherwise);
+/// `auto` or an empty setting falls back to the text's own diacritics.
+pub fn writer_quotes_for_paste(text: &str, whisper_language: &str) -> String {
+    use codescribe_core::util::typographic_quotes::{QuoteStyle, typographic_quotes};
+    let style =
+        QuoteStyle::for_language(Some(whisper_language)).unwrap_or_else(|| QuoteStyle::guess(text));
+    typographic_quotes(text, style)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pasted_text_carries_writers_quotes_by_language_then_by_text() {
+        assert_eq!(
+            super::writer_quotes_for_paste("wpisz \"tak\" w `echo \"x\"`", "pl"),
+            "wpisz „tak” w `echo \"x\"`"
+        );
+        assert_eq!(
+            super::writer_quotes_for_paste("say \"yes\"", "en"),
+            "say “yes”"
+        );
+        assert_eq!(
+            super::writer_quotes_for_paste("mówię \"tak\"", "auto"),
+            "mówię „tak”"
+        );
+        assert_eq!(
+            super::writer_quotes_for_paste("say \"yes\"", ""),
+            "say “yes”"
+        );
+    }
+
     use super::*;
     use crate::os::selection::is_codescribe_app;
 

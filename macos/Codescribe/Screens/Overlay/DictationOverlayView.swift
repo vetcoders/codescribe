@@ -868,7 +868,8 @@ struct DictationOverlayView: View {
     }
   }
 
-  private var channelStatusView: OverlayChannelStatusView {
+  /// Internal so a test can assert that two body passes share one search model.
+  var channelStatusView: OverlayChannelStatusView {
     var view = OverlayChannelStatusView(
       channels: state.visibleChannelRows.filter { $0.channel != "0" },
       unavailable: state.channelStatusUnavailable,
@@ -887,7 +888,12 @@ struct DictationOverlayView: View {
           ($0.id, state.unreadReplies(in: $0))
         }),
       onSelectConversation: { state.selectConversation($0) },
-      onShowMonitor: state.toggleAgentSidebar
+      onShowMonitor: state.toggleAgentSidebar,
+      // The drawer value is rebuilt on every body pass and only its
+      // `monitorBody(...)` is installed, so a `@State` on it never persists:
+      // each HUD tick handed the drawer a fresh, empty search model and the
+      // query vanished mid-typing. The overlay state owns the model.
+      searchModel: state.savedConversationSearch
     )
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =

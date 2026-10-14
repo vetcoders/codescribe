@@ -7,7 +7,8 @@ import XCTest
 
 @MainActor
 final class OverlayAgentArchiveTests: XCTestCase {
-  func testDisconnectingLastAgentShowsLocalizedHintAlongsideBroadcastAndSavedHistory() async throws {
+  func testDisconnectingLastAgentShowsLocalizedHintAlongsideBroadcastAndSavedHistory() async throws
+  {
     let state = OverlayState()
     state.applyChannelRoster([roster()])
     let owner = try XCTUnwrap(state.archiveCandidate(for: "4"))
@@ -27,7 +28,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     }
 
     XCTAssertFalse(drawer().showsConnectionHint, "An agent is still listed")
-    state.archiveAgentCommand = { _ in }
+    state.archiveAgentCommand = { _, _ in }
     await state.archiveAgent(owner)
     XCTAssertTrue(state.visibleChannelRows.isEmpty)
     XCTAssertEqual(state.conversations.map(\.id), [broadcast.id, agent.id])
@@ -64,21 +65,93 @@ final class OverlayAgentArchiveTests: XCTestCase {
     XCTAssertFalse(drawer().showsConnectionHint, "A newly attached agent hides the hint")
   }
 
-  func testOnlyDisconnectedClosedOwnersOfferArchiveAndStaleClickDoesNothing() async throws {
+  /// Founder, 2026-10-14: the cross is on every listed agent. A dead reader is
+  /// released, a live one is stopped first, an open channel is refused with
+  /// a reason, and a stale click on a replaced owner does nothing.
+  func testEveryBoundOwnerOffersArchiveAndTheClickCarriesTheReaderDecision() async throws {
     let state = OverlayState()
-    for (alive, open) in [(true, false), (nil, false), (false, true)] {
+    for (alive, open) in [(true, false), (nil, false), (false, false), (false, true)] {
       state.applyChannelRoster([roster(alive: alive, open: open)])
-      XCTAssertNil(state.archiveCandidate(for: "4"))
+      XCTAssertNotNil(
+        state.archiveCandidate(for: "4"), "alive=\(String(describing: alive)) open=\(open)")
     }
-    state.applyChannelRoster([roster()])
+    var releases: [Bool] = []
+    state.archiveAgentCommand = { _, release in releases.append(release) }
+
+    state.applyChannelRoster([roster(alive: false, open: true)])
+    await state.archiveAgent(try XCTUnwrap(state.archiveCandidate(for: "4")))
+    XCTAssertEqual(releases, [], "an open channel never reaches the helper")
+    XCTAssertEqual(
+      state.agentArchiveError,
+      "Couldn't archive adam: its channel is open. Hang up first; the conversation is retained.")
+
+    state.applyChannelRoster([roster(alive: true)])
+    await state.archiveAgent(try XCTUnwrap(state.archiveCandidate(for: "4")))
+    XCTAssertEqual(releases, [true], "a live reader is stopped before the digit is released")
+    XCTAssertNil(state.agentArchiveError)
+    XCTAssertTrue(state.visibleChannelRows.isEmpty)
+
+    state.applyChannelRoster([roster(session: "second", alive: false)])
+    await state.archiveAgent(try XCTUnwrap(state.archiveCandidate(for: "4")))
+    XCTAssertEqual(releases, [true, false], "a dead reader is simply released")
+
+    state.applyChannelRoster([roster(session: "third")])
     let owner = try XCTUnwrap(state.archiveCandidate(for: "4"))
-    var invocations = 0
-    state.archiveAgentCommand = { _ in invocations += 1 }
     state.applyChannelRoster([roster(session: "replacement", alive: true)])
     await state.archiveAgent(owner)
-    XCTAssertEqual(invocations, 0)
+    XCTAssertEqual(releases, [true, false], "a stale click on a replaced owner does nothing")
     XCTAssertEqual(state.visibleChannelRows.map(\.agent), ["adam"])
-    XCTAssertTrue(state.archivedAgentOwners.isEmpty)
+  }
+
+  /// Liveness has two layers: the follower process (heartbeat) and the
+  /// conversation behind it (acknowledgements). Alive with a backlog older
+  /// than the horizon reads as "not reading" with the minutes; younger
+  /// backlog, no backlog or a dead follower do not.
+  func testStalledFollowerIsAliveWithAnOldUnreadBacklog() throws {
+    let state = OverlayState()
+    let old = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 120)
+    let fresh = Date().addingTimeInterval(-60)
+    func drawer() -> OverlayChannelStatusView {
+      OverlayChannelStatusView(
+        channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
+        hudStates: state.channelHudStates, conversations: [])
+    }
+    for (alive, since, stalled) in [
+      (true, old, true), (true, fresh, false), (true, nil, false), (false, old, false),
+      (nil, old, false),
+    ] as [(Bool?, Date?, Bool)] {
+      state.applyChannelRoster([roster(alive: alive, unreadSince: since)])
+      let hud = try XCTUnwrap(state.channelHudStates["4"])
+      XCTAssertEqual(
+        hud.isStalled(), stalled,
+        "alive=\(String(describing: alive)) since=\(String(describing: since))")
+      let row = try XCTUnwrap(state.visibleChannelRows.first)
+      XCTAssertEqual(drawer().hasStalledFollower(row), stalled)
+      XCTAssertEqual(drawer().statusSymbol(for: row) == "zzz", stalled)
+    }
+    state.applyChannelRoster([roster(alive: true, unreadSince: old)])
+    let row = try XCTUnwrap(state.visibleChannelRows.first)
+    XCTAssertEqual(drawer().stalledMinutes(row), 12)
+    XCTAssertTrue(drawer().detail(for: row).hasSuffix("nothing read for 12 min"))
+    XCTAssertEqual(
+      drawer().archiveHelp(for: row),
+      "Stop the agent's reader, remove from list and move to archive")
+  }
+
+  func testArchiveFailureReasonNamesTheHelperRefusalOrThePreflightFailure() {
+    XCTAssertEqual(
+      OverlayState.archiveFailureReason(
+        CsError.Recording(msg: "agent archive refused: agent reader is alive; channel retained\n")),
+      "agent archive refused: agent reader is alive; channel retained")
+    XCTAssertEqual(
+      OverlayState.archiveFailureReason(CocoaError(.fileNoSuchFile)),
+      "the cs-bus helper is not installed")
+    XCTAssertEqual(
+      OverlayState.archiveFailureReason(CocoaError(.fileReadCorruptFile)),
+      "the agent's lease no longer matches this owner")
+    XCTAssertEqual(
+      OverlayState.archiveFailureReason(CocoaError(.fileWriteUnknown)),
+      "the helper returned no valid receipt")
   }
 
   func testRefusalKeepsListConversationAndDraftAndSuccessMovesItToSaved() async throws {
@@ -90,13 +163,16 @@ final class OverlayAgentArchiveTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.selectConversation(owner.id)
     state.conversationDrafts[owner.id] = "Unsent draft"
-    state.archiveAgentCommand = { _ in throw CocoaError(.fileWriteUnknown) }
+    state.archiveAgentCommand = { _, _ in throw CocoaError(.fileWriteUnknown) }
     await state.archiveAgent(owner)
-    XCTAssertNotNil(state.agentArchiveError)
+    XCTAssertEqual(
+      state.agentArchiveError,
+      "Couldn't archive adam: the helper returned no valid receipt. The channel and conversation are retained."
+    )
     XCTAssertEqual(state.visibleChannelRows.count, 1)
     XCTAssertEqual(state.selectedConversationID, owner.id)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Unsent draft")
-    state.archiveAgentCommand = { _ in }
+    state.archiveAgentCommand = { _, _ in }
     await state.archiveAgent(owner)
     XCTAssertNil(state.agentArchiveError)
     XCTAssertTrue(state.visibleChannelRows.isEmpty)
@@ -267,12 +343,14 @@ final class OverlayAgentArchiveTests: XCTestCase {
     }
   }
 
-  private func roster(session: String = "archive-session", alive: Bool? = false, open: Bool = false)
-    -> CsChannelRosterState
-  {
+  private func roster(
+    session: String = "archive-session", alive: Bool? = false, open: Bool = false,
+    unreadSince: Date? = nil
+  ) -> CsChannelRosterState {
     .init(
       channel: "4", audience: "adam", provider: "codex", providerSessionId: session,
-      open: open, loud: false, autosealDeadlineUnixMs: nil, followerAlive: alive)
+      open: open, loud: false, autosealDeadlineUnixMs: nil, followerAlive: alive,
+      unreadSinceUnixMs: unreadSince.map { Int64($0.timeIntervalSince1970 * 1_000) })
   }
 
   private struct ArchiveFixture {
@@ -359,11 +437,12 @@ final class OverlayAgentArchiveTests: XCTestCase {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: request.executable)
-        process.arguments = [
-          "--archive-agent", String(request.channel), "--provider", request.provider,
-          "--session", request.providerSessionId, "--lease", request.leaseId,
-          "--bus", request.bus, "--bridge-home", request.bridgeHome,
-        ]
+        process.arguments =
+          [
+            "--archive-agent", String(request.channel), "--provider", request.provider,
+            "--session", request.providerSessionId, "--lease", request.leaseId,
+            "--bus", request.bus, "--bridge-home", request.bridgeHome,
+          ] + (request.releaseReader ? ["--release-reader"] : [])
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

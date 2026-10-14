@@ -606,7 +606,8 @@ final class OverlayResizeHitTests: XCTestCase {
       state.applyChannelRoster([
         .init(
           channel: "3", audience: "astra", provider: "codex", providerSessionId: "resize",
-          open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true)
+          open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil)
       ])
       XCTAssertEqual(panel.frame, resized, "passive roster updates must not re-anchor a drag")
     }

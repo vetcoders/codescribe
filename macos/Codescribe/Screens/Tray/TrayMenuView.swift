@@ -323,22 +323,11 @@ struct TrayMenuView: View {
   }
 
   private var recordingActionTitle: String {
-    if viewModel.isStartingDictation {
-      return String(localized: "Starting…", comment: "Tray row: a recording start is in flight")
-    }
-    if viewModel.isRecording {
-      return trayStatus.status.assistive
-        ? String(
-          localized: "Stop transcription in Agent mode",
-          comment: "Tray row: stop the current transcription in Agent mode")
-        : String(
-          localized: "Stop transcription", comment: "Tray row: stop the current transcription")
-    }
-    return viewModel.startInAssistive
-      ? String(
-        localized: "Start transcription in Agent mode",
-        comment: "Tray row: start a new transcription in Agent mode")
-      : String(localized: "Start transcription", comment: "Tray row: start a new transcription")
+    DictationActionTitle.title(
+      isStarting: viewModel.isStartingDictation,
+      isRecording: viewModel.isRecording,
+      assistiveRecording: trayStatus.status.assistive,
+      startInAssistive: viewModel.startInAssistive)
   }
 
   private var recordingActionColor: Color {
