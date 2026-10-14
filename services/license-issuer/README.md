@@ -26,10 +26,24 @@ Site redeploy:
 
 ```bash
 cd site && npm run build
-rsync -az --delete dist/ libraxis-vm:/tmp/codescribe-landing-stage/
-ssh libraxis-vm 'sudo rsync -a --delete /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
+rsync -az --delete --exclude /appcast.xml dist/ libraxis-vm:/tmp/codescribe-landing-stage/
+ssh libraxis-vm 'sudo rsync -a --delete --exclude /appcast.xml /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
   && rm -rf /tmp/codescribe-landing-stage'
 ```
+
+`/srv/codescribe-landing/appcast.xml` is the live Sparkle feed. It is not part
+of the site build; the exclusion keeps `--delete` from removing it. Publish a
+new feed only from the signed `appcast.xml` attached to the GitHub release
+whose DMG it points at:
+
+```bash
+gh release download vX.Y.Z --repo vetcoders/codescribe --pattern appcast.xml --dir /tmp/codescribe-feed
+scp /tmp/codescribe-feed/appcast.xml libraxis-vm:/tmp/appcast.xml
+ssh libraxis-vm 'cp /srv/codescribe-landing/appcast.xml ~/appcast.xml.previous \
+  && sudo install -m 0644 /tmp/appcast.xml /srv/codescribe-landing/appcast.xml && rm /tmp/appcast.xml'
+```
+
+Rollback restores `~/appcast.xml.previous` the same way.
 
 ## Open-beta posture (operator decision, 2026-08-09)
 
