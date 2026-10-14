@@ -21,6 +21,24 @@ when explicitly requested. An occupied channel is not yours to take over. Keep
 the existing voice and credentials. Attachment is `attached_unverified`, not
 proof of voice reception.
 
+## Restore the conversation context
+
+For an established agent, recover relevant history after connecting. Match the
+exact provider/session/lease from the connect/status receipt, not just the channel
+or name. In Codescribe's **Agents / Agenci** panel, open that current conversation
+or its predecessor under **Saved conversations / Zapisane rozmowy**. Read the
+relevant messages and confirm an expected historical message and its owner.
+A resumed session keeps its existing owner; a new session reads its predecessor's
+chat as context without borrowing its identity or moving the old messages.
+
+The unread mailbox is not the full chat, and opening a conversation does not
+inject it into model context. Report what was actually read. If native history
+access is unavailable, state that limit rather than claiming an import. Do not
+ACK old deliveries or execute old requests merely because history was opened.
+The full procedure is in the foundation skill's `references/history.md` under
+`<bridge-home>/runtime/skills/codescribe/` (normally
+`~/.codescribe/agent-bridge/runtime/skills/codescribe/references/history.md`).
+
 ## Every received message
 
 1. Call `codescribe_read` until the mailbox is empty, then make one extra read.
