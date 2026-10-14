@@ -901,7 +901,7 @@ impl RecordingController {
                         hold_badge::update_transcript(cursor_token, text);
                     }))
                     .with_cursor_observer(Arc::new(move |projection| {
-                        hold_badge::update_warning_state(cursor_token, projection.degraded);
+                        hold_badge::update_voice_state(cursor_token, projection.voice);
                         if projection.text.trim().is_empty() {
                             return;
                         }
