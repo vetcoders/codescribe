@@ -157,6 +157,8 @@ struct CodescribeApp: App {
   @Environment(\.openWindow) private var openWindow
 
   init() {
+    // Before any engine: a test host must not see the live runtime.
+    QualityCaptureHost.isolateFromLiveRuntime()
     if CommandLine.arguments.contains("--install-agent-bridge") {
       do {
         print(try RealAgentBridgeInstaller().installRuntime())
