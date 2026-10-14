@@ -185,6 +185,20 @@ still reaches the mailbox as a seal with `coverage: "refused"` and
 reopen, or the session's `session_ended` row. A hang-up (second digit or Fn
 press) releases it only when the app writes one of those rows.
 
+### Restore the conversation as well as the connection
+
+After attaching an established name or resuming a session, follow
+[Conversation history](history.md). Match provider/session/lease, open the
+matching current agent row or saved conversation, and read the relevant prior
+messages. Reusing a channel does not transfer the previous occupant's chat.
+An empty pending mailbox, a saved archive pointer or an open conversation does
+not prove that historical messages were read into this instance's context.
+
+The same-session path reuses its owner and can display its old messages directly.
+A new session reads its predecessor's saved conversation as context while keeping
+its own live identity. Preserve old messages and ACKs; never relabel the previous
+owner or execute historical requests automatically.
+
 ## Preflight
 
 Confirm the app is running and inspect the installed helper:

@@ -2,13 +2,13 @@
 name: codescribe
 description: >
   Connects this chat agent to Codescribe's Transcript Bus with a named mailbox,
-  provider wakeup and verified voice delivery. Also guides explicit CLI
+  provider wakeup, retained conversation context and verified voice delivery. Also guides explicit CLI
   transcript consumption. Use for "/codescribe", "wpięcie w bus", "Hej Roman",
   "named agent on the transcript bus", "transcribe last", or "dyktowanie do CLI".
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.12.0"
+  version: "0.12.1"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -30,7 +30,8 @@ Founder means the human. Operator means an agent role.
 - **Connect `/codescribe NAME CHANNEL [VOICE]`:** follow **Connect once**.
 - **Resume after interruption:** read `--status` for the same provider/session;
   retain the lease, cursor, name, voice and existing follower. Reattach the same
-  session only if recovery or helper adoption is needed.
+  session only if recovery or helper adoption is needed. Recover the relevant
+  [conversation history](references/history.md); an empty mailbox is not an empty chat.
 - **Answer by voice:** follow **Reply** after reading and acknowledging.
 - **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
 
@@ -59,6 +60,13 @@ Replace the uppercase placeholders with this chat's values. Add `--voice VOICE`
 only when requested; otherwise keep the stored profile. Retain the attach
 receipt, especially `lease_id`, `follower_pid`, `follower_events` and `wakeup`.
 The engine creates or reuses **one follower**. Do not also start `--follow`.
+
+For an established agent name, restoring the relevant conversation context is
+part of connecting. Follow [Conversation history](references/history.md) after
+attachment: match the provider/session/lease, open the matching current or saved
+conversation and read the relevant messages. Channel reuse does not transfer
+another agent's history, and opening a chat does not load it into model context.
+Report what was actually read; never claim a full import from an attach receipt.
 
 An occupied slot belongs to its reported owner. Do not silently choose a new
 slot, edit bindings or kill its reader. For a handoff from an ended session of

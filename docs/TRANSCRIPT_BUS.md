@@ -1,5 +1,20 @@
 # Clean Transcript Bus
 
+## Agent attachment and conversation history
+
+Connecting an agent restores its live mailbox; it does not import chat history
+into the model's context. For an established agent, connection includes locating
+and reading the relevant retained conversation using the
+[history procedure](../skills/codescribe/references/history.md).
+
+History belongs to the exact provider/session/lease. The same resumed owner can
+open its existing conversation; a new instance reads its predecessor's saved
+conversation as context. Reusing a channel for a different agent never relabels
+that channel's previous occupant. Archive metadata identifies an owner and bus
+path, not proof that the text was loaded or read. An empty unread mailbox is not
+an empty history. Reading history neither ACKs another lease nor makes old
+requests fresh commands.
+
 ## Conversational read receipt
 
 Native Codex queue entries carry complete untruncated message text with compact
