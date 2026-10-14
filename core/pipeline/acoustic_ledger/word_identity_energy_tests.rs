@@ -16,7 +16,26 @@ const RATE: u32 = 48_000;
 /// by 400 ms and minted `jednak Jednak`. Preserve the recorded capture clock.
 #[test]
 fn recorded_whisper_window_drift_does_not_insert_a_second_jednak() {
-    let pcm = take_pcm("take_cc143598_jednak_prefix.wav");
+    // This ledger corridor consumes the measured energy clock, not phonemes.
+    // Preserve its exact 20 ms RMS values without shipping the source speech.
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/take_cc143598_jednak_prefix.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["sample_rate"].as_u64(), Some(u64::from(RATE)));
+    let hop_samples = fixture["hop_samples"].as_u64().unwrap() as usize;
+    assert_eq!(hop_samples, RATE as usize / 50);
+    let pcm = fixture["rms_f32_bits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|bits| {
+            let level = f32::from_bits(u32::try_from(bits.as_u64().unwrap()).unwrap());
+            assert!(level.is_finite() && level >= 0.0);
+            std::iter::repeat_n(level, hop_samples)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pcm.len() as u64, fixture["samples"].as_u64().unwrap());
     let owner = OccurrenceIdentity::new("cc143598-jednak", 1, 1_292_544, 1_496_064);
     use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
     let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
@@ -24,6 +43,13 @@ fn recorded_whisper_window_drift_does_not_insert_a_second_jednak() {
     for chunk in pcm.chunks(320) {
         writer.push_samples(chunk);
     }
+    assert_eq!(
+        energy
+            .session_noise_floor_rms(&owner.session, owner.capture_epoch)
+            .unwrap()
+            .to_bits(),
+        u32::try_from(fixture["noise_floor_rms_f32_bits"].as_u64().unwrap()).unwrap()
+    );
     let mut ledger = AcousticLedger::new();
     ledger.bind_capture_rate(RATE);
     let calibration = EnergyCalibration::new(
