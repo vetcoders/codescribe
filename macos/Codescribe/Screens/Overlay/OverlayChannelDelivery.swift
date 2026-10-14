@@ -383,7 +383,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           owner: message.recipients[index].owner,
           deliveryID: delivery, queued: false, accepted: false, acknowledged: false)
       }
-      if kind == "seal" { message.captureState = .finished }
+      if kind == "seal", message.captureState != .finished {
+        // A finished take is a projection change: the checkpoint and the
+        // reader's conversation memo both key on this revision.
+        self.revision &+= 1
+        message.captureState = .finished
+      }
       messages[key] = message
     }
 
