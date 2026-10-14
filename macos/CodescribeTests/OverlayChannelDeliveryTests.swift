@@ -651,6 +651,60 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       initial.conversations.first?.messages.map(\.text))
   }
 
+  /// A sample of build 1004 (2026-10-14) had two reader threads at ~55 % of a
+  /// core rebuilding and re-sorting unchanged conversations every 500 ms.
+  func testIdlePollsReuseTheConversationListUntilAProjectionChanges() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let initial = try await reader.readSnapshot()
+    for _ in 0..<20 {
+      let snapshot = try await reader.readSnapshot()
+      XCTAssertEqual(snapshot, initial)
+    }
+    let idleBuilds = await reader.conversationBuilds
+    XCTAssertEqual(idleBuilds, 1, "Unchanged buses build their conversations once")
+    let idle = try await reader.readSnapshot()
+    XCTAssertEqual(
+      idle.conversations.withUnsafeBufferPointer { $0.baseAddress },
+      initial.conversations.withUnsafeBufferPointer { $0.baseAddress },
+      "The reused list keeps its storage, so the main actor's comparison ends at identity")
+
+    try fixture.append(fixture.seal(2))
+    let grown = try await reader.readSnapshot()
+    let grownBuilds = await reader.conversationBuilds
+    XCTAssertEqual(grownBuilds, 2, "A new bus row rebuilds the list")
+    XCTAssertNotEqual(grown.conversations, initial.conversations)
+
+    // A receipt alone, with no new bus bytes, still changes the projection.
+    let delivery = try XCTUnwrap(grown.deliveries.first?.deliveryID)
+    let acknowledgments = fixture.root.appendingPathComponent("acknowledgments/\(Fixture.leaseID)")
+    try FileManager.default.createDirectory(at: acknowledgments, withIntermediateDirectories: true)
+    var envelope = fixture.recipient()
+    envelope.merge([
+      "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
+      "utterance_id": "u2", "sequence": 2,
+    ]) { _, new in new }
+    try fixture.write(
+      [
+        "lease_id": Fixture.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ],
+      to: acknowledgments.appendingPathComponent("\(delivery).json"))
+    let acknowledged = try await reader.readSnapshot()
+    let acknowledgedBuilds = await reader.conversationBuilds
+    XCTAssertEqual(acknowledged.deliveries.first?.stage, .received)
+    XCTAssertEqual(acknowledgedBuilds, 3, "An acknowledgment receipt rebuilds the list")
+    XCTAssertNotEqual(acknowledged.conversations, grown.conversations)
+    _ = try await reader.readSnapshot()
+    let settledBuilds = await reader.conversationBuilds
+    XCTAssertEqual(settledBuilds, 3)
+    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertEqual(restored, acknowledged)
+  }
+
   func testAcknowledgedDeliveryStopsPollingWithoutAProviderAcceptanceReceipt() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
