@@ -84,6 +84,11 @@ struct BridgeRequest<'a> {
     allow_download: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     deadline_policy: Option<AppleDeadlinePolicy>,
+    /// Explicit backend pin. `Some("dictation_transcriber")` is the terminal
+    /// witness lane: the bridge serves it with DT or fails honestly, never
+    /// silently falling through to ST/SFSpeech under a DT label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend: Option<&'a str>,
 }
 
 /// Caller intent for URL recognition; file length only sizes the chosen budget.
@@ -477,6 +482,7 @@ fn transcribe_file_with_backend(
         contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         deadline_policy: Some(policy),
+        backend: None,
     };
     let timeout = match policy {
         AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
@@ -495,6 +501,145 @@ fn transcribe_file_with_backend(
         .as_deref()
         .and_then(AppleSttBackend::from_bridge);
     Ok((raw_transcript_from_bridge_response(response), backend))
+}
+
+/// Terminal DictationTranscriber witness: one bounded, final, closed-file
+/// decode of an exact recorder-owned PCM slice, returned as evidence on the
+/// capture clock.
+///
+/// This is an evidence producer for terminal seal-coverage recovery, not a
+/// general transcription path:
+///
+/// - The input PCM is a slice of the recorder-owned terminal archive. The
+///   bridge only ever sees that slice, so `identity.range.sample_start` is the
+///   true clock origin and every returned segment is translated back by
+///   exactly that offset — a clipped WAV never inherits a fresh clock.
+/// - The request pins `backend = dictation_transcriber`; a response from any
+///   other backend is refused, so ST/SFSpeech output can never masquerade as
+///   DT evidence.
+/// - `allow_download` is always `false`: an uninstalled DT locale is an
+///   explicit unavailable outcome at Stop, never a hidden asset install.
+/// - The caller bounds the wall clock; on timeout the bridge child is killed
+///   and reaped by `run_bridge_with_timeout`.
+///
+/// Segment ranges are measured by the SpeechAnalyzer family but stay
+/// phrase-grain: a multi-word segment is one measured span, never synthetic
+/// per-word timing.
+pub(crate) fn transcribe_dictation_witness(
+    identity: &crate::stt::tail_provider::TailRequestIdentity,
+    pcm: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    timeout: Duration,
+) -> Result<crate::stt::tail_provider::TailProviderPayload> {
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailProviderPayload, TailProviderRequest, TailSampleRange, TailSegmentGrain,
+        TimedTailSegment,
+    };
+
+    let range = &identity.range;
+    let probe = TailProviderRequest {
+        identity: identity.clone(),
+        sample_rate,
+        language: language.map(str::to_owned),
+    };
+    probe.validate_pcm(pcm)?;
+    if range.sample_len()? == 0 {
+        bail!("dictation witness request range must contain samples");
+    }
+    ensure_supported_platform()?;
+    if !dictation_transcriber_enabled() {
+        bail!("dictation witness lane is not armed ({ENV_DICTATION_TRANSCRIBER})");
+    }
+
+    let started = std::time::Instant::now();
+    let wav = TempWavFile::write(pcm, sample_rate)?;
+    let audio_path = wav.path().display().to_string();
+    let locale = resolved_locale(language);
+    let request = BridgeRequest {
+        protocol_version: 1,
+        command: "transcribe",
+        locale: &locale,
+        audio_path: Some(audio_path.as_str()),
+        contextual_strings: None,
+        allow_download: false,
+        deadline_policy: Some(AppleDeadlinePolicy::WholeFile),
+        backend: Some(AppleSttBackend::DictationTranscriber.as_str()),
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
+        .context("DictationTranscriber witness bridge call failed")?;
+    let backend = response
+        .backend
+        .as_deref()
+        .and_then(AppleSttBackend::from_bridge);
+    if backend != Some(AppleSttBackend::DictationTranscriber) {
+        bail!(
+            "dictation witness backend mismatch: expected {}, got {}",
+            AppleSttBackend::DictationTranscriber.as_str(),
+            response.backend.as_deref().unwrap_or("none")
+        );
+    }
+
+    let rate = f64::from(sample_rate.max(1));
+    let mut segments = Vec::with_capacity(response.segments.len());
+    for segment in &response.segments {
+        let text = segment.text.trim();
+        if text.is_empty()
+            || !segment.start_ts.is_finite()
+            || !segment.end_ts.is_finite()
+            || segment.end_ts <= segment.start_ts
+        {
+            continue;
+        }
+        let start = range.sample_start.saturating_add(
+            (f64::from(segment.start_ts) * rate)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64,
+        );
+        let end = range.sample_start.saturating_add(
+            (f64::from(segment.end_ts) * rate)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64,
+        );
+        // Evidence that escapes the requested window is dropped, never clamped
+        // into a range it did not measure.
+        if end <= start || end > range.sample_end {
+            continue;
+        }
+        segments.push(TimedTailSegment {
+            text: text.to_string(),
+            range: TailSampleRange {
+                session: range.session.clone(),
+                capture_epoch: range.capture_epoch,
+                sample_start: start,
+                sample_end: end,
+            },
+            // DT reports measured phrase spans; some contain exactly one word,
+            // which the terminal witness may offer as a measured word pin.
+            grain: TailSegmentGrain::Phrase,
+            confidence: None,
+        });
+    }
+    let payload = TailProviderPayload {
+        identity: identity.clone(),
+        text: response.text.trim().to_string(),
+        segments,
+        avg_logprob: None,
+        compression_ratio: None,
+        provider_id: TailProviderId::AppleDictation,
+        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        evidence: TailProviderEvidence {
+            source: TailEvidenceSource::AppleDictation,
+            revision: None,
+            stability: TailEvidenceStability::Final,
+            timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
+            avg_logprob: None,
+            segment_grain: TailSegmentGrain::Phrase,
+        },
+    };
+    payload.validate()?;
+    Ok(payload)
 }
 
 /// One Silero bucket is 500 ms: every measurable pause closes a file window.
@@ -678,6 +823,7 @@ fn transcribe_apple_file_windows_from_pcm(
             contextual_strings: None,
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
             deadline_policy: Some(AppleDeadlinePolicy::WholeFile),
+            backend: None,
         };
         let window_seconds = (end - start) as f64 / f64::from(rate);
         let mut response = match exchange(&request, Some(whole_file_host_timeout(window_seconds))) {
@@ -867,6 +1013,7 @@ fn transcribe_via_bridge_wav_live(
         contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         deadline_policy: None,
+        backend: None,
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
     let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
@@ -925,6 +1072,7 @@ fn run_bridge_stream(
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
             deadline_policy: None,
+            backend: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -1257,6 +1405,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         contextual_strings: None,
         allow_download,
         deadline_policy: None,
+        backend: None,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
@@ -1275,6 +1424,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         contextual_strings: None,
         allow_download,
         deadline_policy: None,
+        backend: None,
     };
     // Dialog can wait on the user; reuse the generous probe budget.
     run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
