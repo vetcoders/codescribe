@@ -8482,10 +8482,19 @@ public struct CsAgentArchiveRequest: Equatable, Hashable {
     public var bus: String
     public var executable: String
     public var bridgeHome: String
+    /**
+     * Stop the owner's own live follower first (drawer click on an agent
+     * that is alive but no longer reads); off keeps the live-reader refusal.
+     */
+    public var releaseReader: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(channel: UInt8, provider: String, providerSessionId: String, leaseId: String, bus: String, executable: String, bridgeHome: String) {
+    public init(channel: UInt8, provider: String, providerSessionId: String, leaseId: String, bus: String, executable: String, bridgeHome: String,
+        /**
+         * Stop the owner's own live follower first (drawer click on an agent
+         * that is alive but no longer reads); off keeps the live-reader refusal.
+         */releaseReader: Bool) {
         self.channel = channel
         self.provider = provider
         self.providerSessionId = providerSessionId
@@ -8493,6 +8502,7 @@ public struct CsAgentArchiveRequest: Equatable, Hashable {
         self.bus = bus
         self.executable = executable
         self.bridgeHome = bridgeHome
+        self.releaseReader = releaseReader
     }
 
 
@@ -8515,7 +8525,8 @@ public struct FfiConverterTypeCsAgentArchiveRequest: FfiConverterRustBuffer {
                 leaseId: FfiConverterString.read(from: &buf),
                 bus: FfiConverterString.read(from: &buf),
                 executable: FfiConverterString.read(from: &buf),
-                bridgeHome: FfiConverterString.read(from: &buf)
+                bridgeHome: FfiConverterString.read(from: &buf),
+                releaseReader: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -8527,6 +8538,7 @@ public struct FfiConverterTypeCsAgentArchiveRequest: FfiConverterRustBuffer {
         FfiConverterString.write(value.bus, into: &buf)
         FfiConverterString.write(value.executable, into: &buf)
         FfiConverterString.write(value.bridgeHome, into: &buf)
+        FfiConverterBool.write(value.releaseReader, into: &buf)
     }
 }
 
@@ -9598,6 +9610,13 @@ public struct CsChannelRosterState: Equatable, Hashable {
      * `None` = the snapshot made no liveness claim for this row.
      */
     public var followerAlive: Bool?
+    /**
+     * Milliseconds since the Unix epoch of the live follower's oldest
+     * unacknowledged delivery; `None` = no backlog or no follower. The
+     * overlay's "alive but not reading" layer: a process heartbeat proves
+     * the reader, not the conversation behind it.
+     */
+    public var unreadSinceUnixMs: Int64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9610,7 +9629,13 @@ public struct CsChannelRosterState: Equatable, Hashable {
          */autosealDeadlineUnixMs: Int64?,
         /**
          * `None` = the snapshot made no liveness claim for this row.
-         */followerAlive: Bool?) {
+         */followerAlive: Bool?,
+        /**
+         * Milliseconds since the Unix epoch of the live follower's oldest
+         * unacknowledged delivery; `None` = no backlog or no follower. The
+         * overlay's "alive but not reading" layer: a process heartbeat proves
+         * the reader, not the conversation behind it.
+         */unreadSinceUnixMs: Int64?) {
         self.channel = channel
         self.audience = audience
         self.provider = provider
@@ -9619,6 +9644,7 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.loud = loud
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
         self.followerAlive = followerAlive
+        self.unreadSinceUnixMs = unreadSinceUnixMs
     }
 
 
@@ -9642,7 +9668,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 open: FfiConverterBool.read(from: &buf),
                 loud: FfiConverterBool.read(from: &buf),
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
-                followerAlive: FfiConverterOptionBool.read(from: &buf)
+                followerAlive: FfiConverterOptionBool.read(from: &buf),
+                unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
 
@@ -9655,6 +9682,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.loud, into: &buf)
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
         FfiConverterOptionBool.write(value.followerAlive, into: &buf)
+        FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
     }
 }
 

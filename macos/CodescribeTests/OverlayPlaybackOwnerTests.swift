@@ -65,7 +65,7 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
       .init(
         channel: "2", audience: "Same display name", provider: identity.provider,
         providerSessionId: identity.session, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true)
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
     }
     var state: OverlayState? = OverlayState()
     defer { state = nil }

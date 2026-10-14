@@ -186,7 +186,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     state.applyChannelRoster([
       .init(
         channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ])
     XCTAssertTrue(state.audioCaptureActive)
     XCTAssertTrue(state.usesAgentAccent)
@@ -219,7 +220,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .init(
           channel: channel, audience: channel == "0" ? "*" : "bruno", provider: "codex",
           providerSessionId: "bus-agent", open: true, loud: false,
-          autosealDeadlineUnixMs: nil, followerAlive: true)
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
       ])
       XCTAssertTrue(state.channelAudioCaptureActive)
       XCTAssertTrue(state.usesAgentAccent)
@@ -242,7 +243,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     state.applyChannelRoster([
       .init(
         channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ])
     XCTAssertFalse(state.channelAudioCaptureActive)
     XCTAssertFalse(state.usesAgentAccent)

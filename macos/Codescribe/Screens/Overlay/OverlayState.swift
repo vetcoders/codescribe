@@ -1032,7 +1032,10 @@ final class OverlayState {
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
   @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
-  @ObservationIgnored var archiveAgentCommand: ((OverlayConversationOwner) async throws -> Void)?
+  /// Test seam for the archive helper: the owner and whether its live reader
+  /// is to be stopped first.
+  @ObservationIgnored var archiveAgentCommand:
+    ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
   private(set) var showsAgentMonitor = false
   /// Saved-conversation search in the agent drawer. Owned here because the
@@ -1080,9 +1083,18 @@ final class OverlayState {
   }
   var showsMyDictation: Bool { selectedConversationID == nil }
 
+  /// A live follower whose oldest unread delivery is older than this is
+  /// shown as "not reading": the process heartbeats, the conversation behind
+  /// it does not. Ten minutes outlives any tool call a reading agent makes.
+  nonisolated static let followerStallHorizon: TimeInterval = 10 * 60
+
+  /// The owner the drawer's cross acts on. Every bound digit (1–9) whose
+  /// owner is known and not yet archived is a candidate — dead, stalled or
+  /// alive (Founder, 2026-10-14: the cross is always there). Whether the
+  /// click can proceed is decided in `archiveAgent`, with a reason.
   func archiveCandidate(for channel: String) -> OverlayConversationOwner? {
     guard !channelStatusUnavailable, channel.count == 1, "123456789".contains(channel),
-      let hud = channelHudStates[channel], hud.followerAlive == false, !hud.open,
+      let hud = channelHudStates[channel],
       let provider = hud.provider, !provider.isEmpty,
       let session = hud.providerSessionID, !session.isEmpty,
       let name = channelRosterNames[channel]
@@ -1099,15 +1111,28 @@ final class OverlayState {
     guard archiveCandidate(for: owner.channel) == owner,
       !pendingAgentArchives.contains(owner)
     else { return }
+    let hud = channelHudStates[owner.channel]
+    if hud?.open == true {
+      agentArchiveError = String(
+        localized:
+          "Couldn't archive \(owner.name): its channel is open. Hang up first; the conversation is retained.",
+        comment: "Drawer cross pressed while the agent's microphone channel is open")
+      return
+    }
+    // A live reader is stopped by the helper before the digit is released;
+    // a dead one is simply released. The lease and its backlog stay either way.
+    let releaseReader = hud?.followerAlive == true
     pendingAgentArchives.insert(owner)
     agentArchiveError = nil
     defer { pendingAgentArchives.remove(owner) }
     do {
       if let archiveAgentCommand {
-        try await archiveAgentCommand(owner)
+        try await archiveAgentCommand(owner, releaseReader)
       } else {
         guard let engine else { throw CocoaError(.fileWriteUnknown) }
-        try await RealAgentBridgeInstaller.archiveBusAgent(owner: owner) { request in
+        try await RealAgentBridgeInstaller.archiveBusAgent(
+          owner: owner, releaseReader: releaseReader
+        ) { request in
           try await engine.archiveAgent(request: request)
         }
       }
@@ -1116,8 +1141,39 @@ final class OverlayState {
       onChannelPresentationChanged?()
     } catch {
       agentArchiveError = String(
-        localized: "Couldn't archive agent. The channel and conversation are retained.")
+        localized:
+          "Couldn't archive \(owner.name): \(Self.archiveFailureReason(error)). The channel and conversation are retained.",
+        comment: "First placeholder is the agent name, second the helper's refusal sentence")
     }
+  }
+
+  /// The sentence the drawer shows for a refused archive. The helper's own
+  /// refusal ("agent reader is alive; channel retained") comes through the
+  /// bridge verbatim; the facade's preflight failures are named here.
+  static func archiveFailureReason(_ error: Error) -> String {
+    if let error = error as? CsError {
+      switch error {
+      case .Agent(let msg), .Config(let msg), .Recording(let msg), .License(let msg),
+        .Quality(let msg), .Runtime(let msg):
+        return msg.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+    }
+    if let error = error as? CocoaError {
+      switch error.code {
+      case .fileNoSuchFile:
+        return String(
+          localized: "the cs-bus helper is not installed",
+          comment: "Archive refusal reason: managed helper missing")
+      case .fileReadCorruptFile:
+        return String(
+          localized: "the agent's lease no longer matches this owner",
+          comment: "Archive refusal reason: lease identity mismatch")
+      default: break
+      }
+    }
+    return String(
+      localized: "the helper returned no valid receipt",
+      comment: "Archive refusal reason: unknown failure")
   }
 
   private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
@@ -1679,7 +1735,10 @@ final class OverlayState {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             },
             followerAlive: row.followerAlive,
-            provider: row.provider, providerSessionID: row.providerSessionId)
+            provider: row.provider, providerSessionID: row.providerSessionId,
+            unreadSince: row.unreadSinceUnixMs.map {
+              Date(timeIntervalSince1970: Double($0) / 1_000)
+            })
         )
       }, uniquingKeysWith: { _, latest in latest })
     guard snapshot != channelRoster else { return }

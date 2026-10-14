@@ -82,6 +82,16 @@ struct OverlayChannelHudProjection: Equatable {
   let followerAlive: Bool?
   var provider: String? = nil
   var providerSessionID: String? = nil
+  /// When the live follower's oldest unacknowledged delivery was emitted.
+  /// The second liveness layer: a reader process can heartbeat while the
+  /// conversation behind it reads nothing (Founder, 2026-10-14).
+  var unreadSince: Date? = nil
+
+  /// Alive by heartbeat, yet nothing read for longer than the stall horizon.
+  func isStalled(now: Date = Date()) -> Bool {
+    guard followerAlive == true, let unreadSince else { return false }
+    return now.timeIntervalSince(unreadSince) >= OverlayState.followerStallHorizon
+  }
 }
 
 /// Shared by the header and roster; animation never owns delivery state.
@@ -403,6 +413,17 @@ struct OverlayChannelStatusView: View {
     hudStates[channel.channel]?.followerAlive == false
   }
 
+  func hasStalledFollower(_ channel: OverlayChannelDelivery) -> Bool {
+    hudStates[channel.channel]?.isStalled() == true
+  }
+
+  /// Whole minutes since the stalled follower's oldest unread delivery.
+  func stalledMinutes(_ channel: OverlayChannelDelivery) -> Int? {
+    guard let since = hudStates[channel.channel]?.unreadSince, hasStalledFollower(channel)
+    else { return nil }
+    return max(1, Int(Date().timeIntervalSince(since) / 60))
+  }
+
   var glyph: OverlayAgentGlyph {
     OverlayAgentGlyph.resolve(channels: channels, unavailable: unavailable) ?? .attached
   }
@@ -659,7 +680,11 @@ struct OverlayChannelStatusView: View {
         )
         .fixedSize()
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
+        // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
+        // tam zawsze"); only an open microphone or an archive in flight
+        // disables it, and the help says which.
         if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
+          let archiveHelp = archiveHelp(for: channel)
           Button {
             onArchiveAgent?(owner)
           } label: {
@@ -670,9 +695,9 @@ struct OverlayChannelStatusView: View {
           }
           .modifier(OverlayAgentControlStyle())
           .csFocusOutline()
-          .disabled(pendingArchives.contains(owner))
-          .help("Remove from list and move to archive")
-          .accessibilityLabel("Remove from list and move to archive")
+          .disabled(pendingArchives.contains(owner) || open)
+          .help(archiveHelp)
+          .accessibilityLabel(Text(verbatim: archiveHelp))
           .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
         }
       }
@@ -923,9 +948,26 @@ struct OverlayChannelStatusView: View {
     }
   }
 
+  func archiveHelp(for channel: OverlayChannelDelivery) -> String {
+    if isOpen(channel) {
+      return String(
+        localized: "Hang up the channel first, then remove the agent from the list",
+        comment: "Drawer cross on an agent whose microphone channel is open")
+    }
+    if hasDeadFollower(channel) {
+      return String(localized: "Remove from list and move to archive")
+    }
+    return String(
+      localized: "Stop the agent's reader, remove from list and move to archive",
+      comment: "Drawer cross on an agent whose reader process is still alive")
+  }
+
   private func shortStatus(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return String(localized: "Status unavailable") }
     if hasDeadFollower(channel) { return String(localized: "Disconnected") }
+    if hasStalledFollower(channel) {
+      return String(localized: "Not reading", comment: "Agent alive, backlog unread for long")
+    }
     if isOpen(channel) { return String(localized: "Listening") }
     switch channel.stage {
     case nil: return String(localized: "Ready")
@@ -946,6 +988,7 @@ struct OverlayChannelStatusView: View {
   func statusSymbol(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return "exclamationmark.triangle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
+    if hasStalledFollower(channel) { return "zzz" }
     if isOpen(channel) { return "mic.fill" }
     switch channel.stage {
     case nil: return "circle"
@@ -956,7 +999,7 @@ struct OverlayChannelStatusView: View {
 
   private func statusTone(for channel: OverlayChannelDelivery) -> OverlayColorToken {
     if unavailable { return palette.processingStatus }
-    if hasDeadFollower(channel) { return palette.mutedText }
+    if hasDeadFollower(channel) || hasStalledFollower(channel) { return palette.mutedText }
     if isOpen(channel) { return palette.listeningStatus }
     switch channel.stage {
     case nil: return palette.mutedText
@@ -977,6 +1020,13 @@ struct OverlayChannelStatusView: View {
     case .sent: delivery = String(localized: "sent · waiting for receipt")
     case .queued: delivery = String(localized: "queued · waiting for receipt")
     case .received: delivery = String(localized: "receipt confirmed by the agent")
+    }
+    if let minutes = stalledMinutes(channel) {
+      return String(
+        localized: "\(delivery) · nothing read for \(minutes) min",
+        comment:
+          "Channel row; first placeholder is the delivery state, second the whole minutes since the oldest unread message"
+      )
     }
     guard hasDeadFollower(channel) else { return delivery }
     return String(

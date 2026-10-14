@@ -108,6 +108,10 @@ pub struct AgentArchiveRequest {
     pub bus: PathBuf,
     pub executable: PathBuf,
     pub bridge_home: PathBuf,
+    /// Stop the owner's own live follower before archiving (the drawer's
+    /// click on an agent that is alive but no longer reads). Off = the
+    /// helper refuses a live reader, as it always did.
+    pub release_reader: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +257,11 @@ pub struct ChannelHudState {
     /// Whether the bound provider session has a live bridge follower
     /// (fresh lease heartbeat). `None` = the snapshot made no liveness claim.
     pub follower_alive: Option<bool>,
+    /// When the live follower's oldest unacknowledged delivery was emitted.
+    /// A heartbeat proves the reader process, not the conversation behind
+    /// it; a backlog that only grows is the overlay's "alive but not
+    /// reading" signal. `None` = no backlog, no follower, or no claim.
+    pub unread_since: Option<SystemTime>,
 }
 
 fn utterance_silence_ms(seconds: f32) -> u32 {
@@ -624,9 +633,12 @@ fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
             "--bridge-home",
         ])
         .arg(&request.bridge_home)
+        .args(request.release_reader.then_some("--release-reader"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // The helper names its refusal on stderr ("agent reader is alive;
+        // channel retained"); the drawer shows that sentence, not a code.
+        .stderr(Stdio::piped())
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
@@ -651,7 +663,18 @@ fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
         }
     };
     if !status.success() {
-        return Err(anyhow!("agent archive helper failed: {status}"));
+        let mut stderr = String::new();
+        if let Some(pipe) = child.stderr.take() {
+            let _ = pipe.take(RECEIPT_LIMIT as u64).read_to_string(&mut stderr);
+        }
+        let reason = stderr
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.trim_start_matches("cs-bus: ").to_string())
+            .unwrap_or_else(|| format!("agent archive helper failed: {status}"));
+        return Err(anyhow!("{reason}"));
     }
     let output = child
         .stdout
@@ -1420,6 +1443,7 @@ impl RecordingController {
                     provider: open.provider.clone(),
                     provider_session_id: open.provider_session_id.clone(),
                     follower_alive: None,
+                    unread_since: None,
                 })
             })
             .collect()
@@ -1451,6 +1475,11 @@ impl RecordingController {
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
         );
+        let unread = codescribe_core::stt::active_names::unread_backlog_since_at(
+            bridge_home,
+            now,
+            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
+        );
         let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
             match (provider.as_deref(), session.as_deref()) {
                 (Some(provider), Some(session)) => {
@@ -1459,9 +1488,20 @@ impl RecordingController {
                 _ => None,
             }
         };
+        let unread_since = |provider: &Option<String>,
+                            session: &Option<String>|
+         -> Option<SystemTime> {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return None;
+            };
+            unread
+                .get(&(provider.to_lowercase(), session.to_string()))
+                .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)))
+        };
         let mut states = self.channel_hud_states().await;
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
+            state.unread_since = unread_since(&state.provider, &state.provider_session_id);
         }
         if !states.iter().any(|state| state.channel == "0") {
             states.push(ChannelHudState {
@@ -1478,6 +1518,7 @@ impl RecordingController {
                 provider: None,
                 provider_session_id: None,
                 follower_alive: None,
+                unread_since: None,
             });
         }
         let Ok(file) = load_binding(binding) else {
@@ -1506,6 +1547,7 @@ impl RecordingController {
                 opened_at: SystemTime::UNIX_EPOCH,
                 utterance_silence_ms: 0,
                 follower_alive: alive(&provider, &session),
+                unread_since: unread_since(&provider, &session),
                 provider,
                 provider_session_id: session,
             });
@@ -2715,7 +2757,7 @@ mod tests {
         std::fs::write(
             bridge.join("leases/ada.json"),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session"}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
             ),
         )
         .expect("lease");
@@ -2732,6 +2774,18 @@ mod tests {
         assert_eq!(roster[1].audience, "Ada");
         assert!(!roster[1].open);
         assert_eq!(roster[1].follower_alive, Some(true));
+        assert_eq!(
+            roster[1].unread_since,
+            Some(
+                SystemTime::UNIX_EPOCH
+                    + Duration::from_secs(
+                        chrono::DateTime::parse_from_rfc3339("2026-10-14T11:00:00Z")
+                            .expect("stamp")
+                            .timestamp() as u64
+                    )
+            ),
+            "the oldest unacknowledged delivery dates the backlog of a live follower"
+        );
         assert_eq!(roster[2].channel, "3");
         assert_eq!(roster[2].audience, "Leon");
         assert!(!roster[2].open);
@@ -2739,6 +2793,10 @@ mod tests {
             roster[2].follower_alive,
             Some(false),
             "no lease means nobody is listening"
+        );
+        assert_eq!(
+            roster[2].unread_since, None,
+            "a dead follower has no live backlog"
         );
     }
 
@@ -3546,6 +3604,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
                 bus: self.bus.clone(),
                 executable: self.executable.clone(),
                 bridge_home: self.dir.path().to_owned(),
+                release_reader: false,
             }
         }
 
