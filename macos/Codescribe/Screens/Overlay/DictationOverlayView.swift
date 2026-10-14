@@ -593,7 +593,7 @@ struct DictationOverlayView: View {
             // Glass is confined to each capsule, before the bar's clear margins.
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+            .padding(.horizontal, OverlayResizeChrome.actionsSideInset)
             if state.completedMaxConsultationID != nil {
               Button("Continue in chat", systemImage: "bubble.left") {
                 state.continueMaxConsultationInChat()
