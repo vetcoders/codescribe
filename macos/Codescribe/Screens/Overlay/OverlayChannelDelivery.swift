@@ -1042,6 +1042,12 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   /// An unopened history is not a verified empty conversation.
   var historyLoaded = true
   var replyIDs: [String] { messages.filter { $0.kind == .reply }.map(\.id) }
+  /// One of this conversation's replies is coming out of the speaker now.
+  /// Synthesis and the wait for the shared player are not speech yet; the
+  /// player serializes agents, so at most one conversation speaks at a time.
+  var replySpeaking: Bool {
+    messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
+  }
 }
 
 struct OverlayChannelDeliverySnapshot: Equatable, Sendable {
