@@ -1473,6 +1473,153 @@ fn context_quality_is_bounded_at_extreme_sample_offsets() {
     assert!(context_quality(u64::MAX / 3, u64::MAX / 2, (0, u64::MAX)) <= 1_000_000);
 }
 
+#[test]
+fn measured_anchored_rewrite_preserves_distinct_raw_evidence_for_live_trial() {
+    let owner = OccurrenceIdentity::new("anchored-raw-rewrite", 1, 24_000, 40_000);
+    let mut pcm = vec![0.0; 144_000];
+    pcm[25_600..30_400].fill(0.2);
+    let mut ledger = measured_ledger(&owner, &pcm);
+    for (producer, generation, raw, decode) in [
+        (ObservationProducer::Apple, 0, "akcja", None),
+        (
+            ObservationProducer::Whisper,
+            1,
+            "kompakcja",
+            Some((0, 144_000)),
+        ),
+    ] {
+        let observation = ObservationIdentity::new(producer, 8, generation, owner.clone());
+        let mut original = WordPin::new(25_600, 30_400, raw);
+        if let Some((start, end)) = decode {
+            original = original.with_decode_window(start, end);
+        }
+        ledger.stage_word_evidence(&observation, &[original.clone()], None, "unknown");
+        let mut rewritten = original;
+        rewritten.text = "compaction".into();
+        rewritten.surface_rewritten = true;
+        ledger.admit_word_slots(&observation, &[rewritten]);
+    }
+    let support = &ledger
+        .word_choices()
+        .last()
+        .expect("retained word question")
+        .support;
+    for raw in ["akcja", "kompakcja"] {
+        let hypothesis = support
+            .iter()
+            .find(|hypothesis| hypothesis.original_text.as_deref() == Some(raw))
+            .expect("anchor normalization must retain the producer's raw spelling");
+        assert_eq!(hypothesis.surface, "compaction");
+        assert_eq!(
+            hypothesis.pins[0].lexical_position,
+            Some(0),
+            "this must exercise the anchor path"
+        );
+        assert_eq!(hypothesis.pins[0].sample_start, 25_600);
+        assert_eq!(hypothesis.pins[0].sample_end, 30_400);
+    }
+    assert_eq!(ledger.text_of(&owner), Some("compaction"));
+    assert!(
+        ledger.has_word_conflicts(),
+        "equal rewritten surfaces are not raw agreement"
+    );
+    assert!(
+        ledger
+            .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000,)
+            .is_some(),
+        "preserved raw evidence can seed a bounded independent decode"
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn measured_anchored_rewrite_cannot_borrow_unassociated_originals() {
+    for case in [
+        "observation",
+        "decode",
+        "range",
+        "duplicate",
+        "cardinality",
+        "missing",
+    ] {
+        let owner = OccurrenceIdentity::new(format!("anchor-raw-{case}"), 1, 24_000, 40_000);
+        let mut pcm = vec![0.0; 144_000];
+        pcm[25_600..30_400].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.admit_word_slots(
+            &ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone()),
+            &[WordPin::new(25_600, 30_400, "PTM")],
+        );
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
+        let staged = if case == "observation" {
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, owner.clone())
+        } else {
+            observation.clone()
+        };
+        let mut raw = WordPin::new(
+            25_600,
+            30_400,
+            if case == "cardinality" {
+                "PN PM"
+            } else {
+                "PNPM"
+            },
+        )
+        .with_decode_window(0, 144_000);
+        if case == "missing" {
+            raw.surface_rewritten = true;
+        }
+        let originals = if case == "duplicate" {
+            vec![raw.clone(), raw.clone()]
+        } else {
+            vec![raw.clone()]
+        };
+        ledger.stage_word_evidence(&staged, &originals, None, "unknown");
+        let mut rewritten = raw;
+        rewritten.text = "PNPM".into();
+        rewritten.surface_rewritten = true;
+        if case == "decode" {
+            rewritten = rewritten.with_decode_window(0, 128_000);
+        }
+        if case == "range" {
+            rewritten.sample_start = 26_000;
+        }
+        ledger.admit_word_slots(&observation, &[rewritten]);
+        let hypotheses = ledger
+            .word_choices()
+            .iter()
+            .flat_map(|choice| &choice.support)
+            .filter(|hypothesis| hypothesis.observation == observation)
+            .collect::<Vec<_>>();
+        assert!(
+            !hypotheses.is_empty(),
+            "fixture must reach retained support: {case}"
+        );
+        assert!(
+            hypotheses
+                .iter()
+                .all(|hypothesis| hypothesis.original_text.is_none()),
+            "no raw borrowing: {case}"
+        );
+        assert!(
+            hypotheses
+                .iter()
+                .flat_map(|hypothesis| &hypothesis.pins)
+                .all(|pin| pin.lexical_position == Some(0)),
+            "fixture must reach measured anchors: {case}"
+        );
+        assert!(
+            ledger
+                .next_word_trial_before_horizon(false, None, Some((48_000, 0..144_000)), 48_000,)
+                .is_none(),
+            "an unassociated spelling cannot authorize a fresh live trial: {case}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("PTM"), "{case}");
+        assert_eq!(ledger.conservation().residue(), 0, "{case}");
+    }
+}
+
 /// Fixture decoder results must identify another captured context explicitly;
 /// renaming the original request does not provide a resolving observation.
 pub(crate) fn corroborate_candidate(
