@@ -1149,16 +1149,18 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(state.hasOpenChannel)
         XCTAssertGreaterThan(presented, 0)
         XCTAssertEqual(factories, 1)
+      } else if control == "assistive" {
+        // An Agent take keeps the panel: its words and send countdown live
+        // there until the turn opens (Maciej, 2026-10-14).
+        XCTAssertGreaterThan(presented, 0)
+        XCTAssertEqual(factories, 1)
+        XCTAssertEqual(state.selectedConversationID, lena.id)
+        XCTAssertEqual(state.indicatorMode, .assistive)
       } else {
         XCTAssertEqual(presented, 0)
         XCTAssertEqual(factories, 0)
-        if control == "assistive" {
-          XCTAssertEqual(state.selectedConversationID, lena.id)
-          XCTAssertEqual(state.indicatorMode, .assistive)
-        } else {
-          XCTAssertTrue(state.showsMyDictation)
-          XCTAssertFalse(state.transcriptOverlayEnabled)
-        }
+        XCTAssertTrue(state.showsMyDictation)
+        XCTAssertFalse(state.transcriptOverlayEnabled)
       }
       XCTAssertEqual(engine.startedRecordingCount, 0)
       XCTAssertTrue(engine.toggledDigits.isEmpty)
@@ -4243,26 +4245,35 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotEqual(controller.state.indicatorMode, .assistive)
   }
 
-  func testAgentModesNeverConstructOrOrderOverlayFront() {
-    for mode in ["Chat", "Selection"] {
+  /// An Agent take keeps the panel in front even with the transcript overlay
+  /// toggle off: the words and the send countdown have nowhere else to be
+  /// seen before the turn opens. Only a take the Agent composer captures
+  /// itself stays headless (Maciej, 2026-10-14).
+  func testAgentTakeKeepsOverlayFrontUnlessComposerOwnsCapture() {
+    for composerOwned in [false, true] {
       var frontCount = 0
       let controller = OverlayController(
         state: OverlayState(),
         engine: nil,
-        overlayEnabledProvider: { true },
+        overlayEnabledProvider: { false },
         assistiveStatusProvider: { true },
+        composerOwnsCaptureProvider: { composerOwned },
         panelFactory: { _, _ in NSPanel() },
         orderPanelFront: { _ in frontCount += 1 },
         orderPanelOut: { _ in }
       )
 
       controller.showForRecording()
-      XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
+      XCTAssertEqual(
+        frontCount, composerOwned ? 0 : 1,
+        composerOwned
+          ? "a composer-captured take streams into the composer field"
+          : "an Agent take shows its words and countdown on the panel")
       XCTAssertEqual(controller.state.indicatorMode, .assistive)
     }
   }
 
-  func testMidHoldAssistiveUpgradeClosesOverlayAndFlipsSemantics() {
+  func testMidHoldAssistiveUpgradeKeepsOverlayAndFlipsSemantics() {
     var frontCount = 0
     var outCount = 0
     let controller = OverlayController(
@@ -4280,8 +4291,44 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(outCount, 0)
 
     controller.handleIndicatorModeChange(.assistive)
-    XCTAssertEqual(outCount, 1)
+    XCTAssertEqual(outCount, 0, "the upgrade flips the lane, never the window")
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
+  }
+
+  /// The deadline that sends an armed Agent take is shown as whole seconds and
+  /// follows the clock; taking the canvas for an edit ends it, because an
+  /// edited take needs an explicit send.
+  func testArmedAgentTakeShowsCountdownThatFollowsTheClockAndAnEditEnds() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    projectText(
+      "send me", to: state, terminal: true, sessionId: "S", reducerAction: "session_ended")
+    XCTAssertEqual(state.agentSendCountdownSeconds, Int(OverlayState.autoHideDelaySeconds))
+
+    clock.now += 2.4
+    state.refreshAgentSendCountdown()
+    XCTAssertEqual(state.agentSendCountdownSeconds, 3)
+
+    state.beginTranscriptEdit()
+    XCTAssertTrue(state.isEditingTranscript)
+    XCTAssertNil(state.agentSendCountdownSeconds)
+    XCTAssertNil(state.autoHideDeadline)
+  }
+
+  func testAgentCountdownNeedsOptInAutoSendAndAnArmedTake() {
+    let clock = OverlayStateTestClock()
+    for (armed, autoSend) in [(true, false), (false, true)] {
+      let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { autoSend })
+      state.engine = OverlayStateTestEngine()
+      if armed { state.applyIndicatorMode(.assistive) }
+      projectText(
+        "plain words", to: state, terminal: true, sessionId: "S", reducerAction: "session_ended")
+      XCTAssertNil(
+        state.agentSendCountdownSeconds, "armed=\(armed) autoSend=\(autoSend) shows no countdown")
+    }
   }
 
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
@@ -6076,7 +6123,7 @@ final class OverlayStateTests: XCTestCase {
     withExtendedLifetime(controller) {}
   }
 
-  func testExplicitOffAndGenuineAssistiveHideWithoutStealingFocus() {
+  func testExplicitOffRunsHeadlessWhileAnAgentTakeShowsWithoutStealingFocus() {
     var offFronts = 0
     let offState = OverlayState()
     let offPanel = NSPanel()
@@ -6096,7 +6143,8 @@ final class OverlayStateTests: XCTestCase {
       frontCount: { agentFronts += 1 }, outCount: {})
     agentState.handleRecordingPreparing()
     agentState.handleRecordingStarted()
-    XCTAssertEqual(agentFronts, 0, "a genuine Agent/Assistive route is owned by the composer")
+    XCTAssertGreaterThan(
+      agentFronts, 0, "an Agent take shows its words and the send countdown on the panel")
     XCTAssertEqual(agentState.indicatorMode, .assistive)
 
     // The visible Dictation route never takes key or main away from the user.

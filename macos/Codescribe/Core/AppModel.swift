@@ -132,6 +132,11 @@ final class OverlayController: ObservableObject {
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
   /// flip the tray status while recording, so every lifecycle hook re-polls.
   private var sessionWasAssistive = false
+  /// The Agent composer's own mic (or a `composerPending` route) owns the take:
+  /// its words stream into the composer field, so the floating panel has no
+  /// job. Every other Agent take keeps the panel up — the words and the send
+  /// countdown must stay visible until the turn opens (Maciej, 2026-10-14).
+  private let composerOwnsCapture: () -> Bool
   /// Ordered front by `show`, out by `orderOut` or a completed handoff fade.
   /// A hidden panel holds the automatic collapse; its wake cannot act.
   private var panelPresented = false
@@ -149,6 +154,7 @@ final class OverlayController: ObservableObject {
     assistiveStatusProvider: @escaping () -> Bool = {
       CodescribeTrayStatus().currentStatus().assistive
     },
+    composerOwnsCaptureProvider: (() -> Bool)? = nil,
     panelFactory: (@MainActor (OverlayState, TextScaleController) -> NSPanel)? = nil,
     orderPanelFront: (@MainActor (NSPanel) -> Void)? = nil,
     orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil,
@@ -160,6 +166,10 @@ final class OverlayController: ObservableObject {
     self.state = state
     self.overlayEnabledProvider = overlayEnabledProvider
     self.assistiveStatusProvider = assistiveStatusProvider
+    self.composerOwnsCapture =
+      composerOwnsCaptureProvider ?? { [weak composer] in
+        composer?.hasComposerCaptureRequest ?? false
+      }
     self.panelFactory =
       panelFactory ?? {
         DictationOverlayWindow.make(state: $0, textScale: $1)
@@ -323,10 +333,21 @@ final class OverlayController: ObservableObject {
   /// dictate, and the text lands at the cursor (+ clipboard) with no window.
   /// Delivery is engine-side (LocalFinalPass), independent of this window, so
   /// hiding the overlay never suppresses the paste.
+  ///
+  /// An Agent take ignores the toggle: until its turn opens in the chat, the
+  /// panel is the only place the spoken words and the send countdown exist.
+  /// Hiding it ran that countdown in the dark and the words surfaced in the
+  /// bubble ten seconds later (Maciej, 2026-10-14). Only a take the composer
+  /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
     refreshAssistiveLatch()
-    guard !sessionWasAssistive else {
-      hide()
+    if sessionWasAssistive {
+      if composerOwnsCapture() {
+        hide()
+      } else {
+        readOverlayPreference()
+        show()
+      }
       return
     }
     guard readOverlayPreference() else {
@@ -552,7 +573,9 @@ final class OverlayController: ObservableObject {
   }
 
   /// Called by the live TrayStatusStore listener. Assistive uses the shared
-  /// controller but keeps the Dictation overlay closed in favor of Agent UI.
+  /// controller and keeps the Dictation overlay up: a mid-hold upgrade
+  /// (Fn → Fn+Shift) flips the semantics, never the window. Only a take the
+  /// Agent composer captures itself closes the panel.
   /// Format / Retranscribe (and the post-take review they run on) own the
   /// panel: an Assistive tray tick must not hide it, steal focus, or arm
   /// Agent auto-send.
@@ -562,7 +585,7 @@ final class OverlayController: ObservableObject {
     }
     if mode == .assistive {
       sessionWasAssistive = true
-      hide()
+      if composerOwnsCapture() { hide() }
     }
     state.applyIndicatorMode(mode)
   }

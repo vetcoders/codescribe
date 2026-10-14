@@ -7937,9 +7937,11 @@ mod terminal_delivery_target_falsifiers {
     }
 
     /// Composer delivery gets its own sink payload while the reducer document
-    /// remains the clean text passed into this boundary.
+    /// remains the clean text passed into this boundary. The payload keeps the
+    /// bucket markers the Agent resolves and never the outward transcript tag:
+    /// dictation on the Agent's own path is not a paste into a foreign app.
     #[tokio::test]
-    async fn composer_route_retains_tagged_delivery_separate_from_working_text() {
+    async fn composer_route_delivers_untagged_text_separate_from_working_text() {
         let controller = RecordingController::new_without_keychain();
         controller.delivery_tagger.begin("agent", "en");
         let config = Config {
@@ -7950,7 +7952,7 @@ mod terminal_delivery_target_falsifiers {
 
         controller
             .deliver_stop_transcript_with_sink(
-                Some("composer-tagged"),
+                Some("composer-untagged"),
                 "{selection_1} editable {image_1} draft",
                 (true, false, CaptureTurnIntent::SingleTurn, false),
                 &config,
@@ -7962,8 +7964,8 @@ mod terminal_delivery_target_falsifiers {
         assert_eq!(
             controller.composer_delivery_payload.read().await.as_ref(),
             Some(&(
-                "composer-tagged".to_string(),
-                "[agent|en|unknown] {selection_1} editable {image_1} draft".to_string()
+                "composer-untagged".to_string(),
+                "{selection_1} editable {image_1} draft".to_string()
             ))
         );
     }
