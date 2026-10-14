@@ -1448,6 +1448,157 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 398, y: 2), in: bounds), .bottomRight)
   }
 
+  /// Maciej, 2026-10-14: the bottom corners were "practically ungrabbable".
+  /// They are whole 30 pt squares; the top corners keep the band because the
+  /// header's close dot sits 16 pt from the left.
+  func testBottomCornersAreThirtyPointSquaresAndTopCornersKeepTheBand() {
+    XCTAssertEqual(OverlayResizeHit.bottomCorner, 30)
+    for size in [bounds.size, DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let w = size.width
+      let h = size.height
+      func edge(_ x: CGFloat, _ y: CGFloat) -> OverlayResizeHit.Edge? {
+        OverlayResizeHit.edge(at: NSPoint(x: x, y: y), in: frame)
+      }
+      for (x, y) in [(CGFloat(1), CGFloat(1)), (29, 29), (29, 1), (1, 29), (22, 24)] {
+        XCTAssertEqual(edge(x, y), .bottomLeft, "\(size) (\(x), \(y))")
+        XCTAssertEqual(edge(w - x, y), .bottomRight, "\(size) (\(w - x), \(y))")
+      }
+      XCTAssertEqual(edge(31, 2), .bottom)
+      XCTAssertEqual(edge(w - 31, 2), .bottom)
+      XCTAssertEqual(edge(2, 31), .left)
+      XCTAssertEqual(edge(w - 2, 31), .right)
+      XCTAssertNil(edge(31, 31))
+      XCTAssertEqual(edge(2, h - 2), .topLeft)
+      XCTAssertEqual(edge(20, h - 2), .top)
+      XCTAssertEqual(edge(2, h - 20), .left)
+      XCTAssertNil(edge(20, h - 20), "the close dot's corner is not a resize zone")
+    }
+  }
+
+  /// The cursor AppKit shows and the gesture the panel starts must agree at
+  /// every point: one owner per point, the cursor of the hit edge, none inside.
+  @MainActor
+  func testCursorRectsAgreeWithTheHitTestAtEveryPoint() {
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let rects = OverlayResizeHit.cursorRects(in: frame)
+      var mismatches: [String] = []
+      for x in stride(from: CGFloat(0.5), to: size.width, by: 1) {
+        for y in stride(from: CGFloat(0.5), to: size.height, by: 1) {
+          let point = NSPoint(x: x, y: y)
+          let owners = Set(rects.filter { $0.0.contains(point) }.map { ObjectIdentifier($0.1) })
+          let expected = OverlayResizeHit.edge(at: point, in: frame).map {
+            Set([ObjectIdentifier(OverlayResizeHit.cursor(for: $0))])
+          }
+          if owners != (expected ?? []) { mismatches.append("\(point)") }
+        }
+      }
+      XCTAssertTrue(
+        mismatches.isEmpty,
+        "\(size): \(mismatches.count) points disagree, first \(mismatches.prefix(5))")
+    }
+  }
+
+  /// The window server passes a click through a fully transparent pixel. The
+  /// pad keeps every pixel the rounded glass leaves transparent inside the
+  /// resize zones, and paints nothing that is not already a resize zone.
+  @MainActor
+  func testGrabPadCoversTheTransparentGlassCornersAndOnlyResizeZones() {
+    XCTAssertGreaterThanOrEqual(OverlayResizeGrabPad.fillAlpha * 255, 1, "nonzero in 8 bits")
+    XCTAssertLessThanOrEqual(OverlayResizeGrabPad.fillAlpha * 255, 2, "invisible on white")
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let pad = OverlayResizeHit.grabPadRects(in: frame, mode: .expanded)
+      let glass = RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
+        .path(in: frame)
+      var uncovered: [NSPoint] = []
+      let reach: CGFloat = 40
+      for corner in [
+        NSPoint(x: 0, y: 0), NSPoint(x: size.width - reach, y: 0),
+        NSPoint(x: 0, y: size.height - reach),
+        NSPoint(x: size.width - reach, y: size.height - reach),
+      ] {
+        for x in stride(from: corner.x + 0.25, to: corner.x + reach, by: 0.5) {
+          for y in stride(from: corner.y + 0.25, to: corner.y + reach, by: 0.5) {
+            let point = NSPoint(x: x, y: y)
+            if !glass.contains(point), !pad.contains(where: { $0.contains(point) }) {
+              uncovered.append(point)
+            }
+          }
+        }
+      }
+      XCTAssertTrue(
+        uncovered.isEmpty,
+        "\(size): \(uncovered.count) transparent corner pixels pass clicks through, "
+          + "first \(uncovered.prefix(5))")
+
+      var stray: [NSPoint] = []
+      for rect in pad {
+        for x in stride(from: rect.minX + 0.25, to: rect.maxX, by: 0.5) {
+          for y in stride(from: rect.minY + 0.25, to: rect.maxY, by: 0.5) {
+            let point = NSPoint(x: x, y: y)
+            if OverlayResizeHit.edge(at: point, in: frame) == nil { stray.append(point) }
+          }
+        }
+      }
+      XCTAssertTrue(stray.isEmpty, "\(size): the pad owns non-resize points \(stray.prefix(5))")
+    }
+
+    XCTAssertTrue(OverlayResizeHit.grabPadRects(in: bounds, mode: .mini).isEmpty)
+    let midi = NSRect(origin: .zero, size: DictationOverlayWindow.midiSize)
+    let midiPad = OverlayResizeHit.grabPadRects(in: midi, mode: .midi)
+    XCTAssertEqual(midiPad.count, 2)
+    for rect in midiPad {
+      for y in stride(from: rect.minY + 0.25, to: rect.maxY, by: 1) {
+        XCTAssertNotNil(
+          OverlayResizeHit.edge(at: NSPoint(x: rect.midX, y: y), in: midi, mode: .midi))
+      }
+    }
+  }
+
+  @MainActor
+  func testRealPanelGrabPadFollowsModeAndNeverTakesAHit() throws {
+    let state = OverlayState.previewListening()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.grabPad")
+      ) as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.setContentSize(NSSize(width: 470, height: 280))
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    XCTAssertTrue(root.subviews.first === root.grabPad, "the pad sits beneath the hosted content")
+    XCTAssertEqual(root.grabPad.frame, root.bounds)
+    XCTAssertEqual(
+      root.grabPad.rects, OverlayResizeHit.grabPadRects(in: root.bounds, mode: .expanded))
+    for point in [
+      NSPoint(x: 2, y: 2), NSPoint(x: 25, y: 25), NSPoint(x: root.bounds.maxX - 25, y: 25),
+      NSPoint(x: root.bounds.midX, y: root.bounds.midY),
+    ] {
+      XCTAssertFalse(root.hitTest(point) === root.grabPad, "\(point)")
+    }
+    // The corner square is a resize grab in the real panel, inside the glass
+    // curve as well as outside it.
+    for point in [NSPoint(x: 25, y: 25), NSPoint(x: root.bounds.maxX - 25, y: 25)] {
+      XCTAssertTrue(root.hitTest(point) === root, "\(point) is not claimed for resize")
+      XCTAssertFalse(panel.isWindowDragHit(at: point))
+    }
+
+    panel.setPresentationMode(.mini)
+    XCTAssertTrue(root.grabPad.rects.isEmpty, "a mini panel does not resize")
+    panel.setPresentationMode(.expanded)
+    XCTAssertEqual(
+      root.grabPad.rects, OverlayResizeHit.grabPadRects(in: root.bounds, mode: .expanded))
+    withExtendedLifetime(state) {}
+  }
+
   @MainActor
   func testGripAndItsVerticalMarginUseBottomResizeAndCursorAtBothWindowSizes() {
     for size in [DictationOverlayWindow.defaultSize, DictationOverlayWindow.minSize] {

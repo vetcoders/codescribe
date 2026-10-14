@@ -166,6 +166,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     if presentationMode != .mini { styleMask.insert(.resizable) }
     if let contentView {
       invalidateCursorRects(for: contentView)
+      (contentView as? OverlayContentContainer)?.refreshGrabPad()
       OverlayPresentationTrace.shared.record(.cursorRectsInvalidated, mode: presentationMode)
     }
     if presentationMode == .expanded {
@@ -575,10 +576,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 /// stays structurally dead.
 final class OverlayContentContainer: NSView {
   private let hosting: NSView
+  let grabPad = OverlayResizeGrabPad()
 
   init(hosting: NSView) {
     self.hosting = hosting
     super.init(frame: .zero)
+    addSubview(grabPad)
     addSubview(hosting)
     hosting.frame = bounds
   }
@@ -590,12 +593,28 @@ final class OverlayContentContainer: NSView {
     let previousBounds = bounds
     super.setFrameSize(newSize)
     if hosting.frame != bounds { hosting.frame = bounds }
-    if previousBounds != bounds { window?.invalidateCursorRects(for: self) }
+    if previousBounds != bounds {
+      window?.invalidateCursorRects(for: self)
+      refreshGrabPad()
+    }
   }
 
   override func layout() {
     super.layout()
     if hosting.frame != bounds { hosting.frame = bounds }
+    refreshGrabPad()
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    refreshGrabPad()
+  }
+
+  /// The pad follows the frame and the mode; a mini panel has no resize zone.
+  func refreshGrabPad() {
+    let resizable = window?.styleMask.contains(.resizable) == true
+    let mode = (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded
+    grabPad.update(bounds: bounds, mode: resizable ? mode : .mini)
   }
 
   /// AppKit's borderless resize strip is ~1–2 px. Claim the 16 pt band first,
@@ -653,6 +672,42 @@ final class OverlayContentContainer: NSView {
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// The window server passes a mouse event through every fully transparent
+/// pixel of a non-opaque window, and the rounded glass leaves the corners of
+/// the resize zone transparent: a corner grab reached the app beneath before
+/// the panel saw it. A fill of 2/255 keeps those pixels inside the panel's
+/// event shape; it is invisible on white and on black. It paints only
+/// `OverlayResizeHit.grabPadRects`, all of them resize zones.
+final class OverlayResizeGrabPad: NSView {
+  static let fillAlpha: CGFloat = 2 / 255
+  private let shape = CAShapeLayer()
+  private(set) var rects: [NSRect] = []
+
+  init() {
+    super.init(frame: .zero)
+    wantsLayer = true
+    shape.fillColor = NSColor(white: 0.5, alpha: Self.fillAlpha).cgColor
+    shape.actions = ["path": NSNull(), "bounds": NSNull(), "position": NSNull()]
+    layer?.addSublayer(shape)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  func update(bounds container: NSRect, mode: OverlayPresentationMode) {
+    if frame != container { frame = container }
+    let rects = OverlayResizeHit.grabPadRects(in: container, mode: mode)
+    guard rects != self.rects || shape.frame != bounds else { return }
+    self.rects = rects
+    shape.frame = bounds
+    let path = CGMutablePath()
+    for rect in rects { path.addRect(rect) }
+    shape.path = path
+  }
 }
 
 enum DictationOverlayWindow {
@@ -971,6 +1026,10 @@ final class OverlayPresence {
 enum OverlayResizeHit: Sendable {
   static let band: CGFloat = 16
   static let scrollbarInset: CGFloat = 15
+  /// The bottom corners are whole squares, 30 pt a side (Maciej, 2026-10-14:
+  /// a 16 pt corner under a 22 pt glass radius left a sliver to grab). The top
+  /// corners keep the band: the header's close dot sits 16 pt from the left.
+  static let bottomCorner: CGFloat = 30
 
   enum Edge: Sendable, Hashable {
     case left, right, top, bottom
@@ -986,6 +1045,11 @@ enum OverlayResizeHit: Sendable {
     let left = point.x <= bounds.minX + band
     let right = point.x >= bounds.maxX - band
     if mode == .midi { return left ? .left : right ? .right : nil }
+    let corner = bottomCornerSide(in: bounds, band: band)
+    if point.y <= bounds.minY + corner {
+      if point.x <= bounds.minX + corner { return .bottomLeft }
+      if point.x >= bounds.maxX - corner { return .bottomRight }
+    }
     let bottom = point.y <= bounds.minY + band
     let top = point.y >= bounds.maxY - band
     switch (left, right, bottom, top) {
@@ -1050,17 +1114,52 @@ enum OverlayResizeHit: Sendable {
       ]
     }
     let b = band
+    let c = bottomCornerSide(in: bounds, band: band)
     let w = bounds.width
     let h = bounds.height
     return [
-      (NSRect(x: 0, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .left)),
-      (NSRect(x: w - b, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .right)),
+      (NSRect(x: 0, y: c, width: b, height: max(0, h - c - b)), cursor(for: .left)),
+      (NSRect(x: w - b, y: c, width: b, height: max(0, h - c - b)), cursor(for: .right)),
       (NSRect(x: b, y: h - b, width: max(0, w - 2 * b), height: b), cursor(for: .top)),
-      (NSRect(x: b, y: 0, width: max(0, w - 2 * b), height: b), cursor(for: .bottom)),
+      (NSRect(x: c, y: 0, width: max(0, w - 2 * c), height: b), cursor(for: .bottom)),
       (NSRect(x: 0, y: h - b, width: b, height: b), cursor(for: .topLeft)),
       (NSRect(x: w - b, y: h - b, width: b, height: b), cursor(for: .topRight)),
-      (NSRect(x: 0, y: 0, width: b, height: b), cursor(for: .bottomLeft)),
-      (NSRect(x: w - b, y: 0, width: b, height: b), cursor(for: .bottomRight)),
+      (NSRect(x: 0, y: 0, width: c, height: c), cursor(for: .bottomLeft)),
+      (NSRect(x: w - c, y: 0, width: c, height: c), cursor(for: .bottomRight)),
+    ]
+  }
+
+  /// The bottom corner square, never larger than half the panel.
+  static func bottomCornerSide(in bounds: NSRect, band: CGFloat = band) -> CGFloat {
+    max(band, min(bottomCorner, bounds.width / 2, bounds.height / 2))
+  }
+
+  /// Where the panel must own pointer events although the glass leaves its
+  /// pixels transparent: the rounded corners. Every rect lies inside a resize
+  /// zone, so the pad never takes a click that the content receives today.
+  static func grabPadRects(
+    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode
+  ) -> [NSRect] {
+    guard mode != .mini, bounds.width > band * 2, bounds.height > band * 2 else { return [] }
+    let b = band
+    let w = bounds.width
+    let h = bounds.height
+    if mode == .midi {
+      return [
+        NSRect(x: 0, y: 0, width: b, height: h),
+        NSRect(x: w - b, y: 0, width: b, height: h),
+      ]
+    }
+    let c = bottomCornerSide(in: bounds, band: band)
+    // Along each top edge the band reaches past the glass curve (~22 pt).
+    let reach = min(c, w / 2, h / 2)
+    return [
+      NSRect(x: 0, y: 0, width: c, height: c),
+      NSRect(x: w - c, y: 0, width: c, height: c),
+      NSRect(x: 0, y: h - reach, width: b, height: reach),
+      NSRect(x: 0, y: h - b, width: reach, height: b),
+      NSRect(x: w - b, y: h - reach, width: b, height: reach),
+      NSRect(x: w - reach, y: h - b, width: reach, height: b),
     ]
   }
 

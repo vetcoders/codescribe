@@ -79,7 +79,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(bottom.contains("glassNamespace: bottomChromeNamespace"))
     XCTAssertTrue(bottom.contains(".layoutPriority(-1)"))
     XCTAssertTrue(bottom.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertTrue(bottom.contains(".padding(.horizontal, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertTrue(bottom.contains(".padding(.horizontal, OverlayResizeChrome.actionsSideInset)"))
     XCTAssertTrue(overlay.contains("@Namespace private var bottomChromeNamespace"))
     XCTAssertTrue(evidence.contains(".glassEffect(.regular.interactive(), in: Capsule())"))
     XCTAssertTrue(evidence.contains(".glassEffectID(\"overlay-evidence\", in: glassNamespace)"))
