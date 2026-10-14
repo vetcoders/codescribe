@@ -206,10 +206,10 @@ impl AcousticLedger {
                     .session_noise_floor_rms(&owner.session, owner.capture_epoch)
                     .filter(|noise| noise.is_finite() && *noise >= 0.0)
                     .map(|noise| {
-                        noise
-                            .max(crate::audio::capture_receipt::DIGITAL_ZERO_ABS)
-                            .min(crate::audio::capture_receipt::SESSION_NOISE_FLOOR_CEILING_RMS)
-                            * 10.0_f32.powf(8.0 / 20.0)
+                        noise.clamp(
+                            crate::audio::capture_receipt::DIGITAL_ZERO_ABS,
+                            crate::audio::capture_receipt::SESSION_NOISE_FLOOR_CEILING_RMS,
+                        ) * 10.0_f32.powf(8.0 / 20.0)
                     })
                     .filter(|floor| floor.is_finite() && *floor > 0.0 && *floor <= 1.0)
             });
