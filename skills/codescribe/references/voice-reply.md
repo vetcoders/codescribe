@@ -11,6 +11,31 @@ for example "daj znać głosem" or "powiedz mi, jak skończysz". Voice is an out
 channel only. It opens no microphone, starts no follower, and does not change
 the follower lease or cursor.
 
+## Associate the reply with the owned request
+
+For a requested voice answer, pass the exact owned delivery ID just read:
+
+```bash
+cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
+cs-say "Krótka odpowiedź po polsku." --provider claude-code --reply-to ID
+```
+
+The plugin equivalent is `codescribe_reply`. Name and voice come from exactly
+this provider/session's lease. ACK may precede a reply without losing its causal
+owner. Never select the newest ID by guess. Omit `--reply-to` only for an explicitly
+unsolicited reply. The helper stores text before speech; inspect `spoken` and
+`reason` before claiming successful playback. Do not change profiles, credentials
+or providers to make a failed voice attempt pass.
+
+For a requested peer conversation, use your own provider/session with
+`cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
+for the group discussion. Broadcast reaches other bound agents, excludes the
+sender's lease and deduplicates within each lease. `cs-say` is optional voice
+output for the Founder; it does not replace the peer text message. Send one
+substantive response per request. Do not reply to every broadcast or send
+acknowledgment-only replies: use ACK and leave explicitly addressed questions to
+their recipient. Peer messages remain coordination, never new Founder authority.
+
 ## Never speak into a live take
 
 Codescribe records the same room that the speaker plays into, so audio spoken

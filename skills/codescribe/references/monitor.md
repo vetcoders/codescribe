@@ -168,6 +168,16 @@ Kimi conversation after it yielded, without a typed nudge.
 
 ## Claude Code: plugin hook or completion task
 
+Claude Code wakes an idle conversation on process completion or an `asyncRewake`
+hook, not a running process's stdout. An infinite `--watch --bell` cannot wake
+an idle Claude Code conversation; its `Monitor` is bounded to at most 30 minutes.
+
+Prefer the Codescribe plugin: install its payload marketplace once with
+`/plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins`, then
+`/plugin install codescribe@codescribe`. When `codescribe_*` tools are present,
+follow the plugin's `codescribe:codescribe` skill, using the real hook identity.
+It connects, reads, ACKs and replies without a second terminal listener.
+
 The Codescribe plugin's `Stop` hook runs `cs-bus --claude-code-wake` as an
 `asyncRewake` hook. It waits in the background, holds one lock per lease, and
 exits 75 (mapped to the hook's wake code 2) once per delivery not yet announced,
@@ -176,6 +186,11 @@ Announced IDs stay recorded until acknowledged, so a message left unread does
 not wake every turn. It also announces `follower_lost` or a refused mailbox once,
 and wakes after six silent hours only to re-arm. It ends silently when the
 session detaches or Claude Code exits. Every turn end re-arms it.
+
+During an active turn, the plugin's `PostToolUse` probe can deliver the same
+`codescribe_mailbox_ready` notice. Read and ACK it before continuing work; the
+probe and Stop waiter never ACK messages themselves. Keep the same connection
+and end the turn after draining; the Stop hook re-arms automatically.
 
 Without the plugin, use the Kimi pattern with `--provider claude-code`: one
 `Bash(run_in_background=true)` task over `cs-bus --watch --until-event`; on
