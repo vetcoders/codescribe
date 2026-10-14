@@ -208,6 +208,9 @@ struct CodescribeApp: App {
     }
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
+    // The window opens in the unified style it keeps; `adoptHostWindow` holds
+    // the same contract on the NSWindow and is what the chrome test measures.
+    .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .appSettings) {
         Button("Settings…") { openWindow.presentSettings() }

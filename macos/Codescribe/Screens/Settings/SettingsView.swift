@@ -104,6 +104,12 @@ struct SettingsView: View {
     window.styleMask.insert(.fullSizeContentView)
     window.isOpaque = false
     window.backgroundColor = .clear
+    // One header plane, as in Agent (`AgentWindowChrome.apply`). Left at
+    // `.automatic`, AppKit lays a separate toolbar strip across the whole
+    // width and the sidebar stops beneath it instead of running through the
+    // titlebar from the bottom edge to the top of the window.
+    window.toolbarStyle = .unified
+    window.titlebarSeparatorStyle = .automatic
     DockPresence.adopt(window)
   }
 
