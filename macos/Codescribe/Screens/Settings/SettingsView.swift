@@ -104,12 +104,11 @@ struct SettingsView: View {
     window.styleMask.insert(.fullSizeContentView)
     window.isOpaque = false
     window.backgroundColor = .clear
-    // One header plane, as in Agent (`AgentWindowChrome.apply`). Left at
-    // `.automatic`, AppKit lays a separate toolbar strip across the whole
-    // width and the sidebar stops beneath it instead of running through the
-    // titlebar from the bottom edge to the top of the window.
-    window.toolbarStyle = .unified
-    window.titlebarSeparatorStyle = .automatic
+    // The toolbar style belongs to the scene (`.windowToolbarStyle(.unified)`
+    // in App.swift): SwiftUI's toolbar bridging rewrites the NSWindow value
+    // after this adoption, so setting it here is not what the window keeps.
+    // The strip that once cut the sidebar beneath the titlebar came from a
+    // visible toolbar background, not from the style; see `CSWindowHeaderChrome`.
     DockPresence.adopt(window)
   }
 

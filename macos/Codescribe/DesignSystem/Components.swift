@@ -16,17 +16,23 @@ struct CSWindowHeaderItem<Content: View>: View {
   }
 }
 
+/// One header plane per column: the window toolbar paints no background of its
+/// own, so the sidebar material and the detail canvas each run from the bottom
+/// edge up through the titlebar.
+///
+/// A forced `.bar` background here is honoured only by SwiftUI-managed scenes.
+/// In the Settings `Window` scene it painted a flat strip across the whole
+/// titlebar width, and the sidebar material started beneath it; the Agent window
+/// is an AppKit `NSWindow` hosting the same split view, where the same modifier
+/// is ignored, which is why Agent looked right and Settings did not
+/// (measured 2026-10-14 with a scene/AppKit probe over a gradient backdrop).
 struct CSWindowHeaderChrome: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 15.0, *) {
-      content
-        .toolbarBackground(.bar, for: .windowToolbar)
-        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+      content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
     } else {
-      content
-        .toolbarBackground(.bar, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
+      content.toolbarBackground(.hidden, for: .windowToolbar)
     }
   }
 }
