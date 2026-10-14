@@ -224,6 +224,14 @@ pub enum ObservationProducer {
     Apple,
     /// Live websocket finals, committed at Silero closes.
     CloudLive,
+    /// Terminal DictationTranscriber witness over recorder-owned, already
+    /// closed PCM: one bounded final decode with measured segment ranges,
+    /// requested only for unresolved recovery debt or material uncovered
+    /// speech gaps. It sits below Whisper: it inserts into ranges no complete
+    /// source holds and never overrides a held Whisper word. Apple's omission
+    /// of a word is not acoustic evidence of absence, so it carries no
+    /// deletion authority either.
+    AppleDictation,
     /// Whisper tail retranscription.
     Whisper,
     /// Lexicon and Light+ cleanup.
@@ -242,10 +250,11 @@ impl ObservationProducer {
         match self {
             Self::Apple => 0,
             Self::CloudLive => 1,
-            Self::Whisper => 2,
-            Self::Lexicon => 3,
-            Self::Formatter => 4,
-            Self::ManualHuman => 5,
+            Self::AppleDictation => 2,
+            Self::Whisper => 3,
+            Self::Lexicon => 4,
+            Self::Formatter => 5,
+            Self::ManualHuman => 6,
         }
     }
 
@@ -258,6 +267,7 @@ impl ObservationProducer {
         match self {
             Self::Apple => "apple",
             Self::CloudLive => "cloud_live",
+            Self::AppleDictation => "apple_dictation",
             Self::Whisper => "whisper",
             Self::Lexicon | Self::Formatter => "retained_text",
             Self::ManualHuman => "manual_human",
@@ -269,6 +279,7 @@ impl ObservationProducer {
         match self {
             Self::Apple => "apple",
             Self::CloudLive => "cloud_live",
+            Self::AppleDictation => "apple_dictation",
             Self::Whisper => "whisper",
             Self::Lexicon => "lexicon",
             Self::Formatter => "formatter",
@@ -1808,6 +1819,7 @@ impl AcousticLedger {
                     ObservationProducer::Apple
                         | ObservationProducer::Whisper
                         | ObservationProducer::CloudLive
+                        | ObservationProducer::AppleDictation
                 )
             {
                 let sources = conflicts
@@ -1870,6 +1882,7 @@ impl AcousticLedger {
                         ObservationProducer::Apple
                             | ObservationProducer::Whisper
                             | ObservationProducer::CloudLive
+                            | ObservationProducer::AppleDictation
                             | ObservationProducer::ManualHuman
                     ))
                 || conflicts.iter().any(|&index| {

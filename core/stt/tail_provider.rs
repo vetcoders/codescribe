@@ -94,6 +94,10 @@ pub enum TailProviderId {
     Sidecar,
     Remote,
     Fake,
+    /// Apple DictationTranscriber bridge witness. Never selected from config:
+    /// it is requested only by the terminal seal-coverage witness, which names
+    /// it directly.
+    AppleDictation,
 }
 
 impl TailProviderId {
@@ -103,6 +107,7 @@ impl TailProviderId {
             Self::Sidecar => "sidecar",
             Self::Remote => "remote",
             Self::Fake => "fake",
+            Self::AppleDictation => "apple_dictation",
         }
     }
 
@@ -343,6 +348,9 @@ impl TailTimingQuality {
 pub enum TailEvidenceSource {
     AppleSpeech,
     Whisper,
+    /// Terminal DictationTranscriber witness decode over recorder-owned PCM.
+    /// Final, closed-file, measured segment ranges; never a live partial.
+    AppleDictation,
 }
 
 impl TailEvidenceSource {
@@ -350,6 +358,7 @@ impl TailEvidenceSource {
         match self {
             Self::AppleSpeech => "apple_speech",
             Self::Whisper => "whisper",
+            Self::AppleDictation => "apple_dictation",
         }
     }
 }
@@ -1770,6 +1779,9 @@ pub(crate) fn transcribe_selected_controlled(
             )?,
         },
         TailProviderId::Fake => unreachable!("fake is injectable, never selected from config"),
+        TailProviderId::AppleDictation => unreachable!(
+            "apple dictation is the terminal witness provider, never selected from config"
+        ),
     };
     control.check()?;
     let payload = outcome.payload;
