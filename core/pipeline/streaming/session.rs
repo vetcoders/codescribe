@@ -829,7 +829,6 @@ mod session_tests {
         };
         let evidence = crate::stt::tail_provider::TailProviderEvidence {
             segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-            unaligned_words: Vec::new(),
             source: TailEvidenceSource::Whisper,
             revision: Some("fixture-r1".to_string()),
             stability: TailEvidenceStability::Final,
@@ -1116,7 +1115,6 @@ mod local_execution_tests {
                     elapsed_ms: 0,
                     evidence: crate::stt::tail_provider::TailProviderEvidence {
                         segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                        unaligned_words: Vec::new(),
                         source: TailEvidenceSource::Whisper,
                         revision: None,
                         stability: TailEvidenceStability::Final,
@@ -1292,7 +1290,6 @@ mod local_execution_tests {
             0,
             0,
             0,
-            0,
             std::collections::BTreeMap::new(),
         );
         let receipt =
@@ -1300,7 +1297,6 @@ mod local_execution_tests {
         assert!(receipt.conservation.emitted);
         assert_eq!(receipt.conservation.windows_admitted, 0);
         assert_eq!(receipt.conservation.windows_coalesced, 0);
-        assert_eq!(receipt.conservation.windows_partially_aligned, 0);
         assert_eq!(receipt.conservation.windows_unresolved, 0);
         assert!(
             receipt
@@ -1328,7 +1324,6 @@ mod local_execution_tests {
                 .is_empty()
         );
         assert_eq!(receipt.conservation.energy_lookups_without_voiced_hop, 0);
-        assert_eq!(receipt.conservation.live_fence_holds, 0);
         assert_eq!(receipt.conservation.residue(), 0);
         assert_eq!(ledger.conservation().residue(), 0);
         assert_eq!(
@@ -1354,7 +1349,6 @@ mod local_execution_tests {
         for key in [
             "windows_admitted",
             "windows_coalesced",
-            "windows_partially_aligned",
             "windows_unresolved",
             "first_covered_sample",
             "last_covered_sample",
@@ -1366,7 +1360,6 @@ mod local_execution_tests {
             "observations_refused_by_reason",
             "windows_refused_before_inference",
             "energy_lookups_without_voiced_hop",
-            "live_fence_holds",
         ] {
             assert!(object.contains_key(key), "receipt missing {key}");
             assert!(schema.contains(key), "schema missing {key}");

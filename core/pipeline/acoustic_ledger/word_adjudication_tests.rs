@@ -446,7 +446,7 @@ pub(crate) fn measured_ledger_at_rate(
     use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
     assert!(owner.sample_start < owner.sample_end && owner.sample_end <= pcm.len() as u64);
     let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
-    let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+    let mut writer = CaptureLevelAccumulator::bound_to_at_rate(&energy, sample_rate);
     for chunk in pcm.chunks(320) {
         writer.push_samples(chunk);
     }

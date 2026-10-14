@@ -96,7 +96,6 @@ fn completion(request: &TailPatchRequest, words: usize, label: &str) -> TailPatc
         elapsed_ms: 1,
         evidence: TailProviderEvidence {
             segment_grain: TailSegmentGrain::Word,
-            unaligned_words: Vec::new(),
             source: TailEvidenceSource::Whisper,
             revision: Some("synthetic-capture-owner-proof".into()),
             stability: TailEvidenceStability::Final,

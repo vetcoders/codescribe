@@ -8,7 +8,6 @@
     "emitted",
     "windows_admitted",
     "windows_coalesced",
-    "windows_partially_aligned",
     "windows_unresolved",
     "first_covered_sample",
     "last_covered_sample",
@@ -19,15 +18,13 @@
     "observations_unanchored",
     "observations_refused_by_reason",
     "windows_refused_before_inference",
-    "energy_lookups_without_voiced_hop",
-    "live_fence_holds"
+    "energy_lookups_without_voiced_hop"
   ],
   "properties": {
     "schema": { "const": "codescribe-session-conservation/v1" },
     "emitted": { "type": "boolean" },
     "windows_admitted": { "type": "integer", "minimum": 0 },
     "windows_coalesced": { "type": "integer", "minimum": 0 },
-    "windows_partially_aligned": { "type": "integer", "minimum": 0 },
     "windows_unresolved": { "type": "integer", "minimum": 0 },
     "first_covered_sample": { "type": ["integer", "null"], "minimum": 0 },
     "last_covered_sample": { "type": ["integer", "null"], "minimum": 0 },
@@ -47,7 +44,6 @@
       "type": "object",
       "additionalProperties": { "type": "integer", "minimum": 0 }
     },
-    "energy_lookups_without_voiced_hop": { "type": "integer", "minimum": 0 },
-    "live_fence_holds": { "type": "integer", "minimum": 0 }
+    "energy_lookups_without_voiced_hop": { "type": "integer", "minimum": 0 }
   }
 }

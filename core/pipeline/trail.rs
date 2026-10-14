@@ -277,8 +277,109 @@ pub struct TrailSlotStart {
     pub alternatives_before: usize,
     #[serde(default)]
     pub speech: Option<TrailSpeechEvidence>,
+    /// Physical anchor map used for this admission, not producer timestamps.
+    #[serde(default)]
+    pub anchor: Option<TrailAnchorEvidence>,
     #[serde(default)]
     pub assignments: Vec<(OccurrenceIdentity, OccurrenceIdentity)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailAnchorEvidence {
+    session: String,
+    capture_epoch: u64,
+    observed_samples: Option<u64>,
+    availability: String,
+    anchors: Vec<(OccurrenceIdentity, bool)>,
+    #[serde(default)]
+    capture_end: Option<OccurrenceIdentity>,
+    #[serde(default)]
+    quiet_fences: Vec<OccurrenceIdentity>,
+}
+
+impl TrailAnchorEvidence {
+    fn from_evidence(map: &crate::audio::capture_receipt::SpeechAnchorEvidence) -> Self {
+        Self {
+            session: map.identity.session.clone(),
+            capture_epoch: map.identity.capture_epoch,
+            observed_samples: map.availability.observed_samples(),
+            availability: map.availability.as_str().to_string(),
+            capture_end: None,
+            quiet_fences: Vec::new(),
+            anchors: map
+                .anchors
+                .iter()
+                .map(|anchor| (OccurrenceIdentity::from(&anchor.range), anchor.open_at_end))
+                .collect(),
+        }
+    }
+
+    fn evidence(
+        &self,
+        owner: &OccurrenceIdentity,
+    ) -> io::Result<crate::audio::capture_receipt::SpeechAnchorEvidence> {
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, CaptureEvidenceIdentity, SpeechAnchor, SpeechAnchorEvidence,
+        };
+        if self.session != owner.session || self.capture_epoch != owner.capture_epoch {
+            return Err(io::Error::other("anchor capture identity differs"));
+        }
+        if self.observed_samples.is_some() != (self.availability == "observed") {
+            return Err(io::Error::other(
+                "anchor availability differs from measurement extent",
+            ));
+        }
+        if self.capture_end.as_ref().is_some_and(|receipt| {
+            !receipt.same_capture(owner)
+                || receipt.sample_start != 0
+                || receipt.sample_end == 0
+                || self.observed_samples != Some(receipt.sample_end)
+        }) || self.quiet_fences.iter().any(|range| {
+            !range.same_capture(owner)
+                || !range.is_anchored()
+                || self
+                    .observed_samples
+                    .is_none_or(|end| range.sample_end > end)
+        }) {
+            return Err(io::Error::other(
+                "invalid capture-end or quiet-fence anchor receipt",
+            ));
+        }
+        let mut previous_end = 0;
+        for (range, _) in &self.anchors {
+            if !range.same_capture(owner)
+                || !range.is_anchored()
+                || range.sample_start < previous_end
+                || self
+                    .observed_samples
+                    .is_none_or(|extent| range.sample_end > extent)
+            {
+                return Err(io::Error::other("invalid recorded speech anchor map"));
+            }
+            previous_end = range.sample_end;
+        }
+        Ok(SpeechAnchorEvidence {
+            identity: CaptureEvidenceIdentity::new(&self.session, self.capture_epoch),
+            availability: self
+                .observed_samples
+                .map_or(AcousticAvailability::NotObserved, |observed_samples| {
+                    AcousticAvailability::Observed { observed_samples }
+                }),
+            anchors: self
+                .anchors
+                .iter()
+                .map(|(range, open_at_end)| SpeechAnchor {
+                    range: crate::stt::tail_provider::TailSampleRange {
+                        session: range.session.clone(),
+                        capture_epoch: range.capture_epoch,
+                        sample_start: range.sample_start,
+                        sample_end: range.sample_end,
+                    },
+                    open_at_end: *open_at_end,
+                })
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +454,12 @@ impl SlotTrace {
                 .speech_evidence
                 .as_ref()
                 .map(TrailSpeechEvidence::from_evidence),
+            anchor: ledger.speech_anchors.as_ref().map(|map| {
+                let mut receipt = TrailAnchorEvidence::from_evidence(map);
+                receipt.capture_end = ledger.anchor_capture_end.clone();
+                receipt.quiet_fences = ledger.authenticated_anchor_quiet_fences();
+                receipt
+            }),
             assignments: ledger.assigned_word_pin_ranges(observation),
         };
         record(
@@ -1205,6 +1312,7 @@ fn replay_slot_operation(
                 && (pins.len() != input.words.len()
                     || !pins.iter().zip(&input.words).all(|(pin, source)| {
                         pin.sample_start == source.sample_start
+                            && source.lexical_position.is_none()
                             && pin.sample_end == source.sample_end
                             && pin.text == source.surface
                             && pin.confidence == source.confidence
@@ -1234,6 +1342,60 @@ fn replay_slot_operation(
         .as_ref()
         .map(TrailSpeechEvidence::evidence)
         .transpose()?;
+    ledger.speech_anchors = start
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.evidence(&observation.occurrence))
+        .transpose()?;
+    let capture_end = start
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.capture_end.clone());
+    if let Some(receipt) = &capture_end {
+        let valid = ledger.speech_anchors.as_ref().is_some_and(|map| {
+            receipt.same_capture(&observation.occurrence)
+                && receipt.sample_start == 0
+                && receipt.sample_end > 0
+                && map.availability.observed_samples() == Some(receipt.sample_end)
+        });
+        if !valid
+            || ledger
+                .anchor_capture_end
+                .as_ref()
+                .is_some_and(|prior| prior != receipt)
+        {
+            return Err(io::Error::other("capture-end anchor receipt differs"));
+        }
+    } else if ledger.anchor_capture_end.is_some() {
+        return Err(io::Error::other("capture-end anchor receipt regressed"));
+    }
+    ledger.anchor_capture_end = capture_end;
+    ledger.replay_quiet_fences = start
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.quiet_fences.clone());
+    if let Some(ranges) = &ledger.replay_quiet_fences
+        && !ranges.is_empty()
+    {
+        let resolution = u64::from(
+            start
+                .capture_rate_hz
+                .ok_or_else(|| io::Error::other("quiet fence capture rate missing"))?,
+        )
+        .div_ceil(50)
+        .saturating_add(1);
+        let extent = start
+            .anchor
+            .as_ref()
+            .and_then(|anchor| anchor.observed_samples);
+        if ranges.iter().any(|range| {
+            !range.same_capture(&observation.occurrence)
+                || range.sample_end.checked_sub(range.sample_start) != Some(resolution)
+                || extent.is_none_or(|end| range.sample_end > end)
+        }) {
+            return Err(io::Error::other("invalid recorded exact-PCM quiet fence"));
+        }
+    }
     ledger.record_assigned_word_pins(observation, &start.assignments);
     match &start.input {
         TrailSlotInput::Words { words } => {
@@ -2774,5 +2936,66 @@ mod tests {
         SINKS.get().unwrap().lock().unwrap().remove(&key);
         assert!(render_trace(&[], None).contains("INCOMPLETE"));
         assert!(trail_path(Path::new("/tmp"), "../escape").is_err());
+    }
+}
+
+#[cfg(test)]
+mod acoustic_v2_anchor_receipt_tests {
+    use super::*;
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, CaptureEvidenceIdentity, SpeechAnchor, SpeechAnchorEvidence,
+    };
+    use crate::stt::tail_provider::TailSampleRange;
+
+    #[test]
+    fn anchor_receipt_roundtrip_preserves_capture_geometry_and_open_edge() {
+        let owner = OccurrenceIdentity::new("anchor-replay", 19, 0, 32_000);
+        let map = SpeechAnchorEvidence {
+            identity: CaptureEvidenceIdentity::new("anchor-replay", 19),
+            availability: AcousticAvailability::Observed {
+                observed_samples: 32_000,
+            },
+            anchors: vec![SpeechAnchor {
+                range: TailSampleRange {
+                    session: "anchor-replay".into(),
+                    capture_epoch: 19,
+                    sample_start: 20_000,
+                    sample_end: 32_000,
+                },
+                open_at_end: true,
+            }],
+        };
+        let wire = serde_json::to_vec(&TrailAnchorEvidence::from_evidence(&map)).unwrap();
+        let recorded: TrailAnchorEvidence = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(recorded.evidence(&owner).unwrap(), map);
+        let foreign = OccurrenceIdentity::new("foreign", 19, 0, 32_000);
+        assert!(recorded.evidence(&foreign).is_err());
+    }
+
+    #[test]
+    fn forged_anchor_extent_or_availability_is_refused_before_replay() {
+        let owner = OccurrenceIdentity::new("anchor-replay", 19, 0, 32_000);
+        let mut wire = TrailAnchorEvidence {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            observed_samples: Some(32_000),
+            availability: "observed".into(),
+            capture_end: None,
+            quiet_fences: Vec::new(),
+            anchors: vec![(
+                OccurrenceIdentity::new("anchor-replay", 19, 20_000, 32_001),
+                true,
+            )],
+        };
+        assert!(wire.evidence(&owner).is_err());
+        wire.anchors[0].0.sample_end = 32_000;
+        wire.availability = "invalid_measurement".into();
+        assert!(wire.evidence(&owner).is_err());
+        wire.availability = "observed".into();
+        wire.anchors.push((
+            OccurrenceIdentity::new("anchor-replay", 19, 31_000, 32_000),
+            false,
+        ));
+        assert!(wire.evidence(&owner).is_err());
     }
 }

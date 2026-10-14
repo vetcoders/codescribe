@@ -230,15 +230,17 @@ fn candle_transcribe_long_with_segments(
 }
 
 /// L1 tail window: phrase-grain transcript plus measured word pins when the
-/// checkpoint alignment heads produce them, with any word the alignment
-/// could not place carried unaligned beside the pins.
+/// checkpoint alignment heads produce them.
 fn candle_transcribe_tail_window(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
     initial_prompt: Option<String>,
     control: &LocalExecutionControl,
-) -> anyhow::Result<(RawTranscript, Option<whisper::word_pins::AlignedWordPins>)> {
+) -> anyhow::Result<(
+    RawTranscript,
+    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+)> {
     whisper::singleton::transcribe_tail_window(
         audio,
         sample_rate,

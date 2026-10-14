@@ -1,0 +1,9 @@
+{
+  "source_session": "cc143598-44f5-4541-ba25-2042dffe7fdd",
+  "source_build": "973 / 8f2fe2b6d",
+  "transformation": "first 32 seconds, PCM unchanged, mono PCM16 48000 Hz",
+  "sha256": "d653223868dd8bfbcc56929741ebffece289e8989a8811e9088d5d7f1afc6e87",
+  "failure": "decision 213 inserts shifted Jednak beside held jednak",
+  "scope": "bounded ledger regression; not full native replay",
+  "physical_owner": [1292544, 1496064]
+}

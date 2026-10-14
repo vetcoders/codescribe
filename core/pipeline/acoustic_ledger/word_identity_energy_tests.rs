@@ -12,6 +12,68 @@ use super::*;
 
 const RATE: u32 = 48_000;
 
+/// Native build 973, decision 213: a later Whisper window moved `jednak`
+/// by 400 ms and minted `jednak Jednak`. Preserve the recorded capture clock.
+#[test]
+fn recorded_whisper_window_drift_does_not_insert_a_second_jednak() {
+    let pcm = take_pcm("take_cc143598_jednak_prefix.wav");
+    let owner = OccurrenceIdentity::new("cc143598-jednak", 1, 1_292_544, 1_496_064);
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
+    let mut writer = CaptureLevelAccumulator::bound_to_at_rate(&energy, RATE);
+    for chunk in pcm.chunks(320) {
+        writer.push_samples(chunk);
+    }
+    let mut ledger = AcousticLedger::new();
+    ledger.bind_capture_rate(RATE);
+    let calibration = EnergyCalibration::new(
+        "cal2-blackhole-2ch-1791129675726@48000hz",
+        0.196_358_433_617_834_12,
+        14_400,
+    );
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: owner.clone(),
+                    duration_ms: 4_240.0,
+                    energy_integral: 1.011_745_850_555_598_7,
+                    mean_rms_dbfs: -53.035_356_620_606_36,
+                    peak_dbfs: -36.959_939_641_395_28,
+                    vad_open_sample: Some(owner.sample_start),
+                    vad_close_sample: Some(owner.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    ledger.record_speech_evidence(&energy.session_active_speech_ranges(
+        &owner.session,
+        owner.capture_epoch,
+        RATE,
+    ));
+    ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 9, 2, owner.clone());
+    ledger.admit_word_slots(
+        &first,
+        &pins(&[
+            ("ale", 1_311_360, 1_320_000),
+            ("może", 1_320_000, 1_354_560),
+            ("najlepszy", 1_354_560, 1_428_480),
+            ("jednak", 1_428_480, 1_451_520),
+        ]),
+    );
+    let next = ObservationIdentity::new(ObservationProducer::Whisper, 9, 3, owner.clone());
+    ledger.admit_word_slots(&next, &pins(&[("Jednak", 1_447_680, 1_464_960)]));
+    assert_eq!(
+        lowercase_tokens(ledger.text_of(&owner).expect("retained phrase")),
+        ["ale", "może", "najlepszy", "jednak"],
+        "a shifted observation of the recorded word is not another occurrence"
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
 fn take_pcm(file: &str) -> Vec<f32> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../tests/fixtures")
@@ -392,76 +454,242 @@ fn real_take_36de5e98_an_edge_cut_word_is_held_live_and_owned_by_the_next_comple
     assert_eq!(ledger.conservation().residue(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Five real repetitions of one word ("pięć" ×5, numerals take on dragon,
-// 32.4–34.8 s, 48 kHz). Plan case (a): energy alone must not decide how
-// many words were spoken, and a word-onset witness must count them.
-// ---------------------------------------------------------------------------
-
-const PIEC_TAKE: &str = "numerals_piec_x5.wav";
-const PIEC_ONSETS: &str = "parakeet_word_onsets_numerals_piec_x5.json";
-
-fn onset_window(file: &str, session: &str) -> WordOnsetEvidence {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../tests/fixtures")
-        .join(file);
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    let mut window: WordOnsetEvidence =
-        serde_json::from_str(&text).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    window.session = session.into();
-    window.capture_epoch = 1;
-    window.validate().unwrap();
-    window
+fn measured_anchor_owner(
+    session: &str,
+    epoch: u64,
+    pcm: &[f32],
+    rate: u32,
+) -> crate::audio::capture_receipt::CaptureEnergyOwner {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    let energy = CaptureEnergyOwner::bind(session, epoch);
+    let mut writer = CaptureLevelAccumulator::bound_to_at_rate(&energy, rate);
+    for hop in pcm.chunks(137) {
+        writer.push_samples(hop);
+    }
+    energy
 }
 
 #[test]
-fn fixture_piec_x5_energy_finds_three_bursts_under_five_spoken_words() {
-    // The valleys between the first three repetitions never drop below the
-    // take's own floor + 8 dB: the ladder hears one long burst, then two.
-    let pcm = take_pcm(PIEC_TAKE);
-    let bursts = speech_bursts(&pcm, 0, pcm.len() as u64);
+fn acoustic_v2_anchor_map_uses_real_take_noise_and_preserves_four_bursts_for_five_words() {
+    let pcm = take_pcm(SHORT_TAKE);
+    let energy = measured_anchor_owner("anchor-real", 11, &pcm, RATE);
+    let floor = 10.0_f32.powf((speech_floor_dbfs(&pcm) as f32 + 8.0) / 20.0);
+    let map = energy.session_speech_anchors("anchor-real", 11, RATE, floor);
+    assert_eq!(map.availability.observed_samples(), Some(pcm.len() as u64));
+    let bursts = map
+        .anchors
+        .iter()
+        .filter(|a| a.range.sample_start < 374_400 && a.range.sample_end > 240_000)
+        .collect::<Vec<_>>();
     assert_eq!(
         bursts.len(),
-        3,
-        "energy bursts are not words; this cut holds five 'pięć': {bursts:?}"
+        4,
+        "physical bursts are not lexical word count: {bursts:?}"
+    );
+    assert!(
+        map.anchors
+            .iter()
+            .all(|a| a.range.session == "anchor-real" && a.range.capture_epoch == 11)
+    );
+    assert!(
+        energy
+            .session_speech_anchors("foreign", 11, RATE, floor)
+            .anchors
+            .is_empty()
+    );
+    assert!(
+        energy
+            .session_speech_anchors("anchor-real", 12, RATE, floor)
+            .anchors
+            .is_empty()
     );
 }
 
 #[test]
-fn real_take_piec_x5_word_onset_witness_counts_five_where_energy_counts_three() {
-    let pcm = take_pcm(PIEC_TAKE);
-    let bursts = speech_bursts(&pcm, 0, pcm.len() as u64);
-    let mut ledger = AcousticLedger::new();
-    ledger
-        .record_word_onset_evidence(onset_window(PIEC_ONSETS, "numerals-piec"))
-        .unwrap();
-    let whole = OccurrenceIdentity::new("numerals-piec", 1, 0, pcm.len() as u64);
+fn acoustic_v2_anchor_map_merges_short_gaps_and_keeps_stable_open_start() {
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    let energy = CaptureEnergyOwner::bind("anchor-growth", 4);
+    let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+    // 16kHz: 100ms speech, 40ms gap, 100ms speech is one open burst.
+    writer.push_samples(&vec![0.1; 1600]);
+    let initial = energy.session_speech_anchors("anchor-growth", 4, 16_000, 0.01);
+    assert_eq!(initial.anchors.len(), 1);
+    assert!(initial.anchors[0].open_at_end);
+    writer.push_samples(&vec![0.0; 640]);
+    writer.push_samples(&vec![0.1; 1600]);
+    let grown = energy.session_speech_anchors("anchor-growth", 4, 16_000, 0.01);
+    assert_eq!(grown.anchors.len(), 1);
     assert_eq!(
-        ledger.word_onset_count(&whole),
-        Some(5),
-        "five word onsets over the whole cut"
+        grown.anchors[0].range.sample_start,
+        initial.anchors[0].range.sample_start
     );
-    // Known limit, kept visible: the first emission falls ~280 ms before any
-    // measured speech (0.16 s against a first burst at 0.42 s), so the count
-    // inside the measured speech union is four. Emission lag has no measured
-    // distribution yet (parakeet-representation-report.md, step 2); until it
-    // has one, a span must be asked over the whole claim, not over bursts.
-    let speech_union = OccurrenceIdentity::new(
-        "numerals-piec",
-        1,
-        bursts.first().map_or(0, |b| b.0),
-        bursts.last().map_or(0, |b| b.1),
+    writer.push_samples(&vec![0.0; 1600]);
+    writer.push_samples(&vec![0.1; 1600]);
+    let separate = energy.session_speech_anchors("anchor-growth", 4, 16_000, 0.01);
+    assert_eq!(separate.anchors.len(), 2);
+    assert!(!separate.anchors[0].open_at_end);
+}
+
+#[test]
+fn acoustic_v2_anchor_map_does_not_certify_invalid_pcm_or_an_invalid_floor() {
+    let mut pcm = vec![0.1; 3200];
+    pcm[1000] = f32::NAN;
+    let energy = measured_anchor_owner("invalid-anchor", 1, &pcm, 16_000);
+    assert!(
+        energy
+            .session_speech_anchors("invalid-anchor", 1, 16_000, 0.01)
+            .anchors
+            .is_empty()
     );
-    assert_eq!(ledger.word_onset_count(&speech_union), Some(4));
-    // A sequence of five pins over the whole cut agrees with the witness; a
-    // sequence of three (one per burst) does not.
-    let owner = OccurrenceIdentity::new("numerals-piec", 1, 0, pcm.len() as u64);
+    let valid = measured_anchor_owner("valid-anchor", 1, &vec![0.1; 3200], 16_000);
+    for floor in [f32::NAN, f32::INFINITY, -0.01, 0.0] {
+        assert!(
+            valid
+                .session_speech_anchors("valid-anchor", 1, 16_000, floor)
+                .anchors
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn acoustic_v2_anchor_grid_does_not_depend_on_callback_partition() {
+    let mut pcm = vec![0.0; 12_031];
+    pcm[1321..4327].fill(0.1);
+    pcm[6003..10007].fill(0.2);
+    let a = measured_anchor_owner("partition", 7, &pcm, 16_000);
+    use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+    let b = CaptureEnergyOwner::bind("partition", 7);
+    let mut writer = CaptureLevelAccumulator::bound_to_at_rate(&b, 16_000);
+    for part in pcm.chunks(977) {
+        writer.push_samples(part);
+    }
+    assert_eq!(
+        a.session_speech_anchors("partition", 7, 16_000, 0.01),
+        b.session_speech_anchors("partition", 7, 16_000, 0.01)
+    );
+    assert_eq!(
+        a.session_noise_floor_rms("partition", 7),
+        Some(0.0),
+        "gated quiet must not be replaced by speech RMS"
+    );
+}
+
+#[test]
+fn acoustic_v2_cut_live_words_remain_unresolved_evidence_not_published_words() {
+    let pcm = take_pcm(PUMPY_TAKE);
+    let owner = OccurrenceIdentity::new("cut-live-proof", 1, PUMPY_OWNER.0, PUMPY_OWNER.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let energy = measured_anchor_owner(&owner.session, owner.capture_epoch, &pcm, RATE);
+    let floor = 10.0_f32.powf((speech_floor_dbfs(&pcm) as f32 + 8.0) / 20.0);
+    let anchors = energy.session_speech_anchors(&owner.session, owner.capture_epoch, RATE, floor);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 5, 2, owner.clone());
+    let original = decoded(&PUMPY_LIVE_WINDOW_6, PUMPY_LIVE_DECODE);
+    let closed = ledger.defer_edge_cut_words(&observation, &original, &anchors.anchors);
+    assert!(!closed.iter().any(
+        |pin| pin.text == "pumpy" || pin.text == "to" && pin.sample_end == PUMPY_LIVE_DECODE.1
+    ));
+    assert!(closed.iter().any(|pin| pin.text == "pracuje"));
+    assert!(
+        ledger
+            .word_finality(&owner)
+            .iter()
+            .any(|word| word.unresolved && word.selected.surface == "pumpy")
+    );
+    assert!(ledger.slots_of(&owner).is_none());
+    assert!(
+        ledger
+            .slot_alternatives()
+            .iter()
+            .any(|alternative| alternative.candidate.contains("pumpy")
+                && alternative.reason == "live_edge_cut_pending")
+    );
+}
+
+#[test]
+fn acoustic_v2_shared_measured_pin_keeps_both_function_words() {
+    let mut pcm = vec![0.0; 16_000];
+    pcm[4_000..10_000].fill(0.1);
+    let owner = OccurrenceIdentity::new("shared-function-words", 3, 0, 16_000);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, 16_000);
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
     let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
-    assert!(ledger.word_onsets_agree(&observation, "piec_x5", 0, pcm.len() as u64, 5));
-    assert!(!ledger.word_onsets_agree(&observation, "piec_x5", 0, pcm.len() as u64, 3));
-    let verdicts = ledger.word_onset_verdicts();
-    assert_eq!(verdicts.len(), 2);
-    assert_eq!(verdicts[1].measured_onsets, Some(5));
-    assert!(!verdicts[1].agrees);
+    let merged = WordPin::new(4_000, 10_000, "w tej").with_decode_window(0, 16_000);
+    let receipt = ledger.admit_word_slots(&observation, &[merged]);
+    assert!(receipt.grants_mutation());
+    assert_eq!(
+        lowercase_tokens(ledger.text_of(&owner).unwrap()),
+        ["w", "tej"]
+    );
+    assert_eq!(
+        ledger.slots_of(&owner).unwrap().len(),
+        1,
+        "one compound pin retains group accuracy without invented word boundaries"
+    );
+    let group = &ledger.slots_of(&owner).unwrap()[0];
+    assert_eq!((group.sample_start, group.sample_end), (4_000, 10_000));
+    assert_eq!(group.text, "w tej");
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn acoustic_v2_five_iwo_on_one_continuous_burst_survive_both_arrival_orders() {
+    for apple_first in [true, false] {
+        let mut pcm = vec![0.0; 32_000];
+        pcm[4_000..16_000].fill(0.1);
+        let owner = OccurrenceIdentity::new(format!("five-shared-{apple_first}"), 4, 0, 32_000);
+        let mut ledger = measured_ledger_at_rate(&owner, &pcm, 16_000);
+        ledger.schedule_frontier(
+            owner.clone(),
+            [ObservationProducer::Apple, ObservationProducer::Whisper],
+        );
+        let physical = (0..5)
+            .map(|index| {
+                WordPin::new(4_000 + index * 2400, 6_400 + index * 2400, "Iwo")
+                    .with_decode_window(0, 32_000)
+            })
+            .collect::<Vec<_>>();
+        let shifted = (0..5)
+            .map(|index| WordPin::new(9_600 + index * 1200, 10_800 + index * 1200, "Iwo"))
+            .collect::<Vec<_>>();
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        if apple_first {
+            ledger.admit_word_slots(&apple, &shifted);
+            ledger.admit_word_slots(&whisper, &physical);
+        } else {
+            ledger.admit_word_slots(&whisper, &physical);
+            ledger.admit_word_slots(&apple, &shifted);
+        }
+        assert_eq!(
+            lowercase_tokens(ledger.text_of(&owner).unwrap()),
+            ["iwo", "iwo", "iwo", "iwo", "iwo"]
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 5);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
+
+#[test]
+fn an_interior_word_does_not_inherit_the_bursts_left_decode_cut() {
+    for (start, expected) in [(8_000, true), (6_000, false)] {
+        let owner = OccurrenceIdentity::new("interior-half-window-burst", 1, 0, 16_000);
+        let mut pcm = vec![0.0_f32; 16_000];
+        pcm[4_000..10_000].fill(0.2);
+        let mut ledger = measured_ledger_at_rate(&owner, &pcm, 16_000);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 1, owner.clone());
+        let receipt = ledger.admit_word_slots(
+            &observation,
+            &[WordPin::new(start, 10_000, "słowo").with_decode_window(6_000, 16_000)],
+        );
+        assert_eq!(
+            receipt.grants_mutation(),
+            expected,
+            "start={start}: {receipt:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), expected.then_some("słowo"));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
 }

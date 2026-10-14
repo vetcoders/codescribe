@@ -366,28 +366,6 @@ pub struct TailProviderEvidence {
     /// Word when every segment is a measured word pin. Phrase otherwise.
     #[serde(default)]
     pub segment_grain: TailSegmentGrain,
-    /// Words of the decoded label that received no measured pin. Only a
-    /// word-grain payload carries them: the pins are complete for every other
-    /// word, and `text` still holds the whole hypothesis. Empty when the
-    /// alignment was complete or the payload is phrase grain.
-    #[serde(default)]
-    pub unaligned_words: Vec<UnalignedTailWord>,
-}
-
-/// One decoded word without a measured pin. `ordinal` is its position in the
-/// full word sequence of the decode, pins included, so the label order is
-/// recoverable without inventing a sample range for it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnalignedTailWord {
-    pub ordinal: usize,
-    pub text: String,
-}
-
-impl TailProviderEvidence {
-    /// True when word pins exist but at least one decoded word has none.
-    pub fn is_partial_alignment(&self) -> bool {
-        self.segment_grain == TailSegmentGrain::Word && !self.unaligned_words.is_empty()
-    }
 }
 
 /// Grain of one tail segment. Phrase is a timestamp-token span. Word is a
@@ -511,35 +489,6 @@ impl TailProviderPayload {
         }
         if self.evidence.segment_grain == TailSegmentGrain::Word && !word_pins {
             bail!("tail provider word-grain evidence has no word pins");
-        }
-        if !self.evidence.unaligned_words.is_empty() {
-            if self.evidence.segment_grain != TailSegmentGrain::Word {
-                bail!("tail provider unaligned words require word-grain evidence");
-            }
-            if self.evidence.unaligned_words.len() > MAX_TAIL_PROVIDER_SEGMENTS {
-                bail!("tail provider returned too many unaligned words");
-            }
-            let word_total = self.segments.len() + self.evidence.unaligned_words.len();
-            let mut previous_ordinal: Option<usize> = None;
-            let mut unaligned_text_bytes = 0usize;
-            for word in &self.evidence.unaligned_words {
-                if word.text.trim().is_empty() {
-                    bail!("tail provider unaligned word has no text");
-                }
-                if word.ordinal >= word_total {
-                    bail!("tail provider unaligned word ordinal escapes the decoded label");
-                }
-                if previous_ordinal.is_some_and(|previous| word.ordinal <= previous) {
-                    bail!("tail provider unaligned words must be ordered and distinct");
-                }
-                previous_ordinal = Some(word.ordinal);
-                unaligned_text_bytes = unaligned_text_bytes
-                    .checked_add(word.text.len())
-                    .ok_or_else(|| anyhow!("tail provider unaligned text size overflow"))?;
-                if unaligned_text_bytes > MAX_TAIL_PROVIDER_TEXT_BYTES {
-                    bail!("tail provider unaligned text exceeds bounded payload size");
-                }
-            }
         }
         Ok(())
     }
@@ -694,42 +643,28 @@ impl InProcessTailProvider {
             &raw.text,
             map_segments(raw.segments.clone(), TailSegmentGrain::Phrase)?,
         );
-        // Pins and the words the alignment could not place travel together:
-        // a refused pin clock drops both back to phrase grain, so an unaligned
-        // word is never reported beside segments that are not pins.
         let word_segments = match word_segments {
-            Some(aligned) if !aligned.pins.is_empty() => {
+            Some(segments) if !segments.is_empty() => {
                 let mapped = coarsen_invalid_in_process_segments(
                     request_range,
                     &raw.text,
-                    map_segments(aligned.pins, TailSegmentGrain::Word)?,
+                    map_segments(segments, TailSegmentGrain::Word)?,
                 );
                 if mapped.is_empty() {
                     None
                 } else {
-                    let unaligned_words = aligned
-                        .unaligned
-                        .into_iter()
-                        .map(|word| UnalignedTailWord {
-                            ordinal: word.ordinal,
-                            text: word.text,
-                        })
-                        .collect::<Vec<_>>();
-                    Some((mapped, unaligned_words))
+                    Some(mapped)
                 }
             }
             _ => None,
         };
-        let (segments, segment_grain, unaligned_words) = match word_segments {
-            Some((segments, unaligned_words)) => {
-                (segments, TailSegmentGrain::Word, unaligned_words)
-            }
-            None => (phrase_segments, TailSegmentGrain::Phrase, Vec::new()),
+        let (segments, segment_grain) = match word_segments {
+            Some(segments) => (segments, TailSegmentGrain::Word),
+            None => (phrase_segments, TailSegmentGrain::Phrase),
         };
         tracing::info!(
             segment_count = segments.len(),
             grain = segment_grain.as_str(),
-            unaligned_words = unaligned_words.len(),
             request_id = request.identity.request_id,
             sample_start = request.identity.range.sample_start,
             sample_end = request.identity.range.sample_end,
@@ -752,7 +687,6 @@ impl InProcessTailProvider {
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
                 segment_grain,
-                unaligned_words,
             },
         };
         payload.validate()?;
@@ -1492,7 +1426,6 @@ impl TailProvider for RemoteTailProvider {
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
                 segment_grain,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: model,
                 stability: TailEvidenceStability::Final,
@@ -2128,7 +2061,6 @@ mod tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -2209,7 +2141,6 @@ mod tests {
             elapsed_ms: 7,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("fake-r1".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -2296,7 +2227,6 @@ mod tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -2337,7 +2267,6 @@ mod tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -2365,89 +2294,6 @@ mod tests {
         );
         payload.evidence.segment_grain = TailSegmentGrain::Word;
         payload.validate().expect("word grain");
-    }
-
-    /// Unaligned words ride only beside word pins. Their ordinals index the
-    /// full decoded label, stay ordered and distinct, and carry text, so a
-    /// serialized payload without the field still validates as complete.
-    #[test]
-    fn unaligned_words_require_word_pins_and_ordered_label_ordinals() {
-        let segment: TimedTailSegment = serde_json::from_str(
-            r#"{"text":"dwa","grain":"word","range":{"session":"s","capture_epoch":1,"sample_start":160,"sample_end":320}}"#,
-        )
-        .expect("segment json");
-        let evidence: TailProviderEvidence = serde_json::from_str(
-            r#"{"source":"whisper","revision":null,"stability":"final","timing_quality":"exact_sample_range","avg_logprob":null,"segment_grain":"word"}"#,
-        )
-        .expect("evidence json without the field");
-        assert!(evidence.unaligned_words.is_empty());
-        assert!(!evidence.is_partial_alignment());
-        let mut payload = TailProviderPayload {
-            identity: TailRequestIdentity {
-                request_id: 1,
-                range: segment.range.clone(),
-            },
-            text: "raz dwa".into(),
-            segments: vec![segment],
-            avg_logprob: None,
-            compression_ratio: None,
-            provider_id: TailProviderId::Fake,
-            elapsed_ms: 0,
-            evidence,
-        };
-        payload.validate().expect("complete word grain");
-        payload.evidence.unaligned_words = vec![UnalignedTailWord {
-            ordinal: 0,
-            text: "raz".into(),
-        }];
-        payload
-            .validate()
-            .expect("one unpinned word beside one pin");
-        assert!(payload.evidence.is_partial_alignment());
-
-        payload.evidence.unaligned_words[0].ordinal = 2;
-        assert!(
-            payload
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("escapes the decoded label")
-        );
-        payload.evidence.unaligned_words[0].ordinal = 0;
-        payload.evidence.unaligned_words.push(UnalignedTailWord {
-            ordinal: 0,
-            text: "raz".into(),
-        });
-        assert!(
-            payload
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("ordered and distinct")
-        );
-        payload.evidence.unaligned_words.truncate(1);
-        payload.evidence.unaligned_words[0].text = " ".into();
-        assert!(
-            payload
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("has no text")
-        );
-        payload.evidence.unaligned_words[0].text = "raz".into();
-        payload.segments[0].grain = TailSegmentGrain::Phrase;
-        payload.evidence.segment_grain = TailSegmentGrain::Phrase;
-        assert!(
-            payload
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("unaligned words require word-grain")
-        );
-        payload.evidence.unaligned_words.clear();
-        payload
-            .validate()
-            .expect("phrase grain without unaligned words");
     }
 
     fn cloud_window(sample_start: u64, frames: u64) -> TailProviderRequest {
@@ -2581,7 +2427,6 @@ mod tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: grain,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
