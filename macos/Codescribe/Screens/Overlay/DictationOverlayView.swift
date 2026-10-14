@@ -401,8 +401,12 @@ struct DictationOverlayView: View {
     ZStack {
       GeometryReader { geometry in
         ZStack {
+          // Both ends are numbers, so the fold interpolates with the window's
+          // 0.28 s morph. A `nil` height has nothing to animate from: the body
+          // snapped to zero on the first frame while the glass kept shrinking
+          // (presentation ledger, 2026-10-14).
           bodySection
-            .frame(height: state.isCollapsed ? 0 : nil)
+            .frame(height: state.isCollapsed ? 0 : geometry.size.height)
             .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
             .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
             .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
@@ -683,14 +687,21 @@ struct DictationOverlayView: View {
     VStack(spacing: 6) {
       if state.isMini {
         miniHeader
+          .transition(.opacity)
       } else {
         ViewThatFits(in: .horizontal) {
           fullHeader
           narrowHeader
         }
+        .transition(.opacity)
       }
-
     }
+    // The mini and the full header cross-fade over the window's morph instead
+    // of swapping on its first frame (presentation ledger, 2026-10-14).
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: DictationOverlayWindow.presentationDuration),
+      value: state.presentationMode
+    )
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
