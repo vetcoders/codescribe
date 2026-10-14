@@ -28,10 +28,21 @@ pub const DEFAULT_CAPTURE_LEVEL_LOW_DB: f32 = -52.0;
 pub const DIGITAL_ZERO_ABS: f32 = 1.0e-8;
 /// Linear RMS below this is not active speech (~−80 dBFS).
 pub const ACTIVE_SPEECH_LINEAR_FLOOR: f32 = 1.0e-4;
+/// Highest RMS the session noise floor estimate may take (−40 dBFS). The
+/// estimate is the quietest tenth of the capture; a capture with no quiet hop
+/// (steady speech, a synthetic constant block) reports its own speech level
+/// there, and a speech threshold 8 dB above speech would measure silence
+/// under every word. Noise louder than this is treated as speech.
+pub const SESSION_NOISE_FLOOR_CEILING_RMS: f32 = 1.0e-2;
 /// Adjacent active hops separated only by an ordinary word-edge pause stay one
 /// measured speech span. Seal coverage separately tolerates a smaller 250 ms
 /// uncovered edge; this merge is not transcript-dependent.
 pub const ACTIVE_SPEECH_MERGE_GAP_MS: u64 = 200;
+/// Anchor bursts join only across a quiet gap strictly shorter than this.
+/// Qualification still uses [`ACTIVE_SPEECH_MERGE_GAP_MS`].
+pub const SPEECH_ANCHOR_MERGE_GAP_MS: u64 = 60;
+/// A burst of this length is an anchor. A shorter outer span is not.
+pub const SPEECH_ANCHOR_MIN_BURST_MS: u64 = 60;
 /// Near-full-scale samples count as clipping.
 pub const CLIP_ABS: f32 = 0.99;
 
@@ -232,6 +243,39 @@ impl AcousticSpeechEvidence {
     }
 }
 
+/// One speech burst on the capture hop clock.
+///
+/// Identity is `(range.capture_epoch, range.sample_start)`. The start stays
+/// put when later hops extend `range.sample_end`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeechAnchor {
+    pub range: TailSampleRange,
+    pub open_at_end: bool,
+}
+
+/// Anchor map for one capture epoch. An empty `anchors` list is measured
+/// silence only when `availability` is [`AcousticAvailability::Observed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeechAnchorEvidence {
+    pub identity: CaptureEvidenceIdentity,
+    pub availability: AcousticAvailability,
+    pub anchors: Vec<SpeechAnchor>,
+}
+
+impl SpeechAnchorEvidence {
+    fn refused(identity: CaptureEvidenceIdentity, availability: AcousticAvailability) -> Self {
+        debug_assert!(
+            availability.observed_samples().is_none(),
+            "an observed anchor map must carry its bursts"
+        );
+        Self {
+            identity,
+            availability,
+            anchors: Vec::new(),
+        }
+    }
+}
+
 /// Shared, identity-bound owner of one take's capture energy ladder.
 ///
 /// The production writer is the async capture arm and the production reader is
@@ -271,11 +315,21 @@ impl CaptureEnergyOwner {
         if sample_end <= sample_start || !rms.is_finite() || rms < 0.0 {
             return;
         }
-        clock.hops.push(EnergyHop {
+        let hop = EnergyHop {
             sample_start,
             sample_end,
             rms,
-        });
+        };
+        if let Some(last) = clock.hops.last_mut()
+            && last.sample_start == sample_start
+            && last.sample_end <= sample_end
+        {
+            // The tail of a fixed capture hop may be visible before the next
+            // callback completes it. Extend that one measurement in place.
+            *last = hop;
+        } else {
+            clock.hops.push(hop);
+        }
     }
 
     /// Mean RMS of hops overlapping `[sample_start, sample_end)`, as dBFS.
@@ -381,6 +435,131 @@ impl CaptureEnergyOwner {
         )
     }
 
+    /// Speech-anchor map for one capture epoch, read from this owner's hop clock.
+    ///
+    /// `speech_floor_rms` is the caller-supplied device floor in linear RMS.
+    /// Hops at or above that floor form bursts. A gap strictly shorter than
+    /// [`SPEECH_ANCHOR_MERGE_GAP_MS`] is joined; a burst whose outer span is
+    /// shorter than [`SPEECH_ANCHOR_MIN_BURST_MS`] is dropped. `open_at_end`
+    /// is set when the quiet from the burst end to the observed edge is still
+    /// shorter than that merge gap, so the same start can grow. This does not
+    /// allocate a second clock, a cache, or a VAD, and it does not change
+    /// [`Self::session_active_speech_ranges`].
+    pub fn session_speech_anchors(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_rate: u32,
+        speech_floor_rms: f32,
+    ) -> SpeechAnchorEvidence {
+        let identity = (*self.identity).clone();
+        if !self.identity.matches(session, capture_epoch) {
+            return SpeechAnchorEvidence::refused(identity, AcousticAvailability::IdentityMismatch);
+        }
+        // A threshold that is not a finite positive RMS, or a rate that cannot
+        // place 60 ms on the sample axis, must not be read as measured silence.
+        let floor_usable =
+            speech_floor_rms.is_finite() && speech_floor_rms > 0.0 && speech_floor_rms <= 1.0;
+        if sample_rate == 0 || !floor_usable {
+            return SpeechAnchorEvidence::refused(
+                identity,
+                AcousticAvailability::InvalidMeasurement { valid_samples: 0 },
+            );
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0 {
+            return SpeechAnchorEvidence::refused(identity, AcousticAvailability::NotObserved);
+        }
+        if let Some(valid_samples) = clock.first_invalid_sample {
+            return SpeechAnchorEvidence::refused(
+                identity,
+                AcousticAvailability::InvalidMeasurement { valid_samples },
+            );
+        }
+        if !speech_anchor_clock_contiguous(&clock) {
+            return SpeechAnchorEvidence::refused(
+                identity,
+                AcousticAvailability::Discontinuous {
+                    observed_samples: clock.observed_samples,
+                },
+            );
+        }
+        let observed_samples = clock.observed_samples;
+        let mut bursts: Vec<(u64, u64)> = Vec::new();
+        for hop in clock.hops.iter().filter(|hop| hop.rms >= speech_floor_rms) {
+            if let Some((_, previous_end)) = bursts.last_mut()
+                && speech_anchor_shorter_than(
+                    hop.sample_start.saturating_sub(*previous_end),
+                    sample_rate,
+                    SPEECH_ANCHOR_MERGE_GAP_MS,
+                )
+            {
+                *previous_end = (*previous_end).max(hop.sample_end);
+            } else {
+                bursts.push((hop.sample_start, hop.sample_end));
+            }
+        }
+        let anchors = bursts
+            .into_iter()
+            .filter(|(sample_start, sample_end)| {
+                speech_anchor_duration_kept(sample_end.saturating_sub(*sample_start), sample_rate)
+            })
+            .map(|(sample_start, sample_end)| {
+                let quiet_after = observed_samples.saturating_sub(sample_end);
+                SpeechAnchor {
+                    range: TailSampleRange {
+                        session: session.to_string(),
+                        capture_epoch,
+                        sample_start,
+                        sample_end,
+                    },
+                    open_at_end: speech_anchor_shorter_than(
+                        quiet_after,
+                        sample_rate,
+                        SPEECH_ANCHOR_MERGE_GAP_MS,
+                    ),
+                }
+            })
+            .collect();
+        SpeechAnchorEvidence {
+            identity,
+            availability: AcousticAvailability::Observed { observed_samples },
+            anchors,
+        }
+    }
+
+    /// Linear RMS at the 10th percentile of this capture's hop clock.
+    ///
+    /// Rank is `sorted[len / 10]` after an ascending total order, the same
+    /// index the take-floor counterexamples use on hop levels. Digital zero
+    /// remains measured quiet; removing it would mistake the speech level for
+    /// the noise floor on a gated capture path.
+    /// The caller applies margin (`p10 * 10^(8/20)`). A calibration profile is
+    /// not read here. `None` is a mismatched, unobserved, invalid, or
+    /// discontinuous clock.
+    pub fn session_noise_floor_rms(&self, session: &str, capture_epoch: u64) -> Option<f32> {
+        if !self.identity.matches(session, capture_epoch) {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0
+            || clock.first_invalid_sample.is_some()
+            || !speech_anchor_clock_contiguous(&clock)
+        {
+            return None;
+        }
+        if clock.hops.iter().any(|hop| !hop.rms.is_finite()) {
+            return None;
+        }
+        let mut levels: Vec<f32> = clock.hops.iter().map(|hop| hop.rms).collect();
+        if levels.is_empty() {
+            return None;
+        }
+        levels.sort_by(|left, right| left.total_cmp(right));
+        let floor = levels[levels.len() / 10];
+        floor.is_finite().then_some(floor)
+    }
+
     /// Voiced hops that overlap `[sample_start, sample_end)`.
     ///
     /// A hop is voiced when its own RMS is at or above
@@ -427,49 +606,31 @@ impl CaptureEnergyOwner {
         }
         (cursor >= sample_end).then_some(voiced)
     }
+}
 
-    /// Every hop overlapping `[sample_start, sample_end)` with its own RMS,
-    /// clipped to the query. Same contiguity contract as
-    /// [`Self::voiced_hops_in`]: `None` when this owner cannot speak for the
-    /// whole range. The caller decides what is speech; no floor is applied.
-    pub fn hop_levels_in(
-        &self,
-        session: &str,
-        capture_epoch: u64,
-        sample_start: u64,
-        sample_end: u64,
-    ) -> Option<Vec<(u64, u64, f32)>> {
-        if sample_end <= sample_start || !self.identity.matches(session, capture_epoch) {
-            return None;
+/// `samples` is strictly shorter than `ms` at `sample_rate`.
+///
+/// Cross-multiply avoids truncating 60 ms to zero samples at low rates, which
+/// would refuse to join adjacent hops.
+fn speech_anchor_shorter_than(samples: u64, sample_rate: u32, ms: u64) -> bool {
+    samples.saturating_mul(1_000) < u64::from(sample_rate).saturating_mul(ms)
+}
+
+fn speech_anchor_duration_kept(samples: u64, sample_rate: u32) -> bool {
+    samples.saturating_mul(1_000)
+        >= u64::from(sample_rate).saturating_mul(SPEECH_ANCHOR_MIN_BURST_MS)
+}
+
+/// Hops must tile `[0, observed_samples)` with no hole and no overlap.
+fn speech_anchor_clock_contiguous(clock: &SessionEnergyClock) -> bool {
+    let mut cursor = 0_u64;
+    for hop in &clock.hops {
+        if hop.sample_start != cursor || hop.sample_end <= cursor {
+            return false;
         }
-        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
-        if clock.observed_samples == 0
-            || clock.first_invalid_sample.is_some()
-            || sample_end > clock.observed_samples
-        {
-            return None;
-        }
-        let mut cursor = sample_start;
-        let mut levels = Vec::new();
-        for hop in &clock.hops {
-            if hop.sample_end <= sample_start {
-                continue;
-            }
-            if hop.sample_start >= sample_end {
-                break;
-            }
-            let overlap_start = hop.sample_start.max(sample_start);
-            if overlap_start > cursor {
-                return None;
-            }
-            let end = hop.sample_end.min(sample_end);
-            if end > overlap_start {
-                levels.push((overlap_start, end, hop.rms));
-            }
-            cursor = cursor.max(end);
-        }
-        (cursor >= sample_end).then_some(levels)
+        cursor = hop.sample_end;
     }
+    cursor == clock.observed_samples
 }
 
 fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
@@ -591,6 +752,9 @@ impl CapturePathMeta {
 pub struct CaptureLevelAccumulator {
     /// Owner this writer feeds. `None` = statistics-only (calibration).
     energy: Option<CaptureEnergyOwner>,
+    energy_hop_size: Option<usize>,
+    energy_hop_start: u64,
+    energy_pending: Vec<f32>,
     sample_count: u64,
     digital_zero_samples: u64,
     clipping_samples: u64,
@@ -619,6 +783,17 @@ impl CaptureLevelAccumulator {
     pub fn bound_to(owner: &CaptureEnergyOwner) -> Self {
         Self {
             energy: Some(owner.clone()),
+            ..Self::default()
+        }
+    }
+
+    /// Rate-aware capture writer: energy hops have a fixed 20 ms grid,
+    /// independent of device callback sizes. Statistics still cover all PCM.
+    pub fn bound_to_at_rate(owner: &CaptureEnergyOwner, sample_rate: u32) -> Self {
+        assert!(sample_rate > 0, "capture rate must be positive");
+        Self {
+            energy: Some(owner.clone()),
+            energy_hop_size: Some((sample_rate / 50).max(1) as usize),
             ..Self::default()
         }
     }
@@ -656,7 +831,34 @@ impl CaptureLevelAccumulator {
         let sample_start = self.sample_count;
         self.sample_count += samples.len() as u64;
         if let Some(owner) = self.energy.as_ref() {
-            owner.record_hop(sample_start, self.sample_count, rms, nonfinite);
+            if let Some(hop_size) = self.energy_hop_size {
+                let mut remaining = samples;
+                while !remaining.is_empty() {
+                    let count = remaining.len().min(hop_size - self.energy_pending.len());
+                    self.energy_pending.extend_from_slice(&remaining[..count]);
+                    remaining = &remaining[count..];
+                    let invalid = self
+                        .energy_pending
+                        .iter()
+                        .filter(|sample| !sample.is_finite())
+                        .count() as u64;
+                    let square_sum = self
+                        .energy_pending
+                        .iter()
+                        .filter(|sample| sample.is_finite())
+                        .map(|sample| f64::from(*sample).powi(2))
+                        .sum::<f64>();
+                    let level = (square_sum / self.energy_pending.len() as f64).sqrt() as f32;
+                    let end = self.energy_hop_start + self.energy_pending.len() as u64;
+                    owner.record_hop(self.energy_hop_start, end, level, invalid);
+                    if self.energy_pending.len() == hop_size {
+                        self.energy_pending.clear();
+                        self.energy_hop_start = end;
+                    }
+                }
+            } else {
+                owner.record_hop(sample_start, self.sample_count, rms, nonfinite);
+            }
         }
         self.digital_zero_samples += zeros;
         self.clipping_samples += clips;

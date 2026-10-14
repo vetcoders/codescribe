@@ -36,10 +36,6 @@ pub struct IpcEvent {
 /// [`Engine`]: IpcEventPayload::Engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
-// The engine wire event grew past clippy's variant-size threshold with the
-// session conservation receipt counters (13 X 2026). Boxing it touches every
-// construction and match site of the payload; deferred to its own cut.
-#[allow(clippy::large_enum_variant)]
 pub enum IpcEventPayload {
     #[serde(rename = "engine")]
     Engine(EngineEventWire),

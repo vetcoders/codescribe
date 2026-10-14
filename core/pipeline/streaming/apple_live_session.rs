@@ -1168,7 +1168,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // the same handle, so no process-global slot and no reset entrypoint sit
     // between them.
     let capture_energy = CaptureEnergyOwner::bind(session_id.clone(), capture_epoch);
-    let mut capture_level = CaptureLevelAccumulator::bound_to(&capture_energy);
+    let mut capture_level = CaptureLevelAccumulator::bound_to_at_rate(&capture_energy, sample_rate);
     let input_plan = SpeechInputPlan::for_capture(
         &runtime_settings,
         capture_device_name.as_deref(),
@@ -1915,10 +1915,6 @@ struct AppleSealState {
     windows_admitted: u64,
     /// Accepted windows built from more than one occurrence.
     windows_coalesced: u64,
-    /// Returned word-grain windows in which at least one decoded word
-    /// carried no measured pin. The label kept every word; only the
-    /// unpinned ones stay outside the pin set.
-    windows_partially_aligned: u64,
     /// Windows refused before a provider ever saw them, by reason code.
     windows_refused_before_inference: BTreeMap<String, u64>,
     /// Seals where Layer 1 recovered speech it could not place on the canvas
@@ -2191,12 +2187,8 @@ impl AppleSealState {
             );
         for candidate in ranged {
             if let Some(index) = current_ranged.iter().position(|(held, _)| {
-                crate::pipeline::acoustic_ledger::pcm_ranges_share_slot(
-                    held.sample_start,
-                    held.sample_end,
-                    candidate.0.sample_start,
-                    candidate.0.sample_end,
-                )
+                held.sample_start == candidate.0.sample_start
+                    && held.sample_end == candidate.0.sample_end
             }) {
                 current_ranged[index] = candidate;
             } else {
@@ -2397,7 +2389,7 @@ impl AppleSealState {
             }),
         );
         if self.capture_stopping {
-            ledger.record_exhausted_capture(
+            ledger.close_speech_anchor_capture(
                 &self.session_id,
                 self.capture_epoch,
                 self.audio.session_sample_end(),
@@ -2441,7 +2433,6 @@ impl AppleSealState {
             unresolved_windows: 0,
             windows_admitted: 0,
             windows_coalesced: 0,
-            windows_partially_aligned: 0,
             windows_refused_before_inference: BTreeMap::new(),
             under_commit_escalations: 0,
             tail_patch: None,
@@ -3158,7 +3149,6 @@ impl AppleSealState {
             &ledger,
             self.windows_admitted,
             self.windows_coalesced,
-            self.windows_partially_aligned,
             self.unresolved_windows,
             self.windows_refused_before_inference.clone(),
         )
@@ -3770,46 +3760,14 @@ impl AppleSealState {
                     &open_members,
                     word_grain,
                 );
-                let same_word_replay = word_grain
-                    && (open_members.iter().any(|owner| {
-                        pin_intersects(&pin, owner)
-                            && ledger.slots_of(owner).is_some_and(|slots| {
-                                slots.iter().any(|slot| {
-                                    (slot.producer == LedgerObservationProducer::Whisper
-                                        || (producer == LedgerObservationProducer::CloudLive
-                                            && slot.producer
-                                                == LedgerObservationProducer::CloudLive))
-                                        && ledger.slot_source_ranges(slot).iter().any(|source| {
-                                            source.same_capture(owner)
-                                                && source.sample_start.max(owner.sample_start)
-                                                    == slot.sample_start
-                                                && source.sample_end.min(owner.sample_end)
-                                                    == slot.sample_end
-                                                && crate::pipeline::acoustic_ledger::same_word_pin(
-                                                    pin.sample_start,
-                                                    pin.sample_end,
-                                                    text,
-                                                    source.sample_start,
-                                                    source.sample_end,
-                                                    &slot.text,
-                                                )
-                                        })
-                                })
-                            })
-                    }) || routes.iter().any(|route| {
-                        route.exclusive.iter().any(|prior| {
-                            crate::pipeline::acoustic_ledger::same_word_pin(
-                                pin.sample_start,
-                                pin.sample_end,
-                                text,
-                                prior.pin.sample_start,
-                                prior.pin.sample_end,
-                                &prior.text,
-                            )
-                        })
-                    }));
-                if same_word_replay {
-                    class = OverlapPinClass::Replay;
+                // Routing chooses an open utterance, never word identity.
+                // Every word hypothesis reaches the ledger's anchor matcher;
+                // approximate model timestamps cannot deduplicate it here.
+                if word_grain
+                    && let Some(member_index) = ledger.word_owner_index(&pin, &open_members)
+                    && !ledger.is_sealed(&open_members[member_index])
+                {
+                    class = OverlapPinClass::ExclusiveTail { member_index };
                 }
                 let energy_silent = self
                     .capture_energy
@@ -4192,26 +4150,6 @@ impl AppleSealState {
         let identity = &returned.identity;
         let admit_sample_start = identity.range.sample_start;
         let admit_sample_end = identity.range.sample_end;
-        if fresh && returned.evidence.is_partial_alignment() {
-            // The provider named the words it could not pin. They are still
-            // in the window label; the ledger sees only the measured pins.
-            self.windows_partially_aligned = self.windows_partially_aligned.saturating_add(1);
-            info!(
-                request_id = identity.request_id,
-                sample_start = admit_sample_start,
-                sample_end = admit_sample_end,
-                word_pins = returned.segments.len(),
-                unaligned_words = returned.evidence.unaligned_words.len(),
-                unaligned_ordinals = ?returned
-                    .evidence
-                    .unaligned_words
-                    .iter()
-                    .map(|word| word.ordinal)
-                    .collect::<Vec<_>>(),
-                windows_partially_aligned = self.windows_partially_aligned,
-                "tail_patch_partial_alignment"
-            );
-        }
         let payload = Some(returned);
         let exact_open_members = self
             .unsealed_word_owners()
@@ -4919,7 +4857,7 @@ impl AppleSealState {
         // A measured group refinement needs the capture's own speech ranges and
         // this batch's neighbour geometry; without them the group is kept.
         let speech = coverage_speech_evidence(self);
-        let (observation, receipt, label) = {
+        let (observation, receipt, label, child_receipts) = {
             let mut ledger = self
                 .acoustic_ledger
                 .lock()
@@ -4949,12 +4887,18 @@ impl AppleSealState {
                     .flatten(),
             );
             ledger.record_assigned_word_pins(&observation, neighbours);
+            let trail_start = ledger.layer_trail().len();
             let receipt = ledger.admit_word_slots(&observation, &words);
+            let child_receipts = ledger.layer_trail()[trail_start..]
+                .iter()
+                .filter(|entry| entry.observation != observation)
+                .cloned()
+                .collect::<Vec<_>>();
             let label = match &receipt {
                 MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
                 _ => ledger.text_of(owner).unwrap_or("").to_string(),
             };
-            (observation, receipt, label)
+            (observation, receipt, label, child_receipts)
         };
         if let MutationReceipt::KeepVisibleUnanchored { reason, .. } = &receipt {
             let _ = ev_tx.send(EngineEvent::Warning {
@@ -4963,6 +4907,13 @@ impl AppleSealState {
                     "owner={}..{} request={request}",
                     owner.sample_start, owner.sample_end
                 ),
+            });
+        }
+        for entry in child_receipts {
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation: entry.observation,
+                label: entry.candidate_label,
+                receipt: entry.decision,
             });
         }
         let admitted = receipt.grants_mutation();
@@ -5912,19 +5863,15 @@ fn admit_late_apple_words(
 }
 
 /// Arrival order chooses the current Apple hypothesis for one PCM slot.
-/// Identity is `pcm_ranges_share_slot`. Distinct adjacent words stay distinct
+/// Only exact native callback coordinates identify a revised transport row.
+/// Physical word identity is decided later by the ledger's speech anchors.
 /// even when timestamp edges cross.
 fn select_current_apple_words(words: Vec<FusionWord>) -> (Vec<FusionWord>, Vec<FusionWord>) {
     let mut selected: Vec<FusionWord> = Vec::new();
     let mut superseded = Vec::new();
     for word in words {
         if let Some(index) = selected.iter().position(|held| {
-            crate::pipeline::acoustic_ledger::pcm_ranges_share_slot(
-                held.sample_start,
-                held.sample_end,
-                word.sample_start,
-                word.sample_end,
-            )
+            held.sample_start == word.sample_start && held.sample_end == word.sample_end
         }) {
             if selected[index] == word {
                 continue;
@@ -8102,6 +8049,17 @@ fn apple_stream_worker(
         ),
     };
     state.bind_capture_energy(capture_energy);
+    if let Some(device) = capture_device_name.as_deref()
+        && let Ok(floor) = runtime_settings
+            .energy_calibration()
+            .speech_anchor_floor_for_capture(device, sample_rate)
+    {
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind_speech_anchor_floor(floor);
+    }
     if input_enhanced {
         state.recognizer_audio = Some(LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS));
         state.recognizer_archive = input_archive;
@@ -9621,7 +9579,6 @@ mod c13a_lifecycle_tests {
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("walkaround-755".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -10484,7 +10441,6 @@ mod c13a_lifecycle_tests {
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -10761,7 +10717,6 @@ mod layer1_frontier_contracts {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-test".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -12153,7 +12108,6 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -13715,7 +13669,6 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 0,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("rc-w2".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -14608,7 +14561,6 @@ mod rc_w2_acoustic_tests {
             elapsed_ms: 1,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Word,
-                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("context-window".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -19761,7 +19713,6 @@ mod live_refinement_admission_tests {
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
                 segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
-                unaligned_words: Vec::new(),
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-live-admission".into()),
                 stability: TailEvidenceStability::Final,
@@ -23060,7 +23011,6 @@ mod relay_l1_overlap_admission_tests {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain,
-                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("relay-l1-phrase-grain".into()),
                     stability: TailEvidenceStability::Final,
@@ -28984,7 +28934,6 @@ mod relay_l1_overlap_admission_tests {
             elapsed_ms: 1,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
                 segment_grain,
-                unaligned_words: Vec::new(),
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("relay-recovery".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -29407,7 +29356,6 @@ mod tc2_window_contract_tests {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain: grain,
-                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("tc2-real-geometry-synthetic-labels".into()),
                     stability: TailEvidenceStability::Final,
@@ -30949,7 +30897,6 @@ mod forensic_word_conservation_fixture {
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
                     segment_grain,
-                    unaligned_words: Vec::new(),
                     source: TailEvidenceSource::Whisper,
                     revision: Some("forensic-word-grain".into()),
                     stability: TailEvidenceStability::Final,
@@ -31257,7 +31204,6 @@ mod bounded_lexical_trial_tests {
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: None,
                 segment_grain: TailSegmentGrain::Word,
-                unaligned_words: Vec::new(),
             },
             segments: vec![TimedTailSegment {
                 text: "PNPM".into(),

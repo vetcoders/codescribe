@@ -915,6 +915,22 @@ impl SealedEnergyCalibration {
         profile.ledger_calibration(sample_rate)
     }
 
+    /// The same validated device profile supplies the speech-anchor floor.
+    /// Reading the sealed snapshot does not probe or reload calibration files.
+    pub fn speech_anchor_floor_for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<f32, EnergyCalibrationRefusal> {
+        self.for_capture(device_name, sample_rate)?;
+        let profile = self.profile_at(device_name, calibration_now_unix_ms()?)?;
+        let threshold_dbfs = profile
+            .measurement
+            .noise_floor_dbfs
+            .map_or(profile.floors.existence_threshold_dbfs, |noise| noise + 8.0);
+        Ok(db_to_linear(threshold_dbfs))
+    }
+
     /// Deterministic pre-mic admission against the complete live cpal path.
     pub fn for_capture_at(
         &self,
