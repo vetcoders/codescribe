@@ -29,13 +29,22 @@ adds the standard macOS helper/interpreter directories to its own PATH. It also
 works when Junie is launched from an app or launchd without a terminal PATH;
 HOME, credentials and the user's shell configuration are never changed.
 
-The `SessionStart`/`UserPromptSubmit` hook supplies Junie's **real session_id**
-with `provider=junie`. The skill passes both to `codescribe_connect`; an occupied
+Use this conversation's native `/link` to supply Junie's **real session_id**
+with `provider=junie` when it is not already present in the conversation.
+The `SessionStart` hook displays that identity as a user-facing `systemMessage`,
+not model context. The skill passes both to `codescribe_connect`; an occupied
 channel is refused, not taken over. The same plugin serves Claude Code
 ([Claude Code](CLAUDE_CODE_PLUGIN.md)); its background wake hook lives in a
 separate hook file that Junie's `hooks/hooks.json` never references. Existing voice profiles, authentication and permission policy remain
-unchanged. Supply a voice only if you want to change it. Hook support is EAP;
-without a native hook receipt, obtain `/link` rather than inventing an identity.
+unchanged. Supply a voice only if you want to change it. Never invent an identity.
+
+Junie 26.10.5 prepends `UserPromptSubmit.additionalContext` to shell tasks too,
+then executes the resulting `<additional_context>` block as shell syntax.
+Junie strips `!` before the hook and does not expose the task type, so filtering
+on a leading `!` cannot fix it. Codescribe therefore registers no
+`UserPromptSubmit` hook, and `session.py` stays silent for that event even if an
+older registration remains loaded. It never emits `additionalContext` in Junie.
+Claude Code's SessionStart identity injection is unchanged.
 
 ## Native reception and the current listening limit
 

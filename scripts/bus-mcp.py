@@ -64,7 +64,7 @@ def schema(properties=None, required=None):
 
 
 TOOLS = [
-    {"name": "codescribe_connect", "description": "Bind THIS conversation to a named Codescribe channel. Pass exactly the provider and session_id supplied by the Codescribe session hook. Never take over another conversation.",
+    {"name": "codescribe_connect", "description": "Bind THIS conversation to a named Codescribe channel. Pass exactly this conversation's provider and real session_id from the Claude Code session hook or Junie's native /link. Never take over another conversation.",
      "inputSchema": schema({"provider": {"type": "string", "enum": sorted(WAIT_SECONDS)},
                             "session_id": {"type": "string"}, "name": {"type": "string"},
                             "channel": {"type": "string", "pattern": "^[1-9]$"},

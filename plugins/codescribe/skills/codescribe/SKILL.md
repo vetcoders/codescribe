@@ -5,11 +5,15 @@ description: Connect this Claude Code or Junie conversation to a named Codescrib
 
 # Codescribe — native conversation (Claude Code and Junie)
 
-Use the provider and real session_id injected by the native Codescribe session
-hook: `provider=claude-code` in Claude Code, `provider=junie` in Junie. Never
-invent an ID, use another chat's ID, launch cs-junie, or create an ACP session.
-If the hook identity is absent, do not connect; report the missing hook (Junie:
-obtain this conversation's /link).
+In Claude Code, use `provider=claude-code` and the real session_id injected by
+the native Codescribe session hook. In Junie, use `provider=junie` and this
+conversation's real session_id from its native `/link` shared by the Founder.
+Junie's SessionStart hook displays the identity to the user, not to the model;
+it never injects prompt context because Junie 26.10.5 also executes that context
+as part of `!` commands. An identity already supplied for this conversation
+remains valid. Never invent an ID, use another chat's ID, launch cs-junie or
+create an ACP session. If identity is absent, do not connect: obtain `/link`
+in Junie or report the missing session hook in Claude Code.
 
 For `/codescribe NAME CHANNEL [VOICE]`, call `codescribe_connect` with that
 provider, session_id, name and single-digit channel (1–9). Set voice/vendor only
@@ -64,8 +68,8 @@ stop the reception task instead of creating a model-polling loop; preserve the
 lease and unread mailbox and do not claim continuous listening after task exit.
 A later `codescribe_wait` supersedes any wait the client abandoned. Typed prompts
 can cancel the wait. Never launch another agent or terminal reader to conceal the
-limit. This is an ordinary Junie CLI extension; no IDE is required. Hook identity
-is EAP functionality; do not silently fabricate it on an unsupported Junie version.
+limit. This is an ordinary Junie CLI extension; no IDE is required. Never obtain
+identity by adding a UserPromptSubmit context hook: it corrupts shell commands.
 
 ## Stop, recovery and proof
 
