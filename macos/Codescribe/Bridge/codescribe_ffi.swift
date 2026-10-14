@@ -15110,15 +15110,17 @@ public struct CsTrayStatusPayload: Equatable, Hashable {
     public var tone: CsTrayStatusTone
     public var indicatorMode: CsIndicatorMode
     public var assistive: Bool
+    public var voice: CsCursorVoice
     public var generation: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, generation: UInt64) {
+    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, voice: CsCursorVoice, generation: UInt64) {
         self.kind = kind
         self.tone = tone
         self.indicatorMode = indicatorMode
         self.assistive = assistive
+        self.voice = voice
         self.generation = generation
     }
 
@@ -15140,6 +15142,7 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
                 tone: FfiConverterTypeCsTrayStatusTone.read(from: &buf),
                 indicatorMode: FfiConverterTypeCsIndicatorMode.read(from: &buf),
                 assistive: FfiConverterBool.read(from: &buf),
+                voice: FfiConverterTypeCsCursorVoice.read(from: &buf),
                 generation: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -15149,6 +15152,7 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
         FfiConverterTypeCsTrayStatusTone.write(value.tone, into: &buf)
         FfiConverterTypeCsIndicatorMode.write(value.indicatorMode, into: &buf)
         FfiConverterBool.write(value.assistive, into: &buf)
+        FfiConverterTypeCsCursorVoice.write(value.voice, into: &buf)
         FfiConverterUInt64.write(value.generation, into: &buf)
     }
 }
@@ -16470,6 +16474,88 @@ public func FfiConverterTypeCsCoverageUnavailableReason_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeCsCoverageUnavailableReason_lower(_ value: CsCoverageUnavailableReason) -> RustBuffer {
     return FfiConverterTypeCsCoverageUnavailableReason.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The voice under the cursor while listening, mirrored into the glyph.
+ */
+
+public enum CsCursorVoice: Equatable, Hashable {
+
+    case unobserved
+    case speaking
+    case quiet
+    case lagging
+
+
+
+}
+
+#if compiler(>=6)
+extension CsCursorVoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCursorVoice: FfiConverterRustBuffer {
+    typealias SwiftType = CsCursorVoice
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCursorVoice {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .unobserved
+
+        case 2: return .speaking
+
+        case 3: return .quiet
+
+        case 4: return .lagging
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsCursorVoice, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .unobserved:
+            writeInt(&buf, Int32(1))
+
+
+        case .speaking:
+            writeInt(&buf, Int32(2))
+
+
+        case .quiet:
+            writeInt(&buf, Int32(3))
+
+
+        case .lagging:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCursorVoice_lift(_ buf: RustBuffer) throws -> CsCursorVoice {
+    return try FfiConverterTypeCsCursorVoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCursorVoice_lower(_ value: CsCursorVoice) -> RustBuffer {
+    return FfiConverterTypeCsCursorVoice.lower(value)
 }
 
 
