@@ -315,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     showAgent: { [weak self] in self?.showAgent() }
   )
   private var statusItem: NSStatusItem!
+  private var statusItemPulse: Task<Void, Never>?
   private var hasUnreadAgentUpdate = false
   // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
   // surface (overlay panel vs agent window). Held so it can be removed on quit.
@@ -985,11 +986,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if let base = statusItemImage() {
       button.image = MenuBarStatusImage.make(
         base: base,
-        dot: trayStatus.menuBarDotColor.map(NSColor.init)
+        dot: trayStatus.menuBarDotColor.map(NSColor.init),
+        rim: trayStatus.menuBarDotRim.map(NSColor.init)
       )
     } else {
       button.image = nil
     }
+    syncStatusItemPulse()
     button.contentTintColor = nil
     let tooltip = trayStatus.tooltip
     button.toolTip =
@@ -998,6 +1001,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         localized: "\(tooltip) - Agent reply ready",
         comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
       : tooltip
+  }
+
+  /// Owed Agent words pulse the glyph's dot like the pointer dot: opacity
+  /// 0.4–1.0 on a ~1.3 s sine, repainted only while the pulse is due.
+  private func syncStatusItemPulse() {
+    guard trayStatus.menuBarDotPulses else {
+      statusItemPulse?.cancel()
+      statusItemPulse = nil
+      return
+    }
+    guard statusItemPulse == nil else { return }
+    statusItemPulse = Task { @MainActor [weak self] in
+      var phase = 0.0
+      while !Task.isCancelled {
+        do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        guard let self, self.trayStatus.menuBarDotPulses,
+          let button = self.statusItem?.button,
+          let base = self.statusItemImage(),
+          let dot = self.trayStatus.menuBarDotColor
+        else { return }
+        phase += 0.5
+        button.image = MenuBarStatusImage.make(
+          base: base,
+          dot: NSColor(dot).withAlphaComponent(0.7 + 0.3 * sin(phase))
+        )
+      }
+    }
   }
 
   private func statusItemImage() -> NSImage? {
