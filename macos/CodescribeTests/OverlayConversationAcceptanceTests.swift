@@ -1783,6 +1783,24 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertEqual(try lenaConversation(bus).messages.last?.playback?.state, "playing")
   }
 
+  /// Founder, 2026-10-14: the speaker shows who is talking right now.
+  func testOnlyAPlayingReplyMarksItsConversationAsSpeaking() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    let replyID = String(repeating: "e", count: 24)
+    bus.consume(reply(replyID))
+    XCTAssertFalse(try lenaConversation(bus).replySpeaking, "Reply text alone is not speech")
+    bus.consume(
+      playback(replyID, ticket: "voice", state: "waiting", time: "2026-10-05T04:00:01Z"))
+    XCTAssertFalse(
+      try lenaConversation(bus).replySpeaking, "Synthesis and the player queue are silent")
+    bus.consume(
+      playback(replyID, ticket: "voice", state: "playing", time: "2026-10-05T04:00:02Z"))
+    XCTAssertTrue(try lenaConversation(bus).replySpeaking)
+    bus.consume(
+      playback(replyID, ticket: "voice", state: "spoken", time: "2026-10-05T04:00:03Z"))
+    XCTAssertFalse(try lenaConversation(bus).replySpeaking, "The indicator ends with the speech")
+  }
+
   func testProjectionRoundTripPreservesDistinctRowsAndCausalOwnership() throws {
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<5 { bus.consume(occurrence(index * 3200, revision: index + 1)) }

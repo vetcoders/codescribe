@@ -254,6 +254,12 @@ struct OverlayAgentAudioControls: View {
   let onMicrophone: () -> Void
   let onPlayback: () -> Void
   var broadcast = false
+  /// Founder, 2026-10-14: "Chciałbym wiedzieć kto gada, żeby był jakiś
+  /// indikator na głośniku." The speaker of the agent whose reply is playing
+  /// turns violet and animates its waves.
+  var speaking = false
+
+  private var speakingNow: Bool { speaking && muted == false }
 
   private var microphoneLabel: String {
     if broadcast {
@@ -280,6 +286,7 @@ struct OverlayAgentAudioControls: View {
         ? String(localized: "All channels muted")
         : String(localized: "Global playback on")
     }
+    if speakingNow { return String(localized: "Speaking") }
     return muted == true
       ? String(localized: "Automatic playback muted")
       : String(localized: "Automatic playback on")
@@ -308,15 +315,18 @@ struct OverlayAgentAudioControls: View {
         Image(
           systemName: muted == nil
             ? "speaker.badge.exclamationmark"
-            : muted == true ? "speaker.slash.fill" : "speaker.wave.2"
+            : muted == true
+              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
         )
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(palette.primaryText.color)
+        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
+        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: 16, height: 16)
       }
+      .tint(speakingNow ? palette.agentAccent.color : nil)
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
-      .help(playbackLabel)
+      .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
       .accessibilityLabel(playbackLabel)
       .accessibilityValue(playbackValue)
       .accessibilityIdentifier("overlay-agent-speaker")
@@ -529,7 +539,8 @@ struct OverlayChannelStatusView: View {
                   && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
                 playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
                 palette: palette, onMicrophone: { onToggleChannel?(0) },
-                onPlayback: { onTogglePlayback?("0") }, broadcast: true
+                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                speaking: broadcast.replySpeaking
               )
               .fixedSize()
               .accessibilityIdentifier("overlay-channel-toggle-0")
@@ -676,7 +687,8 @@ struct OverlayChannelStatusView: View {
           playbackEnabled: onTogglePlayback != nil
             && !pendingMuteChannels.contains(channel.channel),
           palette: palette, onMicrophone: { toggle(channel) },
-          onPlayback: { onTogglePlayback?(channel.channel) }
+          onPlayback: { onTogglePlayback?(channel.channel) },
+          speaking: conversation?.replySpeaking == true
         )
         .fixedSize()
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")

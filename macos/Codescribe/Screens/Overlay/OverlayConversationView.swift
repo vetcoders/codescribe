@@ -159,7 +159,7 @@ struct OverlayConversationView: View {
             open: microphoneOpen, muted: playbackMuted,
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
             palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-            broadcast: conversation.channel == "0"
+            broadcast: conversation.channel == "0", speaking: conversation.replySpeaking
           )
           .fixedSize()
         }
