@@ -1206,12 +1206,15 @@ final class OverlayState {
     return channelPlaybackAgents.values.first { $0.identity == identity }?.descriptor
   }
 
+  /// Effective mute per channel: the global block wins over the agent's own
+  /// receipt, the same composition the bus helper reports as `effective_muted`.
+  /// The local receipt stays untouched so unmuting globally restores it.
   var channelPlaybackMuted: [String: Bool] {
     var result: [String: Bool] = [:]
     result["0"] = globalPlaybackMuted
     for channel in channelHudStates.keys {
       if let identity = playbackIdentity(for: channel), let muted = playbackMutes[identity] {
-        result[channel] = muted
+        result[channel] = globalPlaybackMuted == true || muted
       }
     }
     return result
@@ -1238,6 +1241,7 @@ final class OverlayState {
   func conversationPlaybackMuted(_ conversation: OverlayConversation) -> Bool? {
     if conversation.channel == "0" { return globalPlaybackMuted }
     return playbackIdentity(for: conversation).flatMap { playbackMutes[$0] }
+      .map { globalPlaybackMuted == true || $0 }
   }
 
   func canToggleConversationMicrophone(_ conversation: OverlayConversation) -> Bool {
