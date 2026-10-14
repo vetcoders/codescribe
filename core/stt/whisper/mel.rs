@@ -207,6 +207,42 @@ mod tests {
     }
 
     #[test]
+    fn large_v3_bin_count_matches_candle_for_quiet_audio_and_a_ragged_impulse() {
+        let n_mel = 128;
+        let n_fft = 1 + whisper::N_FFT / 2;
+        let base = filters();
+        let bank: Vec<f32> = (0..n_mel)
+            .flat_map(|bin| {
+                base[(bin % N_MEL) * n_fft..(bin % N_MEL + 1) * n_fft]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        let quiet: Vec<f32> = voice_like(1.0).iter().map(|v| v * 0.00002).collect();
+        let mut impulse = vec![0.0; 16_001];
+        impulse[16_000] = 0.9;
+        for samples in [quiet, impulse] {
+            let expected = log_mel_spectrogram_(
+                &samples,
+                &bank,
+                whisper::N_FFT,
+                whisper::HOP_LENGTH,
+                n_mel,
+                false,
+            );
+            let actual = log_mel(&samples, &bank, n_mel);
+            assert_eq!(actual.len(), expected.len());
+            assert!(actual.iter().all(|value| value.is_finite()));
+            let worst = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, e)| (a - e).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst < 1e-3, "128-bin log-mel error: {worst}");
+        }
+    }
+
+    #[test]
     fn silence_beyond_the_samples_sits_on_candles_floor() {
         let samples = voice_like(1.0);
         let bank = filters();
