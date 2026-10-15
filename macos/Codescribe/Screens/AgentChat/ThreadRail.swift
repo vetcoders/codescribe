@@ -185,6 +185,7 @@ struct ThreadRail: View {
 
   private func copyTitle(_ thread: ChatThread) {
     let title = ThreadRowTitle.displayTitle(for: thread)
+    // Tool metadata, not transcript content: copy the literal thread title.
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(title, forType: .string)
   }

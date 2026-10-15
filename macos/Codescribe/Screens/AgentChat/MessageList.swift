@@ -751,7 +751,11 @@ private struct YouTurn: View {
         if let wire = message.wireText {
           // Debug affordance: the exact prompt the model received,
           // skeleton and all.
-          Button("Copy full prompt") { chatCopy(wire) }
+          Button("Copy full prompt") {
+            // Diagnostic payload, not a content copy: preserve it verbatim.
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(wire, forType: .string)
+          }
         }
       }
       // Clip the chrome so markdown/code/selection never paints past the
@@ -1012,7 +1016,9 @@ struct AttachmentPreviewSheet: View {
         }
 
         Button("Copy path") {
-          chatCopy(pathText)
+          // Tool metadata, not user content: preserve the literal path.
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(pathText, forType: .string)
         }
         .disabled(attachment.url == nil)
 
@@ -1645,18 +1651,25 @@ private struct RenderModeButton: View {
   }
 }
 
-/// Puts a message's raw text on the general pasteboard — the single copy path
-/// shared by the bubble context menu and the inline copy button.
-func chatCopy(_ text: String, to pasteboard: NSPasteboard = .general) {
-  pasteboard.clearContents()
-  pasteboard.setString(text, forType: .string)
+/// Shared by the bubble context menu and inline button. Success is reported
+/// only after the existing Rust copy authority has acknowledged the write.
+@MainActor
+@discardableResult
+func chatCopy(_ text: String) async -> Bool {
+  do {
+    try await UserTextClipboard.copy(text)
+    return true
+  } catch {
+    NSSound.beep()
+    return false
+  }
 }
 
 /// Right-click "Copy" that puts a message's raw text on the pasteboard.
 private struct CopyButton: View {
   let text: String
   var body: some View {
-    Button("Copy") { chatCopy(text) }
+    Button("Copy") { Task { await chatCopy(text) } }
   }
 }
 
@@ -1673,9 +1686,11 @@ struct CopyMessageButton: View {
 
   var body: some View {
     Button {
-      chatCopy(text)
-      copied = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      Task { @MainActor in
+        guard await chatCopy(text) else { return }
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      }
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)

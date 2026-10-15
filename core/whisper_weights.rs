@@ -237,7 +237,11 @@ pub(crate) fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitectu
     parse_whisper_config(raw, &path.display().to_string())
 }
 
-fn read_bounded_metadata_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_metadata_file(
+    path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>> {
     let mut file = {
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only validation of an operator-selected local model artifact or internally resolved cache child.
         fs::File::open(path)

@@ -622,7 +622,7 @@ impl AgentSession {
             });
 
             for (call_id, tool_name, arguments) in ready_calls {
-                let decision = self.tools.decide(
+                let (decision, decided_targets) = self.tools.decide_with_targets(
                     &tool_name,
                     &arguments,
                     &call_id,
@@ -669,6 +669,22 @@ impl AgentSession {
                             ),
                         }
                     }
+                };
+
+                // Consent covers the targets the gate resolved, not whatever the
+                // handler would resolve now: a symlink re-pointed during the
+                // approval wait must not inherit the earlier verdict.
+                let (authorization_error, audit_decision) = match authorization_error {
+                    None => {
+                        match self
+                            .tools
+                            .confirm_targets(&tool_name, &arguments, &decided_targets)
+                        {
+                            Ok(()) => (None, audit_decision),
+                            Err(error) => (Some(error.to_string()), "target_changed"),
+                        }
+                    }
+                    denied => (denied, audit_decision),
                 };
 
                 let dispatch_started = Instant::now();

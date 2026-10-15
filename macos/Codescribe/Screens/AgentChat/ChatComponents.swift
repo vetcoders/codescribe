@@ -721,10 +721,15 @@ private struct CodeBlockView: View {
 
   private var copyButton: some View {
     Button {
-      NSPasteboard.general.clearContents()
-      NSPasteboard.general.setString(content, forType: .string)
-      copied = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      Task { @MainActor in
+        do {
+          try await UserTextClipboard.copy(content)
+          copied = true
+          DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        } catch {
+          NSSound.beep()
+        }
+      }
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)

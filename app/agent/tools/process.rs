@@ -22,6 +22,42 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Ceiling for a caller-supplied timeout, so no single tool call can pin a
 /// process indefinitely.
 const MAX_TIMEOUT_SECS: u64 = 300;
+/// Git configuration that names a program to run, pinned to an inert value
+/// before the model's own arguments. Hooks stay: a commit through this tool
+/// meets the repository's gates like any other commit.
+const GIT_CONFIG_PINS: &[&str] = &[
+    "--no-pager",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.sshCommand=ssh",
+    "-c",
+    "core.askPass=",
+    "-c",
+    "core.editor=true",
+    "-c",
+    "sequence.editor=true",
+    "-c",
+    "gpg.program=gpg",
+    "-c",
+    "gpg.ssh.program=ssh-keygen",
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "protocol.ext.allow=never",
+];
+/// Subcommands that take diff options: external diff drivers and textconv
+/// filters are programs from configuration and attributes, switched off here.
+const GIT_DIFF_COMMANDS: &[&str] = &[
+    "diff",
+    "log",
+    "show",
+    "diff-tree",
+    "diff-files",
+    "diff-index",
+    "whatchanged",
+    "format-patch",
+];
 
 /// Environment keys re-exported into agent-spawned processes after `env_clear`.
 ///
@@ -329,13 +365,41 @@ fn run_process_from_input(input: &Value) -> Result<String> {
         .collect::<Result<_>>()?;
     // nosemgrep: rust.actix.command-injection.rust-actix-command-injection.rust-actix-command-injection -- argv-only spawn after path_policy::validate_terminal (blocks shell operators + forbidden programs) and sanitize_argv_program (rejects control/metacharacters / parent-dir components).
     let mut command = Command::new(&program_os);
+    let git = path_policy::is_git_program(program);
+    if git {
+        // Git runs programs named in configuration, which the argv profile
+        // never sees: pagers, SSH wrappers, editors, fsmonitor daemons,
+        // signature helpers, external diff and textconv drivers, `ext::`
+        // transports. Pin them before the model's arguments; the profile
+        // refuses a model-supplied `-c`, so these are the last word.
+        command.args(GIT_CONFIG_PINS);
+        match args.iter().position(|arg| !arg.starts_with('-')) {
+            Some(subcommand) => {
+                command.args(&args_os[..=subcommand]);
+                if GIT_DIFF_COMMANDS.contains(&args[subcommand].as_str()) {
+                    command.args(["--no-ext-diff", "--no-textconv"]);
+                }
+                command.args(&args_os[subcommand + 1..]);
+            }
+            None => {
+                command.args(&args_os);
+            }
+        }
+    } else {
+        command.args(&args_os);
+    }
     command
-        .args(&args_os)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_sanitized_child_env(&mut command);
+    if git {
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_PAGER", "cat");
+    }
 
     if background {
         let child = command

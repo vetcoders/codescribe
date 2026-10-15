@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -E
 """Native MCP transport over the existing Codescribe mailbox, not an agent runner."""
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import datetime
 import fcntl
 import json
@@ -36,6 +37,8 @@ NATIVE_WAKE_PROVIDERS = frozenset({"claude-code", "omp"})
 WAKE_EXIT = 75
 #: An idle wake re-arms the hook below its configured timeout (21660 s).
 WAKE_SECONDS = 6 * 3600
+#: How long the PostToolUse probe waits for the ledger lock before staying silent.
+PROBE_LEDGER_WAIT_SECONDS = 2.0
 
 
 def install_extension(demux, root, directory):
@@ -95,6 +98,43 @@ TOOLS = [
 def wake_paths(root, lease_id):
     directory = root / "runtime" / "native-wake"
     return directory / f"{lease_id}.lock", directory / f"{lease_id}.json"
+
+
+def ledger_lock_path(root, lease_id):
+    """The announced ledger's own lock. The waiter holds the arming lock for its
+    whole life, so the probe cannot share that one; this one guards a single
+    read-modify-write of the ledger on either side (CS160-F028)."""
+    return root / "runtime" / "native-wake" / f"{lease_id}.ledger.lock"
+
+
+def flock_within(descriptor, wait_seconds):
+    """Take the exclusive lock; with a bound, give up after `wait_seconds`."""
+    if wait_seconds is None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return True
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+
+@contextlib.contextmanager
+def ledger_guard(path, *, wait_seconds=None):
+    """Hold the ledger lock for one read-modify-write; closing the descriptor
+    releases it. Yields whether the lock was taken: with `wait_seconds` the
+    guard gives up after that long, so a PostToolUse probe never stalls a
+    tool call behind a stuck waiter."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        yield flock_within(descriptor, wait_seconds)
+    finally:
+        os.close(descriptor)
 
 
 def wake_armed(root, lease_id):
@@ -447,6 +487,7 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
         args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
                                bus=bus, bus_overridden=bus is not None)
         trigger = demux.BusEventTrigger(root / "leases" / f"{lease_id}.json", 0.1)
+        ledger_lock = ledger_lock_path(root, lease_id)
         deadline = time.monotonic() + window
         try:
             while True:
@@ -457,36 +498,44 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                     return 0
                 if host.isdigit() and not demux.process_is_alive(int(host)):
                     return 0
-                try:
-                    _state, rows = demux.unread_pending(args)
-                    problem = None if demux.live_follower_pid(root, lease_id) else "follower_lost"
-                except (OSError, ValueError) as error:
-                    rows, problem = [], f"mailbox_refused: {error}"
-                unread = [row["delivery_id"] for row in rows]
-                # A PostToolUse probe may have surfaced a delivery mid-turn; its
-                # ledger entry keeps this waiter from announcing it again.
-                probed = (demux.read_json(record) or {}).get("announced")
-                if isinstance(probed, list):
-                    seen |= set(probed)
-                fresh = [identity for identity in unread if identity not in seen]
-                # After this pass every unread delivery is announced; an ACKed
-                # delivery or a resolved problem leaves the set.
-                prior, seen = seen, set(unread) | ({problem} if problem else set())
-                if fresh:
-                    notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
-                              "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
-                              **({"problem": problem} if problem else {}),
-                              "instructions": f"Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
-                elif problem and problem not in prior:
-                    notice = {"kind": "codescribe_listener_problem", "problem": problem,
-                              "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
-                elif time.monotonic() >= deadline:
-                    notice = {"kind": "codescribe_wait_idle", "waited_seconds": window,
-                              "instructions": "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms."}
-                else:
+                # One read-modify-write of the ledger per pass, under the lock
+                # the PostToolUse probe shares: a delivery the probe surfaced is
+                # in the record this pass reads, and the probe cannot write
+                # between this mailbox read and this write (CS160-F028).
+                with ledger_guard(ledger_lock):
+                    try:
+                        _state, rows = demux.unread_pending(args)
+                        problem = None if demux.live_follower_pid(root, lease_id) else "follower_lost"
+                    except (OSError, ValueError) as error:
+                        rows, problem = [], f"mailbox_refused: {error}"
+                    unread = [row["delivery_id"] for row in rows]
+                    # A PostToolUse probe may have surfaced a delivery mid-turn; its
+                    # ledger entry keeps this waiter from announcing it again.
+                    probed = (demux.read_json(record) or {}).get("announced")
+                    if isinstance(probed, list):
+                        seen |= set(probed)
+                    fresh = [identity for identity in unread if identity not in seen]
+                    # After this pass every unread delivery is announced; an ACKed
+                    # delivery or a resolved problem leaves the set.
+                    prior, seen = seen, set(unread) | ({problem} if problem else set())
+                    if fresh:
+                        notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
+                                  "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
+                                  **({"problem": problem} if problem else {}),
+                                  "instructions": f"Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
+                    elif problem and problem not in prior:
+                        notice = {"kind": "codescribe_listener_problem", "problem": problem,
+                                  "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
+                    elif time.monotonic() >= deadline:
+                        notice = {"kind": "codescribe_wait_idle", "waited_seconds": window,
+                                  "instructions": "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms."}
+                    else:
+                        notice = None
+                    if notice is not None:
+                        demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen)})
+                if notice is None:
                     trigger.wait(timeout=interval)
                     continue
-                demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen)})
                 sys.stderr.write(describe_wake(notice, provider, session, channel, name) + "\n")
                 return WAKE_EXIT
         finally:
@@ -516,18 +565,26 @@ def claude_code_probe(demux, root, bus, payload, environ):
     _lock, record = wake_paths(root, lease_id)
     args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
                            bus=bus, bus_overridden=bus is not None)
-    try:
-        _state, rows = demux.unread_pending(args)
-    except (OSError, ValueError):
-        return 0
-    unread = [row["delivery_id"] for row in rows]
-    saved = (demux.read_json(record) or {}).get("announced")
-    seen = set(saved) if isinstance(saved, list) else set()
-    fresh = [identity for identity in unread if identity not in seen]
-    if not fresh:
-        return 0
-    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
+    # The ledger lock the Stop waiter takes around its own mailbox read and
+    # ledger write (CS160-F028). Without it the waiter could overwrite this
+    # probe's entry with its earlier snapshot and announce the same delivery
+    # again at the turn end. A waiter pass takes milliseconds; a lock still
+    # busy after PROBE_LEDGER_WAIT_SECONDS means the probe stays silent and
+    # the waiter announces the delivery itself.
+    with ledger_guard(ledger_lock_path(root, lease_id), wait_seconds=PROBE_LEDGER_WAIT_SECONDS) as held:
+        if not held:
+            return 0
+        try:
+            _state, rows = demux.unread_pending(args)
+        except (OSError, ValueError):
+            return 0
+        unread = [row["delivery_id"] for row in rows]
+        saved = (demux.read_json(record) or {}).get("announced")
+        seen = set(saved) if isinstance(saved, list) else set()
+        fresh = [identity for identity in unread if identity not in seen]
+        if not fresh:
+            return 0
+        demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
               "addressed": addressed(rows, fresh, demux),
               "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}

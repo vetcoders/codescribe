@@ -40,6 +40,118 @@ struct TranscribeResponse {
     text: String,
 }
 
+/// Byte budget for a successful multipart transcription body. An upload is
+/// capped at `BACKEND_MAX_UPLOAD_MB` (20 MB by default), hours of speech at
+/// the very most, and its text stays far below this even as `verbose_json`
+/// with segments.
+const MAX_TRANSCRIPTION_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// Byte budget for the diagnostic body of a failed ASR request.
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// A response body outgrew its byte budget while it was being received.
+///
+/// Content-free by construction: the budget is the only datum, so neither a
+/// log line nor an error chain can echo what the server sent. Callers recognise
+/// it with `anyhow::Error::is::<ResponseTooLarge>()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseTooLarge {
+    pub limit_bytes: usize,
+}
+
+impl std::fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ASR response body exceeds its {} byte budget",
+            self.limit_bytes
+        )
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
+
+impl ResponseTooLarge {
+    /// The overflow error for a body budget of `limit_bytes`.
+    fn over(limit_bytes: usize) -> anyhow::Error {
+        Self { limit_bytes }.into()
+    }
+}
+
+/// Receive a response body without ever holding more than `limit` bytes.
+///
+/// The budget counts the bytes that actually arrive (after content decoding),
+/// so a chunked body and a missing or false `Content-Length` cannot outrun it;
+/// a declared length over the budget is refused before the first byte is read.
+/// On overflow the response is dropped, which closes the connection, and the
+/// error is [`ResponseTooLarge`].
+pub(crate) async fn read_response_bounded(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|declared| declared > limit as u64)
+    {
+        return Err(ResponseTooLarge::over(limit));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed to read ASR response body")?
+    {
+        // `body.len() <= limit` holds on every pass, so this cannot underflow.
+        if chunk.len() > limit - body.len() {
+            return Err(ResponseTooLarge::over(limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Blocking twin of [`read_response_bounded`] for the synchronous tail
+/// provider: at most `limit + 1` bytes are ever read, and the extra one is the
+/// overflow witness.
+pub(crate) fn read_blocking_response_bounded(
+    response: reqwest::blocking::Response,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|declared| declared > limit as u64)
+    {
+        return Err(ResponseTooLarge::over(limit));
+    }
+    let mut body = Vec::new();
+    response
+        .take(limit as u64 + 1)
+        .read_to_end(&mut body)
+        .context("Failed to read ASR response body")?;
+    if body.len() > limit {
+        return Err(ResponseTooLarge::over(limit));
+    }
+    Ok(body)
+}
+
+/// Diagnostic body of a failed request, read within [`MAX_ERROR_RESPONSE_BYTES`].
+///
+/// An unreadable body counts as empty: the status already says what failed. An
+/// oversize one is [`ResponseTooLarge`] under `what` and the status, never a
+/// prefix of its content.
+async fn failed_response_body(
+    response: reqwest::Response,
+    status: reqwest::StatusCode,
+    what: &str,
+) -> Result<String> {
+    match read_response_bounded(response, MAX_ERROR_RESPONSE_BYTES).await {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(error) if error.is::<ResponseTooLarge>() => {
+            Err(error.context(format!("{what} with status {status}")))
+        }
+        Err(_) => Ok(String::new()),
+    }
+}
+
 /// Typed cloud-STT verdict emitted at the client boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudTranscriptionVerdict {
@@ -412,6 +524,14 @@ const NDJSON_SEGMENT_SEARCH_SECONDS: usize = 5;
 const NDJSON_QUIET_FRAME_SAMPLES: usize = 320;
 /// PCM bytes per `chunk` line, the size the operator's proven shell client uses.
 const NDJSON_CHUNK_BYTES: usize = 128 * 1024;
+/// Byte budget for one response line. A `transcript.final` line carries the
+/// text of one 10-minute segment (tens of KiB, a few times that with word
+/// timings); a line past this is not a transcript.
+const NDJSON_MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Byte budget for a whole `:stream` response (hello, ack, partials and the
+/// final of one segment). The timeout bounds the time a stream may run; this
+/// bounds what it may send.
+const NDJSON_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Transcribe an audio file via the NDJSON streaming HTTP lane (`stt-jsonl-v1`).
 ///
@@ -435,7 +555,7 @@ async fn transcribe_ndjson(
     if samples.is_empty() {
         anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
     }
-    let samples = crate::audio::resample_to_16k(&samples, sample_rate);
+    let samples = crate::audio::resample_to_16k(&samples, sample_rate)?;
     let pcm: Vec<i16> = samples
         .iter()
         .map(|s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
@@ -513,7 +633,7 @@ async fn transcribe_multipart_segmented(
     if samples.is_empty() {
         anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
     }
-    let samples = crate::audio::resample_to_16k(&samples, sample_rate);
+    let samples = crate::audio::resample_to_16k(&samples, sample_rate)?;
     let pcm: Vec<i16> = samples
         .iter()
         .map(|s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
@@ -670,24 +790,41 @@ async fn transcribe_ndjson_segment(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = failed_response_body(response, status, "NDJSON STT request failed").await?;
         error!("[NDJSON STT] Error {}: {}", status, body);
         anyhow::bail!("NDJSON STT request failed: {} - {}", status, body);
     }
 
-    // Stream and parse NDJSON
+    // Stream and parse NDJSON. Two byte budgets are spent as the bytes arrive:
+    // one line (so a stream with no newline cannot grow the buffer) and the
+    // whole stream. Either overflow drops the response and fails with
+    // `ResponseTooLarge`, before anything is parsed.
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::new();
+    let mut received = 0usize;
     let mut final_text: Option<String> = None;
     let mut partial_count = 0u32;
 
     'lines: while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("Failed to read NDJSON chunk")?;
-        buffer.extend_from_slice(&bytes);
+        received = received.saturating_add(bytes.len());
+        if received > NDJSON_MAX_RESPONSE_BYTES {
+            return Err(ResponseTooLarge::over(NDJSON_MAX_RESPONSE_BYTES));
+        }
 
         // Process complete lines
-        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=pos).collect();
+        for piece in bytes.split_inclusive(|&b| b == b'\n') {
+            // `buffer.len() <= NDJSON_MAX_LINE_BYTES` holds on every pass, so
+            // this cannot underflow.
+            if piece.len() > NDJSON_MAX_LINE_BYTES - buffer.len() {
+                return Err(ResponseTooLarge::over(NDJSON_MAX_LINE_BYTES));
+            }
+            buffer.extend_from_slice(piece);
+            if buffer.last() != Some(&b'\n') {
+                // The line continues in the next chunk.
+                continue;
+            }
+            let line = std::mem::take(&mut buffer);
             let line_str = String::from_utf8_lossy(&line);
             let line_str = line_str.trim();
 
@@ -901,10 +1038,8 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
         if super::speech::vendor_for_endpoint(url).is_some() {
             anyhow::bail!("Vendor STT transcription failed with status {}", status);
         }
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "(no body)".to_string());
+        let body =
+            failed_response_body(response, status, "External STT transcription failed").await?;
         anyhow::bail!(
             "External STT transcription failed with status {}: {}",
             status,
@@ -912,10 +1047,12 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
         );
     }
 
-    // External STT returns OpenAI-compatible response
-    let transcribe_response: TranscribeResponse = response
-        .json()
+    // External STT returns OpenAI-compatible response. The body is received
+    // within its byte budget first; only then is it parsed.
+    let body = read_response_bounded(response, MAX_TRANSCRIPTION_RESPONSE_BYTES)
         .await
+        .context("Failed to receive external STT transcription response")?;
+    let transcribe_response: TranscribeResponse = serde_json::from_slice(&body)
         .context("Failed to parse external STT transcription response")?;
 
     info!(

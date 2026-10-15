@@ -808,17 +808,23 @@ final class LiveTranscriptNativeTextView: NSTextView {
   }
 
   @discardableResult
-  func copySelection(to pasteboard: NSPasteboard) -> Bool {
+  func copySelection() -> Task<Void, Never>? {
     let selection = selectedRange()
     let source = string as NSString
-    guard hasCopyableSelection else { return false }
+    guard hasCopyableSelection else { return nil }
 
-    pasteboard.clearContents()
-    return pasteboard.setString(source.substring(with: selection), forType: .string)
+    let text = source.substring(with: selection)
+    return Task { @MainActor in
+      do {
+        try await UserTextClipboard.copy(text)
+      } catch {
+        NSSound.beep()
+      }
+    }
   }
 
   override func copy(_ sender: Any?) {
-    _ = copySelection(to: .general)
+    copySelection()
   }
 }
 
