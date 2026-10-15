@@ -2,14 +2,29 @@
 //!
 //! All paths are workspace-sandboxed via [`super::path_policy`]. Mutating tools
 //! declare `ToolRisk::Mutating` so the central approval gateway defaults to Ask.
+//!
+//! Every tool here that names a path carries a validator resolving it exactly
+//! as the handler will, so the gateway decides on the canonical target — a
+//! symlink alias of a secret is judged as the secret. `search_files` never
+//! returns content of a secret-bearing file: consent is per file, through
+//! `read_file`.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
-use codescribe_core::util::safe_path::{safe_read_to_string_bounded, safe_write_bounded};
+use codescribe_core::agent::{
+    ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolRegistry,
+    ToolResultContent, ToolRisk,
+};
+use codescribe_core::util::safe_path::{
+    safe_open_bounded, safe_read_to_string_bounded, safe_write_bounded,
+};
 use serde_json::{Value, json};
 
 use super::{path_policy, workspace};
@@ -21,6 +36,12 @@ const MAX_SEARCH_HITS: usize = 50;
 /// Files larger than this are skipped during search — binaries and build
 /// artifacts would flood the result set without informing the model.
 const MAX_SEARCH_FILE_BYTES: u64 = 512 * 1024;
+/// Directories one `fs.search` may descend below its root.
+const MAX_SEARCH_DEPTH: usize = 32;
+/// Directory entries one `fs.search` may inspect before it stops.
+const MAX_SEARCH_ENTRIES: usize = 100_000;
+/// Wall-clock budget for one `fs.search` walk.
+const SEARCH_TIME_BUDGET: Duration = Duration::from_secs(15);
 /// Upper bound on a single `fs.write` / `fs.patch` payload.
 const MAX_WRITE_BYTES: usize = 512 * 1024;
 
@@ -28,40 +49,74 @@ const MAX_WRITE_BYTES: usize = 512 * 1024;
 /// tools declared as [`ToolRisk::Mutating`] so approval defaults to Ask.
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register_native(
+        .register_with_policy(
             list_directory_definition(),
             Box::new(|input| Box::pin(async move { handle_list_directory(input) })),
-            ToolRisk::ReadOnly,
+            ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+            Some(path_validator(&["path"], &[])),
         )
         .expect("register list_directory");
     registry
-        .register_native(
+        .register_with_policy(
             search_files_definition(),
-            Box::new(|input| Box::pin(async move { handle_search_files(input) })),
-            ToolRisk::ReadOnly,
+            Box::new(|input| Box::pin(handle_search_files(input))),
+            ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+            Some(path_validator(&["path"], &[])),
         )
         .expect("register search_files");
     registry
-        .register_native(
+        .register_with_policy(
             write_file_definition(),
             Box::new(|input| Box::pin(async move { handle_write_file(input) })),
-            ToolRisk::Mutating,
+            ToolExecutionPolicy::native(ToolRisk::Mutating),
+            Some(path_validator(&[], &["path"])),
         )
         .expect("register write_file");
     registry
-        .register_native(
+        .register_with_policy(
             apply_patch_definition(),
             Box::new(|input| Box::pin(async move { handle_apply_patch(input) })),
-            ToolRisk::Mutating,
+            ToolExecutionPolicy::native(ToolRisk::Mutating),
+            Some(path_validator(&["path"], &[])),
         )
         .expect("register apply_patch");
     registry
-        .register_native(
+        .register_with_policy(
             move_path_definition(),
             Box::new(|input| Box::pin(async move { handle_move_path(input) })),
-            ToolRisk::Mutating,
+            ToolExecutionPolicy::native(ToolRisk::Mutating),
+            Some(path_validator(&["from"], &["to"])),
         )
         .expect("register move_path");
+}
+
+/// Pre-flight validator resolving the named input fields exactly as the
+/// handlers do: `existing` fields through [`path_policy::validate_existing`],
+/// `new_targets` through [`path_policy::validate_new_target`].
+///
+/// The preview carries the canonical targets, so the permission gateway judges
+/// what a handler will touch, not the alias the model typed. A path that does
+/// not resolve inside the workspace roots is a hard deny before any approval.
+fn path_validator(
+    existing: &'static [&'static str],
+    new_targets: &'static [&'static str],
+) -> ToolInputValidator {
+    Arc::new(move |input: &Value| {
+        let roots = workspace_roots();
+        let mut paths = Vec::new();
+        for field in existing {
+            let path = path_policy::validate_existing(require_string(input, field)?, &roots)?;
+            paths.push(path.display().to_string());
+        }
+        for field in new_targets {
+            let path = path_policy::validate_new_target(require_string(input, field)?, &roots)?;
+            paths.push(path.display().to_string());
+        }
+        Ok(ToolCallPreview {
+            paths,
+            ..Default::default()
+        })
+    })
 }
 
 /// Wire schema for `list_directory` (capability `fs.list`).
@@ -160,9 +215,30 @@ fn handle_list_directory(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
-/// Tool-result adapter for [`search_files_from_input`].
-fn handle_search_files(input: Value) -> Vec<ToolResultContent> {
-    match search_files_from_input(&input) {
+/// Trips its flag when dropped.
+///
+/// The search runs on a blocking thread that keeps going after the future
+/// awaiting it is dropped, so dropping that future (the turn was cancelled) is
+/// the only signal that reaches the walk.
+#[derive(Default)]
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Tool-result adapter for [`search_files_from_input`]. The walk runs off the
+/// async executor and stops at its next entry when the turn is cancelled.
+async fn handle_search_files(input: Value) -> Vec<ToolResultContent> {
+    let cancel = CancelOnDrop::default();
+    let flag = Arc::clone(&cancel.0);
+    let result = tokio::task::spawn_blocking(move || search_files_from_input(&input, &flag))
+        .await
+        .context("search worker stopped")
+        .and_then(|result| result);
+    match result {
         Ok(text) => vec![ToolResultContent::Text(text)],
         Err(error) => vec![ToolResultContent::Error(error.to_string())],
     }
@@ -344,9 +420,67 @@ fn path_stays_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| canonical.starts_with(root))
 }
 
+/// Why a search walk ended before it covered the whole tree. Machine codes for
+/// the model, not copy: they travel in the payload as `stopped`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchStop {
+    /// A subtree below [`SearchLimits::max_depth`] was not entered.
+    Depth,
+    /// [`SearchLimits::max_entries`] directory entries were inspected.
+    Entries,
+    /// [`SearchLimits::budget`] elapsed.
+    Time,
+    /// The turn was cancelled while the walk ran.
+    Cancelled,
+}
+
+impl SearchStop {
+    /// Stable payload spelling.
+    fn code(self) -> &'static str {
+        match self {
+            Self::Depth => "depth_limit",
+            Self::Entries => "entry_limit",
+            Self::Time => "time_limit",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Independent ceilings on one search walk. Each one alone ends the walk (or
+/// prunes the subtree) with the hits gathered so far, so a tree that is deep,
+/// wide, or slow to read stays bounded whichever way it is pathological.
+#[derive(Debug, Clone, Copy)]
+struct SearchLimits {
+    /// Directories the walk may descend below the search root.
+    max_depth: usize,
+    /// Directory entries the walk may inspect.
+    max_entries: usize,
+    /// Wall-clock budget for the walk.
+    budget: Duration,
+}
+
+impl Default for SearchLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: MAX_SEARCH_DEPTH,
+            max_entries: MAX_SEARCH_ENTRIES,
+            budget: SEARCH_TIME_BUDGET,
+        }
+    }
+}
+
+/// What a search walk gathered, and why it stopped early if it did.
+struct SearchOutcome {
+    hits: Vec<Value>,
+    stop: Option<SearchStop>,
+}
+
 /// Literal-substring search under a workspace path, with an optional filename
 /// suffix filter. Output passes through the guard that bounds tool payloads.
-fn search_files_from_input(input: &Value) -> Result<String> {
+///
+/// `cancel` is polled by the walk; the async adapter trips it when the turn is
+/// dropped.
+fn search_files_from_input(input: &Value, cancel: &AtomicBool) -> Result<String> {
     let path_str = require_string(input, "path")?;
     let query = require_string(input, "query")?;
     if query.is_empty() {
@@ -359,15 +493,22 @@ fn search_files_from_input(input: &Value) -> Result<String> {
         bail!("Search path is not a directory: {}", root.display());
     }
 
-    let mut hits = Vec::new();
-    walk_search(&root, query, glob_suffix, &mut hits)?;
+    let outcome = walk_search(
+        &root,
+        &roots,
+        query,
+        glob_suffix,
+        SearchLimits::default(),
+        cancel,
+    );
 
     let payload = json!({
         "path": root.display().to_string(),
         "query": query,
-        "count": hits.len(),
-        "truncated": hits.len() >= MAX_SEARCH_HITS,
-        "hits": hits,
+        "count": outcome.hits.len(),
+        "truncated": outcome.hits.len() >= MAX_SEARCH_HITS || outcome.stop.is_some(),
+        "stopped": outcome.stop.map(SearchStop::code),
+        "hits": outcome.hits,
         "provider": "native",
         "capability": "fs.search",
     });
@@ -378,81 +519,139 @@ fn search_files_from_input(input: &Value) -> Result<String> {
     ))
 }
 
-/// Recursive search worker collecting into `hits`.
+/// Iterative search walk from the canonical directory `root`.
 ///
-/// Unreadable directories are skipped rather than failing the whole search — a
+/// Every entry is resolved to its canonical target first, and that target, not
+/// the alias, is what gets contained, filtered, classified, and opened. An
+/// alias of a secret (`docs/info.txt -> .env`) is therefore skipped like the
+/// secret, a symlink out of the roots is skipped, and a directory symlink is
+/// followed at most once per canonical directory, so `loop -> .` and mutual
+/// cycles cannot recurse. The walk is a worklist, not recursion: depth costs
+/// heap, never stack, and [`SearchLimits`] bounds depth, entries, and time
+/// independently.
+///
+/// Unreadable directories are skipped rather than failing the whole search: a
 /// single permission-denied subtree must not blank an otherwise useful result.
-/// Dotfiles, VCS/build directories, and oversized files are skipped; each hit
-/// records path, 1-based line number, and a 200-char snippet.
+/// Dotfiles, VCS/build directories, secret-bearing files, and oversized files
+/// are skipped; each hit records the canonical path, 1-based line number, and
+/// a 200-char snippet.
 fn walk_search(
-    dir: &Path,
+    root: &Path,
+    roots: &[PathBuf],
     query: &str,
     glob_suffix: Option<&str>,
-    hits: &mut Vec<Value>,
-) -> Result<()> {
-    if hits.len() >= MAX_SEARCH_HITS {
-        return Ok(());
-    }
-    let roots = workspace_roots();
-    let read = match open_dir_under_roots(dir, &roots) {
-        Ok(r) => r,
-        Err(_) => return Ok(()),
-    };
-    for entry in read.flatten() {
-        if hits.len() >= MAX_SEARCH_HITS {
-            break;
-        }
-        let path = entry.path();
-        if !path_stays_under_roots(&path, &roots) {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == ".git" || name == "target" || name == "node_modules" || name.starts_with('.') {
-            continue;
-        }
-        if path.is_dir() {
-            walk_search(&path, query, glob_suffix, hits)?;
-            continue;
-        }
-        if !path.is_file() {
-            continue;
-        }
-        if let Some(suffix) = glob_suffix
-            && !name.ends_with(suffix)
-        {
-            continue;
-        }
-        let meta = match path.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if meta.len() > MAX_SEARCH_FILE_BYTES {
-            continue;
-        }
-        // Open only files still under workspace roots (symlink-safe).
-        let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
+    limits: SearchLimits,
+    cancel: &AtomicBool,
+) -> SearchOutcome {
+    let started = Instant::now();
+    let mut hits = Vec::new();
+    let mut stop = None;
+    let mut entries_seen = 0usize;
+    let mut visited = HashSet::from([root.to_path_buf()]);
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    'walk: while let Some((dir, depth)) = pending.pop() {
+        let Ok(read) = open_dir_under_roots(&dir, roots) else {
             continue;
         };
-        let Ok(file) = codescribe_core::util::safe_path::safe_open_bounded(&path, root) else {
-            continue;
-        };
-        let reader = BufReader::new(file);
-        for (idx, line) in reader.lines().enumerate() {
+        for entry in read.flatten() {
             if hits.len() >= MAX_SEARCH_HITS {
-                break;
+                break 'walk;
             }
-            let Ok(line) = line else { continue };
-            if line.contains(query) {
-                let snippet: String = line.chars().take(200).collect();
-                hits.push(json!({
-                    "path": path.display().to_string(),
-                    "line": idx + 1,
-                    "snippet": snippet,
-                }));
+            entries_seen += 1;
+            if cancel.load(Ordering::Relaxed) {
+                stop = Some(SearchStop::Cancelled);
+                break 'walk;
+            }
+            if started.elapsed() >= limits.budget {
+                stop = Some(SearchStop::Time);
+                break 'walk;
+            }
+            if entries_seen > limits.max_entries {
+                stop = Some(SearchStop::Entries);
+                break 'walk;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_skipped_name(&name) {
+                continue;
+            }
+            let Ok(canonical) = entry.path().canonicalize() else {
+                continue;
+            };
+            let Some(bound) = containing_root(&canonical, roots) else {
+                continue;
+            };
+            if !is_searchable_below(&canonical, bound) {
+                continue;
+            }
+            if canonical.is_dir() {
+                if depth >= limits.max_depth {
+                    stop = stop.or(Some(SearchStop::Depth));
+                } else if visited.insert(canonical.clone()) {
+                    pending.push((canonical, depth + 1));
+                }
+                continue;
+            }
+            if !canonical.is_file() || path_policy::is_secret_bearing(&canonical) {
+                continue;
+            }
+            if let Some(suffix) = glob_suffix
+                && !name.ends_with(suffix)
+            {
+                continue;
+            }
+            let Ok(meta) = canonical.metadata() else {
+                continue;
+            };
+            if meta.len() > MAX_SEARCH_FILE_BYTES {
+                continue;
+            }
+            let Ok(file) = safe_open_bounded(&canonical, bound) else {
+                continue;
+            };
+            for (idx, line) in BufReader::new(file).lines().enumerate() {
+                if hits.len() >= MAX_SEARCH_HITS {
+                    break;
+                }
+                let Ok(line) = line else { continue };
+                if line.contains(query) {
+                    let snippet: String = line.chars().take(200).collect();
+                    hits.push(json!({
+                        "path": canonical.display().to_string(),
+                        "line": idx + 1,
+                        "snippet": snippet,
+                    }));
+                }
             }
         }
     }
-    Ok(())
+    SearchOutcome { hits, stop }
+}
+
+/// Names the search never enters or reads: VCS and build directories, and
+/// dotfiles.
+fn is_skipped_name(name: &str) -> bool {
+    name == ".git" || name == "target" || name == "node_modules" || name.starts_with('.')
+}
+
+/// The deepest workspace root containing `canonical`, if any.
+fn containing_root<'a>(canonical: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots
+        .iter()
+        .filter(|root| canonical.starts_with(root))
+        .max_by_key(|root| root.components().count())
+}
+
+/// Whether every component of `canonical` below `root` is one the search walks
+/// into, so an alias into `.git` or a dot-directory is skipped like the real
+/// path would be.
+fn is_searchable_below(canonical: &Path, root: &Path) -> bool {
+    let Ok(relative) = canonical.strip_prefix(root) else {
+        return false;
+    };
+    relative.components().all(|component| match component {
+        Component::Normal(name) => !is_skipped_name(&name.to_string_lossy()),
+        _ => false,
+    })
 }
 
 /// Write UTF-8 text to a workspace path, creating parent directories.
