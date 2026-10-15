@@ -273,6 +273,8 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     await nextMainQueueTurn()
     let dark = try XCTUnwrap(material(in: host))
     XCTAssertEqual(dark.appearance?.name, .darkAqua)
+    var darkTint: NSColor?
+    if #available(macOS 26, *) { darkTint = (dark as? NSGlassEffectView)?.tintColor }
     host.rootView = OverlayCanvasBackdrop(palette: .light, reduceTransparency: false)
     host.layoutSubtreeIfNeeded()
     await nextMainQueueTurn()
@@ -280,7 +282,12 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertTrue(dark === light, "Palette update must preserve native material identity")
     XCTAssertEqual(light.appearance?.name, .aqua)
     if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
-      XCTAssertNil(glass.tintColor, "Shared glass must retain its native, untinted appearance")
+      // Maciej, 2026-10-14: bare glass read a little too transparent. The veil
+      // is the palette's own sheet colour, light enough to stay glass; the
+      // 72 % tint removed in 469b701b8 made a solid sheet.
+      let tint = try XCTUnwrap(glass.tintColor, "The overlay glass carries a light veil")
+      XCTAssertEqual(tint.alphaComponent, 0.22, accuracy: 0.001)
+      XCTAssertNotEqual(tint, darkTint, "The veil follows the palette")
     }
     host.rootView = OverlayCanvasBackdrop(
       palette: .light, reduceTransparency: false, increasedContrast: true)
