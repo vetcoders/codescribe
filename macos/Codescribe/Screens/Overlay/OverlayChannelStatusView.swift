@@ -164,9 +164,10 @@ struct OverlayMicrophoneGlyph: View {
     self.plateOpacity = plateOpacity
   }
 
-  init(character: String, tint: Color) {
+  init(character: String, tint: Color, plateOpacity: Double = 0.12) {
     mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
     self.tint = tint
+    self.plateOpacity = plateOpacity
   }
 
   var body: some View {
@@ -464,9 +465,12 @@ struct OverlayChannelStatusView: View {
 
   var body: some View {
     Button(action: showMonitor) {
+      // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.agents,
-        tint: headerSelected ? Color(nsColor: .controlAccentColor) : palette.mutedText.color
+        tint: headerSelected
+          ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
+        plateOpacity: headerSelected ? 0 : 0.12
       )
       .contentShape(Circle())
       .overlay(alignment: .topTrailing) {
