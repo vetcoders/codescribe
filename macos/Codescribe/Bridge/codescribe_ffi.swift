@@ -726,6 +726,24 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func streamDocumentWithAttachments(text: String, threadId: String, attachments: [CsAttachment], document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
 
     /**
+     * Stream one typed turn of the selected Max consultation, forwarding the
+     * owner's text, reasoning, tool and approval events for exactly this turn
+     * to `listener`. Returns the final assembled assistant text.
+     *
+     * `turn_id` is the composer's durable acceptance identity. It survives a
+     * restart, so the consultation journal refuses a replay of an accepted
+     * turn instead of running its tools twice, and it is the key the events
+     * are matched on. The turn runs on the consultation owner under Max by
+     * identity, independent of the dictation formatting level selected at the
+     * moment: no second session, and the owner records the reply once.
+     *
+     * Attachments follow the composer contract of
+     * [`Self::stream_reply_with_attachments`], judged on the Agent lane
+     * because Max answers on it.
+     */
+    func streamMaxConsultation(text: String, threadId: String, turnId: String, attachments: [CsAttachment], listener: CsAgentListener) async throws  -> String
+
+    /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
      * arrive. Returns the final assembled assistant text.
@@ -1003,6 +1021,39 @@ open func streamDocumentWithAttachments(text: String, threadId: String, attachme
                 uniffi_codescribe_ffi_fn_method_codescribeagent_stream_document_with_attachments(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsDocumentToolHost_lower(document),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Stream one typed turn of the selected Max consultation, forwarding the
+     * owner's text, reasoning, tool and approval events for exactly this turn
+     * to `listener`. Returns the final assembled assistant text.
+     *
+     * `turn_id` is the composer's durable acceptance identity. It survives a
+     * restart, so the consultation journal refuses a replay of an accepted
+     * turn instead of running its tools twice, and it is the key the events
+     * are matched on. The turn runs on the consultation owner under Max by
+     * identity, independent of the dictation formatting level selected at the
+     * moment: no second session, and the owner records the reply once.
+     *
+     * Attachments follow the composer contract of
+     * [`Self::stream_reply_with_attachments`], judged on the Agent lane
+     * because Max answers on it.
+     */
+open func streamMaxConsultation(text: String, threadId: String, turnId: String, attachments: [CsAttachment], listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_max_consultation(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterString.lower(turnId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsAgentListener_lower(listener)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
@@ -2673,12 +2724,6 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func commitUserRevision(sessionId: String, sourceRevision: UInt64, renderedText: String) async throws  -> CsUserRevisionResult
 
     /**
-     * Continue an exact Max thread through its retained execution owner. The
-     * accepted turn identity survives restart, preventing duplicate effects.
-     */
-    func continueMaxConsultation(text: String, threadId: String, turnId: String, attachmentPaths: [String]) async throws  -> String
-
-    /**
      * Copy the tagged transcript to the clipboard without a synthetic paste.
      * Swift calls this when the caret already sits inside Codescribe, where a
      * synthetic Cmd+V would paste the transcript back into the overlay itself.
@@ -3279,27 +3324,6 @@ open func commitUserRevision(sessionId: String, sourceRevision: UInt64, rendered
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Continue an exact Max thread through its retained execution owner. The
-     * accepted turn identity survives restart, preventing duplicate effects.
-     */
-open func continueMaxConsultation(text: String, threadId: String, turnId: String, attachmentPaths: [String])async throws  -> String  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribehotkeys_continue_max_consultation(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterString.lower(turnId),FfiConverterSequenceString.lower(attachmentPaths)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterString.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -20949,6 +20973,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document_with_attachments() != 58150) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_max_consultation() != 11031) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21187,9 +21214,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_user_revision() != 37560) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_continue_max_consultation() != 34094) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_copy_text_tagged() != 1762) {

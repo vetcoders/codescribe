@@ -633,11 +633,21 @@ fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
     if name.to_ascii_lowercase().contains("whisper") {
         return true;
     }
-    fs::read_to_string(path.join("config.json"))
-        .map(|config| {
-            config.contains("\"n_mels\"") || config.to_ascii_lowercase().contains("whisper")
-        })
-        .unwrap_or(false)
+    crate::whisper_weights::read_bounded_metadata_file(
+        &path.join("config.json"),
+        crate::whisper_weights::MAX_WHISPER_CONFIG_BYTES,
+        "config",
+    )
+    .map(|config| {
+        std::str::from_utf8(&config).is_ok()
+            && (config
+                .windows(b"\"n_mels\"".len())
+                .any(|part| part == b"\"n_mels\"")
+                || config
+                    .windows(b"whisper".len())
+                    .any(|part| part.eq_ignore_ascii_case(b"whisper")))
+    })
+    .unwrap_or(false)
 }
 
 /// Short single-line refusal reason for the picker; quantized bundles get the

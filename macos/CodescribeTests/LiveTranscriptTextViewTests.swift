@@ -276,7 +276,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     if #available(macOS 26, *), let glass = dark as? NSGlassEffectView {
       XCTAssertEqual(
         glass.tintColor,
-        OverlayAppearancePalette.dark.desktopBackground.nsColor.withAlphaComponent(0.22))
+        OverlayAppearancePalette.dark.desktopBackground.nsColor.withAlphaComponent(0.84))
     }
     host.rootView = OverlayCanvasBackdrop(palette: .light, reduceTransparency: false)
     host.layoutSubtreeIfNeeded()
@@ -287,7 +287,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
       XCTAssertEqual(
         glass.tintColor,
-        OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.22),
+        OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.84),
         "Appearance changes must update the same bounded palette veil")
     }
     host.rootView = OverlayCanvasBackdrop(

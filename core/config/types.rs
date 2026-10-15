@@ -581,7 +581,7 @@ impl FromStr for HoldArmModifier {
 ///
 /// This struct contains all configuration options for the app.
 /// Values are loaded from .env file (single source of truth).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     // ===== Hotkeys =====
     /// Whether to ignore extra modifiers when hold key is pressed
@@ -819,6 +819,86 @@ pub struct Config {
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
     pub dump_audio_logs: bool,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("hold_exclusive", &self.hold_exclusive)
+            .field("hold_arm_modifier", &self.hold_arm_modifier)
+            .field("hold_start_delay_ms", &self.hold_start_delay_ms)
+            .field("double_tap_interval_ms", &self.double_tap_interval_ms)
+            .field("toggle_silence_sec", &self.toggle_silence_sec)
+            .field(
+                "whisper_context_window_sec",
+                &self.whisper_context_window_sec,
+            )
+            .field("whisper_adaptive_buffer", &self.whisper_adaptive_buffer)
+            .field("format_on_device", &self.format_on_device)
+            .field(
+                "light_plus_sentence_pause_sec",
+                &self.light_plus_sentence_pause_sec,
+            )
+            .field("deferred_insert_shortcut", &self.deferred_insert_shortcut)
+            .field("channel_modifier", &self.channel_modifier)
+            .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
+            .field("middle_mouse_acts_as_fn", &self.middle_mouse_acts_as_fn)
+            .field("whisper_language", &self.whisper_language)
+            .field("ai_formatting_enabled", &self.ai_formatting_enabled)
+            .field("paste_mode", &self.paste_mode)
+            .field("transcript_send_mode", &self.transcript_send_mode)
+            .field(
+                "transcript_tagging_enabled",
+                &self.transcript_tagging_enabled,
+            )
+            .field("transcript_tag_template", &self.transcript_tag_template)
+            .field("ai_max_tokens", &self.ai_max_tokens)
+            .field("ai_assistive_max_tokens", &self.ai_assistive_max_tokens)
+            .field("show_tray_glyph", &self.show_tray_glyph)
+            .field("show_dock_icon", &self.show_dock_icon)
+            .field(
+                "transcription_overlay_enabled",
+                &self.transcription_overlay_enabled,
+            )
+            .field("tray_start_assistive", &self.tray_start_assistive)
+            .field("hold_indicator", &self.hold_indicator)
+            .field("hold_badge_size", &self.hold_badge_size)
+            .field("hold_badge_offset_x", &self.hold_badge_offset_x)
+            .field("hold_badge_offset_y", &self.hold_badge_offset_y)
+            .field("overlay_position_mode", &self.overlay_position_mode)
+            .field("overlay_custom_x", &self.overlay_custom_x)
+            .field("overlay_custom_y", &self.overlay_custom_y)
+            .field("beep_on_start", &self.beep_on_start)
+            .field("sound_name", &self.sound_name)
+            .field("sound_volume", &self.sound_volume)
+            .field("audio_input_device", &self.audio_input_device)
+            .field("audio_retention", &self.audio_retention)
+            .field("history_enabled", &self.history_enabled)
+            .field("quick_notes_enabled", &self.quick_notes_enabled)
+            .field("quick_notes_save_only", &self.quick_notes_save_only)
+            .field("use_local_stt", &self.use_local_stt)
+            .field("local_model", &self.local_model)
+            .field("stt_file_endpoint", &self.stt_file_endpoint)
+            .field("stt_file_api_key_present", &self.stt_file_api_key.is_some())
+            .field("stt_live_endpoint", &self.stt_live_endpoint)
+            .field("stt_live_api_key_present", &self.stt_live_api_key.is_some())
+            .field("stt_cloud_refine_endpoint", &self.stt_cloud_refine_endpoint)
+            .field("cloud_refine_selected", &self.cloud_refine_selected)
+            .field(
+                "stt_initial_prompt_enabled",
+                &self.stt_initial_prompt_enabled,
+            )
+            .field("restore_clipboard", &self.restore_clipboard)
+            .field(
+                "restore_clipboard_delay_ms",
+                &self.restore_clipboard_delay_ms,
+            )
+            .field("start_at_login", &self.start_at_login)
+            .field("agent_enter_sends", &self.agent_enter_sends)
+            .field("agent_auto_send", &self.agent_auto_send)
+            .field("dump_audio_logs", &self.dump_audio_logs)
+            .finish()
+    }
 }
 
 impl Default for Config {

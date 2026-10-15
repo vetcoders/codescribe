@@ -251,9 +251,34 @@ fn route_hotkey_event<F, G>(
 /// happened — a silent no-op on an explicit user gesture reads as a broken
 /// hotkey, so nothing-to-insert and expiry both surface a notification.
 fn deliver_deferred_insert_and_notify() {
-    match clipboard::deliver_deferred_insert() {
+    // The hotkey tap holds no controller; the runtime snapshot carries the same
+    // clipboard restore settings the controller passes on its own paste path.
+    let (restore_clipboard, restore_clipboard_delay_ms) =
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(settings) => (
+                settings.values().restore_clipboard,
+                settings.values().restore_clipboard_delay_ms,
+            ),
+            Err(error) => {
+                let defaults = Config::default();
+                tracing::warn!(
+                    %error,
+                    restore_clipboard = defaults.restore_clipboard,
+                    "Runtime settings snapshot refused; deferred insert uses the default clipboard restore"
+                );
+                (
+                    defaults.restore_clipboard,
+                    defaults.restore_clipboard_delay_ms,
+                )
+            }
+        };
+    match clipboard::deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms) {
         Ok(clipboard::DeferredInsertDelivery::Delivered) => {
-            tracing::info!("Deferred transcript delivered and clipboard restore scheduled");
+            tracing::info!(
+                restore_clipboard,
+                restore_clipboard_delay_ms,
+                "Deferred transcript delivered"
+            );
         }
         Ok(
             clipboard::DeferredInsertDelivery::NothingToInsert
@@ -1068,43 +1093,6 @@ impl CodescribeHotkeys {
                 })
                 .map_err(|error| CsError::Recording {
                     msg: format!("Max preparation failed: {error:#}"),
-                })
-        })
-        .await?
-    }
-
-    /// Continue an exact Max thread through its retained execution owner. The
-    /// accepted turn identity survives restart, preventing duplicate effects.
-    pub async fn continue_max_consultation(
-        &self,
-        text: String,
-        thread_id: String,
-        turn_id: String,
-        attachment_paths: Vec<String>,
-    ) -> Result<String, CsError> {
-        application_runtime::run(async move {
-            let settings =
-                codescribe_core::config::Config::load_runtime_snapshot().map_err(|error| {
-                    CsError::Config {
-                        msg: error.to_string(),
-                    }
-                })?;
-            // Max runs on the Agent lane; its model decides image support.
-            let lane = settings.llm_lanes().assistive();
-            let attachments = attachment_paths
-                .into_iter()
-                .map(|path| crate::agent::CsAttachment { path })
-                .collect::<Vec<_>>();
-            let images = crate::agent::validate_composer_attachments(
-                &attachments,
-                lane.supports_vision(lane.model()),
-            )?;
-            let controller = ensure_controller(&shared_controller(), Handle::current());
-            controller
-                .continue_max_consultation(&thread_id, turn_id, text, images)
-                .await
-                .map_err(|error| CsError::Recording {
-                    msg: format!("Max continuation failed: {error:#}"),
                 })
         })
         .await?
@@ -2733,6 +2721,21 @@ const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::DoubleRightOption,
 ];
 
+/// Pure picker projection of the detector's routing table. No settings or
+/// runtime handle is needed to enumerate gestures reachable for one mode.
+#[uniffi::export]
+pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
+    ALL_SHORTCUT_BINDINGS
+        .iter()
+        .copied()
+        .filter(|&binding| hotkeys::mode_binding_reachable(mode.into(), binding))
+        .map(|binding| CsBindingOption {
+            binding: binding.into(),
+            label: binding.label().to_string(),
+        })
+        .collect()
+}
+
 /// Pair a mode with its binding and attach the display copy sourced from the
 /// core, so the Settings UI never re-invents labels that live in
 /// `docs/HOTKEYS_CONTRACT.md`.
@@ -3121,9 +3124,8 @@ impl CodescribeHotkeys {
             .collect()
     }
 
-    /// The closed set of gestures a mode can bind to, with display labels. Drives
-    /// the Settings picker (no free-form key capture — the binding space is a
-    /// fixed enum, see `HOTKEYS_CONTRACT`).
+    /// Label catalog for draft edits and conflict presentation. Picker choices
+    /// come from `available_bindings_for_mode`, never this unfiltered catalog.
     pub fn available_bindings(&self) -> Vec<CsBindingOption> {
         ALL_SHORTCUT_BINDINGS
             .iter()

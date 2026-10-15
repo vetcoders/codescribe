@@ -85,11 +85,7 @@ struct MCPAddFailure: Equatable {
   /// The bridge flattens every store error into `CsError.Config(msg:)`; mocks
   /// throw plain errors. Either way the message is what the store said.
   init(_ error: Error) {
-    if case CsError.Config(let msg) = error {
-      self.init(storeMessage: msg)
-    } else {
-      self.init(storeMessage: String(describing: error))
-    }
+    self.init(storeMessage: error.userFacingMessage)
   }
 
   init(storeMessage detail: String) {

@@ -1163,6 +1163,40 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         self.assertEqual(DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])["announced"],
                          sorted(self.ids[1:] + ["e" * 24]))
 
+    def test_a_delivery_probed_while_the_waiter_writes_its_ledger_is_announced_once(self):
+        """Forced interleave (CS160-F028): the waiter has decided its notice and is
+        about to write the ledger when a delivery arrives and the probe surfaces
+        it. The waiter's write must not drop the probed id, or the next turn end
+        announces that delivery a second time."""
+        record = MCP.wake_paths(self.root, self.lease)[1]
+        original = DEMUX.atomic_json
+        probed, interleaved, threads = [], threading.Event(), []
+
+        def write_with_a_probe_in_between(path, payload):
+            if Path(path) == record and not interleaved.is_set():
+                interleaved.set()
+                self.pending.append(self.envelope("e" * 24))
+                self.save()
+                thread = threading.Thread(target=lambda: probed.append(self.probe()))
+                thread.start()
+                threads.append(thread)
+                time.sleep(0.3)  # the probe either finishes (no lock) or blocks on the ledger lock
+            return original(path, payload)
+
+        with patch.object(DEMUX, "atomic_json", write_with_a_probe_in_between):
+            code, notice = self.wake()
+        for thread in threads:
+            thread.join(5)
+        self.assertTrue(interleaved.is_set(), "the waiter never wrote its ledger")
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, self.ids))
+        self.assertEqual(probed[0][1]["new_delivery_ids"], ["e" * 24], "the probe surfaced the arrival")
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"),
+                         "the probed delivery was announced a second time")
+        self.assertEqual(DEMUX.read_json(record)["announced"], sorted(self.ids + ["e" * 24]))
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
     def test_probe_is_silent_for_other_sessions_unbound_channels_and_empty_mailboxes(self):
         for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "another-claude-session"}):
             with self.subTest(environ=environ):

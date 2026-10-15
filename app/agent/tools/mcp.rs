@@ -1932,7 +1932,11 @@ fn discover_mcp_tools_blocking(
                                 return (server_name, server_config, None);
                             }
                             let client = McpClient::new(server_config.clone());
-                            let outcome = client.probe().await;
+                            let outcome =
+                                tokio::time::timeout(Duration::from_secs(10), client.probe())
+                                    .await
+                                    .context("mcp_probe_timeout")
+                                    .and_then(|result| result);
                             (server_name, server_config, Some(outcome))
                         });
                 let results = futures_util::future::join_all(probes).await;
