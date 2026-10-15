@@ -1072,6 +1072,9 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// The agent conversation viewed last. The transcription clears the
+  /// selection; this keeps the way back for the Agents button.
+  @ObservationIgnored private var lastAgentConversationID: String?
   private(set) var showsAgentMonitor = false
   /// Saved-conversation search in the agent drawer. Owned here because the
   /// drawer value is rebuilt on every overlay body pass and only its
@@ -1415,6 +1418,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
@@ -1442,8 +1446,41 @@ final class OverlayState {
     if let expansion { expandAgentSurface(cause: expansion) }
   }
 
+  /// The Agents button. Founder, 2026-10-15: reaching an agent took mini →
+  /// midi → drawer → conversation. One press opens the conversation itself;
+  /// in a conversation the press opens the drawer to change agents, and on
+  /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
-    if showsAgentMonitor && !isCollapsed { hideAgentSidebar() } else { showAgentMonitor() }
+    if showsAgentMonitor && !isCollapsed {
+      hideAgentSidebar()
+    } else if !isCollapsed && selectedConversationID != nil {
+      showAgentMonitor()
+    } else if let destination = agentDestinationConversationID {
+      selectConversation(destination)
+    } else {
+      showAgentMonitor()
+    }
+  }
+
+  /// Where one press on Agents lands: the conversation with the newest unread
+  /// reply, else the one viewed last, else the most recent live conversation (or the
+  /// only one, even empty).
+  var agentDestinationConversationID: String? {
+    let live = conversations.filter { conversation in
+      guard let owner = conversation.owner else { return true }
+      return !archivedAgentOwners.contains { $0.id == owner.id && $0.channel == owner.channel }
+    }
+    func newest(_ candidates: [OverlayConversation]) -> OverlayConversation? {
+      candidates.max {
+        ($0.messages.map(\.order).max() ?? 0) < ($1.messages.map(\.order).max() ?? 0)
+      }
+    }
+    if let unread = newest(live.filter { unreadReplies(in: $0) > 0 }) { return unread.id }
+    if let last = lastAgentConversationID, conversations.contains(where: { $0.id == last }) {
+      return last
+    }
+    if live.count == 1 { return live[0].id }
+    return newest(live.filter { !$0.messages.isEmpty })?.id
   }
 
   func hideAgentSidebar() {
