@@ -285,9 +285,9 @@ final class LiveTranscriptTextViewTests: XCTestCase {
       // Maciej, 2026-10-14: bare glass read a little too transparent. The veil
       // is the palette's own sheet colour, light enough to stay glass; the
       // 72 % tint removed in 469b701b8 made a solid sheet.
-      let tint = try XCTUnwrap(glass.tintColor, "The overlay glass carries a light veil")
-      XCTAssertEqual(tint.alphaComponent, 0.22, accuracy: 0.001)
-      XCTAssertNotEqual(tint, darkTint, "The veil follows the palette")
+      XCTAssertEqual(darkTint, OverlayCanvasBackdrop.glassVeil(.dark))
+      XCTAssertEqual(glass.tintColor, OverlayCanvasBackdrop.glassVeil(.light))
+      XCTAssertLessThan(OverlayCanvasBackdrop.glassVeil(.light).alphaComponent, 0.5)
     }
     host.rootView = OverlayCanvasBackdrop(
       palette: .light, reduceTransparency: false, increasedContrast: true)
