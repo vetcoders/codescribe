@@ -4471,6 +4471,9 @@ final class OverlayState {
     }
   }
   @ObservationIgnored private var recoveryCopyPending = false
+  /// The in-flight recovery write, so the intent route's caller (and tests)
+  /// can await the bridge acknowledgement the UI will follow.
+  @ObservationIgnored private(set) var recoveryCopyTask: Task<Void, Never>?
 
   /// Set when a recovery write failed. The retained item is still present, so
   /// this is a "try again", never a loss report. Cleared by the next successful
@@ -4494,7 +4497,7 @@ final class OverlayState {
     guard !recoveryCopyPending, let take = supersededTakes.first else { return nil }
     if reopenRetainedArchiveWork(take) { return nil }
     recoveryCopyPending = true
-    return Task { @MainActor in
+    let copy = Task { @MainActor in
       defer { recoveryCopyPending = false }
       let copied = await recoveryClipboardWriter(take.recoverableText)
       // A discard or capture boundary may change the queue while Rust writes.
@@ -4522,6 +4525,8 @@ final class OverlayState {
       // Interacting with recovery must not close a terminal take under the user.
       if terminal, !isEditingTranscript { restartAutoHideCountdown() }
     }
+    recoveryCopyTask = copy
+    return copy
   }
 
   /// The only path that drops retained work. No capture boundary, late event or

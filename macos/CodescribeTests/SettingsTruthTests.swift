@@ -2441,10 +2441,6 @@ private final class RecordingPermissionAdmin: MCPAdminEngine {
 /// MCP admin double with a scripted add failure and a recorded update log.
 @MainActor
 private final class ScriptedMcpAdmin: MCPAdminEngine {
-  struct StoreFailure: Error, CustomStringConvertible {
-    let description: String
-  }
-
   private var servers: [CsMcpServer]
   private let serverRules: [String]
   var addFailure: String?
@@ -2459,7 +2455,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   func listServers() throws -> [CsMcpServer] { servers }
 
   func addServer(_ input: CsMcpServerInput) throws {
-    if let addFailure { throw StoreFailure(description: addFailure) }
+    if let addFailure { throw CsError.Config(msg: addFailure) }
     servers.append(
       CsMcpServer(
         name: input.name, command: input.command, args: input.args, envKeys: [],

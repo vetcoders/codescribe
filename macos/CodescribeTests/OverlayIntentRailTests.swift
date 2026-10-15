@@ -564,7 +564,7 @@ final class OverlayIntentRailTests: XCTestCase {
   /// The rail's own dispatch route reaches the retention owner, and the
   /// retained bytes leave through the injected pasteboard rather than the
   /// reducer, a seal, a delivery or the canvas.
-  func testPreviousTakeMenuDispatchesRecoveryAndDiscardThroughTheProductionRoute() throws {
+  func testPreviousTakeMenuDispatchesRecoveryAndDiscardThroughTheProductionRoute() async throws {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntentRail.swift")
@@ -576,11 +576,8 @@ final class OverlayIntentRailTests: XCTestCase {
     let recovered = stateWithOneRetainedEdit()
     let engine = OverlayIntentBoundaryEngine()
     recovered.engine = engine
-    var written: [String] = []
-    recovered.recoveryClipboardWriter = { text in
-      written.append(text)
-      return true
-    }
+    let written = RecoveryWriteRecorder()
+    recovered.recoveryClipboardWriter = written.writer
     let rail = OverlayIntentRail(
       phase: recovered.statusText,
       intents: OverlayIntentRail.projectedIntents(for: recovered),
@@ -591,8 +588,9 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(rail.intents.contains(.discardSuperseded))
 
     rail.dispatch(.recoverSuperseded)
+    await recovered.recoveryCopyTask?.value
 
-    XCTAssertEqual(written, ["Zdanie z moją poprawką."])
+    XCTAssertEqual(written.texts, ["Zdanie z moją poprawką."])
     XCTAssertFalse(recovered.hasRecoverableSupersededWork)
     XCTAssertNil(recovered.recoveryFailure)
     XCTAssertTrue(engine.formatterRequests.isEmpty, "recovery is not a reducer path")
@@ -612,6 +610,7 @@ final class OverlayIntentRailTests: XCTestCase {
     let refused = stateWithOneRetainedEdit()
     refused.recoveryClipboardWriter = { _ in false }
     refused.relayIntent(.recoverSuperseded)
+    await refused.recoveryCopyTask?.value
     XCTAssertTrue(refused.hasRecoverableSupersededWork)
     XCTAssertNotNil(refused.recoveryFailure)
     XCTAssertEqual(
