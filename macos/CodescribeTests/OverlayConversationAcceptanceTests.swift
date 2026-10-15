@@ -1679,6 +1679,46 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     }
   }
 
+  func testExplicitPrivatePeerRouteOverridesBroadcastAssociation() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    var question = occurrence(0, revision: 1, text: "Do wszystkich")
+    question["session_id"] = "agent-channel-0-test"
+    question["occurrence_session_id"] = "agent-channel-0-test"
+    question["audience"] = "*"
+    bus.consume(question)
+    let delivery = try XCTUnwrap(
+      try lenaConversation(bus).messages.first?.recipients.first?.deliveryID)
+    // An ordinary associated response still follows its question into All.
+    let associatedID = String(repeating: "d", count: 24)
+    bus.consume(reply(associatedID, delivery: delivery))
+    // Explicit peer addressing wins even if an older association names All.
+    let privateID = String(repeating: "e", count: 24)
+    var privateReply = reply(privateID, delivery: delivery)
+    privateReply["sender"] = owner(leaseA)
+    privateReply["channel"] = "4"
+    privateReply["origin_channel"] = "4"
+    privateReply["peer_to"] = "Adam"
+    privateReply["recipients"] = [owner(leaseB, session: "agent-b", name: "Adam", channel: "4")]
+    privateReply["text"] = "Tylko do Adama"
+    bus.consume(privateReply)
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let conversations = projection.conversations(busPath: busPath)
+      let all = try XCTUnwrap(conversations.first { $0.id == "0" })
+      XCTAssertEqual(all.messages.map(\.text), ["Do wszystkich", "Odpowiedź"])
+      XCTAssertEqual(all.messages.last?.id, "reply:" + associatedID)
+      XCTAssertEqual(all.messages.last?.replyTo, delivery)
+      XCTAssertFalse(
+        try lenaConversation(projection).messages.contains { $0.id == "reply:" + privateID })
+      let adam = try XCTUnwrap(conversations.first { $0.owner?.leaseID == leaseB })
+      XCTAssertEqual(adam.messages.map(\.id), ["reply:" + privateID])
+      XCTAssertEqual(adam.messages.first?.owner?.name, "Lena")
+      XCTAssertEqual(adam.messages.first?.sourceChannel, "4")
+    }
+  }
+
   func testLateAcknowledgmentRetainsReplyAndForeignOwnerCannotAcknowledge() throws {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(occurrence(0, revision: 1))
