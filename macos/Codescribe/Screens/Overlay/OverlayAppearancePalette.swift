@@ -45,9 +45,12 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     shadowOpacity: 0.16
   )
 
+  /// The dark sheet is the Vibecrafted terminal's near-black navy
+  /// (`~/.config/vibecrafted/terminal-theme.toml`, `colors.primary.background`),
+  /// which Maciej asked to carry into the app (ch1, 2026-10-15 15:58Z).
   static let dark = OverlayAppearancePalette(
     appearance: .dark,
-    desktopBackground: OverlayColorToken(0x191919),
+    desktopBackground: OverlayColorToken(0x0B0B12),
     border: OverlayColorToken(0xF3F0EA, alpha: 0.16),
     primaryText: OverlayColorToken(0xF3F0EA),
     bodyText: OverlayColorToken(0xC8C1B8),

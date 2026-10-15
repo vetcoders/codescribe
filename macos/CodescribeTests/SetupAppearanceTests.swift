@@ -82,11 +82,9 @@ final class SetupAppearanceTests: XCTestCase {
             XCTAssertNil(backdrop, "Reduced transparency must use the solid shared backdrop")
           } else {
             let glass = try XCTUnwrap(backdrop, "Every setup step must use the overlay glass")
-            XCTAssertEqual(
+            XCTAssertNil(
               glass.tintColor,
-              (dark ? OverlayAppearancePalette.dark : .light)
-                .desktopBackground.nsColor.withAlphaComponent(0.84),
-              "Setup must use the same bounded palette veil as the overlay")
+              "Setup must use the same untinted glass as the overlay; the veil is a layer above")
             XCTAssertNil(glass.hitTest(NSPoint(x: glass.bounds.midX, y: glass.bounds.midY)))
           }
         } else {
