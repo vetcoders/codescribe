@@ -1195,11 +1195,7 @@ final class OverlayState {
   /// bridge verbatim; the facade's preflight failures are named here.
   static func archiveFailureReason(_ error: Error) -> String {
     if let error = error as? CsError {
-      switch error {
-      case .Agent(let msg), .Config(let msg), .Recording(let msg), .License(let msg),
-        .Quality(let msg), .Runtime(let msg):
-        return msg.trimmingCharacters(in: .whitespacesAndNewlines)
-      }
+      return error.userFacingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     if let error = error as? CocoaError {
       switch error.code {

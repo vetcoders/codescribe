@@ -51,6 +51,7 @@ prose CsCapabilityRow.tier
 prose CsCapabilityRow.provider
 prose CsCapabilityRow.nativeTool
 prose CsCapabilityRow.reason
+data  CsCalibrationRefusal.digitalSilence.deviceName
 data  CsCaptureHandle.captureId
 data  CsChannelRosterState.channel
 data  CsChannelRosterState.audience

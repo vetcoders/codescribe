@@ -10426,12 +10426,34 @@
         }
       }
     },
+    "No sound comes from “%@”, only digital zeros. Bluetooth headphones in use by another device, such as an iPhone, do this. Select them on this Mac in Control Center." : {
+      "comment" : "Calibration refusal. The placeholder is an input device name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z „%@” nie dochodzi żaden dźwięk, tylko cyfrowe zera. Tak zachowują się słuchawki Bluetooth zajęte przez inne urządzenie, np. iPhone’a. Wybierz je na tym Macu w Centrum sterowania."
+          }
+        }
+      }
+    },
     "No speech detected" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie wykryto mowy"
+          }
+        }
+      }
+    },
+    "No speech was heard. Speak normally for the whole measurement." : {
+      "comment" : "Calibration refusal when the measurement contained no speech",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie usłyszano mowy. Mów normalnie przez cały pomiar."
           }
         }
       }
@@ -10961,6 +10983,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Jedno anonimowe zdarzenie z wersją aplikacji i wersją macOS. Nigdy audio ani tekst."
+          }
+        }
+      }
+    },
+    "Only %@ s of speech was heard; at least %@ s is needed. Speak normally for the whole measurement." : {
+      "comment" : "Calibration refusal. Both placeholders are pre-formatted numbers of seconds: measured, then required",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Only %1$@ s of speech was heard; at least %2$@ s is needed. Speak normally for the whole measurement."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usłyszano tylko %1$@ s mowy, a potrzeba co najmniej %2$@ s. Mów normalnie przez cały pomiar."
           }
         }
       }
@@ -15316,6 +15355,17 @@
         }
       }
     },
+    "Speech was barely louder than the background noise. Move closer to the microphone or to a quieter place." : {
+      "comment" : "Calibration refusal when speech is too close to the room noise",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mowa była ledwie głośniejsza od szumu tła. Przybliż się do mikrofonu albo przenieś w cichsze miejsce."
+          }
+        }
+      }
+    },
     "Spoken" : {
       "localizations" : {
         "en" : {
@@ -16481,6 +16531,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Tryb lokalny będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
+          }
+        }
+      }
+    },
+    "The measurement could not be used. Try again." : {
+      "comment" : "Calibration refusal for a measurement that can only be repeated",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pomiaru nie da się użyć. Spróbuj ponownie."
           }
         }
       }
