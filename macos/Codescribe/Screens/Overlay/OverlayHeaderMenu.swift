@@ -136,7 +136,8 @@ struct OverlayHeaderMenu: View {
 }
 
 /// The header's one window control: an explicit Pin / Unpin. Pinned is the
-/// filled accent glyph and hairline, without lifting the circular background.
+/// filled accent glyph on the chrome's pastel accent wash (Founder,
+/// 2026-10-15: the three controls left of the microphone were faint circles).
 /// Unpinning a resting panel lets it go after
 /// `OverlayState.pinReleaseDelaySeconds` with a fade, never at the click.
 @MainActor

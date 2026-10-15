@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.12.2"
+  version: "0.13.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -34,6 +34,8 @@ Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in ref
   session only if recovery or helper adoption is needed. Recover the relevant
   [conversation history](references/history.md); an empty mailbox is not an empty chat.
 - **Answer by voice:** follow **Reply** after reading and acknowledging.
+- **A mailbox on another Mac:** follow [Remote bus](references/remote.md). Use
+  `--remote HOST` consistently; local MCP tools do not read the remote mailbox.
 - **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
 
 ## Connect once

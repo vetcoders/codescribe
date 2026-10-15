@@ -719,17 +719,13 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     engine.audioSnapshotLoader = { live.snapshot }
     engine.admissionReadiness = .sampleMissing
     engine.calibrateEnergyObserver = { _ in
-      throw NSError(
-        domain: "Calibration", code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey:
-            "calibration_refused: `AirPods Pro` sent no sound: all 240000 samples were digital zero"
-        ])
+      throw CsError.CalibrationRefused(
+        refusal: .digitalSilence(deviceName: "AirPods Pro", samples: 240_000))
     }
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
     model.refreshAudioInput()
     await model.runCalibration()
-    XCTAssertTrue(model.calibrationNotice?.contains("sent no sound") == true)
+    XCTAssertTrue(model.calibrationNotice?.contains("“AirPods Pro”") == true)
 
     await model.audioHardwareChanged()
     XCTAssertNotNil(model.calibrationNotice, "same input: its refusal stays")
@@ -776,18 +772,26 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     var engine = MockSettingsEngine()
     engine.admissionReadiness = .sampleMissing
     engine.calibrateEnergyObserver = { _ in
-      throw NSError(
-        domain: "Calibration", code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"
-        ])
+      throw CsError.CalibrationRefused(
+        refusal: .insufficientSpeech(measuredSeconds: 0.4, requiredSeconds: 1))
     }
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
 
     await model.runCalibration()
 
     XCTAssertTrue(model.calibrationNotice?.hasPrefix("Calibration refused") == true)
+    XCTAssertTrue(model.calibrationNotice?.contains("0.4 s of speech") == true)
     XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+
+    // 2026-10-15: an untyped bridge failure printed `Recording(msg: …)`.
+    engine.calibrateEnergyObserver = { _ in
+      throw CsError.Recording(msg: "energy calibration refused while an agent channel is open")
+    }
+    let busy = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    await busy.runCalibration()
+    XCTAssertEqual(
+      busy.calibrationNotice,
+      "Calibration refused: energy calibration refused while an agent channel is open")
   }
 }
 

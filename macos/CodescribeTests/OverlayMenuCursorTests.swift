@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -76,6 +77,42 @@ final class OverlayMenuCursorTests: XCTestCase {
       XCTAssertTrue(panel.refreshCursor(at: point), "Mounted control at \(point)")
       XCTAssertEqual(NSCursor.current, .arrow)
     }
+  }
+
+  /// Founder, 2026-10-15: an I-beam showed between and over the agent's
+  /// microphone and speaker, which float above message text. The pair and
+  /// the gap between its buttons claim the arrow from the text below.
+  func testAgentAudioControlsClaimTheArrowAboveText() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 300, height: 120),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    defer { panel.close() }
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 120))
+    let text = NSTextView(frame: content.bounds)
+    text.isHorizontallyResizable = false
+    text.isVerticallyResizable = false
+    text.isEditable = false
+    text.string = String(repeating: "Wiadomość od agenta pod przyciskami. ", count: 12)
+    content.addSubview(text)
+    let controls = NSHostingView(
+      rootView: OverlayAgentAudioControls(
+        open: false, muted: false, microphoneEnabled: true, playbackEnabled: true,
+        palette: .dark, onMicrophone: {}, onPlayback: {}))
+    controls.frame = NSRect(x: 180, y: 70, width: 100, height: 40)
+    content.addSubview(controls)
+    panel.contentView = content
+    content.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    content.layoutSubtreeIfNeeded()
+
+    let region = try XCTUnwrap(
+      panel.menuCursorRegions.allObjects.first { $0.window === panel },
+      "the controls register a cursor region")
+    let frame = region.convert(region.bounds, to: nil)
+    XCTAssertGreaterThan(frame.width, 50, "both buttons and their gap, got \(frame)")
+    let gap = NSPoint(x: frame.midX, y: frame.midY)
+    XCTAssertEqual(panel.cursor(at: gap), .arrow, "region \(frame)")
+    XCTAssertEqual(panel.cursor(at: NSPoint(x: 40, y: 30)), .iBeam, "text keeps its cursor")
   }
 
   func testDrawerTextInputKeepsItsTextCursor() {

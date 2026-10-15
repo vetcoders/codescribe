@@ -85,8 +85,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
         isOneWay(steps.map(\.width)), "\(mode): width steps back: \(steps.map(\.width))")
       XCTAssertTrue(
         isOneWay(steps.map(\.height)), "\(mode): height steps back: \(steps.map(\.height))")
+      let declared = DictationOverlayWindow.presentationDuration(
+        from: try XCTUnwrap(began.frame), to: target)
       XCTAssertEqual(
-        completed.at - began.at, DictationOverlayWindow.presentationDuration, accuracy: 0.25,
+        completed.at - began.at, declared, accuracy: 0.25,
         "\(mode): the morph takes its declared duration")
 
       // Nothing rewrites the frame once the morph has landed.
@@ -112,6 +114,57 @@ final class OverlayPresentationTraceTests: XCTestCase {
     try? ("mini→midi→expanded→mini\n" + trace.dump() + "\n").write(
       to: dump, atomically: true, encoding: .utf8)
     withExtendedLifetime(state) {}
+  }
+
+  /// Founder, 2026-10-15: a full-screen overlay folded in the time MIDI folds
+  /// to mini. The morph keeps one speed: duration follows the longest edge travel.
+  func testMorphDurationFollowsTheFarthestEdgeAtOneSpeed() {
+    let midi = NSRect(x: 1590, y: 1040, width: 410, height: 46)
+    let mini = NSRect(x: 1800, y: 1040, width: 200, height: 46)
+    XCTAssertEqual(
+      DictationOverlayWindow.presentationDuration(from: midi, to: mini),
+      DictationOverlayWindow.presentationDuration, "A short step keeps the former pace")
+    let fullScreen = NSRect(x: 40, y: 40, width: 1960, height: 1046)
+    let fold = DictationOverlayWindow.presentationDuration(from: fullScreen, to: mini)
+    XCTAssertEqual(fold, 1760 / DictationOverlayWindow.presentationSpeed, accuracy: 0.001)
+    XCTAssertEqual(
+      DictationOverlayWindow.presentationDuration(from: mini, to: fullScreen), fold,
+      "Unfolding the same distance takes as long")
+    let defaultPanel = NSRect(x: 1530, y: 760, width: 470, height: 326)
+    XCTAssertEqual(
+      DictationOverlayWindow.presentationDuration(from: defaultPanel, to: mini),
+      DictationOverlayWindow.presentationDuration, "The default panel folds as before")
+    let largePanel = NSRect(x: 1100, y: 500, width: 900, height: 586)
+    let partial = DictationOverlayWindow.presentationDuration(from: largePanel, to: mini)
+    XCTAssertEqual(partial, 0.7, accuracy: 0.001)
+    XCTAssertLessThan(partial, fold, "A shorter fold is quicker, at the same speed")
+  }
+
+  /// Founder, 2026-10-15: a fold caught by the pointer returns to the frame
+  /// the panel had before the fold started, from wherever the morph had got to.
+  func testFoldCaughtMidwayReturnsToThePreFoldFrame() throws {
+    let (_, panel) = try makePanel("fold-caught")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.expanded)
+    let before = panel.frame
+
+    panel.setPresentationMode(.mini, animated: true)
+    let fold = panel.lastMorphDuration
+    RunLoop.main.run(until: Date().addingTimeInterval(fold / 3))
+    let caught = panel.frame
+    XCTAssertLessThan(caught.height, before.height, "the fold is under way")
+    XCTAssertGreaterThan(caught.height, DictationOverlayWindow.collapsedHeight)
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.expanded, animated: true)
+    XCTAssertLessThanOrEqual(panel.lastMorphDuration, fold, "the way back is shorter")
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertEqual(began.target, before, "the target is the pre-fold frame")
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame, before)
   }
 
   func testModeRequestPrecedesTheFrameAndCarriesItsCause() throws {

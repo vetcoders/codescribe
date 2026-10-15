@@ -559,6 +559,80 @@ final class OverlayClipboardPasteTests: XCTestCase {
     }
   }
 
+  /// Founder, 2026-10-15: a pasted image showed as a raw path in the overlay
+  /// composer; it becomes the pill the Agent window's input already shows.
+  @MainActor
+  func testPastedStoreAttachmentIsAPillAndTheEditorKeepsOnlyProse() throws {
+    let isolatedRoot = CodescribeConfig().configDir()
+    guard isolatedRoot != NSHomeDirectory() + "/.codescribe" else {
+      return XCTFail("tests must run under an isolated config root")
+    }
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    board.setData(
+      try XCTUnwrap(bitmap().representation(using: .png, properties: [:])), forType: .png)
+    var draft = "Obejrzyj:"
+    var sent: String?
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }), sending: false,
+        onSubmit: { sent = draft }, clipboard: board))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 160)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    text.setSelectedRange(NSRange(location: text.string.utf16.count, length: 0))
+    text.paste(nil)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+
+    let parts = ConversationDraft.split(draft)
+    XCTAssertEqual(parts.text, "Obejrzyj:")
+    XCTAssertEqual(parts.attachments.count, 1, draft)
+    XCTAssertEqual(text.string, "Obejrzyj:", "the editor shows prose, not the pointer")
+    XCTAssertTrue(
+      parts.attachments.first?.hasPrefix(
+        URL(fileURLWithPath: isolatedRoot).resolvingSymlinksInPath().path + "/assets/") == true,
+      "\(parts.attachments)")
+
+    // The prose can go; the pill stays and Return still sends it.
+    text.selectAll(nil)
+    text.delete(nil)
+    XCTAssertEqual(ConversationDraft.split(draft).text, "")
+    XCTAssertEqual(ConversationDraft.split(draft).attachments, parts.attachments)
+    let enter = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: window.windowNumber, context: nil, characters: "\r",
+        charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+    text.keyDown(with: enter)
+    XCTAssertEqual(sent, draft)
+    XCTAssertEqual(ConversationAttachmentPointer.extract(from: sent ?? "").paths, parts.attachments)
+  }
+
+  func testDraftComposesProseAndPillsAndSplitsBackExactly() {
+    let root = URL(fileURLWithPath: "/tmp/cs-attachments-test")
+    let a = root.appendingPathComponent("assets/inline_a.png").path
+    let b = root.appendingPathComponent("attachments/clipboard_b_note.txt").path
+    for prose in ["", "krótko", "dwie\nlinie", "z nową linią\n"] {
+      let draft = ConversationDraft.compose(text: prose, attachments: [a, b])
+      let parts = ConversationDraft.split(draft, configDirectory: root)
+      XCTAssertEqual(parts.text, prose)
+      XCTAssertEqual(parts.attachments, [a, b])
+    }
+    XCTAssertEqual(ConversationDraft.compose(text: "bez", attachments: []), "bez")
+  }
+
   func testAttachmentMarkersRetainProseRejectOutsidePathsAndFollowDraftDeletion() {
     let root = URL(fileURLWithPath: "/tmp/cs-attachments-test")
     let pointer = root.appendingPathComponent("attachments/clipboard_abc_note.txt")

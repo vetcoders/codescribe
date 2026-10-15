@@ -118,31 +118,59 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
   }
 
-  func testSelectedPinShowsFullAccentWithoutLiftingItsPlate() throws {
+  /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"
+  /// that ignored hover. A chosen control sits on a pastel of its mode's
+  /// colour (Agents lavender, Transcription the listening terracotta, Pin the
+  /// system accent): noticeable, never the full colour, and hover still moves it.
+  func testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover() throws {
     let pinned = OverlayState()
     pinned.engine = OverlayChromePolicyEngine()
     pinned.setKeepVisibleBetweenTakes(true)
     XCTAssertTrue(pinned.keepVisibleBetweenTakes)
     let loose = OverlayState()
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let selected = try hoverFrames(
-        OverlayPinButton(state: pinned, palette: palette), palette: palette)
-      XCTAssertTrue(
-        headerContains(selected.rest, near: headerSystemAccent(palette), tolerance: 0.2))
-      XCTAssertLessThan(
-        headerInteriorDelta(selected.rest, selected.hover, width: selected.width), 0.01,
-        "hover must not brighten the selected pin's plate or glyph")
-      XCTAssertLessThan(headerDelta(selected.rest, selected.leave), 0.01)
-      let unselected = try hoverFrames(
-        OverlayPinButton(state: loose, palette: palette), palette: palette)
-      let scale = CGFloat(selected.width) / 64
-      let plateSample = Int(40 * scale) * selected.width + Int(32 * scale)
-      XCTAssertLessThan(
-        headerDistance(selected.rest[plateSample], unselected.rest[plateSample]), 0.01,
-        "pin state must not lift the empty circular plate")
-      XCTAssertGreaterThan(
-        headerDelta(selected.rest, unselected.rest), 0.05,
-        "filled accent pin must remain distinct from the hollow inactive pin")
+      var agentsSelected = OverlayChannelStatusView(
+        channels: [], unavailable: false, palette: palette, animates: false,
+        unreadCounts: [:], onShowMonitor: {})
+      agentsSelected.headerSelected = true
+      let agentsResting = OverlayChannelStatusView(
+        channels: [], unavailable: false, palette: palette, animates: false,
+        unreadCounts: [:], onShowMonitor: {})
+      let cases: [(String, OverlayColorToken, AnyView, AnyView)] = [
+        (
+          "transcription", palette.listeningStatus,
+          AnyView(HeaderHoverTranscription(palette: palette, selected: true)),
+          AnyView(HeaderHoverTranscription(palette: palette))
+        ),
+        ("agents", palette.agentAccent, AnyView(agentsSelected), AnyView(agentsResting)),
+        (
+          "pin", headerSystemAccent(palette),
+          AnyView(OverlayPinButton(state: pinned, palette: palette)),
+          AnyView(OverlayPinButton(state: loose, palette: palette))
+        ),
+      ]
+      for (name, token, selectedView, restingView) in cases {
+        let label = "\(name)-\(palette.appearance == .dark ? "dark" : "light")"
+        let selected = try hoverFrames(selectedView, palette: palette)
+        let resting = try hoverFrames(restingView, palette: palette)
+        XCTAssertGreaterThan(
+          headerShift(resting.rest, selected.rest, toward: token), 0.04,
+          "\(label): the choice is not tinted toward its mode colour")
+        let scale = CGFloat(selected.width) / 64
+        let plateSample = Int(40 * scale) * selected.width + Int(32 * scale)
+        let plate = selected.rest[plateSample]
+        XCTAssertGreaterThan(
+          headerDistance(plate, resting.rest[plateSample]), 0.03,
+          "\(label): the choice must wash its plate")
+        XCTAssertGreaterThan(
+          headerDistance(plate, headerPixel(token.nsColor)), 0.15,
+          "\(label): a pastel, not the full colour")
+        XCTAssertGreaterThan(
+          headerDelta(selected.rest, selected.hover), 0.02,
+          "\(label): a chosen control must still answer hover")
+        XCTAssertLessThan(
+          headerDelta(selected.rest, selected.leave), 0.02, "\(label): hover did not clear")
+      }
     }
   }
 
@@ -153,6 +181,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let view = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(
       view.contains("title: transcriptPreviewHelp, accent: .transcription, palette: palette"))
+    XCTAssertTrue(
+      view.contains("? OverlayHeaderAccent.transcription.selectionTint(in: palette)"),
+      "the fixture mirrors the production Transcription tint")
     XCTAssertTrue(view.contains("accent: recordingDisabled ? nil : .state, palette: palette"))
     XCTAssertTrue(
       view.contains("title: previewAccessibilityLabel, accent: .state, palette: palette"))
@@ -610,6 +641,24 @@ final class OverlayHeaderChromeTests: XCTestCase {
     return (red * red + green * green + blue * blue).squareRoot()
   }
 
+  /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
+  /// glass and the symbol wore the same violet. A lit control washes its glass
+  /// with a pastel of the colour; the glyph keeps the whole colour. (An
+  /// offscreen raster does not draw glass tint, so this pins the contract.)
+  func testLitAgentControlWashesItsGlassWithAPastelOfItsColour() {
+    for palette in [OverlayAppearancePalette.dark, .light] {
+      let accent = palette.agentAccent.color
+      let glass = OverlayAgentAudioControls.litGlass(accent)
+      XCTAssertEqual(glass, accent.opacity(OverlayAgentAudioControls.litGlassOpacity))
+      XCTAssertNotEqual(glass, accent)
+    }
+    XCTAssertEqual(
+      OverlayAgentAudioControls.litGlass(.red),
+      Color.red.opacity(OverlayAgentAudioControls.litGlassOpacity))
+    XCTAssertLessThanOrEqual(OverlayAgentAudioControls.litGlassOpacity, 0.35)
+    XCTAssertNil(OverlayAgentAudioControls.litGlass(nil), "an unlit control keeps plain glass")
+  }
+
   private func source(_ relative: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -628,18 +677,25 @@ private struct HeaderPixel {
 
 /// The transcription button is private to the overlay. This mounts the same
 /// production glyph and chrome the header uses.
+/// Mirrors the production Transcription control in `DictationOverlayView`.
 private struct HeaderHoverTranscription: View {
   let palette: OverlayAppearancePalette
+  var selected = false
 
   var body: some View {
     Button(action: {}) {
       OverlayMicrophoneGlyph(
-        character: OverlayHeaderGlyph.transcription, tint: palette.mutedText.color)
+        character: OverlayHeaderGlyph.transcription,
+        tint: selected
+          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
+          : palette.mutedText.color,
+        plateOpacity: selected ? 0 : 0.12)
     }
     .buttonStyle(.plain)
     .modifier(
       OverlayHeaderControlChrome(
-        title: "Show transcription", accent: .transcription, palette: palette))
+        title: "Show transcription", accent: .transcription, palette: palette,
+        selected: selected))
   }
 }
 

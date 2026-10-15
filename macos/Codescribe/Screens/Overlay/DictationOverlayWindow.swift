@@ -39,6 +39,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
+  /// Duration of the morph most recently started; the SwiftUI cross-fade
+  /// reads it so content and frame land together.
+  private(set) var lastMorphDuration: TimeInterval = DictationOverlayWindow.presentationDuration
   private var transitionTop: CGFloat?
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
@@ -128,8 +131,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     OverlayPresentationTrace.shared.record(
       .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
       target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
+    lastMorphDuration =
+      animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
     NSAnimationContext.runAnimationGroup { context in
-      context.duration = animated ? DictationOverlayWindow.presentationDuration : 0
+      context.duration = lastMorphDuration
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
       animator().setFrame(restored, display: true)
     } completionHandler: { [weak self] in
@@ -711,7 +716,19 @@ final class OverlayResizeGrabPad: NSView {
 }
 
 enum DictationOverlayWindow {
+  /// Founder, 2026-10-15: the collapse animations are too fast; a big
+  /// full-screen overlay folded in the same time as MIDI to mini. The morph
+  /// keeps one speed instead of one clock: the edge that travels farthest
+  /// sets the duration, and a short step keeps the former 0.28 s.
+  static let presentationSpeed: CGFloat = 1000
   static let presentationDuration: TimeInterval = 0.28
+
+  static func presentationDuration(from start: NSRect, to end: NSRect) -> TimeInterval {
+    let travel = max(
+      abs(end.minX - start.minX), abs(end.maxX - start.maxX),
+      abs(end.minY - start.minY), abs(end.maxY - start.maxY))
+    return max(presentationDuration, TimeInterval(travel / presentationSpeed))
+  }
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
@@ -793,11 +810,12 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    state.onPresentationModeChanged = { [weak panel] mode in
+    state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      state?.presentationMorphDuration = panel.lastMorphDuration
     }
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
@@ -1030,6 +1048,11 @@ enum OverlayResizeHit: Sendable {
   /// a 16 pt corner under a 22 pt glass radius left a sliver to grab). The top
   /// corners keep the band: the header's close dot sits 16 pt from the left.
   static let bottomCorner: CGFloat = 30
+  /// The top edge is thinner than the sides. Founder, 2026-10-15 (build 1050):
+  /// the pointer turned into a resize cursor over Pin. The header's controls
+  /// start 10 pt below the top edge (its vertical padding), so a 16 pt band
+  /// took their upper third, cursor and click alike. The band ends above them.
+  static let topBand: CGFloat = 8
 
   enum Edge: Sendable, Hashable {
     case left, right, top, bottom
@@ -1051,7 +1074,7 @@ enum OverlayResizeHit: Sendable {
       if point.x >= bounds.maxX - corner { return .bottomRight }
     }
     let bottom = point.y <= bounds.minY + band
-    let top = point.y >= bounds.maxY - band
+    let top = point.y >= bounds.maxY - min(band, topBand)
     switch (left, right, bottom, top) {
     case (true, false, true, false): return .bottomLeft
     case (true, false, false, true): return .topLeft
@@ -1114,16 +1137,17 @@ enum OverlayResizeHit: Sendable {
       ]
     }
     let b = band
+    let t = min(band, topBand)
     let c = bottomCornerSide(in: bounds, band: band)
     let w = bounds.width
     let h = bounds.height
     return [
-      (NSRect(x: 0, y: c, width: b, height: max(0, h - c - b)), cursor(for: .left)),
-      (NSRect(x: w - b, y: c, width: b, height: max(0, h - c - b)), cursor(for: .right)),
-      (NSRect(x: b, y: h - b, width: max(0, w - 2 * b), height: b), cursor(for: .top)),
+      (NSRect(x: 0, y: c, width: b, height: max(0, h - c - t)), cursor(for: .left)),
+      (NSRect(x: w - b, y: c, width: b, height: max(0, h - c - t)), cursor(for: .right)),
+      (NSRect(x: b, y: h - t, width: max(0, w - 2 * b), height: t), cursor(for: .top)),
       (NSRect(x: c, y: 0, width: max(0, w - 2 * c), height: b), cursor(for: .bottom)),
-      (NSRect(x: 0, y: h - b, width: b, height: b), cursor(for: .topLeft)),
-      (NSRect(x: w - b, y: h - b, width: b, height: b), cursor(for: .topRight)),
+      (NSRect(x: 0, y: h - t, width: b, height: t), cursor(for: .topLeft)),
+      (NSRect(x: w - b, y: h - t, width: b, height: t), cursor(for: .topRight)),
       (NSRect(x: 0, y: 0, width: c, height: c), cursor(for: .bottomLeft)),
       (NSRect(x: w - c, y: 0, width: c, height: c), cursor(for: .bottomRight)),
     ]
@@ -1150,6 +1174,7 @@ enum OverlayResizeHit: Sendable {
         NSRect(x: w - b, y: 0, width: b, height: h),
       ]
     }
+    let t = min(band, topBand)
     let c = bottomCornerSide(in: bounds, band: band)
     // Along each top edge the band reaches past the glass curve (~22 pt).
     let reach = min(c, w / 2, h / 2)
@@ -1157,9 +1182,9 @@ enum OverlayResizeHit: Sendable {
       NSRect(x: 0, y: 0, width: c, height: c),
       NSRect(x: w - c, y: 0, width: c, height: c),
       NSRect(x: 0, y: h - reach, width: b, height: reach),
-      NSRect(x: 0, y: h - b, width: reach, height: b),
+      NSRect(x: 0, y: h - t, width: reach, height: t),
       NSRect(x: w - b, y: h - reach, width: b, height: reach),
-      NSRect(x: w - reach, y: h - b, width: reach, height: b),
+      NSRect(x: w - reach, y: h - t, width: reach, height: t),
     ]
   }
 

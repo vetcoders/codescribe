@@ -453,6 +453,7 @@ extension RealAgentBridgeInstaller {
     ]
     environment["PATH"] = (commandDirectories + [environment["PATH"] ?? ""]).joined(separator: ":")
     let commandEnvironment = environment
+    let outcomePublished: Int32 = stop ? 0 : playbackOutcomePublishedStatus
     try await Task.detached(priority: .userInitiated) {
       let process = Process()
       process.executableURL = URL(fileURLWithPath: executablePath)
@@ -463,7 +464,10 @@ extension RealAgentBridgeInstaller {
       process.standardError = FileHandle.nullDevice
       try process.run()
       process.waitUntilExit()
-      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+      guard process.terminationReason == .exit,
+        process.terminationStatus == 0
+          || process.terminationStatus == outcomePublished
+      else {
         throw NSError(
           domain: "Codescribe.BusPlayback", code: Int(process.terminationStatus),
           userInfo: [
@@ -473,4 +477,10 @@ extension RealAgentBridgeInstaller {
       }
     }.value
   }
+
+  /// `cs-bus --play-reply` exits 5 when the reply was not spoken and its
+  /// outcome (stopped, take began, refused, failed) is already published on
+  /// the reply's playback record (`speak_published_reply`). The record is
+  /// what the conversation shows, so the exit is not a second error.
+  nonisolated static let playbackOutcomePublishedStatus: Int32 = 5
 }

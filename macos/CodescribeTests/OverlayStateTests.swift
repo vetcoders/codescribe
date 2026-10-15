@@ -1015,6 +1015,81 @@ final class OverlayStateTests: XCTestCase {
     withExtendedLifetime(controller) {}
   }
 
+  /// Founder, 2026-10-15: reaching an agent took mini → midi → drawer →
+  /// conversation. One press on Agents lands in the conversation itself.
+  func testAgentsPressFromMiniOpensTheNewestUnreadConversationInOneStep() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.showTranscription()
+    // Two replies at once follow nobody; both stay unread, Astra's is newer.
+    let older = replyFocusConversation(lena, id: "reply:older")
+    var newer = replyFocusConversation(astra, id: "reply:newer")
+    newer = OverlayConversation(
+      id: newer.id, channel: newer.channel, name: newer.name, owner: newer.owner,
+      messages: newer.messages.map { message in
+        OverlayConversationMessage(
+          id: message.id, kind: message.kind, text: message.text, order: 2,
+          emittedAt: message.emittedAt, owner: message.owner, recipients: [],
+          deliveryID: nil, replyTo: nil, unsolicited: true, playback: nil,
+          busPath: message.busPath)
+      })
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [older, newer]))
+    state.setPresentationMode(.mini)
+    state.setConversationVisible(true)
+    XCTAssertTrue(state.isMini)
+
+    state.toggleAgentSidebar()
+
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertFalse(state.showsAgentMonitor, "the drawer is not a step on the way")
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(state.unreadReplies(in: newer), 0)
+  }
+
+  func testAgentsPressReturnsToTheLastConversationThenOffersTheDrawer() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.selectConversation(astra.id)
+    state.showTranscription()
+    XCTAssertNil(state.selectedConversationID)
+
+    state.toggleAgentSidebar()
+    XCTAssertEqual(state.selectedConversationID, astra.id, "back where the user left")
+    XCTAssertFalse(state.showsAgentMonitor)
+
+    state.toggleAgentSidebar()
+    XCTAssertTrue(state.showsAgentMonitor, "in a conversation the press changes agents")
+
+    state.toggleAgentSidebar()
+    XCTAssertFalse(state.showsAgentMonitor, "and a press on the drawer closes it")
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+  }
+
+  func testAgentsPressOpensTheDrawerOnlyWithNothingToShow() throws {
+    let empty = OverlayState()
+    empty.toggleAgentSidebar()
+    XCTAssertTrue(empty.showsAgentMonitor)
+    XCTAssertNil(empty.selectedConversationID)
+
+    let silent = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    silent.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    silent.showTranscription()
+    silent.toggleAgentSidebar()
+    XCTAssertTrue(silent.showsAgentMonitor, "two silent agents: the user chooses")
+
+    let single = OverlayState()
+    single.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    single.showTranscription()
+    single.toggleAgentSidebar()
+    XCTAssertEqual(single.selectedConversationID, lena.id, "the only agent needs no choice")
+  }
+
   func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()

@@ -10426,12 +10426,34 @@
         }
       }
     },
+    "No audio signal arrives from “%@”. Check that this device sends audio to this Mac and select the microphone in Control Center." : {
+      "comment" : "Calibration refusal. The placeholder is an input device name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z „%@” nie dociera sygnał dźwiękowy. Sprawdź, czy urządzenie przekazuje dźwięk do tego Maca, i wybierz mikrofon w Centrum sterowania."
+          }
+        }
+      }
+    },
     "No speech detected" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie wykryto mowy"
+          }
+        }
+      }
+    },
+    "No speech was heard. Speak normally for the whole measurement." : {
+      "comment" : "Calibration refusal when the measurement contained no speech",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie usłyszano mowy. Mów normalnie przez cały pomiar."
           }
         }
       }
@@ -10613,6 +10635,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Jeszcze nie załadowany · załaduje się przy następnym nagraniu"
+          }
+        }
+      }
+    },
+    "Not played while a take was live" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not played while a take was live"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odtworzono w trakcie nagrania"
+          }
+        }
+      }
+    },
+    "Not played while another reply was speaking" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not played while another reply was speaking"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odtworzono, bo mówiła inna odpowiedź"
           }
         }
       }
@@ -10961,6 +11015,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Jedno anonimowe zdarzenie z wersją aplikacji i wersją macOS. Nigdy audio ani tekst."
+          }
+        }
+      }
+    },
+    "Only %@ s of speech was heard; at least %@ s is needed. Speak normally for the whole measurement." : {
+      "comment" : "Calibration refusal. Both placeholders are pre-formatted numbers of seconds: measured, then required",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Only %1$@ s of speech was heard; at least %2$@ s is needed. Speak normally for the whole measurement."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usłyszano tylko %1$@ s mowy, a potrzeba co najmniej %2$@ s. Mów normalnie przez cały pomiar."
           }
         }
       }
@@ -15231,6 +15302,70 @@
         }
       }
     },
+    "Speech failed: no connection to the voice service" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: no connection to the voice service"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: brak połączenia z usługą głosu"
+          }
+        }
+      }
+    },
+    "Speech failed: no voice credential" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: no voice credential"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: brak klucza głosu"
+          }
+        }
+      }
+    },
+    "Speech failed: the voice credential was rejected" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: the voice credential was rejected"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: klucz głosu odrzucony"
+          }
+        }
+      }
+    },
+    "Speech failed: the voice quota is used up" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: the voice quota is used up"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: limit głosu wyczerpany"
+          }
+        }
+      }
+    },
     "Speech recognition" : {
       "comment" : "Settings tab headline: Dictation › Engine",
       "localizations" : {
@@ -15296,6 +15431,22 @@
         }
       }
     },
+    "Speech stopped when a take began" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech stopped when a take began"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie przerwane, bo zaczęło się nagranie"
+          }
+        }
+      }
+    },
     "Speech too quiet or short — adjust the mic and try again" : {
       "localizations" : {
         "pl" : {
@@ -15312,6 +15463,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy niedostępne"
+          }
+        }
+      }
+    },
+    "Speech was barely louder than the background noise. Move closer to the microphone or to a quieter place." : {
+      "comment" : "Calibration refusal when speech is too close to the room noise",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mowa była ledwie głośniejsza od szumu tła. Przybliż się do mikrofonu albo przenieś w cichsze miejsce."
           }
         }
       }
@@ -16481,6 +16643,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Tryb lokalny będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
+          }
+        }
+      }
+    },
+    "The measurement could not be used. Try again." : {
+      "comment" : "Calibration refusal for a measurement that can only be repeated",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pomiaru nie da się użyć. Spróbuj ponownie."
           }
         }
       }

@@ -53,10 +53,22 @@ jobs:
       - name: Fetch the base the prose ratchet measures against
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          echo "L10N_BASE=origin/$BASE_REF" >> "$GITHUB_ENV"
-          git fetch --no-tags --depth=1 origin \
-            "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          if [[ "$EVENT_NAME" == push && "$REF_NAME" == main ]]; then
+            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ || "$BEFORE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+              echo "::error::main push has no immutable comparison baseline"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$BEFORE_SHA"
+            printf 'L10N_BASE=%s\n' "$BEFORE_SHA" >> "$GITHUB_ENV"
+          else
+            git fetch --no-tags --depth=1 origin \
+              "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            printf 'L10N_BASE=origin/%s\n' "$BASE_REF" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify catalog localization contracts
         run: make verify-l10n-catalog
