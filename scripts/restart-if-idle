@@ -95,20 +95,15 @@ def carried_environment() -> list[str]:
 def launch_new_generation(app: Path, carried: list[str]):
     if not carried:
         return run(["/usr/bin/open", "-g", str(app)])
-    # LaunchServices never carries the caller's environment. An operator who
-    # exported CODESCRIBE_* gates asked for them in the new process, so the
-    # relaunch spawns the binary directly, in its own session, inheriting this
-    # process environment by default.
-    try:
-        return subprocess.Popen(
-            [str(app / "Contents/MacOS/Codescribe")],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as error:
-        raise Refusal("new_generation_launch_failed") from error
+    # LaunchServices drops the caller's environment, but `open --env` hands
+    # named variables to the new process with the full launch context intact —
+    # a directly spawned GUI binary loses its LaunchServices identity (TCC
+    # permissions break), so the relaunch never leaves `open`.
+    arguments = ["/usr/bin/open", "-g"]
+    for key in carried:
+        arguments.extend(["--env", f"{key}={os.environ[key]}"])
+    arguments.append(str(app))
+    return run(arguments)
 
 
 def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: Path | None = None) -> dict:
