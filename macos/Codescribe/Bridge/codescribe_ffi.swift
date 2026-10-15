@@ -13615,6 +13615,10 @@ public struct CsSettings: Equatable, Hashable {
     public var startAtLogin: Bool
     public var agentEnterSends: Bool
     public var agentAutoSend: Bool
+    /**
+     * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
+     */
+    public var agentSendHoldSec: UInt32
     public var dumpAudioLogs: Bool
     /**
      * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -13711,7 +13715,10 @@ public struct CsSettings: Equatable, Hashable {
          */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?,
         /**
          * Effective settings-only storage policy for the next capture.
-         */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
+         */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
+        /**
+         * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
+         */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
@@ -13794,6 +13801,7 @@ public struct CsSettings: Equatable, Hashable {
         self.startAtLogin = startAtLogin
         self.agentEnterSends = agentEnterSends
         self.agentAutoSend = agentAutoSend
+        self.agentSendHoldSec = agentSendHoldSec
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
@@ -13877,6 +13885,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 startAtLogin: FfiConverterBool.read(from: &buf),
                 agentEnterSends: FfiConverterBool.read(from: &buf),
                 agentAutoSend: FfiConverterBool.read(from: &buf),
+                agentSendHoldSec: FfiConverterUInt32.read(from: &buf),
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
@@ -13948,6 +13957,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.startAtLogin, into: &buf)
         FfiConverterBool.write(value.agentEnterSends, into: &buf)
         FfiConverterBool.write(value.agentAutoSend, into: &buf)
+        FfiConverterUInt32.write(value.agentSendHoldSec, into: &buf)
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
