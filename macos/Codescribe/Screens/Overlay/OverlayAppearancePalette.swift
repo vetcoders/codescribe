@@ -30,7 +30,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
 
   static let light = OverlayAppearancePalette(
     appearance: .light,
-    desktopBackground: OverlayColorToken(0xF6F3EE),
+    desktopBackground: OverlayColorToken(CSPalette.sheetLightHex),
     border: OverlayColorToken(0x5F5A52, alpha: 0.20),
     primaryText: OverlayColorToken(0x1C1B18),
     bodyText: OverlayColorToken(0x5F5A52),
@@ -45,9 +45,11 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     shadowOpacity: 0.16
   )
 
+  /// The sheet colour is owned by `CSPalette.sheet` (one value for the overlay,
+  /// the wizard, the tray menu and every window's content area).
   static let dark = OverlayAppearancePalette(
     appearance: .dark,
-    desktopBackground: OverlayColorToken(0x191919),
+    desktopBackground: OverlayColorToken(CSPalette.sheetDarkHex),
     border: OverlayColorToken(0xF3F0EA, alpha: 0.16),
     primaryText: OverlayColorToken(0xF3F0EA),
     bodyText: OverlayColorToken(0xC8C1B8),

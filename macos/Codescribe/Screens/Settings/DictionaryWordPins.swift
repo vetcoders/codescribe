@@ -150,18 +150,18 @@ struct DictionaryPinSnapshot: Sendable {
     let manager = FileManager.default
     guard manager.fileExists(atPath: directory.path) else { return Self() }
     let suffix = ".slots.jsonl"
+    // One modification-date lookup per file. Inside the sort comparator it ran
+    // O(n log n) times on every 2 s refresh: 858 slot files made it the hottest
+    // frame of an open Dictionary (sample 2026-10-15).
     let files = try manager.contentsOfDirectory(
       at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
       options: [.skipsHiddenFiles]
-    ).filter { $0.lastPathComponent.hasSuffix(suffix) }.sorted {
-      let a =
-        (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+    ).filter { $0.lastPathComponent.hasSuffix(suffix) }.map { url in
+      let modified =
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         ?? .distantPast
-      let b =
-        (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        ?? .distantPast
-      return a > b
-    }
+      return (url: url, modified: modified)
+    }.sorted { $0.modified > $1.modified }.map(\.url)
     let candidates = Array(files.prefix(30))
     var result = Self(
       sessions: candidates.map { String($0.lastPathComponent.dropLast(suffix.count)) })
