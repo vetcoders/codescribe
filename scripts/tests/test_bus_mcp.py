@@ -1108,8 +1108,128 @@ class PluginContractTests(unittest.TestCase):
     def test_wait_windows_stay_below_measured_client_deadlines(self):
         self.assertLess(MCP.WAIT_SECONDS["junie"], 180)
         self.assertLess(MCP.WAIT_SECONDS["claude-code"], 1800)
+        self.assertLessEqual(MCP.WAIT_SECONDS["omp"], MCP.WAIT_SECONDS["claude-code"])
         connect = next(tool for tool in MCP.TOOLS if tool["name"] == "codescribe_connect")
         self.assertEqual(connect["inputSchema"]["properties"]["provider"]["enum"], sorted(MCP.WAIT_SECONDS))
+        self.assertEqual(MCP.NATIVE_WAKE_PROVIDERS, {"claude-code", "omp"})
+
+    def test_omp_extension_runs_the_wake_from_the_managed_helper_path(self):
+        # OMP loads `hooks/pre/*.ts` from a marketplace plugin as extension modules;
+        # Claude Code and Junie read only the JSON hook files, so the TS module must
+        # not appear there, and it must launch the same verified helper as .mcp.json.
+        extension = (self.PLUGIN / "hooks/pre/codescribe-omp.ts").read_text()
+        launcher = self.load(".mcp.json")["mcpServers"]["codescribe"]["args"][-1]
+        self.assertIn('"$HOME/.local/bin/cs-bus"', launcher)
+        self.assertIn('exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
+        self.assertIn('export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"', extension)
+        self.assertEqual(int(re.search(r"const WAKE_EXIT = (\d+)", extension)[1]), MCP.WAKE_EXIT)
+        self.assertGreater(int(re.search(r"const WAKE_TIMEOUT_MS = ([\d_]+)", extension)[1].replace("_", "")),
+                           MCP.WAKE_SECONDS * 1000)
+        for relative in ("hooks/hooks.json", "hooks/claude-code.json", ".claude-plugin/plugin.json"):
+            self.assertNotIn("codescribe-omp", json.dumps(self.load(relative)))
+
+
+class OmpMailboxTests(MailboxTests):
+    PROVIDER = "omp"
+
+
+class OmpProtocolTests(MCPProtocolTests):
+    PROVIDER = "omp"
+
+
+class OmpWakeTests(MailboxFixture):
+    PROVIDER = "omp"
+
+    def setUp(self):
+        super().setUp()
+        self.bind()
+        self.host = os.getpid()
+
+    def save(self):
+        super().save()
+        state = DEMUX.read_json(self.lease_path)
+        state["pid"] = os.getpid()  # a live follower owns this lease
+        DEMUX.atomic_json(self.lease_path, state)
+
+    def bind(self, provider="omp"):
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings["4"] = {"audience": "leon", "provider": provider,
+                             "provider_session_id": self.session, "bus": str(self.bus)}
+
+    def wake(self, session=None, host=None, window=0.6):
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            code = MCP.omp_wake(DEMUX, self.root, None, self.session if session is None else session,
+                                self.host if host is None else host, window=window, interval=0.05)
+        lines = [line for line in errors.getvalue().splitlines() if line]
+        return code, (parse_wake_notice(lines[-1]) if lines else None)
+
+    def test_existing_unread_wakes_once_then_only_for_new_deliveries(self):
+        code, notice = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(notice["kind"], "codescribe_mailbox_ready")
+        self.assertEqual(notice["new_delivery_ids"], self.ids)
+        self.assertEqual((notice["provider"], notice["channel"], notice["name"]), ("omp", "4", "leon"))
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.pending.append(self.envelope("f" * 24))
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(notice["new_delivery_ids"], ["f" * 24])
+        self.assertEqual(notice["pending_count"], 6)
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
+    def test_arrival_during_silence_wakes_without_reading(self):
+        self.pending = []
+        self.save()
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+        time.sleep(0.3)
+        self.assertTrue(outcome.empty())
+        self.assertTrue(MCP.wake_armed(self.root, self.lease))
+        self.assertTrue(self.mailbox.status()["native_wake_armed"])
+        self.pending = [self.envelope(self.ids[0])]
+        self.save()
+        code, notice = outcome.get(timeout=5)
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, self.ids[:1]))
+        self.assertFalse(MCP.wake_armed(self.root, self.lease))
+        self.assert_not_acknowledged()
+
+    def test_only_the_bound_omp_session_waits(self):
+        started = time.monotonic()
+        self.assertEqual(self.wake(session="another-omp-session", window=30), (0, None))
+        self.assertEqual(self.wake(session="", window=30), (0, None))
+        self.assertEqual(self.wake(session="bad\nid", window=30), (0, None))
+        self.assertLess(time.monotonic() - started, 1)
+        self.bind(provider="claude-code")
+        self.assertEqual(self.wake(window=30), (0, None))
+        self.assertFalse(MCP.wake_paths(self.root, self.lease)[0].exists())
+
+    def test_host_exit_ends_the_wait_silently(self):
+        self.pending = []
+        self.save()
+        ended = subprocess.Popen(["true"])
+        ended.wait()
+        self.assertEqual(self.wake(host=ended.pid, window=30), (0, None))
+
+    def test_cli_waiter_exits_wake_code_with_one_sentence(self):
+        command = [sys.executable, str(SCRIPTS / "cs-bus"), "--omp-wake", "--provider", "omp",
+                   "--session", self.session, "--host-pid", str(self.host), "--bridge-home", str(self.root)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, MCP.WAKE_EXIT, result.stderr)
+        self.assertEqual(result.stdout, "")
+        notice = parse_wake_notice(result.stderr.strip().splitlines()[-1])
+        self.assertEqual((notice["kind"], notice["new_delivery_ids"]), ("codescribe_mailbox_ready", self.ids))
+        self.assertIn("--provider omp", result.stderr)
+        self.assertNotIn("{", result.stderr)
+        for wrong in (["--omp-wake", "--session", self.session], ["--omp-wake", "--provider", "omp"],
+                      ["--omp-wake", "--provider", "codex", "--session", self.session],
+                      ["--claude-code-wake", "--provider", "omp", "--session", self.session]):
+            with self.subTest(wrong=wrong):
+                refused = subprocess.run([sys.executable, str(SCRIPTS / "cs-bus"), *wrong, "--bridge-home", str(self.root)],
+                                         capture_output=True, text=True, timeout=20, input="{}")
+                self.assertEqual(refused.returncode, 2, refused.stderr)
 
 
 class SessionHookTests(unittest.TestCase):

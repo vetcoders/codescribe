@@ -15,9 +15,17 @@ from types import SimpleNamespace
 #: Hosts that load the Codescribe plugin, each with a wait window below its
 #: client's tool-call deadline. Junie 26.10.5 aborts any tool call after
 #: 180 s. Claude Code 2.1.296 aborts a stdio tool call that sends nothing for
-#: 30 min, and any call after 1e8 ms. A window that ends with an explicit idle
-#: receipt keeps server and client agreeing on which wait is pending.
-WAIT_SECONDS = {"claude-code": 900, "junie": 150}
+#: 30 min, and any call after 1e8 ms. OMP 18.10.3 applies no client-side MCP
+#: deadline unless `timeout`/`OMP_MCP_TIMEOUT_MS` is set; its window matches
+#: Claude Code's because the hook, not the wait, is the idle wakeup there too.
+#: A window that ends with an explicit idle receipt keeps server and client
+#: agreeing on which wait is pending.
+WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900}
+
+#: Hosts whose idle wakeup is a hook process holding the lease's wake lock:
+#: Claude Code through its asyncRewake Stop hook, OMP through the bundled
+#: extension running `cs-bus --omp-wake`. Junie has no idle wakeup.
+NATIVE_WAKE_PROVIDERS = frozenset({"claude-code", "omp"})
 
 #: Claude Code's asyncRewake hook wakes the model on exit code 2, which is
 #: also argparse's usage-error code. The wake therefore exits WAKE_EXIT and the
@@ -232,7 +240,27 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
     session = payload.get("session_id") if isinstance(payload, dict) else None
     if not isinstance(session, str) or not session or environ.get("CLAUDE_CODE_SESSION_ID") != session:
         return 0
-    provider = "claude-code"
+    return native_wake(demux, root, bus, "claude-code", session, environ.get("CLAUDE_PID", ""),
+                       window=window, interval=interval)
+
+
+def omp_wake(demux, root, bus, session, host_pid, *, window=WAKE_SECONDS, interval=1.0):
+    """OMP extension waiter: `cs-bus --omp-wake --provider omp --session ID --host-pid PID`.
+
+    OMP exports no session id to child processes, so the bundled extension
+    passes the id it read from its own session manager and its host pid. The
+    waiter has the same contract as the Claude Code hook: exit WAKE_EXIT once
+    per unannounced delivery, never read, ACK or reply, one lock per lease,
+    silent exit when the session owns no channel or the host process is gone.
+    """
+    if not isinstance(session, str) or not session.strip() or any(ord(c) < 32 for c in session):
+        return 0
+    return native_wake(demux, root, bus, "omp", session, "" if host_pid is None else str(host_pid),
+                       window=window, interval=interval)
+
+
+def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECONDS, interval=1.0):
+    """Hold this lease's wake lock until one notice is due, then exit WAKE_EXIT."""
     if bound_channel(demux, root, provider, session)[0] is None:
         return 0
     lease_id = demux.lease_identifier(provider, session)
@@ -244,7 +272,6 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        host = environ.get("CLAUDE_PID", "")
         saved = (demux.read_json(record) or {}).get("announced")
         seen = set(saved) if isinstance(saved, list) else set()
         args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
@@ -276,7 +303,7 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
                 if fresh:
                     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
                               "new_delivery_ids": fresh, **({"problem": problem} if problem else {}),
-                              "instructions": "Read every pending message (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
+                              "instructions": f"Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
                 elif problem and problem not in prior:
                     notice = {"kind": "codescribe_listener_problem", "problem": problem,
                               "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
@@ -433,8 +460,9 @@ class Mailbox:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         rearm = ("Call codescribe_wait again to keep this listening turn open, or end the turn: "
-                                 "the Codescribe Stop hook wakes this conversation on the next message."
-                                 if self.provider == "claude-code" else "Call codescribe_wait again to keep listening.")
+                                 f"the Codescribe {'Stop hook' if self.provider == 'claude-code' else 'OMP extension'} "
+                                 "wakes this conversation on the next message."
+                                 if self.provider in NATIVE_WAKE_PROVIDERS else "Call codescribe_wait again to keep listening.")
                         return {"kind": "wait_idle", "provider": self.provider, "provider_session_id": self.owner,
                                 "waited_seconds": round(time.monotonic() - started), "read_delivery_ids": [],
                                 "acknowledged": False,
@@ -455,7 +483,7 @@ class Mailbox:
 
     def status(self):
         result = self.run(["--status"])
-        if self.provider == "claude-code":
+        if self.provider in NATIVE_WAKE_PROVIDERS:
             result["native_wake_armed"] = wake_armed(self.root, self.demux.lease_identifier(self.provider, self.owner))
         return result
 

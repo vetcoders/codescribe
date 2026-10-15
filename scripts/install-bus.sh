@@ -51,4 +51,5 @@ build_installer
 echo "Commands: ~/.local/bin/cs-bus, ~/.local/bin/cs-say and ~/.local/bin/cs-junie"
 echo "Claude Code plugin: /plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins; /plugin install codescribe@codescribe."
 echo "Native Junie extension: cs-bus --install-junie-extension; then /codescribe junie 6 in Junie."
+echo "OMP plugin: omp plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins; omp plugin install codescribe@codescribe; then /codescribe leon 4 in omp."
 echo "Existing followers stay alive. Reattach this session to adopt the updated runtime."
