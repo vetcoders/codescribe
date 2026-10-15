@@ -1365,8 +1365,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       ]
       if let commit = manifest.sourceCommit { metadata["source_commit"] = commit }
       let generation = try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys])
+      // -E: a host that leaks its own PYTHONHOME/PYTHONPATH (seen from a
+      // Vibecrafted launcher, 2026-10-15) must not kill the helper before
+      // its first line; the helper keeps its children clean the same way.
       let header =
-        "#!/usr/bin/env python3\n" + Self.commandMarker
+        "#!/usr/bin/env -S python3 -E\n" + Self.commandMarker
         + String(decoding: generation, as: UTF8.self) + "\n"
       let data = Data((header + body).utf8)
       if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == nil,

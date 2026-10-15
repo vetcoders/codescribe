@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """cs-say TEXT --provider codex|claude-code --session SESSION [--reply-to DELIVERY_ID] [voice options].
 cs-say auth --provider xai|openai|deepinfra|custom --login-type oauth|key|device-code
 cs-say --version — installed helper version and source commit.
@@ -19,6 +19,11 @@ from pathlib import Path
 import sys
 import shutil
 import argparse
+
+# Started with -E; the cs-bus it execs runs without it and must not see the
+# host's PYTHON* variables.
+for name in [name for name in os.environ if name.startswith("PYTHON")]:
+    del os.environ[name]
 
 if sys.argv[1:2] == ["auth"]:
     parser = argparse.ArgumentParser(

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """Native MCP transport over the existing Codescribe mailbox, not an agent runner."""
 from concurrent.futures import ThreadPoolExecutor
 import datetime
