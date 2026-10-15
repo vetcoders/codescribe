@@ -274,10 +274,13 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     let dark = try XCTUnwrap(material(in: host))
     XCTAssertEqual(dark.appearance?.name, .darkAqua)
     if #available(macOS 26, *), let glass = dark as? NSGlassEffectView {
-      XCTAssertEqual(
+      XCTAssertNil(
         glass.tintColor,
-        OverlayAppearancePalette.dark.desktopBackground.nsColor.withAlphaComponent(0.84))
+        "The sheet colour is a layer above the glass; a tint vanishes in a non-key window")
     }
+    XCTAssertEqual(
+      OverlayCanvasBackdrop.glassVeil(.dark),
+      OverlayAppearancePalette.dark.desktopBackground.nsColor.withAlphaComponent(0.84))
     host.rootView = OverlayCanvasBackdrop(palette: .light, reduceTransparency: false)
     host.layoutSubtreeIfNeeded()
     await nextMainQueueTurn()
@@ -285,11 +288,12 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertTrue(dark === light, "Palette update must preserve native material identity")
     XCTAssertEqual(light.appearance?.name, .aqua)
     if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
-      XCTAssertEqual(
-        glass.tintColor,
-        OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.84),
-        "Appearance changes must update the same bounded palette veil")
+      XCTAssertNil(glass.tintColor, "Appearance changes must not tint the shared glass")
     }
+    XCTAssertEqual(
+      OverlayCanvasBackdrop.glassVeil(.light),
+      OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.84),
+      "Appearance changes must update the same bounded palette veil")
     host.rootView = OverlayCanvasBackdrop(
       palette: .light, reduceTransparency: false, increasedContrast: true)
     host.layoutSubtreeIfNeeded()
