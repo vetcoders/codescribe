@@ -206,6 +206,10 @@ verify-install-bus:
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
+.PHONY: restart-if-idle
+restart-if-idle:
+	@./scripts/restart-if-idle
+
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
 	@BIT=$$(./scripts/developer-surface-gate.sh); \

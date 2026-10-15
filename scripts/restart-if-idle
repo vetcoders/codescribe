@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Restart Codescribe only after its live controller atomically reserves idle shutdown."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import plistlib
+import subprocess
+import sys
+import time
+import uuid
+
+
+class Refusal(Exception):
+    pass
+
+
+def run(arguments: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(arguments, capture_output=True, text=True, timeout=15, check=False)
+
+
+def pids() -> set[int]:
+    result = run(["/usr/bin/pgrep", "-x", "Codescribe"])
+    if result.returncode not in (0, 1):
+        raise Refusal("process_identity_unavailable")
+    return {int(value) for value in result.stdout.split() if value.isdecimal()}
+
+
+def read_json(path: Path) -> dict:
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise Refusal("unsafe_handshake_file")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise Refusal("invalid_handshake")
+    return value
+
+
+def supported(root: Path, app: Path, running: set[int]) -> list[dict]:
+    result = []
+    for pid in sorted(running):
+        path = root / f"{pid}.ready.json"
+        if not path.is_file():
+            continue
+        ready = read_json(path)
+        if (
+            ready.get("schema") == "codescribe.restart-if-idle.ready.v1"
+            and ready.get("pid") == pid
+            and ready.get("bundle") == str(app)
+            and isinstance(ready.get("nonce"), str)
+        ):
+            result.append(ready)
+    return result
+
+
+def loaded_matches(pid: int, app: Path) -> bool:
+    required = [
+        app / "Contents/MacOS/Codescribe",
+        app / "Contents/Frameworks/libcodescribe_ffi.dylib",
+    ]
+    result = run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Ffin"])
+    if result.returncode != 0:
+        return False
+    loaded = {}
+    inode = None
+    for line in result.stdout.splitlines():
+        if line.startswith("f"):
+            inode = None
+        elif line.startswith("i") and line[1:].isdecimal():
+            inode = int(line[1:])
+        elif line.startswith("n") and inode is not None:
+            loaded[line[1:]] = inode
+    return all(path.is_file() and loaded.get(str(path)) == path.stat().st_ino for path in required)
+
+
+def wait_until(probe, deadline: float):
+    while time.monotonic() < deadline:
+        value = probe()
+        if value:
+            return value
+        time.sleep(0.1)
+    raise Refusal("timeout_without_forced_termination")
+
+
+def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
+    running = pids()
+    if not running:
+        raise Refusal("application_not_running")
+    candidates = supported(root, app, running)
+    if len(candidates) != 1:
+        raise Refusal("running_process_does_not_support_atomic_restart_or_is_ambiguous")
+    ready = candidates[0]
+    old_pid = ready["pid"]
+    if not quit_only:
+        signature = run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+        if signature.returncode != 0:
+            raise Refusal("installed_signature_invalid")
+    request_id = str(uuid.uuid4())
+    request = {
+        "schema": "codescribe.restart-if-idle.request.v1",
+        "request": request_id,
+        "pid": old_pid,
+        "nonce": ready["nonce"],
+        "created": time.time(),
+    }
+    request_path = root / f"{request_id}.request.json"
+    descriptor = os.open(request_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(request, output)
+    receipt_path = root / f"{request_id}.receipt.json"
+    # LaunchServices delivers a request to the application; it never sends Quit.
+    dispatched = run(
+        ["/usr/bin/open", "-g", "-a", str(app), f"codescribe://restart-if-idle?request={request_id}"]
+    )
+    if dispatched.returncode != 0:
+        raise Refusal("restart_request_not_delivered")
+    deadline = time.monotonic() + timeout
+
+    def final_receipt():
+        if not receipt_path.is_file():
+            return None
+        receipt = read_json(receipt_path)
+        if (
+            receipt.get("schema") != "codescribe.restart-if-idle.receipt.v1"
+            or receipt.get("request") != request_id
+            or receipt.get("pid") != old_pid
+            or receipt.get("nonce") != ready["nonce"]
+        ):
+            raise Refusal("restart_receipt_identity_mismatch")
+        if receipt.get("status") == "refused":
+            raise Refusal(receipt.get("reason") or "native_restart_refused")
+        if receipt.get("status") == "accepted":
+            return receipt
+        return None
+
+    receipt = wait_until(final_receipt, deadline)
+    wait_until(lambda: old_pid not in pids(), deadline)
+    if quit_only:
+        return {"status": "quit_idle", "old_pid": old_pid, "native_receipt": receipt}
+    launched = run(["/usr/bin/open", "-g", str(app)])
+    if launched.returncode != 0:
+        raise Refusal("new_generation_launch_failed")
+
+    def new_generation():
+        for candidate in supported(root, app, pids() - {old_pid}):
+            if candidate["nonce"] != ready["nonce"] and loaded_matches(candidate["pid"], app):
+                return candidate
+        return None
+
+    new = wait_until(new_generation, time.monotonic() + timeout)
+    with (app / "Contents/Info.plist").open("rb") as handle:
+        info = plistlib.load(handle)
+    return {
+        "status": "restarted",
+        "old_pid": old_pid,
+        "new_pid": new["pid"],
+        "version": info.get("CFBundleShortVersionString"),
+        "build": info.get("CFBundleVersion"),
+        "commit": info.get("CSBuildCommit"),
+        "loaded_matches_installed": True,
+        "signature_verified": True,
+        "native_receipt": receipt,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--app", type=Path, default=Path("/Applications/Codescribe.app"))
+    parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--quit-only", action="store_true", help="Reserve idle and exit for an installer")
+    arguments = parser.parse_args()
+    if not 0 < arguments.timeout <= 60:
+        parser.error("--timeout must be greater than zero and at most 60 seconds")
+    helper = Path.home() / ".local/bin/cs-bus"
+    try:
+        location = run([str(helper), "--print-agent-turn-lease-path"])
+        lease_path = Path(location.stdout.strip())
+        if location.returncode != 0 or not lease_path.is_absolute():
+            raise Refusal("runtime_directory_unavailable")
+        root = lease_path.with_name("restart-if-idle")
+        if not root.is_dir() or root.is_symlink() or root.stat().st_uid != os.getuid():
+            raise Refusal("running_process_does_not_support_atomic_restart")
+        descriptor = os.open(root / "request.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "w"):
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise Refusal("another_restart_request_is_active") from error
+            result = restart(arguments.app.resolve(), root, arguments.timeout, arguments.quit_only)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(json.dumps({"status": "refused", "reason": str(error)}, ensure_ascii=False))
+        return 75
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

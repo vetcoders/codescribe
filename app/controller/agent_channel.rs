@@ -793,6 +793,10 @@ impl RecordingController {
             return Ok(false);
         }
 
+        if self.shutdown_requested.load(Ordering::SeqCst) {
+            return Err(anyhow!("capture admission closed for shutdown"));
+        }
+
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
         let mut recipients = frozen_channel_recipients(digit, binding_file, shared_bus);
         if digit != 0 {
