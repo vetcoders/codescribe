@@ -92,6 +92,10 @@ enum AgentBroadcastPolicy: String, Decodable, Sendable, CaseIterable {
   }
 }
 
+enum OverlayDeliveryControl: String, CaseIterable, Sendable {
+  case revise, withdraw, release
+}
+
 private struct AgentBroadcastPolicyReceipt: Decodable, Sendable {
   let schema: String
   let provider: String
@@ -439,7 +443,7 @@ extension RealAgentBridgeInstaller {
   /// Written user messages share the installed canonical bus publisher and follower.
   @MainActor
   static func sendBusText(
-    owner: OverlayConversationOwner?, text: String,
+    owner: OverlayConversationOwner?, text: String, holdSeconds: UInt32? = nil,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws {
     let executable = installer.commandURL("cs-bus")
@@ -454,26 +458,9 @@ extension RealAgentBridgeInstaller {
     }
     let root = installer.bridgeRoot
     let message = ConversationAttachmentPointer.extract(from: text)
+    let hold = holdSeconds ?? CodescribeConfig().loadSettings().agentSendHoldSec
     try await Task.detached(priority: .userInitiated) {
-      var arguments = ["--send-text", "--channel", "0", "--bridge-home", root.path]
-      if let owner {
-        let lease = root.appendingPathComponent("leases/\(owner.leaseID).json")
-        guard
-          let receipt = try JSONSerialization.jsonObject(with: Data(contentsOf: lease))
-            as? [String: Any],
-          receipt["provider"] as? String == owner.provider,
-          receipt["provider_session_id"] as? String == owner.providerSessionID,
-          receipt["lease_id"] as? String == owner.leaseID,
-          let bus = receipt["bus"] as? String, bus.hasPrefix("/")
-        else {
-          throw CocoaError(.fileReadCorruptFile)
-        }
-        arguments = [
-          "--send-text", "--channel", owner.channel, "--provider", owner.provider,
-          "--session", owner.providerSessionID, "--lease", owner.leaseID, "--bus", bus,
-          "--bridge-home", root.path,
-        ]
-      }
+      var arguments = try busTextArguments(holdSeconds: hold, owner: owner, root: root)
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
@@ -498,6 +485,108 @@ extension RealAgentBridgeInstaller {
                   "Some agents may have received this message. Check read receipts before sending again."
               )
               : String(localized: "Message could not be sent. Your draft is retained.")
+          ])
+      }
+    }.value
+  }
+
+  static func busTextArguments(
+    holdSeconds: UInt32, owner: OverlayConversationOwner?, root: URL
+  ) throws -> [String] {
+    ["--send-text", "--hold-seconds", String(holdSeconds)]
+      + (try busOwnerArguments(owner: owner, root: root))
+  }
+
+  static func deliveryControlArguments(
+    _ control: OverlayDeliveryControl, identity: String, owner: OverlayConversationOwner?,
+    busPath: String, root: URL
+  ) throws -> [String] {
+    guard !identity.isEmpty, identity.utf8.count <= 256,
+      !identity.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+      busPath.hasPrefix("/")
+    else { throw CocoaError(.fileReadCorruptFile) }
+    return ["--" + control.rawValue, identity]
+      + (try busOwnerArguments(owner: owner, root: root, busPath: busPath))
+  }
+
+  private static func busOwnerArguments(
+    owner: OverlayConversationOwner?, root: URL, busPath: String? = nil
+  ) throws -> [String] {
+    guard let owner else {
+      return ["--channel", "0", "--bridge-home", root.path]
+    }
+    guard (1...9).contains(Int(owner.channel) ?? -1), owner.leaseID.count == 32,
+      owner.leaseID.allSatisfy({ "0123456789abcdef".contains($0) })
+    else { throw CocoaError(.fileReadCorruptFile) }
+    let lease = root.appendingPathComponent("leases/\(owner.leaseID).json")
+    let data = try Data(contentsOf: lease)
+    guard data.count <= 16 << 20,
+      let receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+      receipt["schema"] as? String == "codescribe.agent-bridge.lease.v1",
+      receipt["provider"] as? String == owner.provider,
+      receipt["provider_session_id"] as? String == owner.providerSessionID,
+      receipt["lease_id"] as? String == owner.leaseID,
+      let bus = receipt["bus"] as? String, bus.hasPrefix("/"),
+      busPath.map({
+        URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+          == URL(fileURLWithPath: bus).resolvingSymlinksInPath().path
+      }) ?? true
+    else { throw CocoaError(.fileReadCorruptFile) }
+    return [
+      "--channel", owner.channel, "--provider", owner.provider,
+      "--session", owner.providerSessionID, "--lease", owner.leaseID, "--bus", bus,
+      "--bridge-home", root.path,
+    ]
+  }
+
+  /// Writes a control to the same bus. Only the follower decides delivery eligibility.
+  @MainActor
+  static func controlBusMessage(
+    _ control: OverlayDeliveryControl, identity: String, owner: OverlayConversationOwner?,
+    busPath: String, text: String? = nil,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(
+        domain: "Codescribe.BusDelivery", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to send messages.")
+        ])
+    }
+    let root = installer.bridgeRoot
+    try await Task.detached(priority: .userInitiated) {
+      let arguments = try deliveryControlArguments(
+        control, identity: identity, owner: owner, busPath: busPath, root: root)
+      if control == .revise {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          text.utf8.count <= 65536
+        else { throw CocoaError(.fileWriteOutOfSpace) }
+      }
+      let process = Process()
+      let input = Pipe()
+      process.executableURL = executable
+      process.arguments = arguments
+      if control == .revise {
+        process.standardInput = input
+      } else {
+        process.standardInput = FileHandle.nullDevice
+      }
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      if control == .revise, let text {
+        try input.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+        try input.fileHandleForWriting.close()
+      }
+      process.waitUntilExit()
+      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        throw NSError(
+          domain: "Codescribe.BusDelivery", code: Int(process.terminationStatus),
+          userInfo: [
+            NSLocalizedDescriptionKey: String(localized: "Message could not be changed.")
           ])
       }
     }.value

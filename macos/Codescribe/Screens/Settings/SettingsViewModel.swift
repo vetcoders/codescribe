@@ -3260,6 +3260,18 @@ final class SettingsViewModel: ObservableObject {
     persist("PASTE_MODE", mode.wireId)
   }
 
+  var agentSendHoldSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentSendHoldSec) },
+      set: { self.setAgentSendHoldSeconds($0) })
+  }
+
+  func setAgentSendHoldSeconds(_ seconds: Int) {
+    let bounded = min(30, max(0, seconds))
+    if engine == nil { settings.agentSendHoldSec = UInt32(bounded) }
+    persist("CODESCRIBE_AGENT_SEND_HOLD_SEC", String(bounded))
+  }
+
   // MARK: - Agent workspace roots (list_projects tool)
 
   /// Effective workspace roots the `list_projects` tool scans. Never empty —
