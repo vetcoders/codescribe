@@ -43,15 +43,26 @@ struct OverlayCanvasBackdrop: View {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
         OverlayDesktopMaterial(palette: palette)
+        Rectangle()
+          .fill(Color(nsColor: Self.glassVeil(palette)))
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
       }
     }
   }
 
-  /// The palette's own sheet colour over the shared glass, as dense as the tray
-  /// menu's `CSPalette.glassBase`: near-black on ink, paper on paper, with the
-  /// desktop left as a faint blurred hint (Maciej, 2026-10-15: "bardziej
-  /// czarno", "dark almost black"). The 22 % veil of 2026-10-14 still took the
-  /// page's brightness; the macOS Liquid Glass slider does not darken it.
+  /// The palette's own sheet colour over the shared glass: near-black on ink,
+  /// paper on paper, with the desktop left as a faint blurred hint (Maciej,
+  /// 2026-10-15: "bardziej czarno", "dark almost black"). The 22 % veil of
+  /// 2026-10-14 still took the page's brightness; the macOS Liquid Glass slider
+  /// does not darken it.
+  ///
+  /// The veil is a SwiftUI layer above the glass, not the glass's `tintColor`:
+  /// Liquid Glass drops its tint and brightens when the window is not key, so a
+  /// tinted sheet read #09 active and #50 inactive on the same wizard (Maciej's
+  /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
+  /// sheet constant in both states; only the 16 % of desktop hint still follows
+  /// the window.
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
     palette.desktopBackground.nsColor.withAlphaComponent(0.84)
   }
@@ -87,9 +98,12 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
     if view.appearance?.name != name {
       view.appearance = NSAppearance(named: name)
     }
-    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView {
-      let tint = OverlayCanvasBackdrop.glassVeil(palette)
-      if glass.tintColor != tint { glass.tintColor = tint }
+    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView,
+      glass.tintColor != nil
+    {
+      // The sheet colour lives in `OverlayCanvasBackdrop.glassVeil` above the
+      // glass; a tint here would vanish whenever the window is not key.
+      glass.tintColor = nil
     }
   }
 }
