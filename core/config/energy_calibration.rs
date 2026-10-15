@@ -1042,6 +1042,23 @@ mod tests {
     }
 
     #[test]
+    fn div0_admission_all_zero_device_is_named_but_quiet_audio_stays_unmeasured() {
+        let mut receipt = operator_receipt();
+        receipt.device_name = "Admission microphone without a route".to_owned();
+        receipt.digital_zero_samples = receipt.sample_count;
+        receipt.active_speech_samples = 0;
+        receipt.active_speech_median_db = f32::NEG_INFINITY;
+        let refusal = EnergyCalibrationProfile::derive(&receipt, 1, SOURCE_GUIDED_CAPTURE)
+            .expect_err("digital zero is not calibrated speech");
+        assert!(refusal.to_string().contains(&receipt.device_name));
+        receipt.digital_zero_samples = 0;
+        assert_eq!(
+            EnergyCalibrationProfile::derive(&receipt, 1, SOURCE_GUIDED_CAPTURE).unwrap_err(),
+            EnergyCalibrationRefusal::NoActiveSpeech
+        );
+    }
+
+    #[test]
     fn ledger_calibration_scales_linearly_with_capture_rate() {
         let profile =
             EnergyCalibrationProfile::derive(&operator_receipt(), 7, SOURCE_GUIDED_CAPTURE)

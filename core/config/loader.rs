@@ -2938,6 +2938,30 @@ mod tests {
         assert_ne!(forced_off.digest(), forced_on.digest());
     }
 
+    #[test]
+    #[serial]
+    fn div0_admission_capture_metadata_follows_saved_input_without_restart() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("AUDIO_INPUT_DEVICE");
+        let mut settings = UserSettings {
+            audio_input_device: Some("USB admission microphone".to_owned()),
+            ..Default::default()
+        };
+        settings.save().expect("save first input");
+        let path = crate::audio::capture_receipt::CapturePathMeta::from_open_path(48_000, 1, None);
+        assert_eq!(path.device_name, "USB admission microphone");
+        settings.audio_input_device = Some("Second admission microphone".to_owned());
+        settings.save().expect("save next input");
+        let next = crate::audio::capture_receipt::CapturePathMeta::from_open_path(48_000, 1, None);
+        assert_eq!(next.device_name, "Second admission microphone");
+        let opened = crate::audio::capture_receipt::CapturePathMeta::from_open_path(
+            48_000,
+            1,
+            Some("Actual already-open microphone"),
+        );
+        assert_eq!(opened.device_name, "Actual already-open microphone");
+    }
+
     /// Production hides `.env`-seeded keys from the loader's own env layer once
     /// bootstrapped, so `Config::format_on_device` can carry the toggle while
     /// the captured process value says otherwise. The snapshot is the one place
