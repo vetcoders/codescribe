@@ -1139,6 +1139,27 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         code, notice = self.probe()
         self.assertEqual((code, notice["addressed"]), (0, {self.ids[0]: "channel 0 (all audience)"}))
 
+    def test_probe_surfaces_a_quiet_broadcast_the_stop_waiter_keeps_silent(self):
+        # quiet means no wake; the probe runs inside a turn already being spent,
+        # so it is the natural place for a quiet channel-0 delivery to surface.
+        self.pending = [dict(self.envelope(self.ids[0]), channel="0", audience="*"),
+                        self.envelope(self.ids[1])]
+        self.save()
+        DEMUX.atomic_json(DEMUX.broadcast_policy_path(self.root, self.PROVIDER, self.session, self.bus), {
+            "schema": DEMUX.BROADCAST_POLICY_SCHEMA, "provider": self.PROVIDER,
+            "provider_session_id": self.session, "lease_id": self.lease, "bus": str(self.bus),
+            "policy": "quiet", "emitted_at": DEMUX.utc_now()})
+        code, notice = self.wake()
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, [self.ids[1]]),
+                         "the Stop waiter never wakes for a quiet broadcast")
+        code, notice = self.probe()
+        self.assertEqual((code, notice["new_delivery_ids"], notice["pending_count"]), (0, [self.ids[0]], 2))
+        self.assertEqual(notice["addressed"], {self.ids[0]: "channel 0 (all audience)"})
+        self.assertEqual(self.probe(), (0, None))
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.assert_not_acknowledged()
+
     def test_read_prose_names_channel_audience_and_peer_sender(self):
         def describe(row):
             return MCP.describe_delivery({**row, "addressed_to": DEMUX.delivery_address_label(row)})
