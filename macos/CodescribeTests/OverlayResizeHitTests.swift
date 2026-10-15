@@ -1476,6 +1476,27 @@ final class OverlayResizeHitTests: XCTestCase {
     }
   }
 
+  /// Founder, 2026-10-15 (build 1050): the pointer turned into a resize cursor
+  /// over Pin. Header controls start 10 pt below the top edge (the header's
+  /// vertical padding); the top band ends above them, cursor and click alike.
+  @MainActor
+  func testTopBandEndsAboveTheHeaderControls() {
+    XCTAssertLessThan(OverlayResizeHit.topBand, 10)
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let rects = OverlayResizeHit.cursorRects(in: frame)
+      for x in stride(
+        from: OverlayResizeHit.band + 0.5, to: size.width - OverlayResizeHit.band, by: 1)
+      {
+        let control = NSPoint(x: x, y: size.height - 10.5)
+        XCTAssertNil(OverlayResizeHit.edge(at: control, in: frame), "\(size) \(control)")
+        XCTAssertFalse(rects.contains { $0.0.contains(control) }, "\(size) \(control)")
+        XCTAssertEqual(
+          OverlayResizeHit.edge(at: NSPoint(x: x, y: size.height - 1), in: frame), .top)
+      }
+    }
+  }
+
   /// The cursor AppKit shows and the gesture the panel starts must agree at
   /// every point: one owner per point, the cursor of the hit edge, none inside.
   @MainActor
