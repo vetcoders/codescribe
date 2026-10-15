@@ -58,8 +58,12 @@ struct SettingsView: View {
       consumePendingDeepLink()
       model.refreshForCurrentSection()
       model.beginWhisperResidencyObservation()
+      model.beginAudioDeviceObservation()
     }
-    .onDisappear { model.endWhisperResidencyObservation() }
+    .onDisappear {
+      model.endWhisperResidencyObservation()
+      model.endAudioDeviceObservation()
+    }
     .task {
       // The health footer must include the controller's real recording
       // admission verdict even when Audio is not the selected section.
