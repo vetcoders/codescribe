@@ -110,7 +110,7 @@ pub fn validate_stt_endpoint(lane: SttLane, raw: &str) -> Result<String, SttEndp
     Ok(url.to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedSttLane {
     pub lane: SttLane,
     pub endpoint: String,
@@ -118,6 +118,19 @@ pub struct ResolvedSttLane {
     pub auth_mode: SttAuthMode,
     pub api_key: Option<String>,
 }
+
+impl std::fmt::Debug for ResolvedSttLane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedSttLane")
+            .field("lane", &self.lane)
+            .field("endpoint", &self.endpoint)
+            .field("key_account", &self.key_account)
+            .field("auth_mode", &self.auth_mode)
+            .field("api_key_present", &self.api_key.is_some())
+            .finish()
+    }
+}
+
 impl ResolvedSttLane {
     pub fn key_missing(&self) -> bool {
         // Official vendors resolve OAuth (including refresh) or their vendor key at

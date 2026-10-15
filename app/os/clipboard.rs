@@ -555,8 +555,20 @@ pub(crate) fn paste_to_stop_target(
     text: &str,
     target: &StopPasteTarget,
     mode: PasteMode,
+    restore_clipboard: bool,
+    restore_clipboard_delay_ms: u64,
 ) -> Result<StopPasteReceipt> {
-    let snapshot = ClipboardSnapshot::capture()?;
+    let snapshot = if restore_clipboard {
+        match ClipboardSnapshot::capture() {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                warn!(%error, "Could not capture clipboard snapshot; pasting without restore");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut written_epoch = None;
     let result = write_stop_paste(
         text,
@@ -581,15 +593,15 @@ pub(crate) fn paste_to_stop_target(
     let (receipt, epoch) = match result {
         Ok(receipt) => receipt,
         Err(error) => {
-            if let Some(epoch) = written_epoch {
+            if let (Some(snapshot), Some(epoch)) = (snapshot, written_epoch) {
                 schedule_clipboard_restore(snapshot, epoch, Duration::ZERO);
             }
             return Err(error);
         }
     };
-    if let Some(epoch) = epoch {
+    if let (Some(snapshot), Some(epoch)) = (snapshot, epoch) {
         let delay = if receipt.delivery == StopPasteDelivery::Pasted {
-            get_restore_delay()
+            Duration::from_millis(restore_clipboard_delay_ms)
         } else {
             Duration::ZERO
         };

@@ -111,7 +111,7 @@ struct ShortcutsPanel: View {
   /// screen reader that skips key caps.
   private func bindingPicker(_ row: CsModeBinding) -> some View {
     Menu {
-      ForEach(model.bindingOptions, id: \.binding) { option in
+      ForEach(availableBindingsForMode(mode: row.mode), id: \.binding) { option in
         Button {
           model.editDraftBinding(mode: row.mode, binding: option.binding)
         } label: {
