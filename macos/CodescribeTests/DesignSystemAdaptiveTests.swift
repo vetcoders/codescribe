@@ -171,4 +171,18 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       assertDiffers(color, "\(name) must follow the system appearance")
     }
   }
+
+  // MARK: - One sheet for every content area
+
+  func testSheetIsTheOverlayCanvasInBothAppearances() {
+    assertDiffers(CSPalette.sheet, "sheet must follow the system appearance")
+    XCTAssertEqual(CSPalette.sheetDarkHex, 0x16161C)
+    XCTAssertEqual(
+      OverlayAppearancePalette.dark.desktopBackground,
+      OverlayColorToken(CSPalette.sheetDarkHex),
+      "the overlay canvas and the window sheet must be one colour")
+    XCTAssertEqual(
+      OverlayAppearancePalette.light.desktopBackground,
+      OverlayColorToken(CSPalette.sheetLightHex))
+  }
 }
