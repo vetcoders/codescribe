@@ -394,7 +394,10 @@ actor OverlayChannelDeliveryReader {
             name: existing.name, owner: existing.owner,
             messages: rows.values.sorted {
               if $0.emittedAt != $1.emittedAt { return $0.emittedAt < $1.emittedAt }
-              return $0.order < $1.order
+              if $0.order != $1.order { return $0.order < $1.order }
+              // Two buses can both hand a take order 1; a dictionary walk
+              // must not decide which one a restored checkpoint lists first.
+              return $0.id < $1.id
             })
         } else {
           named[conversation.id] = conversation
