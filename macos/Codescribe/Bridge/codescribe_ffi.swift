@@ -2666,9 +2666,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func archiveAgentChannel(request: CsAgentArchiveRequest) async throws  -> String
 
     /**
-     * The closed set of gestures a mode can bind to, with display labels. Drives
-     * the Settings picker (no free-form key capture — the binding space is a
-     * fixed enum, see `HOTKEYS_CONTRACT`).
+     * Label catalog for draft edits and conflict presentation. Picker choices
+     * come from `available_bindings_for_mode`, never this unfiltered catalog.
      */
     func availableBindings()  -> [CsBindingOption]
 
@@ -3152,9 +3151,8 @@ open func archiveAgentChannel(request: CsAgentArchiveRequest)async throws  -> St
 }
 
     /**
-     * The closed set of gestures a mode can bind to, with display labels. Drives
-     * the Settings picker (no free-form key capture — the binding space is a
-     * fixed enum, see `HOTKEYS_CONTRACT`).
+     * Label catalog for draft edits and conflict presentation. Picker choices
+     * come from `available_bindings_for_mode`, never this unfiltered catalog.
      */
 open func availableBindings() -> [CsBindingOption]  {
     return try!  FfiConverterSequenceTypeCsBindingOption.lift(try! rustCall() {
@@ -20465,6 +20463,17 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
     )
 })
 }
+/**
+ * Pure picker projection of the detector's routing table. No settings or
+ * runtime handle is needed to enumerate gestures reachable for one mode.
+ */
+public func availableBindingsForMode(mode: CsWorkMode) -> [CsBindingOption]  {
+    return try!  FfiConverterSequenceTypeCsBindingOption.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_available_bindings_for_mode(
+        FfiConverterTypeCsWorkMode_lower(mode),$0
+    )
+})
+}
 public func commitOverlayQualityRecord(input: CsOverlayCorrectionInput)throws  -> CsQualityCommitResult  {
     return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
@@ -20850,6 +20859,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_available_bindings_for_mode() != 28306) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 43704) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21189,7 +21201,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_archive_agent_channel() != 55624) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 33198) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_begin_new_max_consultation() != 46924) {
