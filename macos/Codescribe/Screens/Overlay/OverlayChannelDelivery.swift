@@ -306,21 +306,32 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           id: "0", channel: "0", name: "All", owner: nil,
           messages: broadcast)
       ]
-      for owner in historicalOwners.values.sorted(by: { $0.id < $1.id }) {
-        let rows = ordered.filter { row in
+      // Materialize identity strings once per row, not once per historical
+      // owner comparison on every poll. These coordinates are local to this
+      // projection pass; message ownership and destination remain unchanged.
+      let addressedRows = ordered.map { row in
+        (
+          row: row, authorID: row.owner?.id,
+          recipients: row.recipients.map { (id: $0.owner.id, channel: $0.owner.channel) }
+        )
+      }
+      for (ownerID, owner) in historicalOwners.sorted(by: { $0.key < $1.key }) {
+        let rows = addressedRows.filter { addressed in
+          let row = addressed.row
           if row.kind == .reply, let destination = row.sourceChannel {
             // All is one shared conversation. Private peer messages belong to
             // their frozen recipient, never implicitly to their author.
             return destination != "0"
-              && row.recipients.contains {
-                $0.owner.id == owner.id && $0.owner.channel == destination
+              && addressed.recipients.contains {
+                $0.id == ownerID && $0.channel == destination
               }
           }
-          return row.owner?.id == owner.id || row.recipients.contains { $0.owner.id == owner.id }
-        }
+          return addressed.authorID == ownerID
+            || addressed.recipients.contains { $0.id == ownerID }
+        }.map { $0.row }
         result.append(
           OverlayConversation(
-            id: owner.id, channel: owner.channel,
+            id: ownerID, channel: owner.channel,
             name: owner.name, owner: owner, messages: rows))
       }
       return result

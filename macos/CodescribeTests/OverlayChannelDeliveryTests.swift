@@ -117,7 +117,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       let all = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" })
       XCTAssertEqual(all.messages.map(\.id), ["reply:" + Fixture.firstID])
       let merged = try XCTUnwrap(all.messages.first)
-      XCTAssertEqual(merged.text, "Updated broadcast", "A delayed recipient copy cannot rewind text")
+      XCTAssertEqual(
+        merged.text, "Updated broadcast", "A delayed recipient copy cannot rewind text")
       XCTAssertEqual(merged.sourceChannel, "0")
       XCTAssertEqual(merged.owner?.name, "leszek")
       XCTAssertEqual(merged.owner?.channel, "3")
@@ -157,7 +158,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(all.messages.map(\.id), ["reply:" + Fixture.firstID])
     XCTAssertEqual(all.messages.first?.sourceChannel, "0")
     let consumed = await reader.consumedBytes
-    XCTAssertGreaterThan(consumed, 0, "A cursor alone cannot restore discarded destination metadata")
+    XCTAssertGreaterThan(
+      consumed, 0, "A cursor alone cannot restore discarded destination metadata")
     let restarted = OverlayChannelDeliveryReader(root: fixture.root)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, snapshot)

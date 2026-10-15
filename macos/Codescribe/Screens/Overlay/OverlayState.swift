@@ -1034,6 +1034,8 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
+  /// An empty pre-controller response is not evidence of disconnected agents.
+  private(set) var hasLoadedChannelRoster = false
   private(set) var channelToggleError: String?
   private(set) var pendingChannelToggles: Set<String> = []
   private(set) var conversations: [OverlayConversation] = []
@@ -1696,43 +1698,78 @@ final class OverlayState {
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
-  func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
+  deinit {
     channelObservationTask?.cancel()
-    channelObservationTask = Task { @MainActor [weak self] in
-      while !Task.isCancelled {
-        guard self != nil else { return }
-        if let snapshot = await self?.engine?.channelRosterSnapshot() {
-          guard !Task.isCancelled, let self else { return }
-          self.applyChannelRoster(snapshot)
-        }
-        do {
-          let archiveRevision = self?.agentArchiveRevision
-          let focusRevision = self?.conversationFocusRevision
-          let selectedOwner = self?.selectedConversation?.owner
-          let archivedOwner = selectedOwner.flatMap { owner in
-            self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
-          }
-          let snapshot = try await reader.readSnapshot(selectedOwner: archivedOwner)
-          guard !Task.isCancelled, self != nil else { return }
-          // A focus change can discard this paint, but not turn that archive's
-          // first-read history into a fresh admission on the next poll.
-          self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
-          if archiveRevision == self?.agentArchiveRevision,
-            focusRevision == self?.conversationFocusRevision
-          {
-            self?.applyConversationSnapshot(snapshot)
-          }
-        } catch {
-          guard !Task.isCancelled, let self else { return }
-          if !channelStatusUnavailable {
-            channelStatusUnavailable = true
-            onChannelPresentationChanged?()
+  }
+
+  func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
+    observeChannelDelivery { selectedOwner in
+      try await reader.readSnapshot(selectedOwner: selectedOwner)
+    }
+  }
+
+  /// The reader remains the document projection owner. Injecting only its read
+  /// operation lets a suspended history read falsify roster responsiveness.
+  /// One parent task owns both loops and propagates cancellation to both.
+  @discardableResult
+  func observeChannelDelivery(
+    readSnapshot: @escaping @MainActor (OverlayConversationOwner?) async throws
+      -> OverlayChannelDeliverySnapshot
+  ) -> Task<Void, Never> {
+    stopObservingChannelDelivery()
+    let observation = Task { @MainActor [weak self] in
+      await withTaskGroup(of: Void.self) { group in
+        group.addTask { @MainActor [weak self] in
+          while !Task.isCancelled {
+            guard self != nil else { return }
+            if let snapshot = await self?.engine?.channelRosterSnapshot() {
+              guard !Task.isCancelled, let self else { return }
+              self.applyChannelRoster(snapshot)
+            }
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
           }
         }
-        await self?.refreshPlaybackMutes()
-        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+        group.addTask { @MainActor [weak self] in
+          while !Task.isCancelled {
+            guard self != nil else { return }
+            do {
+              let archiveRevision = self?.agentArchiveRevision
+              let focusRevision = self?.conversationFocusRevision
+              let selectedOwner = self?.selectedConversation?.owner
+              let archivedOwner = selectedOwner.flatMap { owner in
+                self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
+              }
+              let snapshot = try await readSnapshot(archivedOwner)
+              guard !Task.isCancelled, self != nil else { return }
+              // A focus change can discard this paint, but not turn that archive's
+              // first-read history into a fresh admission on the next poll.
+              self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
+              if archiveRevision == self?.agentArchiveRevision,
+                focusRevision == self?.conversationFocusRevision
+              {
+                self?.applyConversationSnapshot(snapshot)
+              }
+            } catch {
+              guard !Task.isCancelled, let self else { return }
+              if !channelStatusUnavailable {
+                channelStatusUnavailable = true
+                onChannelPresentationChanged?()
+              }
+            }
+            guard !Task.isCancelled else { return }
+            await self?.refreshPlaybackMutes()
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+          }
+        }
       }
     }
+    channelObservationTask = observation
+    return observation
+  }
+
+  func stopObservingChannelDelivery() {
+    channelObservationTask?.cancel()
+    channelObservationTask = nil
   }
 
   func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
@@ -1754,7 +1791,10 @@ final class OverlayState {
             })
         )
       }, uniquingKeysWith: { _, latest in latest })
-    guard snapshot != channelRoster else { return }
+    // The controller always includes channel 0 once it is ready, even when
+    // no private digit is bound. History and cache readiness cannot assert this.
+    let rosterReady = hasLoadedChannelRoster || snapshot.contains { $0.channel == "0" }
+    guard snapshot != channelRoster || rosterReady != hasLoadedChannelRoster else { return }
     let newlyOpened = snapshot.filter { row in
       row.open
         && !channelRoster.contains {
@@ -1766,6 +1806,7 @@ final class OverlayState {
     let wasChannelCapturing = channelAudioCaptureActive
     let wasCapturingAudio = audioCaptureActive
     channelRoster = snapshot
+    hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
     if wasCapturingAudio != audioCaptureActive {
