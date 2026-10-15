@@ -2757,7 +2757,8 @@ final class SettingsViewModel: ObservableObject {
         seconds: Self.calibrationCaptureSeconds)
       calibrationNotice = Self.calibrationSummary(report)
     } catch {
-      let failure = String(describing: error)
+      // Not `String(describing:)`: that printed `Recording(msg: …)` on screen.
+      let failure = error.userFacingMessage
       calibrationNotice = String(
         localized: "Calibration refused: \(failure)",
         comment: "The placeholder is a technical failure description"

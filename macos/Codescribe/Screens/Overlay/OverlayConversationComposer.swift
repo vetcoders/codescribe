@@ -35,10 +35,52 @@ struct OverlayConversationComposer: View {
     }
   }
 
+  /// The editor holds the prose; pasted attachments ride as pills.
+  private var prose: Binding<String> {
+    Binding(
+      get: { ConversationDraft.split(draft).text },
+      set: { draft = ConversationDraft.compose(text: $0, attachments: attachments) })
+  }
+
+  private var attachments: [String] { ConversationDraft.split(draft).attachments }
+
+  private func attach(_ paths: [String]) {
+    let parts = ConversationDraft.split(draft)
+    let added = paths.filter { !parts.attachments.contains($0) }
+    guard !added.isEmpty else { return }
+    draft = ConversationDraft.compose(text: parts.text, attachments: parts.attachments + added)
+  }
+
+  private func detach(_ path: String) {
+    let parts = ConversationDraft.split(draft)
+    draft = ConversationDraft.compose(
+      text: parts.text, attachments: parts.attachments.filter { $0 != path })
+  }
+
   private var composerContent: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      let attached = attachments
+      if !attached.isEmpty {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
+            ForEach(attached, id: \.self) { path in
+              OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
+            }
+          }
+        }
+        .frame(maxHeight: 30)
+        .accessibilityIdentifier("overlay-conversation-attachments")
+      }
+      editorRow
+    }
+    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
+    .padding(.vertical, ComposerControlMetrics.verticalPadding)
+  }
+
+  private var editorRow: some View {
     HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
       ConversationMessageField(
-        text: $draft, height: $editorHeight,
+        text: prose, height: $editorHeight,
         textColor: palette.primaryText.nsColor,
         fontSize: ComposerControlMetrics.textSize * textScale,
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
@@ -46,14 +88,15 @@ struct OverlayConversationComposer: View {
         onTypingActivity: onTypingActivity,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
-        onPasteError: { pasteError = $0 }
+        onPasteError: { pasteError = $0 },
+        hasAttachments: { !attachments.isEmpty }, onAttach: attach
       )
       .frame(height: editorHeight)
       .transaction { $0.animation = nil }
       .accessibilityIdentifier("overlay-conversation-composer")
       .help("Paste files, images, or long text to attach a local copy.")
       .overlay(alignment: .topLeading) {
-        if draft.isEmpty {
+        if prose.wrappedValue.isEmpty {
           Text(verbatim: placeholder)
             .font(.system(size: ComposerControlMetrics.textSize * textScale))
             .foregroundStyle(palette.mutedText.color)
@@ -74,8 +117,61 @@ struct OverlayConversationComposer: View {
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
     }
-    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
-    .padding(.vertical, ComposerControlMetrics.verticalPadding)
+  }
+}
+
+/// A pasted attachment in the composer: the bubble's pill plus a remove cross.
+struct OverlayComposerAttachmentPill: View {
+  let path: String
+  let palette: OverlayAppearancePalette
+  let onRemove: () -> Void
+  @State private var thumbnail: NSImage?
+
+  private var name: String { URL(fileURLWithPath: path).lastPathComponent }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if let thumbnail {
+        Image(nsImage: thumbnail)
+          .resizable()
+          .aspectRatio(contentMode: .fill)
+          .frame(width: 18, height: 18)
+          .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+      } else {
+        Image(systemName: "doc")
+          .font(.system(size: 10, weight: .medium))
+          .foregroundStyle(palette.mutedText.color)
+      }
+      Text(verbatim: name)
+        .font(CSFont.mono(10.5, .medium))
+        .foregroundStyle(palette.primaryText.color)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(maxWidth: 160)
+      Button(action: onRemove) {
+        Image(systemName: "xmark")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(palette.mutedText.color)
+          .frame(width: 14, height: 14)
+          .contentShape(Circle())
+      }
+      .buttonStyle(.plain)
+      .help("Remove attachment")
+      .accessibilityLabel("Remove attachment")
+      .accessibilityIdentifier("overlay-conversation-attachment-remove")
+    }
+    .padding(.horizontal, 9)
+    .padding(.vertical, 5)
+    .background(palette.primaryText.color.opacity(0.05))
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        .strokeBorder(palette.primaryText.color.opacity(0.10), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+    .help(path)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(Text(verbatim: name))
+    .task(id: path) { thumbnail = NSImage(contentsOf: URL(fileURLWithPath: path)) }
   }
 }
 
@@ -95,6 +191,8 @@ private struct ConversationMessageField: NSViewRepresentable {
   let saveImage: (Data) throws -> URL
   let saveFile: (Data, String) throws -> URL
   let onPasteError: (String?) -> Void
+  var hasAttachments: () -> Bool = { false }
+  var onAttach: ([String]) -> Void = { _ in }
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -160,6 +258,8 @@ private struct ConversationMessageField: NSViewRepresentable {
         from: clipboard, saveImage: saveImage, saveFile: saveFile)
     }
     editor.onPasteError = onPasteError
+    editor.hasAttachments = hasAttachments
+    editor.onAttach = onAttach
     if editor.string != text {
       context.coordinator.applyingExternalText = true
       editor.string = text
@@ -270,6 +370,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     var onTypingActivity: () -> Void = {}
     var pastedText: (() throws -> String?)?
     var onPasteError: (String?) -> Void = { _ in }
+    /// Read at Return: a paste can add a pill before SwiftUI updates the view.
+    var hasAttachments: () -> Bool = { false }
+    var onAttach: ([String]) -> Void = { _ in }
     var onFocusChange: ((Bool) -> Void)?
     private var isFirstResponderActive = false
     private var isWindowKey = false
@@ -364,7 +467,14 @@ private struct ConversationMessageField: NSViewRepresentable {
     override func paste(_ sender: Any?) {
       do {
         if let text = try pastedText?() {
-          insertText(text, replacementRange: selectedRange())
+          // Store pointers become pills; only the prose enters the editor.
+          let parts = ConversationDraft.split(text)
+          if !parts.attachments.isEmpty { onAttach(parts.attachments) }
+          let prose =
+            parts.attachments.isEmpty ? text : parts.text.trimmingCharacters(in: .newlines)
+          if !prose.isEmpty || !parts.attachments.isEmpty {
+            insertText(prose, replacementRange: selectedRange())
+          }
           onPasteError(nil)
           onTypingActivity()
           return
@@ -425,7 +535,9 @@ private struct ConversationMessageField: NSViewRepresentable {
       if performComposerPaste(with: event) { return }
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
       if [36, 76].contains(event.keyCode), alternate.isEmpty, !hasMarkedText() {
-        if !sending && !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !sending
+          && (hasAttachments() || !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        {
           submit?(string)
         }
         return

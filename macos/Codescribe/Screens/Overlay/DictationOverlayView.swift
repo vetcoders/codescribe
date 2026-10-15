@@ -402,7 +402,8 @@ struct DictationOverlayView: View {
       GeometryReader { geometry in
         ZStack {
           // Both ends are numbers, so the fold interpolates with the window's
-          // 0.28 s morph. A `nil` height has nothing to animate from: the body
+          // morph, over the same duration (it follows the distance since
+          // 2026-10-15). A `nil` height has nothing to animate from: the body
           // snapped to zero on the first frame while the glass kept shrinking
           // (presentation ledger, 2026-10-14).
           bodySection
@@ -446,7 +447,10 @@ struct DictationOverlayView: View {
             .accessibilityHidden(state.isCollapsed)
           }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: state.isCollapsed)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
+          value: state.isCollapsed
+        )
         .overlay(alignment: .topTrailing) {
           if state.showsAgentMonitor && !state.isCollapsed {
             ZStack(alignment: .topTrailing) {
@@ -699,7 +703,7 @@ struct DictationOverlayView: View {
     // The mini and the full header cross-fade over the window's morph instead
     // of swapping on its first frame (presentation ledger, 2026-10-14).
     .animation(
-      reduceMotion ? nil : .easeInOut(duration: DictationOverlayWindow.presentationDuration),
+      reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
       value: state.presentationMode
     )
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -848,7 +852,9 @@ struct DictationOverlayView: View {
           OverlayMicrophoneGlyph(
             character: OverlayHeaderGlyph.transcription,
             tint: transcriptionSelected
-              ? Color(nsColor: .controlAccentColor) : palette.mutedText.color)
+              ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
+              : palette.mutedText.color,
+            plateOpacity: transcriptionSelected ? 0 : 0.12)
         }
         .buttonStyle(.plain)
         .csFocusOutline()

@@ -164,9 +164,10 @@ struct OverlayMicrophoneGlyph: View {
     self.plateOpacity = plateOpacity
   }
 
-  init(character: String, tint: Color) {
+  init(character: String, tint: Color, plateOpacity: Double = 0.12) {
     mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
     self.tint = tint
+    self.plateOpacity = plateOpacity
   }
 
   var body: some View {
@@ -261,6 +262,16 @@ struct OverlayAgentAudioControls: View {
 
   private var speakingNow: Bool { speaking && muted == false }
 
+  /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
+  /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
+  /// wyraziste". A lit control washes its glass with a pastel of the colour
+  /// and keeps the glyph in the whole colour.
+  static let litGlassOpacity = 0.3
+
+  static func litGlass(_ color: Color?) -> Color? {
+    color?.opacity(litGlassOpacity)
+  }
+
   private var microphoneLabel: String {
     if broadcast {
       return open
@@ -301,7 +312,7 @@ struct OverlayAgentAudioControls: View {
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(width: 16, height: 16)
       }
-      .tint(open ? Color.red : nil)
+      .tint(Self.litGlass(open ? Color.red : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
@@ -323,7 +334,7 @@ struct OverlayAgentAudioControls: View {
         .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: 16, height: 16)
       }
-      .tint(speakingNow ? palette.agentAccent.color : nil)
+      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
       .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
@@ -332,6 +343,10 @@ struct OverlayAgentAudioControls: View {
       .accessibilityIdentifier("overlay-agent-speaker")
     }
     .modifier(OverlayAgentControlStyle())
+    // Founder, 2026-10-15: an I-beam showed between and over these buttons.
+    // They float above message and transcript text, whose tracking set the
+    // text cursor; the pair and its gap claim the arrow like the drawer does.
+    .background { OverlayMenuCursorRegion() }
   }
 }
 
@@ -453,9 +468,12 @@ struct OverlayChannelStatusView: View {
 
   var body: some View {
     Button(action: showMonitor) {
+      // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.agents,
-        tint: headerSelected ? Color(nsColor: .controlAccentColor) : palette.mutedText.color
+        tint: headerSelected
+          ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
+        plateOpacity: headerSelected ? 0 : 0.12
       )
       .contentShape(Circle())
       .overlay(alignment: .topTrailing) {

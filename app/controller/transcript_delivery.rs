@@ -54,7 +54,8 @@ impl TranscriptDeliveryTagger {
         let outward = if to_agent {
             text.to_string()
         } else {
-            strip_markers_for_delivery(text)
+            let body = strip_markers_for_delivery(text);
+            super::delivery_route::writer_quotes_for_paste(&body, config.whisper_language.as_str())
         };
         let trimmed = outward.trim();
         if trimmed.is_empty() || to_agent || !config.transcript_tagging_enabled {
@@ -112,6 +113,30 @@ impl EventSink for TranscriptDeliveryTagger {
 mod tests {
     use super::*;
     use codescribe_core::pipeline::contracts::TranscriptSegment;
+
+    #[test]
+    fn outward_quotes_change_only_the_body_before_the_tag_is_rendered() {
+        let tagger = TranscriptDeliveryTagger::default();
+        tagger.begin("dictation", "pl");
+        let mut config = Config {
+            transcript_tagging_enabled: true,
+            transcript_tag_template:
+                "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>".into(),
+            ..Config::default()
+        };
+        config.whisper_language = codescribe_core::config::Language::Polish;
+        let body = "powiedz \"tak\" i `echo \"x\"`";
+        assert_eq!(
+            tagger.render(body, &config, Some("dictation")),
+            "<codescribe mode=\"dictation\" lang=\"pl\">\npowiedz „tak” i `echo \"x\"`\n</codescribe>"
+        );
+        config.transcript_tagging_enabled = false;
+        assert_eq!(
+            tagger.render(body, &config, Some("dictation")),
+            "powiedz „tak” i `echo \"x\"`"
+        );
+        assert_eq!(tagger.render(body, &config, Some("agent")), body);
+    }
 
     #[test]
     fn non_agent_payloads_strip_bucket_markers_before_tagging() {

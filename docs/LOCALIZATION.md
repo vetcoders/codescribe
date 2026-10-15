@@ -249,7 +249,8 @@ was the pull request into `main`, by which time the branch was the shape under
 review. A gate a branch can route around is a convention.
 
 Its one extra step fetches the base the prose ratchet measures against
-(`origin/<base_ref>` for a pull request, `origin/main` for a push), because
+(`origin/<base_ref>` for a pull request, immutable `github.event.before` for a
+push to `main`, and `origin/main` for another branch push), because
 `actions/checkout` fetches one ref. A failed fetch fails the job; the census
 also refuses either unreadable base file.
 

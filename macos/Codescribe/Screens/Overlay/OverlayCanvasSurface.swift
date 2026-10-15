@@ -46,6 +46,13 @@ struct OverlayCanvasBackdrop: View {
       }
     }
   }
+
+  /// A light veil of the palette's own sheet colour over the shared glass. 72 %
+  /// (removed in 469b701b8, 2026-10-12) turned the glass into a solid sheet;
+  /// bare glass read a little too transparent (Maciej, 2026-10-14).
+  static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
+    palette.desktopBackground.nsColor.withAlphaComponent(0.22)
+  }
 }
 
 /// Sample the desktop behind the non-activating panel, not its empty content.
@@ -79,7 +86,7 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
       view.appearance = NSAppearance(named: name)
     }
     if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView {
-      let tint = palette.desktopBackground.nsColor.withAlphaComponent(Self.glassTint)
+      let tint = OverlayCanvasBackdrop.glassVeil(palette)
       if glass.tintColor != tint { glass.tintColor = tint }
     }
   }

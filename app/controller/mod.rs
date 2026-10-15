@@ -3392,8 +3392,8 @@ impl RecordingController {
             .await?;
         use codescribe_core::audio::capture_receipt::{CaptureLevelAccumulator, CapturePathMeta};
         use codescribe_core::config::energy_calibration::{
-            EnergyCalibrationArtifact, EnergyCalibrationProfile, SOURCE_GUIDED_CAPTURE,
-            energy_calibration_path,
+            EnergyCalibrationArtifact, EnergyCalibrationProfile, GuidedCalibrationRefused,
+            SOURCE_GUIDED_CAPTURE, energy_calibration_path,
         };
 
         let _guard = self.serial_lock.lock().await;
@@ -3444,7 +3444,7 @@ impl RecordingController {
             .map(|d| d.as_millis() as u64)
             .unwrap_or_default();
         let profile = EnergyCalibrationProfile::derive(&receipt, now_ms, SOURCE_GUIDED_CAPTURE)
-            .map_err(|refusal| anyhow::anyhow!("calibration_refused: {refusal}"))?;
+            .map_err(|refusal| anyhow::Error::new(GuidedCalibrationRefused(refusal)))?;
         let path = energy_calibration_path();
         EnergyCalibrationArtifact::record_profile(&path, profile.clone(), now_ms)
             .map_err(|refusal| anyhow::anyhow!("calibration_store_failed: {refusal}"))?;
@@ -3524,13 +3524,6 @@ impl RecordingController {
         paste_mode: PasteMode,
     ) -> Result<OverlayPasteResult> {
         let config = self.get_config().await;
-        // Writer's quotes outside code for everything that lands in another
-        // app by paste (Founder, 2026-10-14: dictation pasted into `echo`
-        // breaks on straight quotes). Dictation language first, text second.
-        let paste_text = crate::controller::delivery_route::writer_quotes_for_paste(
-            &paste_text,
-            config.whisper_language.as_str(),
-        );
         let focus_confirmed = target_app
             .as_deref()
             .map(str::trim)

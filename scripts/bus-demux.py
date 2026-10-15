@@ -1721,6 +1721,97 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
 #: exposes none, so its session is never guessed and stays an explicit flag.
 PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
 
+#: `--remote HOST` runs one operation in the managed helper of another Mac.
+REMOTE_HELPER = '"$HOME/.local/bin/cs-bus"'
+REMOTE_HOST_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
+#: Local paths and native hook modes mean nothing on another Mac.
+REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--install-junie-extension",
+                        "--claude-code-wake", "--claude-code-probe", "--omp-wake",
+                        "--attach-file", "--from-file", "--extensions-directory")
+
+
+def ssh_command(host: str, command: str, environ: Any = os.environ) -> list[str]:
+    """One non-interactive ssh call; CS_BUS_SSH replaces the client in tests."""
+    return [environ.get("CS_BUS_SSH") or "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", host, command]
+
+
+def remote_hosts_path(root: Path, lease_id: str) -> Path:
+    return root / "runtime" / "native-wake" / f"{lease_id}.remote.json"
+
+
+def remote_hosts(root: Path, lease_id: str) -> list[str]:
+    """Hosts on which this lease attached through `--remote`."""
+    hosts = (read_json(remote_hosts_path(root, lease_id)) or {}).get("hosts")
+    if not isinstance(hosts, list):
+        return []
+    return [host for host in hosts if isinstance(host, str) and REMOTE_HOST_PATTERN.fullmatch(host)]
+
+
+def remember_remote_host(root: Path, lease_id: str, host: str, attached: bool) -> None:
+    path = remote_hosts_path(root, lease_id)
+    hosts = [known for known in remote_hosts(root, lease_id) if known != host] + ([host] if attached else [])
+    if hosts:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_json(path, {"lease_id": lease_id, "hosts": hosts})
+    else:
+        path.unlink(missing_ok=True)
+
+
+def flag_value(args: list[str], flag: str) -> str | None:
+    value = None
+    for index, item in enumerate(args):
+        if item == flag and index + 1 < len(args):
+            value = args[index + 1]
+        if item.startswith(flag + "="):
+            value = item.split("=", 1)[1]
+    return value
+
+
+def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = None) -> int:
+    """`cs-bus --remote HOST OPERATION ...`: the same operation in the managed
+    cs-bus of HOST over ssh, under this conversation's identity.
+
+    Maciej, 2026-10-15: waking and ACKing over ssh should be cheap. A session
+    id that lives in this process's environment is sent as an explicit
+    --session, because the remote shell does not carry it. A successful
+    --attach records HOST for the lease, so the Claude Code wake also waits on
+    that mailbox; --detach forgets it.
+    """
+    import shlex
+    import subprocess
+
+    args: list[str] = []
+    host = None
+    items = iter(argv)
+    for item in items:
+        if item == "--remote":
+            host = next(items, None)
+        elif item.startswith("--remote="):
+            host = item.split("=", 1)[1]
+        else:
+            args.append(item)
+    if not host or not REMOTE_HOST_PATTERN.fullmatch(host):
+        sys.stderr.write("cs-bus: --remote needs an ssh host alias\n")
+        return 2
+    refused = [flag for flag in REMOTE_REFUSED_FLAGS
+               if any(item == flag or item.startswith(flag + "=") for item in args)]
+    if refused:
+        sys.stderr.write(f"cs-bus: --remote does not combine with {', '.join(refused)}\n")
+        return 2
+    provider, session = flag_value(args, "--provider"), flag_value(args, "--session")
+    if session is None and provider in PROVIDER_SESSION_ENV:
+        session = environ.get(PROVIDER_SESSION_ENV[provider], "").strip() or None
+        if session:
+            args += ["--session", session]
+    command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args)])
+    result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL, env=dict(environ))
+    if result.returncode == 0 and provider and session and ("--attach" in args or "--detach" in args):
+        remember_remote_host((root or bridge_home()).expanduser().resolve(strict=False),
+                             lease_identifier(provider, session), host,
+                             "--attach" in args)
+    return result.returncode
+
 
 def provider_session_from_env(provider: str) -> str | None:
     """The provider's own session id from its environment, when it sets one."""
@@ -6168,6 +6259,8 @@ def watch_command(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    if any(item == "--remote" or item.startswith("--remote=") for item in sys.argv[1:]):
+        return run_remote(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="cs-bus", usage="%(prog)s <operation> [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -6201,6 +6294,9 @@ def main() -> int:
                         help="with --install-junie-extension: override Junie's extensions directory")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
+    parser.add_argument("--remote", metavar="HOST",
+                        help="run this operation in the managed cs-bus of HOST over ssh (attach, read, "
+                        "ACK, send, detach); an --attach there also wakes this Claude Code session")
     authority = parser.add_mutually_exclusive_group()
     authority.add_argument(
         "--print-bus-path",

@@ -1199,6 +1199,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("corrections: Int(clamping: model.totalQualityCorrections),"))
     XCTAssertFalse(panel.contains("learnScopeMessage(corrections: corrections.count)"))
 
+    // Founder, 2026-10-15: the pane leads with the current take's word pins,
+    // open on arrival, above the newest correction however old it is.
+    XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
+    let pins = try XCTUnwrap(panel.range(of: "DictionaryWordPins(configDir: model.configDir)"))
+    let recent = try XCTUnwrap(
+      panel.range(of: "ProvidersSectionHeader(String(localized: \"Recent corrections\"))"))
+    XCTAssertLessThan(pins.lowerBound, recent.lowerBound)
+
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Dictionary and corrections": "Słownik i poprawki",

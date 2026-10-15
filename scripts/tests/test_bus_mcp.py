@@ -1195,6 +1195,163 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         self.assert_not_acknowledged()
 
 
+FAKE_SSH = """#!/usr/bin/env python3
+import json, os, subprocess, sys
+host, command = sys.argv[-2], sys.argv[-1]
+with open(os.environ["FAKE_SSH_LOG"], "a") as log:
+    log.write(json.dumps({"host": host, "command": command, "options": sys.argv[1:-2]}) + "\\n")
+if os.environ.get("FAKE_SSH_EXIT"):
+    sys.exit(int(os.environ["FAKE_SSH_EXIT"]))
+sys.exit(subprocess.call(["/bin/sh", "-c", command], env=dict(os.environ, HOME=os.environ["FAKE_REMOTE_HOME"])))
+"""
+
+FAKE_REMOTE_HELPER = """#!/bin/sh
+case " $* " in
+  *" --claude-code-wake "*)
+    payload=$(cat)
+    printf 'wake %s %s\\n' "$CLAUDE_CODE_SESSION_ID" "$payload" >> "$FAKE_REMOTE_LOG"
+    if [ "$(cat "$FAKE_REMOTE_MODE" 2>/dev/null)" = wake ]; then
+      echo "Codescribe: 1 new message(s) for klaudiusz-div0, connected on channel 9 (claude-code session $CLAUDE_CODE_SESSION_ID); pending 1; new delivery ids: aaaaaaaaaaaaaaaaaaaaaaaa [channel 9, to you]. Read every pending message." >&2
+      exit 75
+    fi
+    trap 'echo terminated >> "$FAKE_REMOTE_LOG"; exit 143' TERM
+    while :; do sleep 0.05; done ;;
+  *)
+    for arg in "$@"; do printf 'arg %s\\n' "$arg" >> "$FAKE_REMOTE_LOG"; done
+    exit "${FAKE_REMOTE_EXIT:-0}" ;;
+esac
+"""
+
+
+class RemoteMailboxTests(MailboxFixture):
+    """Maciej, 2026-10-15: waking and ACKing over ssh should be cheap. A
+    channel attached on another Mac wakes this conversation through that
+    Mac's own waiter; every operation runs there under this session."""
+
+    PROVIDER = "claude-code"
+
+    def setUp(self):
+        super().setUp()
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings["7"] = {"audience": "fable", "provider": self.PROVIDER,
+                             "provider_session_id": self.session, "bus": str(self.bus)}
+        home = self.root / "remote-home"
+        helper = home / ".local/bin/cs-bus"
+        helper.parent.mkdir(parents=True)
+        helper.write_text(FAKE_REMOTE_HELPER)
+        helper.chmod(0o755)
+        ssh = self.root / "fake-ssh"
+        ssh.write_text(FAKE_SSH)
+        ssh.chmod(0o755)
+        self.remote_log = self.root / "remote.log"
+        self.remote_mode = self.root / "remote.mode"
+        self.ssh_log = self.root / "ssh.log"
+        self.environ = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.session, CLAUDE_PID=str(os.getpid()),
+                            CS_BUS_SSH=str(ssh), FAKE_REMOTE_HOME=str(home),
+                            FAKE_REMOTE_LOG=str(self.remote_log), FAKE_REMOTE_MODE=str(self.remote_mode),
+                            FAKE_SSH_LOG=str(self.ssh_log))
+
+    def save(self):
+        super().save()
+        state = DEMUX.read_json(self.lease_path)
+        state["pid"] = os.getpid()
+        DEMUX.atomic_json(self.lease_path, state)
+
+    def notice(self, said, marker):
+        """The notice carrying `marker`. stderr is patched process-wide and the
+        daemon waiters of earlier tests (same fixture session) print into it."""
+        mine = [line for line in said.splitlines() if line.startswith("Codescribe: ") and marker in line]
+        self.assertTrue(mine, said)
+        return parse_wake_notice(mine[-1])
+
+    def remote_lines(self):
+        return self.remote_log.read_text().splitlines() if self.remote_log.exists() else []
+
+    def wake(self, window=5.0):
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            code = MCP.claude_code_wake(DEMUX, self.root, None, {"session_id": self.session},
+                                        self.environ, window=window, interval=0.05)
+        return code, errors.getvalue()
+
+    def remote(self, *argv, **environ):
+        return DEMUX.run_remote(list(argv), dict(self.environ, **environ), root=self.root)
+
+    def test_remote_mailbox_wakes_with_its_own_notice_and_names_the_host(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        self.remote_mode.write_text("wake")
+        code, said = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        relayed = [line for line in said.splitlines() if "[Mailbox on dragon, over ssh" in line]
+        self.assertTrue(relayed, said)
+        self.assertTrue(relayed[-1].startswith("Codescribe: 1 new message(s) for klaudiusz-div0"),
+                        "the remote waiter's own notice is relayed word for word")
+        self.assertIn("a" * 24, relayed[-1])
+        self.assertIn("cs-bus --remote dragon --provider claude-code --ack ID", said)
+        payload = json.dumps({"session_id": self.session})
+        self.assertIn(f"wake {self.session} {payload}", self.remote_lines())
+        self.assertEqual(json.loads(self.ssh_log.read_text().splitlines()[0])["host"], "dragon")
+        self.assert_not_acknowledged()
+
+    def test_a_message_here_wakes_and_stops_the_remote_waiter(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+        deadline = time.monotonic() + 5
+        while not any(line.startswith("wake ") for line in self.remote_lines()):
+            self.assertLess(time.monotonic(), deadline, "the remote waiter never started")
+            time.sleep(0.05)
+        self.pending = [self.envelope("e" * 24)]
+        self.save()
+        code, said = outcome.get(timeout=5)
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(self.notice(said, "e" * 24)["new_delivery_ids"], ["e" * 24])
+        self.assertNotIn("Mailbox on dragon", said)
+        deadline = time.monotonic() + 5
+        while "terminated" not in self.remote_lines():
+            self.assertLess(time.monotonic(), deadline, "the remote waiter outlived this side")
+            time.sleep(0.05)
+
+    def test_unreachable_host_is_retried_and_never_wakes_by_itself(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        self.environ["FAKE_SSH_EXIT"] = "255"
+        with patch.object(MCP, "REMOTE_RETRY_SECONDS", 0.2):
+            code, said = self.wake(window=2.5)
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(self.notice(said, "in 2.5 s")["kind"], "codescribe_wait_idle")
+        self.assertNotIn("Mailbox on dragon", said)
+        self.assertGreaterEqual(len(self.ssh_log.read_text().splitlines()), 2)
+
+    def test_operations_run_on_the_host_under_this_session_and_attach_is_remembered(self):
+        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name",
+                                     "klaudiusz div0", "--provider", "claude-code"), 0)
+        args = [line[4:] for line in self.remote_lines() if line.startswith("arg ")]
+        self.assertEqual(args, ["--attach", "--channel", "9", "--name", "klaudiusz div0",
+                                "--provider", "claude-code", "--session", self.session])
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), ["dragon"])
+        self.assertEqual(self.remote("--remote=dragon", "--provider", "claude-code", "--ack", "a" * 24), 0)
+        self.assertEqual(self.remote("--remote", "dragon", "--detach", "--provider", "claude-code"), 0)
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
+
+    def test_a_refused_attach_is_not_remembered_and_local_paths_never_travel(self):
+        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name", "k",
+                                     "--provider", "claude-code", FAKE_REMOTE_EXIT="3"), 3)
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
+        calls = len(self.ssh_log.read_text().splitlines())
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            self.assertEqual(self.remote("--remote", "dragon", "--read-pending", "--bus", "/tmp/x"), 2)
+            self.assertEqual(self.remote("--remote", "-oProxyCommand=x", "--status"), 2)
+            self.assertEqual(self.remote("--remote", "dragon", "--claude-code-wake"), 2)
+        self.assertEqual(len(self.ssh_log.read_text().splitlines()), calls, "nothing reached ssh")
+
+
 class PluginContractTests(unittest.TestCase):
     PLUGIN = SCRIPTS.parent / "plugins/codescribe"
 
