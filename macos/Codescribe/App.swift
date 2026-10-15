@@ -326,6 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var shouldExitForDuplicate = false
   private var credentialServicesStarted = false
   private let terminationCoordinator = AppTerminationCoordinator()
+  private var idleRestartCoordinator: IdleRestartCoordinator?
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
   private lazy var onboarding = OnboardingWindowController(
@@ -366,6 +367,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func application(_ application: NSApplication, open urls: [URL]) {
     guard !Self.isRunningTests, !shouldExitForDuplicate else { return }
     for url in urls {
+      if url.scheme == "codescribe", url.host == "restart-if-idle" {
+        Task { @MainActor [weak self] in await self?.idleRestartCoordinator?.handle(url) }
+        continue
+      }
       vocabularyAB.receive(url, labEnabled: DictationOverlayGate.isLabModeOn())
     }
   }
@@ -493,6 +498,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     prepareTranscriptHistoryStorage()
     prepareMaxConsultation()
     prewarmRecordingController()
+    do {
+      idleRestartCoordinator = try IdleRestartCoordinator(
+        root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
+        acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
+        reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        terminate: {
+          RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        })
+    } catch {
+      appLogger.error("Idle restart capability unavailable: \(error.localizedDescription)")
+    }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(onboardingWindowWillClose),
@@ -863,6 +879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The launch guards in applicationShouldTerminate keep the XCTest host
     // from constructing a bridge here solely to stop it at teardown.
     let voiceStop = Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
+    idleRestartCoordinator?.invalidate()
     trayPanel.dismiss()
     model.chat.invalidate()
     appActionListener?.invalidate()

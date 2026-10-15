@@ -6976,6 +6976,37 @@ impl RecordingController {
         if !self.shutdown_requested.load(Ordering::SeqCst) {
             return false;
         }
+        let Ok(_serial) = self.serial_lock.try_lock() else {
+            return false;
+        };
+        self.capture_work_is_quiescent()
+    }
+
+    /// Reserve an idle restart under the same boundary as every capture start.
+    /// Refusal leaves capture admission open. Acceptance closes it before the
+    /// caller can request process termination, including future channel opens.
+    pub fn reserve_idle_restart(&self) -> bool {
+        let Ok(_serial) = self.serial_lock.try_lock() else {
+            return false;
+        };
+        let Ok(channels) = self.agent_channels.try_lock() else {
+            return false;
+        };
+        let Ok(hold) = self.hold_start_task.try_lock() else {
+            return false;
+        };
+        if self.shutdown_requested.load(Ordering::SeqCst)
+            || !channels.is_empty()
+            || hold.as_ref().is_some_and(|task| !task.is_finished())
+            || !self.capture_work_is_quiescent()
+        {
+            return false;
+        }
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+        true
+    }
+
+    fn capture_work_is_quiescent(&self) -> bool {
         let Ok(slot) = self.capture_settlement.try_lock() else {
             return false;
         };
@@ -6991,9 +7022,6 @@ impl RecordingController {
         if tails.iter().any(|task| !task.is_finished()) {
             return false;
         }
-        let Ok(_serial) = self.serial_lock.try_lock() else {
-            return false;
-        };
         let Ok(state) = self.state.try_read() else {
             return false;
         };
@@ -12765,6 +12793,119 @@ mod explicit_startup_tests {
             "settlement must not remove the finished handle"
         );
         assert!(probe.attempts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn idle_restart_reservation_refuses_active_capture_without_closing_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        for state in [State::RecHold, State::RecToggle, State::Conversation] {
+            *controller.state.write().await = state;
+            assert!(!controller.reserve_idle_restart());
+            assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        }
+        *controller.state.write().await = State::Idle;
+        *controller.session_id.write().await = Some("retained-terminal-owner".into());
+        assert!(!controller.reserve_idle_restart());
+        assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        *controller.session_id.write().await = None;
+        assert!(controller.reserve_idle_restart());
+    }
+
+    #[tokio::test]
+    async fn idle_restart_reservation_refuses_start_and_channel_lock_contention() {
+        let root = tempfile::tempdir().unwrap();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        let start = controller.serial_lock.lock().await;
+        assert!(!controller.reserve_idle_restart());
+        assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        drop(start);
+        let channel = controller.agent_channels.lock().await;
+        assert!(!controller.reserve_idle_restart());
+        assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        drop(channel);
+        assert!(controller.reserve_idle_restart());
+    }
+
+    #[tokio::test]
+    async fn idle_restart_reservation_refuses_scheduled_start_and_unsettled_tail() {
+        let root = tempfile::tempdir().unwrap();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        *controller.hold_start_task.lock().await =
+            Some(tokio::spawn(async { blocked.await.unwrap() }));
+        assert!(!controller.reserve_idle_restart());
+        assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        release.send(()).unwrap();
+        controller
+            .hold_start_task
+            .lock()
+            .await
+            .take()
+            .unwrap()
+            .await
+            .unwrap();
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        controller
+            .closed_capture_tails
+            .lock()
+            .unwrap()
+            .push(tokio::spawn(async {
+                blocked.await.unwrap();
+            }));
+        assert!(!controller.reserve_idle_restart());
+        assert!(!controller.shutdown_requested.load(Ordering::SeqCst));
+        release.send(()).unwrap();
+        let task = controller
+            .closed_capture_tails
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap();
+        task.await.unwrap();
+        assert!(controller.reserve_idle_restart());
+    }
+
+    #[tokio::test]
+    async fn idle_restart_reservation_closes_future_dictation_conversation_and_channel_starts() {
+        let root = tempfile::tempdir().unwrap();
+        let probe = StartupAcquisitionProbe::forbid();
+        let controller = RecordingController::from_startup_inputs(
+            snapshot(root.path()),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        assert!(controller.reserve_idle_restart());
+        assert!(
+            !controller.reserve_idle_restart(),
+            "only one restart can reserve the process"
+        );
+        assert!(matches!(
+            controller
+                .start_toggle_recording(false, CaptureTurnIntent::HandsFree)
+                .await
+                .unwrap(),
+            CaptureAdmission::NotAdmitted
+        ));
+        assert!(controller.start_conversation_mode().await.is_err());
+        assert!(controller.toggle_agent_channel(2).await.is_err());
+        assert!(controller.capture_shutdown_settled());
+        assert!(
+            probe.attempts().is_empty(),
+            "no capture resources may start after reservation"
+        );
     }
 
     #[tokio::test]
