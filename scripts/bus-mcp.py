@@ -575,7 +575,11 @@ def claude_code_probe(demux, root, bus, payload, environ):
         if not held:
             return 0
         try:
-            _state, rows = demux.unread_pending(args)
+            # The probe runs inside a turn the model is already spending, so a
+            # quiet channel-0 delivery costs no wake here: surface it now rather
+            # than leaving it for an explicit read. The Stop waiter above keeps
+            # the default (quiet rows never start a turn).
+            _state, rows = demux.unread_pending(args, include_quiet=True)
         except (OSError, ValueError):
             return 0
         unread = [row["delivery_id"] for row in rows]
