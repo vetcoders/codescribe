@@ -1004,6 +1004,9 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         # Replies enter the follower stream only for the peer text lane;
         # admission drops every reply that does not name a peer recipient.
         AGENT_REPLY_SCHEMA,
+        # Revise / withdraw / release rows steer a held delivery; the lease
+        # that owns the hold consumes them, every other reader ignores them.
+        DELIVERY_CONTROL_SCHEMA,
         "codescribe.bus-chunk.v1",
     ):
         return None
@@ -2593,6 +2596,10 @@ class SessionLease:
         if waiting:
             # Publishing even a preview pollutes the append-only agent stream
             # and incurs agent cost: held text exists only in this lease until release.
+            # The previews that led up to this seal are settled by the hold:
+            # a withdrawn take must not leave orphan drafts counting toward the cap.
+            for queued_id in self._drafts_of(draft_key(payload)):
+                del self.pending[queued_id]
             self.held[delivery_id] = dict(payload)
             self.persist(active=True)
             return False
@@ -2615,8 +2622,13 @@ class SessionLease:
         events = follower_paths(self.root, self.lease_id)[1]
         events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         for raw in replay(events):
-            row = parse_line(raw)
-            if (row and row.get("kind") == "delivery_withdrawn"
+            # Follower receipts carry the bridge event schema, which the bus
+            # admission filter in parse_line never admits: decode them directly.
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if (isinstance(row, dict) and row.get("kind") == "delivery_withdrawn"
                     and row.get("delivery_id") == receipt["delivery_id"]):
                 return
         emit_follower(receipt, events, None, human_output=False)

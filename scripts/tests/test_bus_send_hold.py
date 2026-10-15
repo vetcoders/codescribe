@@ -360,7 +360,12 @@ class SendHoldTests(unittest.TestCase):
 
     def test_joined_voice_twins_preserve_hold_and_numeric_identity_without_double_delivery(self):
         session = "agent-channel-2-hold-fixture"
+        # Channel evidence is admitted only through its frozen owner list,
+        # the way the Rust publisher stamps every channel row.
+        owner = {"provider": self.provider, "provider_session_id": self.session,
+                 "lease_id": self.lease_id, "bus": str(self.bus)}
         preview = {"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session,
+            "recipients": [owner],
             "audience": "lena", "reducer_revision": 3, "sequence": 4,
             "reducer_action": DEMUX.TERMINAL_SEAL, "rendered_text": "joined voice",
             "occurrence_session_id": "capture", "capture_epoch": 1,
@@ -376,7 +381,10 @@ class SendHoldTests(unittest.TestCase):
         self.assertEqual(state["pending"], [])
         held = next(iter(state["held"].values()))
         self.assertEqual((held["utterance_id"], held["hold_until"]), (42, closing["hold_until"]))
-        self.assertEqual((native, hooks), ([], []))
+        # The preview reaches the native queue boundary as every draft does;
+        # the real queue drops non-terminal kinds. No seal may cross it.
+        self.assertFalse(any(call.args[0].get("kind") in DEMUX.TERMINAL_KINDS for call in native))
+        self.assertEqual(hooks, [])
         self.assertFalse(any(row.get("kind") == "seal" for row in self.events()))
 
     def test_closing_metadata_survives_a_restart_before_channel_boundary(self):
@@ -388,13 +396,13 @@ class SendHoldTests(unittest.TestCase):
         normalizer.normalize(row)
         normalizer.normalize({**row, "status": DEMUX.SEALED, "terminal": True,
             "utterance_id": 0, "hold_until": stamp(NOW + 10), "sequence": 2})
-        retained = normalizer.export_open_channel_documents()
+        retained = normalizer.channel_documents()
         self.assertIn(retained[session]["status"], DEMUX.LIVE_STATUSES)
         restored = DEMUX.EvidenceNormalizer()
-        restored.restore_open_channel_documents(retained)
+        restored.restore_channel_documents(list(retained.values()))
         restored.normalize({"schema": DEMUX.CHANNEL_SESSION_SCHEMA, "channel": "2",
                             "session_id": session, "state": "sealed"})
-        sealed = restored.drain_pending()[0]
+        sealed = restored.pop_flushes()[0]
         self.assertEqual(sealed["utterance_id"], 0)
         self.assertEqual(sealed["hold_until"], stamp(NOW + 10))
 
