@@ -341,6 +341,10 @@ impl ToolRegistry {
     }
 
     /// Single choke point: resolve allow / ask / deny before any side effect.
+    ///
+    /// A caller that goes on to dispatch the call must use
+    /// [`Self::decide_with_targets`] and re-check with [`Self::confirm_targets`];
+    /// this form is for callers that only need the verdict.
     pub fn decide(
         &self,
         name: &str,
@@ -349,26 +353,54 @@ impl ToolRegistry {
         session_id: &str,
         thread_id: &str,
     ) -> ToolDecision {
+        let (decision, _) =
+            self.decide_with_targets(name, input, call_id, session_id, thread_id);
+        decision
+    }
+
+    /// The gate itself: the verdict plus the canonical targets it was decided
+    /// on (the validator's `preview.paths`, empty without a validator).
+    ///
+    /// The targets are what the handler will actually open — a symlink alias
+    /// resolves to its destination here, before consent is judged. They travel
+    /// with the verdict so [`Self::confirm_targets`] can prove, right before
+    /// dispatch, that the call still points where the decision (and any
+    /// operator approval) was made.
+    pub fn decide_with_targets(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        call_id: &str,
+        session_id: &str,
+        thread_id: &str,
+    ) -> (ToolDecision, Vec<String>) {
         let Some(tool) = self.tools.get(name) else {
-            return ToolDecision::Deny(format!("Tool '{name}' is not registered"));
+            return (
+                ToolDecision::Deny(format!("Tool '{name}' is not registered")),
+                Vec::new(),
+            );
         };
         let mut preview = match &tool.validator {
             Some(validate) => match validate(input) {
                 Ok(preview) => preview,
-                Err(error) => return ToolDecision::Deny(error.to_string()),
+                Err(error) => return (ToolDecision::Deny(error.to_string()), Vec::new()),
             },
             None => ToolCallPreview::default(),
         };
+        let targets = preview.paths.clone();
 
         // Destructive stays a hard deny — no approval, grant, or settings
         // override can lift it (defense in depth on top of risk defaults).
         if matches!(tool.policy.origin, ToolOrigin::Mcp { .. })
             && tool.policy.risk == ToolRisk::Destructive
         {
-            return ToolDecision::Deny(format!(
-                "External tool '{name}' is denied by policy ({})",
-                tool.policy.risk.as_str()
-            ));
+            return (
+                ToolDecision::Deny(format!(
+                    "External tool '{name}' is denied by policy ({})",
+                    tool.policy.risk.as_str()
+                )),
+                targets,
+            );
         }
 
         let live_policy;
@@ -385,8 +417,10 @@ impl ToolRegistry {
         // silently covers a credential-bearing path (.env, mcp.json env
         // blocks, key material). Escalate to Ask so the operator sees the
         // exact path on the approval card; no rule lifts this back to silent.
+        // The verdict is judged on the input AND the canonical targets, so an
+        // alias (docs/info.txt -> .env) is as secret as the file it opens.
         let level = if level == PermissionLevel::Allow
-            && let Some(secret) = super::secret_paths::find_secret_path(input)
+            && let Some(secret) = find_secret_target(input, &targets)
         {
             let note = format!("Touches secret-bearing path: {secret}");
             preview.summary = if preview.summary.is_empty() {
@@ -402,7 +436,7 @@ impl ToolRegistry {
             level
         };
 
-        match level {
+        let decision = match level {
             PermissionLevel::Allow => ToolDecision::Allow,
             PermissionLevel::Deny => {
                 ToolDecision::Deny(format!("Tool '{name}' is denied by operator policy"))
@@ -419,7 +453,34 @@ impl ToolRegistry {
                 cwd: preview.cwd,
                 paths: preview.paths,
             })),
+        };
+        (decision, targets)
+    }
+
+    /// Prove a call still resolves to the targets its decision was made on.
+    ///
+    /// Run right before dispatch: a symlink re-pointed while the operator was
+    /// deciding (or between verdict and open) changes what the validator
+    /// resolves, and consent for the old target does not cover the new one.
+    /// `Err` means do not dispatch.
+    pub fn confirm_targets(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        decided: &[String],
+    ) -> Result<()> {
+        let tool = self
+            .tools
+            .get(name)
+            .with_context(|| format!("Tool '{name}' is not registered"))?;
+        let current = match &tool.validator {
+            Some(validate) => validate(input)?.paths,
+            None => Vec::new(),
+        };
+        if current != decided {
+            anyhow::bail!("Tool '{name}' call target changed after authorization");
         }
+        Ok(())
     }
 
     /// The one resolution both [`Self::capabilities`] and [`Self::decide`]
@@ -485,6 +546,19 @@ impl ToolRegistry {
         }
         self.dispatch(name, input).await
     }
+}
+
+/// First secret-bearing path in the raw input, else in the canonical targets
+/// the validator resolved.
+///
+/// The input names what the model asked for; the targets name what the handler
+/// will open. A symlink alias passes the first check and fails the second.
+fn find_secret_target(input: &serde_json::Value, targets: &[String]) -> Option<String> {
+    super::secret_paths::find_secret_path(input).or_else(|| {
+        targets.iter().find_map(|target| {
+            super::secret_paths::find_secret_path(&serde_json::Value::String(target.clone()))
+        })
+    })
 }
 
 /// Gate behaviour under test, not plumbing: each case pins one way the
