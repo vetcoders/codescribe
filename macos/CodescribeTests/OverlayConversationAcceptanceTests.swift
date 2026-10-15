@@ -341,12 +341,15 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
-  func testMessageCopyPreservesFullRawMarkdown() {
+  func testMessageCopyPreservesFullRawMarkdown() async {
     let pasteboard = NSPasteboard.withUniqueName()
     defer { pasteboard.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: pasteboard)
+    defer { restoreClipboard() }
     pasteboard.setString("poprzednia zawartość", forType: .string)
     let raw = "Pierwszy akapit.\n\n```swift\nlet wynik = \"całość\"\n```\n\nOstatni akapit."
-    chatCopy(raw, to: pasteboard)
+    let copied = await chatCopy(raw)
+    XCTAssertTrue(copied)
     XCTAssertEqual(pasteboard.string(forType: .string), raw)
   }
 

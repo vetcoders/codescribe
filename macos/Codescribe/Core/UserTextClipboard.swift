@@ -20,6 +20,12 @@ enum UserTextClipboard {
 
   private static var pendingCopy: Task<Result<Void, Error>, Never>?
 
+  /// The bridge write. Tests replace it to observe the payload without the
+  /// Rust runtime and without touching the user's clipboard.
+  static var bridgeWrite: @MainActor (String) async throws -> Void = { text in
+    try await CodescribeHotkeys().copyTextTagged(text: text)
+  }
+
   static func copy(_ text: String, preservingWhitespace: Bool = false) async throws {
     // The bridge treats trimmed-empty input as a successful no-op. It must not
     // acknowledge recovery or show Copied when no clipboard write happened.
@@ -37,7 +43,7 @@ enum UserTextClipboard {
       // result, and a slower earlier bridge call cannot overwrite a later copy.
       if let preceding { _ = await preceding.value }
       do {
-        try await CodescribeHotkeys().copyTextTagged(text: text)
+        try await bridgeWrite(text)
         return .success(())
       } catch {
         return .failure(error)
