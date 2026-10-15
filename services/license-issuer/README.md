@@ -4,6 +4,14 @@ Signs CSK1 licence codes for the form at <https://codescribe.vetcoders.io/licens
 Node stdlib only (node 18+), Ed25519 via `node:crypto`; the token contract is
 `core/licensing/mod.rs` — see the header of `server.mjs`.
 
+Request contract test (runs the real `server.mjs` on an ephemeral port with a
+throwaway seed; a body whose `email` is not a string must be a 400 and the
+process must keep serving):
+
+```bash
+node --test services/license-issuer/
+```
+
 ## Deployment (ops VPS, same box as pensieve.vetcoders.io)
 
 | Piece        | Location                                                                                                      |
