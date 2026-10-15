@@ -16276,6 +16276,113 @@ public func FfiConverterTypeCsArchivedFormatOutcome_lower(_ value: CsArchivedFor
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Why a guided calibration kept no profile: a code and its arguments. The
+ * four the person can act on are named; a measurement that is only to be
+ * repeated is `Unusable`, its English detail logged where it is mapped.
+ */
+
+public enum CsCalibrationRefusal: Equatable, Hashable {
+
+    /**
+     * Every sample was exactly zero, e.g. Bluetooth headphones held by
+     * another device.
+     */
+    case digitalSilence(deviceName: String, samples: UInt64
+    )
+    case noActiveSpeech
+    case insufficientSpeech(measuredSeconds: Float, requiredSeconds: Float
+    )
+    case insufficientSeparation(thresholdDbfs: Float, noiseFloorDbfs: Float
+    )
+    case unusable
+
+
+
+}
+
+#if compiler(>=6)
+extension CsCalibrationRefusal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCalibrationRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CsCalibrationRefusal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCalibrationRefusal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .digitalSilence(deviceName: try FfiConverterString.read(from: &buf), samples: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 2: return .noActiveSpeech
+
+        case 3: return .insufficientSpeech(measuredSeconds: try FfiConverterFloat.read(from: &buf), requiredSeconds: try FfiConverterFloat.read(from: &buf)
+        )
+
+        case 4: return .insufficientSeparation(thresholdDbfs: try FfiConverterFloat.read(from: &buf), noiseFloorDbfs: try FfiConverterFloat.read(from: &buf)
+        )
+
+        case 5: return .unusable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsCalibrationRefusal, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .digitalSilence(deviceName,samples):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(deviceName, into: &buf)
+            FfiConverterUInt64.write(samples, into: &buf)
+
+
+        case .noActiveSpeech:
+            writeInt(&buf, Int32(2))
+
+
+        case let .insufficientSpeech(measuredSeconds,requiredSeconds):
+            writeInt(&buf, Int32(3))
+            FfiConverterFloat.write(measuredSeconds, into: &buf)
+            FfiConverterFloat.write(requiredSeconds, into: &buf)
+
+
+        case let .insufficientSeparation(thresholdDbfs,noiseFloorDbfs):
+            writeInt(&buf, Int32(4))
+            FfiConverterFloat.write(thresholdDbfs, into: &buf)
+            FfiConverterFloat.write(noiseFloorDbfs, into: &buf)
+
+
+        case .unusable:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCalibrationRefusal_lift(_ buf: RustBuffer) throws -> CsCalibrationRefusal {
+    return try FfiConverterTypeCsCalibrationRefusal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCalibrationRefusal_lower(_ value: CsCalibrationRefusal) -> RustBuffer {
+    return FfiConverterTypeCsCalibrationRefusal.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Typed outcome of a conditional stop. Every variant is a state the caller can
  * act on; none of them is an error string to match. A failed transport may
  * retry the same handle to join/retrieve the retained controller operation.
@@ -16762,6 +16869,12 @@ public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
     )
     case Runtime(msg: String
     )
+    /**
+     * Guided calibration measured but kept no profile. Swift owns the
+     * sentence for each refusal (docs/LOCALIZATION.md §5).
+     */
+    case CalibrationRefused(refusal: CsCalibrationRefusal
+    )
 
 
 
@@ -16807,6 +16920,9 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case 6: return .Runtime(
             msg: try FfiConverterString.read(from: &buf)
             )
+        case 7: return .CalibrationRefused(
+            refusal: try FfiConverterTypeCsCalibrationRefusal.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -16847,6 +16963,11 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case let .Runtime(msg):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
+
+
+        case let .CalibrationRefused(refusal):
+            writeInt(&buf, Int32(7))
+            FfiConverterTypeCsCalibrationRefusal.write(refusal, into: &buf)
 
         }
     }
