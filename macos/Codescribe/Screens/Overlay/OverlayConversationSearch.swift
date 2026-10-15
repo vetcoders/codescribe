@@ -235,7 +235,7 @@ final class OverlayConversationSearchModel {
       }
       isMetadataLoading = false
       if !(error is CancellationError) {
-        metadataError = error.localizedDescription
+        metadataError = error.userFacingMessage
       }
       isMetadataPartial = false
       metadataErrorCount = 0
@@ -293,7 +293,7 @@ final class OverlayConversationSearchModel {
       guard generation == searchGeneration else { return }
       isLoading = false
       if !(error is CancellationError) {
-        searchError = error.localizedDescription
+        searchError = error.userFacingMessage
       }
       isPartial = false
       errorCount = 0
