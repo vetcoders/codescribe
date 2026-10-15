@@ -904,7 +904,8 @@ struct DictationOverlayView: View {
       // `monitorBody(...)` is installed, so a `@State` on it never persists:
       // each HUD tick handed the drawer a fresh, empty search model and the
       // query vanished mid-typing. The overlay state owns the model.
-      searchModel: state.savedConversationSearch
+      searchModel: state.savedConversationSearch,
+      rosterReady: state.hasLoadedChannelRoster
     )
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =

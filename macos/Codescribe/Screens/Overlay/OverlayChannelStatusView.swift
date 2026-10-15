@@ -331,6 +331,7 @@ struct OverlayChannelStatusView: View {
   @Environment(\.csTextScale) private var textScale
 
   let channels: [OverlayChannelDelivery]
+  let rosterReady: Bool
   let unavailable: Bool
   let palette: OverlayAppearancePalette
   /// False while the panel is hidden or occluded: the waiting spinner must not
@@ -376,9 +377,11 @@ struct OverlayChannelStatusView: View {
     conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
     unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil,
     onShowMonitor: (() -> Void)? = nil,
-    searchModel: OverlayConversationSearchModel? = nil
+    searchModel: OverlayConversationSearchModel? = nil,
+    rosterReady: Bool = true
   ) {
     self.channels = channels
+    self.rosterReady = rosterReady
     self.unavailable = unavailable
     self.palette = palette
     self.animates = animates
@@ -787,12 +790,21 @@ struct OverlayChannelStatusView: View {
   }
 
   var showsConnectionHint: Bool {
-    channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+    rosterReady && channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+  }
+
+  var showsRosterLoading: Bool {
+    !rosterReady
   }
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 2) {
-      if showsConnectionHint {
+      if showsRosterLoading {
+        Text("Checking the connection…")
+          .foregroundStyle(palette.mutedText.color)
+          .padding(.vertical, 12)
+          .accessibilityIdentifier("overlay-agent-roster-loading")
+      } else if showsConnectionHint {
         Text(
           "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
         )
