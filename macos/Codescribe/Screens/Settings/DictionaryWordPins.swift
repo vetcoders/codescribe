@@ -6,7 +6,11 @@ import SwiftUI
 /// explicit: correction text is never used to guess its acoustic identity.
 struct DictionaryWordPins: View {
   let configDir: String
-  @State private var expanded = false
+  /// Open on arrival. Founder, 2026-10-15: the pane should lead with the
+  /// expanded pins or the current transcription, "nie stalled sprzed
+  /// miesiąca"; the pins of the latest recorded take are the current one.
+  @State private var expanded = DictionaryWordPins.expandedOnArrival
+  static let expandedOnArrival = true
   @State private var session = ""
   @State private var refresh = 0
   @State private var snapshot = DictionaryPinSnapshot()
@@ -36,7 +40,9 @@ struct DictionaryWordPins: View {
           ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 6) {
               ForEach(snapshot.pins) { pin in
-                Button { selected = pin.id } label: {
+                Button {
+                  selected = pin.id
+                } label: {
                   HStack(spacing: 10) {
                     Text(verbatim: "#\(pin.index)").font(.caption.monospaced()).frame(width: 38)
                     Text(pin.text).lineLimit(1).frame(width: 140, alignment: .leading)
@@ -62,7 +68,8 @@ struct DictionaryWordPins: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(pin.text))
-                .accessibilityValue(Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer)"))
+                .accessibilityValue(
+                  Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer)"))
               }
             }
           }
@@ -72,7 +79,8 @@ struct DictionaryWordPins: View {
               Text(pin.text).font(.headline)
               LabeledContent("PCM range", value: "\(pin.start)–\(pin.end) · \(pin.rate) Hz")
               LabeledContent("Capture epoch", value: String(pin.epoch))
-              LabeledContent("Observation", value: "\(pin.producer) / \(pin.request) / \(pin.generation)")
+              LabeledContent(
+                "Observation", value: "\(pin.producer) / \(pin.request) / \(pin.generation)")
               LabeledContent("Occurrence", value: "\(pin.occurrenceStart)–\(pin.occurrenceEnd)")
               DisclosureGroup("Recorded adjudication") {
                 Text(pin.adjudication).font(.caption.monospaced()).textSelection(.enabled)
@@ -81,8 +89,10 @@ struct DictionaryWordPins: View {
             .font(.caption.monospaced())
             .textSelection(.enabled)
           }
-          Text("Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed.")
-            .font(.caption).foregroundStyle(.secondary)
+          Text(
+            "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
+          )
+          .font(.caption).foregroundStyle(.secondary)
         }
       }
       .padding(.top, 10)
@@ -144,15 +154,22 @@ struct DictionaryPinSnapshot: Sendable {
       at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
       options: [.skipsHiddenFiles]
     ).filter { $0.lastPathComponent.hasSuffix(suffix) }.sorted {
-      let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-      let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+      let a =
+        (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        ?? .distantPast
+      let b =
+        (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        ?? .distantPast
       return a > b
     }
     let candidates = Array(files.prefix(30))
-    var result = Self(sessions: candidates.map { String($0.lastPathComponent.dropLast(suffix.count)) })
+    var result = Self(
+      sessions: candidates.map { String($0.lastPathComponent.dropLast(suffix.count)) })
     let url: URL?
     if requested.isEmpty {
-      url = candidates.first { ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }
+      url = candidates.first {
+        ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+      }
     } else {
       url = candidates.first { $0.lastPathComponent == requested + suffix }
     }
@@ -179,7 +196,8 @@ struct DictionaryPinSnapshot: Sendable {
     }
     for (identity, row) in occurrences {
       guard let a = number(row["sample_start"]), let b = number(row["sample_end"]),
-        let epoch = number(row["capture_epoch"]), let rate = number(row["sample_rate_hz"]), rate > 0,
+        let epoch = number(row["capture_epoch"]), let rate = number(row["sample_rate_hz"]),
+        rate > 0,
         let slots = row["slots"] as? [[String: Any]]
       else { throw CocoaError(.fileReadCorruptFile) }
       let finality = row["word_finality"] as? [[String: Any]] ?? []
@@ -188,7 +206,8 @@ struct DictionaryPinSnapshot: Sendable {
           a <= start, start < end, end <= b,
           let text = slot["text"] as? String, let producer = slot["producer"] as? String,
           let observation = slot["observation"] as? [String: Any],
-          let request = number(observation["request"]), let generation = number(observation["generation"])
+          let request = number(observation["request"]),
+          let generation = number(observation["generation"])
         else { throw CocoaError(.fileReadCorruptFile) }
         let evidence = finality.filter { item in
           (item["targets"] as? [[String: Any]] ?? []).contains { target in
@@ -200,17 +219,21 @@ struct DictionaryPinSnapshot: Sendable {
               number(occurrence["sample_end"]) == b
             else { return false }
             return number(target["sample_start"]) == start && number(target["sample_end"]) == end
-              && number(observed["request"]) == request && number(observed["generation"]) == generation
+              && number(observed["request"]) == request
+              && number(observed["generation"]) == generation
               && (observed["producer"] as? String)?.lowercased() == producer.lowercased()
           }
         }
-        let encoded = try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
-        result.pins.append(DictionaryPin(
-          id: "\(result.session):\(identity):\(producer):\(request):\(generation):\(start):\(end)",
-          index: index, text: text, producer: producer,
-          start: start, end: end, occurrenceStart: a, occurrenceEnd: b, epoch: epoch,
-          request: request, generation: generation, rate: rate,
-          adjudication: String(decoding: encoded, as: UTF8.self)))
+        let encoded = try JSONSerialization.data(
+          withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+        result.pins.append(
+          DictionaryPin(
+            id:
+              "\(result.session):\(identity):\(producer):\(request):\(generation):\(start):\(end)",
+            index: index, text: text, producer: producer,
+            start: start, end: end, occurrenceStart: a, occurrenceEnd: b, epoch: epoch,
+            request: request, generation: generation, rate: rate,
+            adjudication: String(decoding: encoded, as: UTF8.self)))
       }
     }
     guard Set(result.pins.map(\.id)).count == result.pins.count else {
