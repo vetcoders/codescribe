@@ -1717,50 +1717,52 @@ final class OverlayState {
       -> OverlayChannelDeliverySnapshot
   ) -> Task<Void, Never> {
     stopObservingChannelDelivery()
-    let observation = Task { @MainActor [weak self] in
+    let readRoster: @MainActor @Sendable () async -> Void = { [weak self] in
+      while !Task.isCancelled {
+        guard self != nil else { return }
+        if let snapshot = await self?.engine?.channelRosterSnapshot() {
+          guard !Task.isCancelled, let self else { return }
+          self.applyChannelRoster(snapshot)
+        }
+        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+      }
+    }
+    let readHistory: @MainActor @Sendable () async -> Void = { [weak self] in
+      while !Task.isCancelled {
+        guard self != nil else { return }
+        do {
+          let archiveRevision = self?.agentArchiveRevision
+          let focusRevision = self?.conversationFocusRevision
+          let selectedOwner = self?.selectedConversation?.owner
+          let archivedOwner = selectedOwner.flatMap { owner in
+            self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
+          }
+          let snapshot = try await readSnapshot(archivedOwner)
+          guard !Task.isCancelled, self != nil else { return }
+          // A focus change can discard this paint, but not turn that archive's
+          // first-read history into a fresh admission on the next poll.
+          self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
+          if archiveRevision == self?.agentArchiveRevision,
+            focusRevision == self?.conversationFocusRevision
+          {
+            self?.applyConversationSnapshot(snapshot)
+          }
+        } catch {
+          guard !Task.isCancelled, let self else { return }
+          if !channelStatusUnavailable {
+            channelStatusUnavailable = true
+            onChannelPresentationChanged?()
+          }
+        }
+        guard !Task.isCancelled else { return }
+        await self?.refreshPlaybackMutes()
+        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+      }
+    }
+    let observation = Task {
       await withTaskGroup(of: Void.self) { group in
-        group.addTask { @MainActor [weak self] in
-          while !Task.isCancelled {
-            guard self != nil else { return }
-            if let snapshot = await self?.engine?.channelRosterSnapshot() {
-              guard !Task.isCancelled, let self else { return }
-              self.applyChannelRoster(snapshot)
-            }
-            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-          }
-        }
-        group.addTask { @MainActor [weak self] in
-          while !Task.isCancelled {
-            guard self != nil else { return }
-            do {
-              let archiveRevision = self?.agentArchiveRevision
-              let focusRevision = self?.conversationFocusRevision
-              let selectedOwner = self?.selectedConversation?.owner
-              let archivedOwner = selectedOwner.flatMap { owner in
-                self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
-              }
-              let snapshot = try await readSnapshot(archivedOwner)
-              guard !Task.isCancelled, self != nil else { return }
-              // A focus change can discard this paint, but not turn that archive's
-              // first-read history into a fresh admission on the next poll.
-              self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
-              if archiveRevision == self?.agentArchiveRevision,
-                focusRevision == self?.conversationFocusRevision
-              {
-                self?.applyConversationSnapshot(snapshot)
-              }
-            } catch {
-              guard !Task.isCancelled, let self else { return }
-              if !channelStatusUnavailable {
-                channelStatusUnavailable = true
-                onChannelPresentationChanged?()
-              }
-            }
-            guard !Task.isCancelled else { return }
-            await self?.refreshPlaybackMutes()
-            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-          }
-        }
+        group.addTask { await readRoster() }
+        group.addTask { await readHistory() }
       }
     }
     channelObservationTask = observation
