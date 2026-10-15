@@ -392,15 +392,20 @@ response chain is reset per turn. The same owner serves both entry points:
 
 - **Voice.** A Max dictation take enters the owner through
   `FormattingConsultation` (`format_text_with_status_for_policy`).
-- **Agent window.** A typed turn on a thread whose stored mode is `max` is
-  routed by the bridge (`CodescribeAgent::run_max_consultation_turn`) into
+- **Agent window.** The composer sends a typed turn on a Max row through
+  `CodescribeAgent::stream_max_consultation`, which hands it to
+  `run_max_consultation_turn` and on to
   `RecordingController::enqueue_max_consultation_text_turn`: same FIFO,
-  Agent lane, Max prompt and Max approval broker as speech. The turn runs
-  under Max regardless of the dictation formatting level selected at the
-  moment, because the consultation is Max by identity. The window renders the
-  owner's events for that turn (`subscribe_max_consultation_events`); the
-  owner persists history once, in `max` mode, so the Assistive lane and its
-  `assistive` delivery never touch a consultation.
+  Agent lane, Max prompt and Max approval broker as speech. The composer's
+  durable accepted-turn id is the turn's identity: the journal refuses a
+  repeat of it and the window renders exactly the owner events stamped with
+  it (`subscribe_max_consultation_events`), so text, reasoning, tool rows and
+  approval cards stream as they do for an Agent turn. The turn runs under Max
+  regardless of the dictation formatting level selected at the moment,
+  because the consultation is Max by identity. The owner persists history
+  once, in `max` mode, so the Assistive lane and its `assistive` delivery
+  never touch a consultation. `stream_reply` on a Max thread carries no
+  acceptance identity and mints one; the Agent window never takes that route.
 
 Guards:
 

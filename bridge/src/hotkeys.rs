@@ -1073,43 +1073,6 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Continue an exact Max thread through its retained execution owner. The
-    /// accepted turn identity survives restart, preventing duplicate effects.
-    pub async fn continue_max_consultation(
-        &self,
-        text: String,
-        thread_id: String,
-        turn_id: String,
-        attachment_paths: Vec<String>,
-    ) -> Result<String, CsError> {
-        application_runtime::run(async move {
-            let settings =
-                codescribe_core::config::Config::load_runtime_snapshot().map_err(|error| {
-                    CsError::Config {
-                        msg: error.to_string(),
-                    }
-                })?;
-            // Max runs on the Agent lane; its model decides image support.
-            let lane = settings.llm_lanes().assistive();
-            let attachments = attachment_paths
-                .into_iter()
-                .map(|path| crate::agent::CsAttachment { path })
-                .collect::<Vec<_>>();
-            let images = crate::agent::validate_composer_attachments(
-                &attachments,
-                lane.supports_vision(lane.model()),
-            )?;
-            let controller = ensure_controller(&shared_controller(), Handle::current());
-            controller
-                .continue_max_consultation(&thread_id, turn_id, text, images)
-                .await
-                .map_err(|error| CsError::Recording {
-                    msg: format!("Max continuation failed: {error:#}"),
-                })
-        })
-        .await?
-    }
-
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
         application_runtime::run(async move {

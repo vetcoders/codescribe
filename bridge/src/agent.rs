@@ -371,6 +371,43 @@ impl CodescribeAgent {
         self.turns.cancel(&thread_id)
     }
 
+    /// Stream one typed turn of the selected Max consultation, forwarding the
+    /// owner's text, reasoning, tool and approval events for exactly this turn
+    /// to `listener`. Returns the final assembled assistant text.
+    ///
+    /// `turn_id` is the composer's durable acceptance identity. It survives a
+    /// restart, so the consultation journal refuses a replay of an accepted
+    /// turn instead of running its tools twice, and it is the key the events
+    /// are matched on. The turn runs on the consultation owner under Max by
+    /// identity, independent of the dictation formatting level selected at the
+    /// moment: no second session, and the owner records the reply once.
+    ///
+    /// Attachments follow the composer contract of
+    /// [`Self::stream_reply_with_attachments`], judged on the Agent lane
+    /// because Max answers on it.
+    pub async fn stream_max_consultation(
+        &self,
+        text: String,
+        thread_id: String,
+        turn_id: String,
+        attachments: Vec<CsAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let settings = agent.current_settings();
+            let agent_lane = settings.llm_lanes().assistive();
+            let images = validate_composer_attachments(
+                &attachments,
+                agent_lane.supports_vision(agent_lane.model()),
+            )?;
+            agent
+                .run_max_consultation_turn(text, thread_id, turn_id, images, listener)
+                .await
+        })
+        .await?
+    }
+
     /// Run the same agent loop against the embedding editor's live document.
     /// Requires an explicit host identity; cannot inherit the desktop app's
     /// documents, credentials, tools, or conversation directory.
@@ -591,9 +628,18 @@ impl CodescribeAgent {
         // A Max consultation is Max by identity. Its typed turn joins the
         // controller's owner (same FIFO, lane, prompt and approvals as speech)
         // instead of running an Assistive turn that would rewrite the thread.
+        // This entry carries no acceptance identity, so the turn is minted
+        // here; the composer's durable id arrives through
+        // [`CodescribeAgent::stream_max_consultation`].
         if hosted.is_none() && thread_is_max_consultation(&thread_id).await {
             return self
-                .run_max_consultation_turn(text, thread_id, attachments, listener)
+                .run_max_consultation_turn(
+                    text,
+                    thread_id,
+                    next_max_composer_turn_id(),
+                    attachments,
+                    listener,
+                )
                 .await;
         }
         // One fresh seal for the WHOLE turn: lane identity, provider
@@ -752,15 +798,19 @@ fn forward_max_consultation_event(event: AgentUiEvent, listener: &dyn CsAgentLis
 
 impl CodescribeAgent {
     /// Run a typed turn on the selected Max consultation through the running
-    /// app's controller. Streams the owner's events for exactly this turn to
-    /// `listener`; history is persisted by the owner (mode `max`), so nothing
-    /// here writes the thread. Stop cannot abort an admitted Max instruction
-    /// (the owner never replays or rolls back tool effects); `cancel_turn`
-    /// therefore reports no active turn for a consultation.
+    /// app's controller. `turn_id` is the accepted turn's identity: the owner
+    /// journals it, stamps every event of the turn with it and refuses a
+    /// repeat, so the events rendered here are exactly this turn's and a
+    /// replay can never run it twice. Streams those events to `listener`;
+    /// history is persisted by the owner (mode `max`), so nothing here writes
+    /// the thread. Stop cannot abort an admitted Max instruction (the owner
+    /// never replays or rolls back tool effects); `cancel_turn` therefore
+    /// reports no active turn for a consultation.
     async fn run_max_consultation_turn(
         &self,
         text: String,
         thread_id: String,
+        turn_id: String,
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
@@ -769,7 +819,6 @@ impl CodescribeAgent {
             msg: "Max consultation needs the running app; open it from the menu bar app"
                 .to_string(),
         })?;
-        let turn_id = next_max_composer_turn_id();
         // Subscribe before admission: the owner never replays deltas.
         let mut events = controller.subscribe_max_consultation_events();
         let mut answer = controller
