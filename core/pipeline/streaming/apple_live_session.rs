@@ -7313,14 +7313,15 @@ fn maybe_spawn_utterance_witness(
         });
         return;
     };
-    for target in &targets {
+    for (index, target) in targets.iter().enumerate() {
         // An attempt binds only when the question was actually asked: the
-        // issued window covers the whole target, or the target is wider than
-        // any legal window — then its leading read counts and the range still
-        // ends honestly unresolved. A sliver of coverage costs nothing.
+        // issued window covers the whole target, or the target leads the
+        // window while being wider than any legal window — its leading read
+        // counts and the range still ends honestly unresolved. A sliver of
+        // coverage, or an oversized range outside the window, costs nothing.
         let covered_whole = target.0 >= window_start && target.1 <= window_end;
-        let oversized = target.1.saturating_sub(target.0) > max_window;
-        if !covered_whole && !oversized {
+        let leading_oversized = index == 0 && target.1.saturating_sub(target.0) > max_window;
+        if !covered_whole && !leading_oversized {
             continue;
         }
         let entry = state
