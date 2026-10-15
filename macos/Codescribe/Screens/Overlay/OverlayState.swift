@@ -1824,7 +1824,8 @@ final class OverlayState {
   /// One parent task owns both loops and propagates cancellation to both.
   @discardableResult
   func observeChannelDelivery(
-    readSnapshot: @escaping @MainActor (OverlayConversationOwner?) async throws
+    readSnapshot:
+      @escaping @MainActor (OverlayConversationOwner?) async throws
       -> OverlayChannelDeliverySnapshot
   ) -> Task<Void, Never> {
     stopObservingChannelDelivery()
@@ -4498,9 +4499,11 @@ final class OverlayState {
       let copied = await recoveryClipboardWriter(take.recoverableText)
       // A discard or capture boundary may change the queue while Rust writes.
       // Consume only the exact retained work that was actually copied.
-      guard let index = supersededTakes.firstIndex(where: {
-        $0 == take && $0.recoverableText.utf8.elementsEqual(take.recoverableText.utf8)
-      }) else { return }
+      guard
+        let index = supersededTakes.firstIndex(where: {
+          $0 == take && $0.recoverableText.utf8.elementsEqual(take.recoverableText.utf8)
+        })
+      else { return }
       guard copied else {
         recoveryFailure =
           take.hasUnsavedEdits
