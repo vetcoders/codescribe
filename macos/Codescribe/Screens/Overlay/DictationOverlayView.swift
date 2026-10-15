@@ -852,7 +852,9 @@ struct DictationOverlayView: View {
           OverlayMicrophoneGlyph(
             character: OverlayHeaderGlyph.transcription,
             tint: transcriptionSelected
-              ? Color(nsColor: .controlAccentColor) : palette.mutedText.color)
+              ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
+              : palette.mutedText.color,
+            plateOpacity: transcriptionSelected ? 0 : 0.12)
         }
         .buttonStyle(.plain)
         .csFocusOutline()

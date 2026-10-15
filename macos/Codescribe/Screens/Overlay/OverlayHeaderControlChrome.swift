@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Header hover uses the macOS accent, independent of brand and activity colors.
+/// Hover over an unchosen header control uses the macOS accent; a chosen
+/// control wears its mode's colour (`selectionTint`).
 enum OverlayHeaderAccent {
   case transcription
   case agents
@@ -10,6 +11,23 @@ enum OverlayHeaderAccent {
   func color(in palette: OverlayAppearancePalette) -> Color {
     Color(nsColor: .controlAccentColor)
   }
+
+  /// The chosen control wears its mode's colour. Founder, 2026-10-15: the
+  /// choice shows as a "wyraźne (nie wyraziste)" tint of the mode's colour,
+  /// Agents a light lavender from the agent recording light. Transcription
+  /// takes the listening terracotta of its own recording light; Pin, which is
+  /// not a mode, keeps the system accent.
+  func selectionTint(in palette: OverlayAppearancePalette) -> Color {
+    switch self {
+    case .transcription: palette.listeningStatus.color
+    case .agents: palette.agentAccent.color
+    case .state: Color(nsColor: .controlAccentColor)
+    }
+  }
+
+  /// The pastel wash under a chosen control, and the deeper one under the pointer.
+  static let selectedWash = 0.3
+  static let selectedHoverWash = 0.42
 }
 
 /// Hover chrome of a header control: a hairline ring in the control's accent
@@ -17,7 +35,9 @@ enum OverlayHeaderAccent {
 /// whole 46 pt window, so a hint cannot sit inside the panel the way the
 /// pill's sits above the canvas; it floats just below the control in a
 /// click-through child window of the overlay panel. A nil accent keeps the
-/// hint without the ring (the close dot has its own hover).
+/// hint without the ring (the close dot has its own hover). A selected control
+/// sits on a pastel wash of its mode's colour; the pointer deepens the wash
+/// and draws the ring in that colour, so a chosen control still answers hover.
 struct OverlayHeaderControlChrome: ViewModifier {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -29,10 +49,21 @@ struct OverlayHeaderControlChrome: ViewModifier {
   @State private var anchor = OverlayHintAnchor()
 
   func body(content: Content) -> some View {
-    let hoverTint: Color? =
-      selected || hovered
-      ? accent?.color(in: palette).opacity(selected ? 1 : 0.8) : nil
+    let selection: Color? = selected ? accent?.selectionTint(in: palette) : nil
+    let hoverTint: Color? = hovered ? (selection ?? accent?.color(in: palette).opacity(0.8)) : nil
     content
+      .background {
+        if let selection {
+          Circle()
+            .fill(
+              selection.opacity(
+                hovered ? OverlayHeaderAccent.selectedHoverWash : OverlayHeaderAccent.selectedWash)
+            )
+            .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
       .overlay {
         if let hoverTint {
           Circle()
