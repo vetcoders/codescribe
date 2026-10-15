@@ -57,7 +57,8 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     let view = try source("Overlay/DictationOverlayView.swift")
     let acoustic = try XCTUnwrap(view.range(of: "character: OverlayHeaderGlyph.transcription"))
     let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
-    let acousticWindow = String(view[acoustic.lowerBound...].prefix(180))
+    // The chosen tint (2026-10-15) sits before the resting muted colour.
+    let acousticWindow = String(view[acoustic.lowerBound...].prefix(260))
     let preferenceWindow = String(view[preference.lowerBound...].prefix(180))
     XCTAssertTrue(acousticWindow.contains("palette.mutedText.color"))
     XCTAssertTrue(preferenceWindow.contains("palette.primaryText.color"))

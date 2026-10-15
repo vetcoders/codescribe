@@ -129,7 +129,7 @@ struct TrayMenuView: View {
         icon: viewModel.isRecording && !viewModel.isStartingDictation ? .stop : .record,
         iconColor: recordingActionColor,
         title: recordingActionTitle
-      ) { viewModel.toggleDictation() }
+      ) { viewModel.toggleDictationFromTray() }
 
       historyGroup
       TrayRow(icon: .copy, title: String(localized: "Copy last transcript")) {

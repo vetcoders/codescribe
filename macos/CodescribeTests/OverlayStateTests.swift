@@ -415,6 +415,197 @@ final class OverlayStateTests: XCTestCase {
       owner: conversation.owner, messages: [message])
   }
 
+  func testColdDrawerDoesNotClaimDisconnectionBeforeControllerRoster() {
+    let state = OverlayState()
+    XCTAssertFalse(
+      DictationOverlayView(state: state).channelStatusView.showsConnectionHint,
+      "No controller snapshot has arrived; a cold drawer cannot assert disconnection")
+  }
+
+  func testDrawerWaitsForAuthoritativeRosterBeforeOfferingConnectionHint() {
+    let state = OverlayState()
+    func drawer() -> OverlayChannelStatusView {
+      DictationOverlayView(state: state).channelStatusView
+    }
+    XCTAssertFalse(state.hasLoadedChannelRoster)
+    XCTAssertTrue(drawer().showsRosterLoading)
+    XCTAssertFalse(drawer().showsConnectionHint)
+    state.applyChannelRoster([])
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [
+          OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+        ]))
+    XCTAssertTrue(drawer().showsRosterLoading, "History cannot establish controller readiness")
+    XCTAssertFalse(drawer().showsConnectionHint)
+
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast])
+    XCTAssertTrue(state.hasLoadedChannelRoster)
+    XCTAssertFalse(drawer().showsRosterLoading)
+    XCTAssertTrue(drawer().showsConnectionHint, "Channel 0 confirms a ready, unbound controller")
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    XCTAssertFalse(drawer().showsConnectionHint)
+    state.applyChannelRoster([broadcast])
+    XCTAssertTrue(drawer().showsConnectionHint, "Removing the last binding restores the hint")
+  }
+
+  func testChannelRosterRefreshesWhileHistoryIsSuspended() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let historyEntered = expectation(description: "history read suspended")
+    let initialRoster = expectation(description: "pre-controller roster requested")
+    let readyRoster = expectation(description: "ready roster requested despite suspended history")
+    let changedRoster = expectation(description: "changed roster requested")
+    let readyPainted = expectation(description: "newly ready roster painted")
+    let changePainted = expectation(description: "changed roster painted")
+    var rosterResponse: CheckedContinuation<[CsChannelRosterState], Never>?
+    var historyResponse: CheckedContinuation<OverlayChannelDeliverySnapshot, Never>?
+    var rosterReads = 0
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation { continuation in
+        rosterResponse = continuation
+        rosterReads += 1
+        switch rosterReads {
+        case 1: initialRoster.fulfill()
+        case 2: readyRoster.fulfill()
+        case 3: changedRoster.fulfill()
+        default: XCTFail("Unexpected roster read")
+        }
+      }
+    }
+    state.onChannelPresentationChanged = {
+      if state.channelRosterNames["2"] != nil { readyPainted.fulfill() }
+      if state.channelRosterNames["3"] != nil { changePainted.fulfill() }
+    }
+    let observation = state.observeChannelDelivery { _ in
+      await withCheckedContinuation { continuation in
+        historyResponse = continuation
+        historyEntered.fulfill()
+      }
+    }
+    defer {
+      state.stopObservingChannelDelivery()
+      state.onChannelPresentationChanged = nil
+      rosterResponse?.resume(returning: [])
+      historyResponse?.resume(returning: .init(deliveries: [], conversations: []))
+    }
+    await fulfillment(of: [initialRoster, historyEntered], timeout: 2)
+    let first = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    first.resume(returning: [])
+    await fulfillment(of: [readyRoster], timeout: 2)
+    XCTAssertFalse(state.hasLoadedChannelRoster)
+    let broadcast = navigationRoster(channel: "0", open: false)
+    let second = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    second.resume(returning: [broadcast, navigationRoster(open: false)])
+    await fulfillment(of: [readyPainted, changedRoster], timeout: 2)
+    XCTAssertTrue(state.hasLoadedChannelRoster)
+    XCTAssertNotNil(historyResponse, "History is still held at the same barrier")
+    XCTAssertTrue(state.conversations.isEmpty)
+    let third = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    third.resume(returning: [broadcast, navigationRoster(channel: "3", open: false)])
+    await fulfillment(of: [changePainted], timeout: 2)
+    XCTAssertEqual(Set(state.channelRosterNames.keys), ["0", "3"])
+    XCTAssertFalse(DictationOverlayView(state: state).channelStatusView.showsConnectionHint)
+
+    state.stopObservingChannelDelivery()
+    let history = try XCTUnwrap(historyResponse)
+    historyResponse = nil
+    history.resume(returning: .init(deliveries: [], conversations: []))
+    await observation.value
+  }
+
+  func testStoppedChannelObservationRejectsLateRosterAndHistory() async throws {
+    try await assertCancelledChannelObservation(reobserve: false, historyFails: false)
+  }
+
+  func testReobservedChannelRejectsLateRosterAndHistory() async throws {
+    try await assertCancelledChannelObservation(reobserve: true, historyFails: false)
+  }
+
+  func testReobservedChannelRejectsLateHistoryFailure() async throws {
+    try await assertCancelledChannelObservation(reobserve: true, historyFails: true)
+  }
+
+  private func assertCancelledChannelObservation(reobserve: Bool, historyFails: Bool) async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(channel: "3", open: false)])
+    let oldRosterEntered = expectation(description: "old roster suspended")
+    let oldHistoryEntered = expectation(description: "old history suspended")
+    var oldRoster: CheckedContinuation<[CsChannelRosterState], Never>?
+    var oldHistory: CheckedContinuation<OverlayChannelDeliverySnapshot, Error>?
+    var newHistory: CheckedContinuation<OverlayChannelDeliverySnapshot, Never>?
+    var replacement: Task<Void, Never>?
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation { continuation in
+        oldRoster = continuation
+        oldRosterEntered.fulfill()
+      }
+    }
+    let old = state.observeChannelDelivery { _ in
+      try await withCheckedThrowingContinuation { continuation in
+        oldHistory = continuation
+        oldHistoryEntered.fulfill()
+      }
+    }
+    defer {
+      state.stopObservingChannelDelivery()
+      state.onChannelPresentationChanged = nil
+      oldRoster?.resume(returning: [])
+      oldHistory?.resume(throwing: CancellationError())
+      newHistory?.resume(returning: .init(deliveries: [], conversations: []))
+    }
+    await fulfillment(of: [oldRosterEntered, oldHistoryEntered], timeout: 2)
+    if reobserve {
+      let replacementPainted = expectation(description: "replacement roster painted")
+      let replacementHistoryEntered = expectation(description: "replacement history suspended")
+      engine.rosterSnapshotHandler = nil
+      engine.rosterSnapshot = [broadcast, navigationRoster(channel: "4", open: false)]
+      state.onChannelPresentationChanged = {
+        if state.channelRosterNames["4"] != nil { replacementPainted.fulfill() }
+      }
+      replacement = state.observeChannelDelivery { _ in
+        await withCheckedContinuation { continuation in
+          newHistory = continuation
+          replacementHistoryEntered.fulfill()
+        }
+      }
+      await fulfillment(of: [replacementPainted, replacementHistoryEntered], timeout: 2)
+    } else {
+      state.stopObservingChannelDelivery()
+    }
+    state.onChannelPresentationChanged = nil
+    let roster = try XCTUnwrap(oldRoster)
+    oldRoster = nil
+    roster.resume(returning: [broadcast, navigationRoster(open: true)])
+    let history = try XCTUnwrap(oldHistory)
+    oldHistory = nil
+    if historyFails {
+      history.resume(throwing: CocoaError(.fileReadCorruptFile))
+    } else {
+      history.resume(
+        returning: .init(deliveries: [], conversations: [try navigationConversation()]))
+    }
+    // Joining the cancelled observation proves both late results were handled;
+    // no yield count, delay or inverted timeout stands in for completion.
+    await old.value
+    XCTAssertEqual(Set(state.channelRosterNames.keys), ["0", reobserve ? "4" : "3"])
+    XCTAssertFalse(state.hasOpenChannel)
+    XCTAssertTrue(state.conversations.isEmpty)
+    XCTAssertFalse(state.channelStatusUnavailable)
+    state.stopObservingChannelDelivery()
+    newHistory?.resume(returning: .init(deliveries: [], conversations: []))
+    newHistory = nil
+    if let replacement { await replacement.value }
+  }
+
   func testReplyAdmissionEmptyFirstSnapshotDoesNotHideFirstFreshReply() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
@@ -824,6 +1015,81 @@ final class OverlayStateTests: XCTestCase {
     withExtendedLifetime(controller) {}
   }
 
+  /// Founder, 2026-10-15: reaching an agent took mini → midi → drawer →
+  /// conversation. One press on Agents lands in the conversation itself.
+  func testAgentsPressFromMiniOpensTheNewestUnreadConversationInOneStep() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.showTranscription()
+    // Two replies at once follow nobody; both stay unread, Astra's is newer.
+    let older = replyFocusConversation(lena, id: "reply:older")
+    var newer = replyFocusConversation(astra, id: "reply:newer")
+    newer = OverlayConversation(
+      id: newer.id, channel: newer.channel, name: newer.name, owner: newer.owner,
+      messages: newer.messages.map { message in
+        OverlayConversationMessage(
+          id: message.id, kind: message.kind, text: message.text, order: 2,
+          emittedAt: message.emittedAt, owner: message.owner, recipients: [],
+          deliveryID: nil, replyTo: nil, unsolicited: true, playback: nil,
+          busPath: message.busPath)
+      })
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [older, newer]))
+    state.setPresentationMode(.mini)
+    state.setConversationVisible(true)
+    XCTAssertTrue(state.isMini)
+
+    state.toggleAgentSidebar()
+
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertFalse(state.showsAgentMonitor, "the drawer is not a step on the way")
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(state.unreadReplies(in: newer), 0)
+  }
+
+  func testAgentsPressReturnsToTheLastConversationThenOffersTheDrawer() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.selectConversation(astra.id)
+    state.showTranscription()
+    XCTAssertNil(state.selectedConversationID)
+
+    state.toggleAgentSidebar()
+    XCTAssertEqual(state.selectedConversationID, astra.id, "back where the user left")
+    XCTAssertFalse(state.showsAgentMonitor)
+
+    state.toggleAgentSidebar()
+    XCTAssertTrue(state.showsAgentMonitor, "in a conversation the press changes agents")
+
+    state.toggleAgentSidebar()
+    XCTAssertFalse(state.showsAgentMonitor, "and a press on the drawer closes it")
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+  }
+
+  func testAgentsPressOpensTheDrawerOnlyWithNothingToShow() throws {
+    let empty = OverlayState()
+    empty.toggleAgentSidebar()
+    XCTAssertTrue(empty.showsAgentMonitor)
+    XCTAssertNil(empty.selectedConversationID)
+
+    let silent = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    silent.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    silent.showTranscription()
+    silent.toggleAgentSidebar()
+    XCTAssertTrue(silent.showsAgentMonitor, "two silent agents: the user chooses")
+
+    let single = OverlayState()
+    single.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+    single.showTranscription()
+    single.toggleAgentSidebar()
+    XCTAssertEqual(single.selectedConversationID, lena.id, "the only agent needs no choice")
+  }
+
   func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
@@ -1149,16 +1415,18 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(state.hasOpenChannel)
         XCTAssertGreaterThan(presented, 0)
         XCTAssertEqual(factories, 1)
+      } else if control == "assistive" {
+        // An Agent take keeps the panel: its words and send countdown live
+        // there until the turn opens (Maciej, 2026-10-14).
+        XCTAssertGreaterThan(presented, 0)
+        XCTAssertEqual(factories, 1)
+        XCTAssertEqual(state.selectedConversationID, lena.id)
+        XCTAssertEqual(state.indicatorMode, .assistive)
       } else {
         XCTAssertEqual(presented, 0)
         XCTAssertEqual(factories, 0)
-        if control == "assistive" {
-          XCTAssertEqual(state.selectedConversationID, lena.id)
-          XCTAssertEqual(state.indicatorMode, .assistive)
-        } else {
-          XCTAssertTrue(state.showsMyDictation)
-          XCTAssertFalse(state.transcriptOverlayEnabled)
-        }
+        XCTAssertTrue(state.showsMyDictation)
+        XCTAssertFalse(state.transcriptOverlayEnabled)
       }
       XCTAssertEqual(engine.startedRecordingCount, 0)
       XCTAssertTrue(engine.toggledDigits.isEmpty)
@@ -1422,6 +1690,64 @@ final class OverlayStateTests: XCTestCase {
     state.setConversationVisible(true)
     XCTAssertEqual(state.unreadReplies(in: named), 0)
     XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
+  }
+
+  /// Founder, 2026-10-15: unread behaves like a messaging app across a
+  /// relaunch. History keeps its read marks; a reply that arrived while the
+  /// app was closed is still unread.
+  func testReadMarksSurviveRelaunchAndRepliesWhileClosedStayUnread() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("overlay-read-state-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var bus = OverlayChannelDelivery.Bus()
+    func reply(_ letter: Character) {
+      let id = String(repeating: letter, count: 24)
+      bus.consume([
+        "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+        "reply_id": id, "text": "Odpowiedź \(letter)",
+        "provider": "codex", "provider_session_id": "agent-a",
+        "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+        "association": "unsolicited",
+      ])
+    }
+    func snapshot() -> OverlayChannelDeliverySnapshot {
+      .init(deliveries: [], conversations: bus.conversations(busPath: "/fixture/bus"))
+    }
+    func lena() throws -> OverlayConversation {
+      try XCTUnwrap(snapshot().conversations.first { $0.channel == "2" })
+    }
+
+    // No stored marks yet: the history already on screen is adopted as read.
+    reply("b")
+    let first = OverlayState()
+    first.restoreReadState(root: root)
+    first.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
+
+    reply("c")
+    first.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 1)
+    first.selectConversation(try lena().id)
+    if first.isCollapsed { first.setPresentationMode(.expanded) }
+    first.setConversationVisible(true)
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
+    XCTAssertEqual(OverlayReadStateStore.load(root: root), Set(try lena().replyIDs))
+    let attributes = try FileManager.default.attributesOfItem(
+      atPath: OverlayReadStateStore.url(root: root).path)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+    // The app is closed while one more reply lands on the bus.
+    reply("e")
+    let relaunched = OverlayState()
+    relaunched.restoreReadState(root: root)
+    relaunched.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(
+      relaunched.unreadReplies(in: try lena()), 1, "only the reply that came while closed")
+
+    // A mark outlives its reply leaving the retained snapshot.
+    relaunched.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    relaunched.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(relaunched.unreadReplies(in: try lena()), 1)
   }
 
   func testBroadcastMicrophoneUsesDigitZeroWithoutAnAgentLease() async {
@@ -4243,26 +4569,35 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotEqual(controller.state.indicatorMode, .assistive)
   }
 
-  func testAgentModesNeverConstructOrOrderOverlayFront() {
-    for mode in ["Chat", "Selection"] {
+  /// An Agent take keeps the panel in front even with the transcript overlay
+  /// toggle off: the words and the send countdown have nowhere else to be
+  /// seen before the turn opens. Only a take the Agent composer captures
+  /// itself stays headless (Maciej, 2026-10-14).
+  func testAgentTakeKeepsOverlayFrontUnlessComposerOwnsCapture() {
+    for composerOwned in [false, true] {
       var frontCount = 0
       let controller = OverlayController(
         state: OverlayState(),
         engine: nil,
-        overlayEnabledProvider: { true },
+        overlayEnabledProvider: { false },
         assistiveStatusProvider: { true },
+        composerOwnsCaptureProvider: { composerOwned },
         panelFactory: { _, _ in NSPanel() },
         orderPanelFront: { _ in frontCount += 1 },
         orderPanelOut: { _ in }
       )
 
       controller.showForRecording()
-      XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
+      XCTAssertEqual(
+        frontCount, composerOwned ? 0 : 1,
+        composerOwned
+          ? "a composer-captured take streams into the composer field"
+          : "an Agent take shows its words and countdown on the panel")
       XCTAssertEqual(controller.state.indicatorMode, .assistive)
     }
   }
 
-  func testMidHoldAssistiveUpgradeClosesOverlayAndFlipsSemantics() {
+  func testMidHoldAssistiveUpgradeKeepsOverlayAndFlipsSemantics() {
     var frontCount = 0
     var outCount = 0
     let controller = OverlayController(
@@ -4280,8 +4615,44 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(outCount, 0)
 
     controller.handleIndicatorModeChange(.assistive)
-    XCTAssertEqual(outCount, 1)
+    XCTAssertEqual(outCount, 0, "the upgrade flips the lane, never the window")
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
+  }
+
+  /// The deadline that sends an armed Agent take is shown as whole seconds and
+  /// follows the clock; taking the canvas for an edit ends it, because an
+  /// edited take needs an explicit send.
+  func testArmedAgentTakeShowsCountdownThatFollowsTheClockAndAnEditEnds() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    projectText(
+      "send me", to: state, terminal: true, sessionId: "S", reducerAction: "session_ended")
+    XCTAssertEqual(state.agentSendCountdownSeconds, Int(OverlayState.autoHideDelaySeconds))
+
+    clock.now += 2.4
+    state.refreshAgentSendCountdown()
+    XCTAssertEqual(state.agentSendCountdownSeconds, 3)
+
+    state.beginTranscriptEdit()
+    XCTAssertTrue(state.isEditingTranscript)
+    XCTAssertNil(state.agentSendCountdownSeconds)
+    XCTAssertNil(state.autoHideDeadline)
+  }
+
+  func testAgentCountdownNeedsOptInAutoSendAndAnArmedTake() {
+    let clock = OverlayStateTestClock()
+    for (armed, autoSend) in [(true, false), (false, true)] {
+      let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { autoSend })
+      state.engine = OverlayStateTestEngine()
+      if armed { state.applyIndicatorMode(.assistive) }
+      projectText(
+        "plain words", to: state, terminal: true, sessionId: "S", reducerAction: "session_ended")
+      XCTAssertNil(
+        state.agentSendCountdownSeconds, "armed=\(armed) autoSend=\(autoSend) shows no countdown")
+    }
   }
 
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
@@ -6076,7 +6447,7 @@ final class OverlayStateTests: XCTestCase {
     withExtendedLifetime(controller) {}
   }
 
-  func testExplicitOffAndGenuineAssistiveHideWithoutStealingFocus() {
+  func testExplicitOffRunsHeadlessWhileAnAgentTakeShowsWithoutStealingFocus() {
     var offFronts = 0
     let offState = OverlayState()
     let offPanel = NSPanel()
@@ -6096,7 +6467,8 @@ final class OverlayStateTests: XCTestCase {
       frontCount: { agentFronts += 1 }, outCount: {})
     agentState.handleRecordingPreparing()
     agentState.handleRecordingStarted()
-    XCTAssertEqual(agentFronts, 0, "a genuine Agent/Assistive route is owned by the composer")
+    XCTAssertGreaterThan(
+      agentFronts, 0, "an Agent take shows its words and the send countdown on the panel")
     XCTAssertEqual(agentState.indicatorMode, .assistive)
 
     // The visible Dictation route never takes key or main away from the user.

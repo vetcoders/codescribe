@@ -152,18 +152,22 @@ struct OverlayConversationView: View {
 
   private var navigation: some View {
     navigationGlassContainer(
-      HStack(spacing: 6) {
+      HStack(spacing: 0) {
         Spacer(minLength: 0)
-        if conversation.owner != nil || conversation.channel == "0" {
-          OverlayAgentAudioControls(
-            open: microphoneOpen, muted: playbackMuted,
-            microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-            broadcast: conversation.channel == "0"
-          )
-          .fixedSize()
+        HStack(spacing: 6) {
+          if conversation.owner != nil || conversation.channel == "0" {
+            OverlayAgentAudioControls(
+              open: microphoneOpen, muted: playbackMuted,
+              microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+              palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
+              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking
+            )
+            .fixedSize()
+          }
+          conversationNamePill
         }
-        conversationNamePill
+        // The gap between the controls and the name is not text either.
+        .background { OverlayMenuCursorRegion() }
       }
     )
     .accessibilityIdentifier("overlay-conversation-navigation")
@@ -487,9 +491,10 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           .disabled(!active && (pending || message.owner == nil))
           .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
           if let playback = message.playback {
-            Text(playbackLabel(playback.state, reason: playback.reason))
+            let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
+            Text(verbatim: label)
               .lineLimit(1)
-              .help(playbackLabel(playback.state, reason: playback.reason))
+              .help(label)
               .accessibilityIdentifier("overlay-playback-status-\(message.id)")
           } else if pending {
             Text("Requesting playback").lineLimit(1)
@@ -507,19 +512,41 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
       }
       .font(.system(size: 10 * textScale))
       .foregroundStyle(palette.mutedText.color)
-      if supportsPlayback, let reason = message.playback?.reason, reason != "muted" {
-        Text(verbatim: reason)
-          .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
-      }
+      // Founder, 2026-10-15: a red warning under a reply he had stopped
+      // himself was "nie na miejscu". The status line names the outcome; this
+      // line is only for a control that could not run, in the muted voice.
       if supportsPlayback, let error {
         Text(verbatim: error)
-          .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
+          .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
       }
     }
   }
+}
 
-  private func playbackLabel(_ state: String, reason: String? = nil) -> String {
-    if reason == "muted" { return String(localized: "Automatic playback muted") }
+/// One line for a reply's playback: the bus publishes a state and a reason
+/// code, and Swift owns the sentence. A stop the Founder caused (Stop, or a
+/// take that began) reads as a stop, never as a failure or a raw code.
+enum ReplyPlaybackCopy {
+  static func label(state: String, reason: String?) -> String {
+    switch reason {
+    case "muted": return String(localized: "Automatic playback muted")
+    case "stopped": return String(localized: "Speech stopped")
+    case "take_started":
+      return String(localized: "Speech stopped when a take began")
+    case "take_live":
+      return String(localized: "Not played while a take was live")
+    case "playback_busy":
+      return String(localized: "Not played while another reply was speaking")
+    case "credential_missing":
+      return String(localized: "Speech failed: no voice credential")
+    case "credential_rejected":
+      return String(localized: "Speech failed: the voice credential was rejected")
+    case "quota_exhausted":
+      return String(localized: "Speech failed: the voice quota is used up")
+    case "network":
+      return String(localized: "Speech failed: no connection to the voice service")
+    default: break
+    }
     return switch state {
     case "waiting": String(localized: "Waiting for speech")
     case "playing": String(localized: "Speaking")
@@ -530,5 +557,4 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
     default: String(localized: "Reply text retained")
     }
   }
-
 }

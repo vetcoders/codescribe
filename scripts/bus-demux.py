@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """Named, session-aware follower for the clean Codescribe Transcript Bus.
 
 The helper never opens audio. It reads ``codescribe.transcript.v1`` NDJSON and
@@ -1721,6 +1721,97 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
 #: exposes none, so its session is never guessed and stays an explicit flag.
 PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
 
+#: `--remote HOST` runs one operation in the managed helper of another Mac.
+REMOTE_HELPER = '"$HOME/.local/bin/cs-bus"'
+REMOTE_HOST_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
+#: Local paths and native hook modes mean nothing on another Mac.
+REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--install-junie-extension",
+                        "--claude-code-wake", "--claude-code-probe", "--omp-wake",
+                        "--attach-file", "--from-file", "--extensions-directory")
+
+
+def ssh_command(host: str, command: str, environ: Any = os.environ) -> list[str]:
+    """One non-interactive ssh call; CS_BUS_SSH replaces the client in tests."""
+    return [environ.get("CS_BUS_SSH") or "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", host, command]
+
+
+def remote_hosts_path(root: Path, lease_id: str) -> Path:
+    return root / "runtime" / "native-wake" / f"{lease_id}.remote.json"
+
+
+def remote_hosts(root: Path, lease_id: str) -> list[str]:
+    """Hosts on which this lease attached through `--remote`."""
+    hosts = (read_json(remote_hosts_path(root, lease_id)) or {}).get("hosts")
+    if not isinstance(hosts, list):
+        return []
+    return [host for host in hosts if isinstance(host, str) and REMOTE_HOST_PATTERN.fullmatch(host)]
+
+
+def remember_remote_host(root: Path, lease_id: str, host: str, attached: bool) -> None:
+    path = remote_hosts_path(root, lease_id)
+    hosts = [known for known in remote_hosts(root, lease_id) if known != host] + ([host] if attached else [])
+    if hosts:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_json(path, {"lease_id": lease_id, "hosts": hosts})
+    else:
+        path.unlink(missing_ok=True)
+
+
+def flag_value(args: list[str], flag: str) -> str | None:
+    value = None
+    for index, item in enumerate(args):
+        if item == flag and index + 1 < len(args):
+            value = args[index + 1]
+        if item.startswith(flag + "="):
+            value = item.split("=", 1)[1]
+    return value
+
+
+def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = None) -> int:
+    """`cs-bus --remote HOST OPERATION ...`: the same operation in the managed
+    cs-bus of HOST over ssh, under this conversation's identity.
+
+    Maciej, 2026-10-15: waking and ACKing over ssh should be cheap. A session
+    id that lives in this process's environment is sent as an explicit
+    --session, because the remote shell does not carry it. A successful
+    --attach records HOST for the lease, so the Claude Code wake also waits on
+    that mailbox; --detach forgets it.
+    """
+    import shlex
+    import subprocess
+
+    args: list[str] = []
+    host = None
+    items = iter(argv)
+    for item in items:
+        if item == "--remote":
+            host = next(items, None)
+        elif item.startswith("--remote="):
+            host = item.split("=", 1)[1]
+        else:
+            args.append(item)
+    if not host or not REMOTE_HOST_PATTERN.fullmatch(host):
+        sys.stderr.write("cs-bus: --remote needs an ssh host alias\n")
+        return 2
+    refused = [flag for flag in REMOTE_REFUSED_FLAGS
+               if any(item == flag or item.startswith(flag + "=") for item in args)]
+    if refused:
+        sys.stderr.write(f"cs-bus: --remote does not combine with {', '.join(refused)}\n")
+        return 2
+    provider, session = flag_value(args, "--provider"), flag_value(args, "--session")
+    if session is None and provider in PROVIDER_SESSION_ENV:
+        session = environ.get(PROVIDER_SESSION_ENV[provider], "").strip() or None
+        if session:
+            args += ["--session", session]
+    command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args)])
+    result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL, env=dict(environ))
+    if result.returncode == 0 and provider and session and ("--attach" in args or "--detach" in args):
+        remember_remote_host((root or bridge_home()).expanduser().resolve(strict=False),
+                             lease_identifier(provider, session), host,
+                             "--attach" in args)
+    return result.returncode
+
 
 def provider_session_from_env(provider: str) -> str | None:
     """The provider's own session id from its environment, when it sets one."""
@@ -2868,6 +2959,24 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def delivery_address_label(payload: dict[str, Any]) -> str:
+    """Expose the source address, never the mailbox that received its copy."""
+    channel = payload.get("origin_channel", payload.get("channel"))
+    audience = payload.get("peer_to") or payload.get("audience")
+    peer_to = payload.get("peer_to")
+    if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
+        return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
+    if channel == "0":
+        return "0 (all audience)"
+    if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
+        return f"{channel} ({audience})" if audience else channel
+    if audience == "*":
+        return "all audience"
+    if isinstance(audience, str) and audience:
+        return f"{audience} (named audience)"
+    return "unknown (source has no address)"
+
+
 def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     """Present complete task text and provenance without acoustic diagnostics.
 
@@ -2883,7 +2992,8 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
     )
-    return {key: payload[key] for key in fields if key in payload}
+    return {**{key: payload[key] for key in fields if key in payload},
+            "addressed_to": delivery_address_label(payload)}
 
 
 def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -3056,6 +3166,7 @@ class NativeQueueWakeup:
             name = str(payload.get("audience") or "agent")
             message = (
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
+                f"ADDRESSED TO: {delivery_address_label(payload)}\n"
                 f"{text}\n\n"
                 "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
                 "Follow the codescribe skill."
@@ -5958,6 +6069,7 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
         "coverage": payload.get("coverage"),
         "sca": payload.get("state_change_allowed") is True,
         "delivery_id": payload.get("delivery_id"),
+        "addressed_to": delivery_address_label(payload),
         "text": str(payload.get("text") or ""),
     }
     # Keep the owner and conversational attribution, without repeating the
@@ -6147,6 +6259,8 @@ def watch_command(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    if any(item == "--remote" or item.startswith("--remote=") for item in sys.argv[1:]):
+        return run_remote(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="cs-bus", usage="%(prog)s <operation> [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -6172,10 +6286,17 @@ def main() -> int:
                         help="Claude Code plugin hook: read the hook payload on stdin and exit 75 when this attached session's mailbox has an unannounced message")
     native.add_argument("--claude-code-probe", action="store_true",
                         help="Claude Code PostToolUse hook: read the hook payload on stdin and print one additionalContext notice when this attached session's mailbox has an unannounced message; silent otherwise")
+    native.add_argument("--omp-wake", action="store_true",
+                        help="OMP extension waiter: with --provider omp --session ID [--host-pid PID], exit 75 when this attached session's mailbox has an unannounced message")
+    parser.add_argument("--host-pid", type=int, default=None,
+                        help="with --omp-wake: the OMP process whose exit ends the wait silently")
     parser.add_argument("--extensions-directory", type=Path, default=None,
                         help="with --install-junie-extension: override Junie's extensions directory")
     parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
+    parser.add_argument("--remote", metavar="HOST",
+                        help="run this operation in the managed cs-bus of HOST over ssh (attach, read, "
+                        "ACK, send, detach); an --attach there also wakes this Claude Code session")
     authority = parser.add_mutually_exclusive_group()
     authority.add_argument(
         "--print-bus-path",
@@ -6373,12 +6494,18 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe:
-        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "extensions_directory", "bridge_home", "bus", "entrypoint"}
+    if args.mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
+        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
+                   "provider", "session", "extensions_directory", "bridge_home", "bus", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
             parser.error("native extension commands combine only with --bridge-home/--bus")
         if args.extensions_directory and not args.install_junie_extension:
             parser.error("--extensions-directory requires --install-junie-extension")
+        if args.omp_wake:
+            if args.provider != "omp" or not args.session:
+                parser.error("--omp-wake requires --provider omp and --session ID")
+        elif args.host_pid is not None or args.provider is not None or args.session is not None:
+            parser.error("--host-pid, --provider and --session combine only with --omp-wake here")
         import importlib.util
         spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
         module = importlib.util.module_from_spec(spec)
@@ -6392,6 +6519,8 @@ def main() -> int:
                 return module.claude_code_wake(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
             elif args.claude_code_probe:
                 return module.claude_code_probe(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
+            elif args.omp_wake:
+                return module.omp_wake(sys.modules[__name__], root, args.bus, args.session, args.host_pid)
             else:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0
@@ -6770,4 +6899,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The launcher starts this interpreter with -E; children re-run
+    # sys.executable without it, so a host's PYTHONHOME/PYTHONPATH must
+    # not reach them either (2026-10-15: a leaked 3.14 PYTHONHOME killed
+    # every helper before its first line).
+    for name in [name for name in os.environ if name.startswith("PYTHON")]:
+        del os.environ[name]
     raise SystemExit(main())

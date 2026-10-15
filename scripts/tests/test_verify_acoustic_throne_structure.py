@@ -2261,14 +2261,16 @@ class NeutralAstTests(unittest.TestCase):
                 contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
                 self.assertFalse(contract["accepted"], name)
 
-    def test_writer_quotes_preserve_payload_language_and_guarded_paste_sequence(self):
+    def test_paste_transport_rejects_transformations_after_tagging(self):
         self.assertTrue(self.run_payload(self.payload)["accepted"],
                         "mutants require an accepted current paste control")
         cases = [
-            ("foreign_transform", "writer_quotes_for_paste(", "foreign_transform("),
-            ("foreign_payload", "&paste_text,\n            config.whisper_language.as_str(),",
-             '"foreign payload",\n            config.whisper_language.as_str(),'),
-            ("foreign_language", "config.whisper_language.as_str()", '"en"'),
+            ("quote_transform_reintroduced", "let config = self.get_config().await;",
+             "let config = self.get_config().await;\n"
+             "let paste_text = crate::controller::delivery_route::writer_quotes_for_paste("
+             "&paste_text, config.whisper_language.as_str());"),
+            ("foreign_transform_reintroduced", "let config = self.get_config().await;",
+             "let config = self.get_config().await;\nlet paste_text = foreign_transform(&paste_text);"),
             ("identity_guard_removed", "target.matches_app_name(name)", "true"),
             ("paste_mode_forged", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
              "clipboard::paste_to_stop_target(&paste_text, &target, PasteMode::Comfort)"),

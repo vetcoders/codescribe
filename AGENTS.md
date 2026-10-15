@@ -80,6 +80,13 @@ architekturze aplikacji).
 lub przekaż słownie przez `cs-say`.
 - Nie restartuj aplikacji samodzielnie, chyba że
 zostaniesz o to poproszony w wątku lub na kanale `cs-bus`.
+- Po otrzymaniu zgody restart aplikacji wykonuj wyłącznie przez
+  `make restart-if-idle` (skrypt `scripts/restart-if-idle`). Sprawdzenie busa
+  i osobne `Quit` nie są atomowe. Skrypt wymaga zgody żywego kontrolera,
+  który pod blokadą startu odmawia przy aktywnym lub domykanym take'u i
+  zamyka przyszły start przed wyjściem. Odmowa ma kod 75; nie obchodź jej
+  AppleScriptem, `kill`, resetem kanałów ani kasowaniem historii.
+  Starszy proces bez protokołu także odmawia. Szczegóły: `docs/RESTART_IF_IDLE.md`.
 - Targetem dmg jest `make release-standard` (notaryzowany slim DMG). Buduj go na każdą prośbę
 Foundera, po sprawdzeniu, czy wszystkie istotne cuty są zintegrowane. Traktuj integrację przed buildem
 relase bundla jako automatyczną powinność.

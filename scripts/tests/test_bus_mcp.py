@@ -31,7 +31,7 @@ MCP_SPEC.loader.exec_module(MCP)
 def parse_wake_notice(line):
     """The wake is one English sentence (what the model reads); recover its facts."""
     text = line.split("Codescribe: ", 1)[1]
-    head = re.search(r"for (?P<name>\S+) on channel (?P<channel>\d) \((?P<provider>\S+) session (?P<session>[^)]+)\)", text)
+    head = re.search(r"for (?P<name>[^,]+), connected on channel (?P<channel>\d) \((?P<provider>\S+) session (?P<session>[^)]+)\)", text)
     notice = {"name": head["name"], "channel": head["channel"], "provider": head["provider"],
               "provider_session_id": head["session"]}
     if text.startswith("listener problem "):
@@ -39,8 +39,10 @@ def parse_wake_notice(line):
     elif text.startswith("no message "):
         notice["kind"] = "codescribe_wait_idle"
     else:
+        listed = re.findall(r"([0-9a-f]{24})(?: \[([^\]]*)\])?", re.search(r"new delivery ids: ([^.]*)\.", text)[1])
         notice.update(kind="codescribe_mailbox_ready", pending_count=int(re.search(r"pending (\d+)", text)[1]),
-                      new_delivery_ids=re.search(r"new delivery ids: ([^.]*)\.", text)[1].split(", "))
+                      new_delivery_ids=[identity for identity, _ in listed],
+                      addressed={identity: said for identity, said in listed if said})
         problem = re.search(r"problem: (\S+?);", text)
         if problem:
             notice["problem"] = problem[1]
@@ -120,7 +122,8 @@ class MailboxTests(MailboxFixture):
         self.save()
         before = self.lease_path.read_bytes()
         result = self.call("read")
-        self.assertEqual(result["deliveries"], self.pending[:1])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(result["remaining"], 4)
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
@@ -131,7 +134,8 @@ class MailboxTests(MailboxFixture):
     def test_wait_returns_existing_message_without_ack(self):
         before = self.lease_path.read_bytes()
         result = self.call("wait")
-        self.assertEqual(result["deliveries"], self.pending[:1])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
         self.assertEqual(self.lease_path.read_bytes(), before)
@@ -142,7 +146,8 @@ class MailboxTests(MailboxFixture):
         ack_ids = []
         for index, identity in enumerate(self.ids):
             result = self.call("read")
-            self.assertEqual(result["deliveries"], [self.pending[index]])
+            self.assertEqual(result["deliveries"], [
+                {**self.pending[index], "addressed_to": "unknown (source has no address)"}])
             self.assertEqual(result["read_delivery_ids"], [identity])
             self.assertEqual(result["remaining"], 4 - index)
             read_ids.extend(result["read_delivery_ids"])
@@ -229,7 +234,8 @@ class MailboxTests(MailboxFixture):
         kind, result = outcome.get(timeout=5)
         thread.join(timeout=5)
         self.assertEqual(kind, "result", result)
-        self.assertEqual(result["deliveries"], self.pending)
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
         self.assert_not_acknowledged()
@@ -385,7 +391,8 @@ class MailboxTests(MailboxFixture):
     def test_no_bus_override_reads_lease_bus_without_touching_default_bus(self):
         self.mailbox = MCP.Mailbox(DEMUX, self.root, None)
         self.mailbox.owner, self.mailbox.provider = self.session, self.PROVIDER
-        self.assertEqual(self.call("read")["deliveries"], self.pending[:1])
+        self.assertEqual(self.call("read")["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.call("ack", {"delivery_ids": self.ids[:1]})
         marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{self.ids[0]}.json")
         self.assertEqual(marker["bus"], str(self.bus))
@@ -904,6 +911,23 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
+    def test_wake_names_each_delivery_channel_and_audience(self):
+        """Maciej, 2026-10-14: a channel 0 broadcast must not read as a message
+        on the agent's own channel."""
+        broadcast, direct, peer = "a" * 24, "b" * 24, "c" * 24
+        self.pending = [dict(self.envelope(broadcast), channel="0", audience="*"),
+                        dict(self.envelope(direct), channel="7", audience="fable"),
+                        dict(self.envelope(peer), channel="0", peer_to="fable",
+                             sender={"name": "codex", "channel": "3"})]
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(notice["channel"], "7", "the head still names the agent's own channel")
+        self.assertEqual(notice["addressed"], {broadcast: "channel 0 (all audience)",
+                                               direct: "channel 7 (fable)",
+                                               peer: "channel 0 (fable)"})
+        self.assert_not_acknowledged()
+
     def test_arrival_during_silence_wakes_without_reading(self):
         self.pending = []
         self.save()
@@ -989,16 +1013,94 @@ class ClaudeCodeWakeTests(MailboxFixture):
                     path.unlink()
                 result = self.hook(shell)
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("new message(s) for fable on channel 7", result.stderr)
+                self.assertIn("new message(s) for fable, connected on channel 7", result.stderr)
                 self.assertNotIn("{", result.stderr)
                 junie = self.hook(shell, environ={})
                 self.assertEqual((junie.returncode, junie.stderr), (0, ""))
                 # A helper that cannot parse the hook exits 2 itself; that must
-                # never become a model wake on every turn end.
+                # never become a model wake on every turn end, and never silence.
                 entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
                 stale = self.hook(shell, command=entry["command"].replace("--claude-code-wake", "--no-such-wake"))
-                self.assertEqual(stale.returncode, 0, stale.stderr)
+                self.assertEqual(stale.returncode, 1, stale.stderr)
                 self.assertIn("unrecognized arguments", stale.stderr)
+                self.assertIn("Codescribe: wake helper failed (exit 2)", stale.stderr)
+        self.assert_not_acknowledged()
+
+    def foreign_interpreter(self):
+        """A host's interpreter variables: a PYTHONHOME whose stdlib matches no helper Python.
+
+        Live 2026-10-15: a Vibecrafted-launched Claude Code inherited the
+        launcher's 3.14 PYTHONHOME; the helper's `#!/usr/bin/env python3` died
+        before any code ran and the hook mapped the crash to a silent exit 0.
+        """
+        home = Path(self.temp.name) / "foreign-python"
+        (home / "lib/python3.14").mkdir(parents=True)
+        return {"PYTHONHOME": str(home), "PYTHONPATH": str(home / "lib/python3.14")}
+
+    def installed_helper(self):
+        """cs-bus exactly as the app installer writes it: its generated header, then the helper body."""
+        installer = (SCRIPTS.parent / "macos/Codescribe/Services/AgentBridgeInstaller.swift").read_text()
+        shebang = re.search(r'let header =\s*"(#![^"]*)\\n" \+ Self\.commandMarker', installer)[1]
+        directory = Path(self.temp.name) / "installed bin"
+        directory.mkdir(exist_ok=True)
+        body = (SCRIPTS / "bus-demux.py").read_text().split("\n", 1)[1]
+        helper = directory / "cs-bus"
+        helper.write_text(f'{shebang}\n# codescribe-managed-command: {{"managed_id":"test"}}\n{body}')
+        helper.chmod(0o755)
+        shutil.copy2(SCRIPTS / "bus-mcp.py", directory / "bus-mcp.py")
+        return helper
+
+    def test_installed_helper_wakes_under_a_foreign_python_home(self):
+        poison = self.foreign_interpreter()
+        # The plugin's managed PATH, as the hook sees it; a pinned door earlier on
+        # this test's own PATH could otherwise repair the interpreter for us.
+        managed = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        env = {**os.environ, **self.environ, **poison, "CODESCRIBE_AGENT_BRIDGE_HOME": str(self.root), "PATH": managed}
+        payload = json.dumps({"session_id": self.session, "hook_event_name": "Stop"})
+        helper = self.installed_helper()
+        python = shutil.which("python3", path=managed)
+        bare = subprocess.run([python, str(helper), "--claude-code-wake"], input=payload, env=env,
+                              capture_output=True, text=True, timeout=20)
+        self.assertNotIn(bare.returncode, (0, MCP.WAKE_EXIT), "the fixture must poison an unisolated interpreter")
+        wake = subprocess.run([str(helper), "--claude-code-wake"], input=payload, env=env,
+                              capture_output=True, text=True, timeout=20)
+        self.assertEqual(wake.returncode, MCP.WAKE_EXIT, wake.stderr)
+        self.assertIn("new message(s) for fable, connected on channel 7", wake.stderr)
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                for path in (self.root / "runtime" / "native-wake").glob("*"):
+                    path.unlink()
+                entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
+                result = self.hook(shell, command=entry["command"].replace('"$HOME/.local/bin/cs-bus"', f'"{helper}"'),
+                                   environ={**self.environ, **poison})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("new message(s) for fable, connected on channel 7", result.stderr)
+        self.assertFalse((self.root / "runtime/hook-failures.log").exists())
+        self.assert_not_acknowledged()
+
+    def test_crashed_wake_helper_is_visible_and_leaves_a_receipt(self):
+        crash = Path(self.temp.name) / "crashing cs-bus"
+        crash.write_text("#!/bin/sh\necho 'Traceback (most recent call last):' >&2\n"
+                         "echo \"ModuleNotFoundError: No module named '_struct'\" >&2\nexit 1\n")
+        crash.chmod(0o755)
+        hooks = json.loads(self.HOOK.read_text())["hooks"]
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                log = self.root / "runtime/hook-failures.log"
+                log.unlink(missing_ok=True)
+                wake = self.hook(shell, command=hooks["Stop"][0]["hooks"][0]["command"].replace(
+                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                self.assertEqual(wake.returncode, 1, wake.stderr)
+                self.assertIn("No module named '_struct'", wake.stderr)
+                self.assertIn("Codescribe: wake helper failed (exit 1)", wake.stderr)
+                probe = self.hook(shell, command=hooks["PostToolUse"][0]["hooks"][0]["command"].replace(
+                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                self.assertEqual((probe.returncode, probe.stdout), (0, ""))
+                lines = log.read_text().splitlines()
+                self.assertEqual(len(lines), 2, lines)
+                self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\S+Z --claude-code-wake exit 1: "
+                                           r"ModuleNotFoundError: No module named '_struct'$")
+                self.assertIn("--claude-code-probe exit 1: ModuleNotFoundError", lines[1])
         self.assert_not_acknowledged()
 
 
@@ -1030,6 +1132,23 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         self.assertEqual((notice["new_delivery_ids"], notice["pending_count"]), (["f" * 24], 6))
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
+
+    def test_probe_names_a_broadcast_as_said_to_every_agent(self):
+        self.pending = [dict(self.envelope(self.ids[0]), channel="0", audience="*")]
+        self.save()
+        code, notice = self.probe()
+        self.assertEqual((code, notice["addressed"]), (0, {self.ids[0]: "channel 0 (all audience)"}))
+
+    def test_read_prose_names_channel_audience_and_peer_sender(self):
+        def describe(row):
+            return MCP.describe_delivery({**row, "addressed_to": DEMUX.delivery_address_label(row)})
+        take = describe(dict(self.envelope(self.ids[0]), channel="0", audience="*"))
+        self.assertTrue(take.startswith("Message from Founder on channel 0 (all audience) (message, "), take)
+        mine = describe(dict(self.envelope(self.ids[1]), channel="7", audience="fable"))
+        self.assertTrue(mine.startswith("Message from Founder on channel 7 (fable) ("), mine)
+        peer = describe(dict(self.envelope(self.ids[2]), channel="7", peer_to="fable",
+                                          sender={"name": "codex", "provider": "codex", "channel": "3"}))
+        self.assertTrue(peer.startswith("Message from codex on channel 7 (fable) ("), peer)
 
     def test_probed_delivery_does_not_wake_the_turn_end_again(self):
         self.probe()
@@ -1068,12 +1187,169 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
                 result = self.hook(shell, command=entry["command"])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-                self.assertIn("new message(s) for fable on channel 7", context)
+                self.assertIn("new message(s) for fable, connected on channel 7", context)
                 again = self.hook(shell, command=entry["command"])
                 self.assertEqual((again.returncode, again.stdout), (0, ""))
                 junie = self.hook(shell, command=entry["command"], environ={})
                 self.assertEqual((junie.returncode, junie.stdout), (0, ""))
         self.assert_not_acknowledged()
+
+
+FAKE_SSH = """#!/usr/bin/env python3
+import json, os, subprocess, sys
+host, command = sys.argv[-2], sys.argv[-1]
+with open(os.environ["FAKE_SSH_LOG"], "a") as log:
+    log.write(json.dumps({"host": host, "command": command, "options": sys.argv[1:-2]}) + "\\n")
+if os.environ.get("FAKE_SSH_EXIT"):
+    sys.exit(int(os.environ["FAKE_SSH_EXIT"]))
+sys.exit(subprocess.call(["/bin/sh", "-c", command], env=dict(os.environ, HOME=os.environ["FAKE_REMOTE_HOME"])))
+"""
+
+FAKE_REMOTE_HELPER = """#!/bin/sh
+case " $* " in
+  *" --claude-code-wake "*)
+    payload=$(cat)
+    printf 'wake %s %s\\n' "$CLAUDE_CODE_SESSION_ID" "$payload" >> "$FAKE_REMOTE_LOG"
+    if [ "$(cat "$FAKE_REMOTE_MODE" 2>/dev/null)" = wake ]; then
+      echo "Codescribe: 1 new message(s) for klaudiusz-div0, connected on channel 9 (claude-code session $CLAUDE_CODE_SESSION_ID); pending 1; new delivery ids: aaaaaaaaaaaaaaaaaaaaaaaa [channel 9, to you]. Read every pending message." >&2
+      exit 75
+    fi
+    trap 'echo terminated >> "$FAKE_REMOTE_LOG"; exit 143' TERM
+    while :; do sleep 0.05; done ;;
+  *)
+    for arg in "$@"; do printf 'arg %s\\n' "$arg" >> "$FAKE_REMOTE_LOG"; done
+    exit "${FAKE_REMOTE_EXIT:-0}" ;;
+esac
+"""
+
+
+class RemoteMailboxTests(MailboxFixture):
+    """Maciej, 2026-10-15: waking and ACKing over ssh should be cheap. A
+    channel attached on another Mac wakes this conversation through that
+    Mac's own waiter; every operation runs there under this session."""
+
+    PROVIDER = "claude-code"
+
+    def setUp(self):
+        super().setUp()
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings["7"] = {"audience": "fable", "provider": self.PROVIDER,
+                             "provider_session_id": self.session, "bus": str(self.bus)}
+        home = self.root / "remote-home"
+        helper = home / ".local/bin/cs-bus"
+        helper.parent.mkdir(parents=True)
+        helper.write_text(FAKE_REMOTE_HELPER)
+        helper.chmod(0o755)
+        ssh = self.root / "fake-ssh"
+        ssh.write_text(FAKE_SSH)
+        ssh.chmod(0o755)
+        self.remote_log = self.root / "remote.log"
+        self.remote_mode = self.root / "remote.mode"
+        self.ssh_log = self.root / "ssh.log"
+        self.environ = dict(os.environ, CLAUDE_CODE_SESSION_ID=self.session, CLAUDE_PID=str(os.getpid()),
+                            CS_BUS_SSH=str(ssh), FAKE_REMOTE_HOME=str(home),
+                            FAKE_REMOTE_LOG=str(self.remote_log), FAKE_REMOTE_MODE=str(self.remote_mode),
+                            FAKE_SSH_LOG=str(self.ssh_log))
+
+    def save(self):
+        super().save()
+        state = DEMUX.read_json(self.lease_path)
+        state["pid"] = os.getpid()
+        DEMUX.atomic_json(self.lease_path, state)
+
+    def notice(self, said, marker):
+        """The notice carrying `marker`. stderr is patched process-wide and the
+        daemon waiters of earlier tests (same fixture session) print into it."""
+        mine = [line for line in said.splitlines() if line.startswith("Codescribe: ") and marker in line]
+        self.assertTrue(mine, said)
+        return parse_wake_notice(mine[-1])
+
+    def remote_lines(self):
+        return self.remote_log.read_text().splitlines() if self.remote_log.exists() else []
+
+    def wake(self, window=5.0):
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            code = MCP.claude_code_wake(DEMUX, self.root, None, {"session_id": self.session},
+                                        self.environ, window=window, interval=0.05)
+        return code, errors.getvalue()
+
+    def remote(self, *argv, **environ):
+        return DEMUX.run_remote(list(argv), dict(self.environ, **environ), root=self.root)
+
+    def test_remote_mailbox_wakes_with_its_own_notice_and_names_the_host(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        self.remote_mode.write_text("wake")
+        code, said = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        relayed = [line for line in said.splitlines() if "[Mailbox on dragon, over ssh" in line]
+        self.assertTrue(relayed, said)
+        self.assertTrue(relayed[-1].startswith("Codescribe: 1 new message(s) for klaudiusz-div0"),
+                        "the remote waiter's own notice is relayed word for word")
+        self.assertIn("a" * 24, relayed[-1])
+        self.assertIn("cs-bus --remote dragon --provider claude-code --ack ID", said)
+        payload = json.dumps({"session_id": self.session})
+        self.assertIn(f"wake {self.session} {payload}", self.remote_lines())
+        self.assertEqual(json.loads(self.ssh_log.read_text().splitlines()[0])["host"], "dragon")
+        self.assert_not_acknowledged()
+
+    def test_a_message_here_wakes_and_stops_the_remote_waiter(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+        deadline = time.monotonic() + 5
+        while not any(line.startswith("wake ") for line in self.remote_lines()):
+            self.assertLess(time.monotonic(), deadline, "the remote waiter never started")
+            time.sleep(0.05)
+        self.pending = [self.envelope("e" * 24)]
+        self.save()
+        code, said = outcome.get(timeout=5)
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(self.notice(said, "e" * 24)["new_delivery_ids"], ["e" * 24])
+        self.assertNotIn("Mailbox on dragon", said)
+        deadline = time.monotonic() + 5
+        while "terminated" not in self.remote_lines():
+            self.assertLess(time.monotonic(), deadline, "the remote waiter outlived this side")
+            time.sleep(0.05)
+
+    def test_unreachable_host_is_retried_and_never_wakes_by_itself(self):
+        self.pending = []
+        self.save()
+        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        self.environ["FAKE_SSH_EXIT"] = "255"
+        with patch.object(MCP, "REMOTE_RETRY_SECONDS", 0.2):
+            code, said = self.wake(window=2.5)
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(self.notice(said, "in 2.5 s")["kind"], "codescribe_wait_idle")
+        self.assertNotIn("Mailbox on dragon", said)
+        self.assertGreaterEqual(len(self.ssh_log.read_text().splitlines()), 2)
+
+    def test_operations_run_on_the_host_under_this_session_and_attach_is_remembered(self):
+        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name",
+                                     "klaudiusz div0", "--provider", "claude-code"), 0)
+        args = [line[4:] for line in self.remote_lines() if line.startswith("arg ")]
+        self.assertEqual(args, ["--attach", "--channel", "9", "--name", "klaudiusz div0",
+                                "--provider", "claude-code", "--session", self.session])
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), ["dragon"])
+        self.assertEqual(self.remote("--remote=dragon", "--provider", "claude-code", "--ack", "a" * 24), 0)
+        self.assertEqual(self.remote("--remote", "dragon", "--detach", "--provider", "claude-code"), 0)
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
+
+    def test_a_refused_attach_is_not_remembered_and_local_paths_never_travel(self):
+        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name", "k",
+                                     "--provider", "claude-code", FAKE_REMOTE_EXIT="3"), 3)
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
+        calls = len(self.ssh_log.read_text().splitlines())
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            self.assertEqual(self.remote("--remote", "dragon", "--read-pending", "--bus", "/tmp/x"), 2)
+            self.assertEqual(self.remote("--remote", "-oProxyCommand=x", "--status"), 2)
+            self.assertEqual(self.remote("--remote", "dragon", "--claude-code-wake"), 2)
+        self.assertEqual(len(self.ssh_log.read_text().splitlines()), calls, "nothing reached ssh")
 
 
 class PluginContractTests(unittest.TestCase):
@@ -1108,8 +1384,128 @@ class PluginContractTests(unittest.TestCase):
     def test_wait_windows_stay_below_measured_client_deadlines(self):
         self.assertLess(MCP.WAIT_SECONDS["junie"], 180)
         self.assertLess(MCP.WAIT_SECONDS["claude-code"], 1800)
+        self.assertLessEqual(MCP.WAIT_SECONDS["omp"], MCP.WAIT_SECONDS["claude-code"])
         connect = next(tool for tool in MCP.TOOLS if tool["name"] == "codescribe_connect")
         self.assertEqual(connect["inputSchema"]["properties"]["provider"]["enum"], sorted(MCP.WAIT_SECONDS))
+        self.assertEqual(MCP.NATIVE_WAKE_PROVIDERS, {"claude-code", "omp"})
+
+    def test_omp_extension_runs_the_wake_from_the_managed_helper_path(self):
+        # OMP loads `hooks/pre/*.ts` from a marketplace plugin as extension modules;
+        # Claude Code and Junie read only the JSON hook files, so the TS module must
+        # not appear there, and it must launch the same verified helper as .mcp.json.
+        extension = (self.PLUGIN / "hooks/pre/codescribe-omp.ts").read_text()
+        launcher = self.load(".mcp.json")["mcpServers"]["codescribe"]["args"][-1]
+        self.assertIn('"$HOME/.local/bin/cs-bus"', launcher)
+        self.assertIn('exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
+        self.assertIn('export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"', extension)
+        self.assertEqual(int(re.search(r"const WAKE_EXIT = (\d+)", extension)[1]), MCP.WAKE_EXIT)
+        self.assertGreater(int(re.search(r"const WAKE_TIMEOUT_MS = ([\d_]+)", extension)[1].replace("_", "")),
+                           MCP.WAKE_SECONDS * 1000)
+        for relative in ("hooks/hooks.json", "hooks/claude-code.json", ".claude-plugin/plugin.json"):
+            self.assertNotIn("codescribe-omp", json.dumps(self.load(relative)))
+
+
+class OmpMailboxTests(MailboxTests):
+    PROVIDER = "omp"
+
+
+class OmpProtocolTests(MCPProtocolTests):
+    PROVIDER = "omp"
+
+
+class OmpWakeTests(MailboxFixture):
+    PROVIDER = "omp"
+
+    def setUp(self):
+        super().setUp()
+        self.bind()
+        self.host = os.getpid()
+
+    def save(self):
+        super().save()
+        state = DEMUX.read_json(self.lease_path)
+        state["pid"] = os.getpid()  # a live follower owns this lease
+        DEMUX.atomic_json(self.lease_path, state)
+
+    def bind(self, provider="omp"):
+        with DEMUX.channel_bindings(self.root) as bindings:
+            bindings["4"] = {"audience": "leon", "provider": provider,
+                             "provider_session_id": self.session, "bus": str(self.bus)}
+
+    def wake(self, session=None, host=None, window=0.6):
+        errors = io.StringIO()
+        with patch.object(sys, "stderr", errors):
+            code = MCP.omp_wake(DEMUX, self.root, None, self.session if session is None else session,
+                                self.host if host is None else host, window=window, interval=0.05)
+        lines = [line for line in errors.getvalue().splitlines() if line]
+        return code, (parse_wake_notice(lines[-1]) if lines else None)
+
+    def test_existing_unread_wakes_once_then_only_for_new_deliveries(self):
+        code, notice = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(notice["kind"], "codescribe_mailbox_ready")
+        self.assertEqual(notice["new_delivery_ids"], self.ids)
+        self.assertEqual((notice["provider"], notice["channel"], notice["name"]), ("omp", "4", "leon"))
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.pending.append(self.envelope("f" * 24))
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(notice["new_delivery_ids"], ["f" * 24])
+        self.assertEqual(notice["pending_count"], 6)
+        self.assertEqual(self.mailbox.read_ids, set())
+        self.assert_not_acknowledged()
+
+    def test_arrival_during_silence_wakes_without_reading(self):
+        self.pending = []
+        self.save()
+        outcome = queue.Queue()
+        threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+        time.sleep(0.3)
+        self.assertTrue(outcome.empty())
+        self.assertTrue(MCP.wake_armed(self.root, self.lease))
+        self.assertTrue(self.mailbox.status()["native_wake_armed"])
+        self.pending = [self.envelope(self.ids[0])]
+        self.save()
+        code, notice = outcome.get(timeout=5)
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, self.ids[:1]))
+        self.assertFalse(MCP.wake_armed(self.root, self.lease))
+        self.assert_not_acknowledged()
+
+    def test_only_the_bound_omp_session_waits(self):
+        started = time.monotonic()
+        self.assertEqual(self.wake(session="another-omp-session", window=30), (0, None))
+        self.assertEqual(self.wake(session="", window=30), (0, None))
+        self.assertEqual(self.wake(session="bad\nid", window=30), (0, None))
+        self.assertLess(time.monotonic() - started, 1)
+        self.bind(provider="claude-code")
+        self.assertEqual(self.wake(window=30), (0, None))
+        self.assertFalse(MCP.wake_paths(self.root, self.lease)[0].exists())
+
+    def test_host_exit_ends_the_wait_silently(self):
+        self.pending = []
+        self.save()
+        ended = subprocess.Popen(["true"])
+        ended.wait()
+        self.assertEqual(self.wake(host=ended.pid, window=30), (0, None))
+
+    def test_cli_waiter_exits_wake_code_with_one_sentence(self):
+        command = [sys.executable, str(SCRIPTS / "cs-bus"), "--omp-wake", "--provider", "omp",
+                   "--session", self.session, "--host-pid", str(self.host), "--bridge-home", str(self.root)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, MCP.WAKE_EXIT, result.stderr)
+        self.assertEqual(result.stdout, "")
+        notice = parse_wake_notice(result.stderr.strip().splitlines()[-1])
+        self.assertEqual((notice["kind"], notice["new_delivery_ids"]), ("codescribe_mailbox_ready", self.ids))
+        self.assertIn("--provider omp", result.stderr)
+        self.assertNotIn("{", result.stderr)
+        for wrong in (["--omp-wake", "--session", self.session], ["--omp-wake", "--provider", "omp"],
+                      ["--omp-wake", "--provider", "codex", "--session", self.session],
+                      ["--claude-code-wake", "--provider", "omp", "--session", self.session]):
+            with self.subTest(wrong=wrong):
+                refused = subprocess.run([sys.executable, str(SCRIPTS / "cs-bus"), *wrong, "--bridge-home", str(self.root)],
+                                         capture_output=True, text=True, timeout=20, input="{}")
+                self.assertEqual(refused.returncode, 2, refused.stderr)
 
 
 class SessionHookTests(unittest.TestCase):
@@ -1203,8 +1599,71 @@ class SessionHookTests(unittest.TestCase):
                                             input=json.dumps({"session_id": session, "hook_event_name": "SessionStart"}))
                     self.assertIn(f"provider=claude-code session_id={session}", self.context(result))
 
+    def test_hook_command_survives_a_foreign_python_home(self):
+        # Live 2026-10-15: a Vibecrafted launcher leaked its 3.14 PYTHONHOME into
+        # Claude Code; the managed python3 then died before reading the payload.
+        managed = [Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+        if not any((directory / "python3").is_file() for directory in managed):
+            self.skipTest("no python3 in the plugin's managed interpreter directories")
+        command = json.loads((self.HOOK.parent / "hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        session = "2bb934cc-f1d9-48df-a456-1f5f8190f8ae"
+        with tempfile.TemporaryDirectory() as temporary:
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE_")}
+            env.update({"PATH": "/usr/bin:/bin", "CLAUDE_CODE_SESSION_ID": session, "PYTHONHOME": str(foreign),
+                        "PYTHONPATH": str(foreign / "lib/python3.14"), "CLAUDE_PLUGIN_ROOT": str(self.HOOK.parents[1])})
+            for shell in ("/bin/bash", "/bin/zsh"):
+                with self.subTest(shell=shell):
+                    result = subprocess.run([shell, "-c", command], env=env, capture_output=True, text=True, timeout=10,
+                                            input=json.dumps({"session_id": session, "hook_event_name": "SessionStart"}))
+                    self.assertIn(f"provider=claude-code session_id={session}", self.context(result))
+
 
 class NativeLaunchTests(unittest.TestCase):
+    def test_every_helper_entrypoint_starts_isolated_from_host_interpreter_variables(self):
+        for name in ("cs-bus", "cs-say", "cs-junie", "bus-demux.py", "bus-mcp.py"):
+            with self.subTest(entrypoint=name):
+                self.assertEqual((SCRIPTS / name).read_text().split("\n", 1)[0], "#!/usr/bin/env -S python3 -E")
+        session = json.loads((SCRIPTS.parent / "plugins/codescribe/hooks/hooks.json").read_text())
+        self.assertIn('exec python3 -E "${CLAUDE_PLUGIN_ROOT}/hooks/session.py"',
+                      session["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+
+    def test_helper_children_never_inherit_a_foreign_python_home(self):
+        # cs-say re-runs sys.executable on cs-bus without -E; the parent must hand
+        # it an environment without the host's interpreter variables.
+        with tempfile.TemporaryDirectory(prefix=".helper-child-", dir=Path(__file__).parent) as temporary:
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            env = {**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                   "PYTHONHOME": str(foreign), "PYTHONPATH": str(foreign / "lib/python3.14")}
+            for name in ("cs-say", "cs-bus"):
+                with self.subTest(entrypoint=name):
+                    result = subprocess.run([str(SCRIPTS / name), "--version"], env=env,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(result.stdout.startswith(f"{name} "), result.stdout)
+
+    def test_installed_mcp_launch_survives_a_foreign_python_home(self):
+        config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
+        with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:
+            installed = Path(temporary) / "managed bin"
+            installed.mkdir()
+            for name in ("cs-bus", "bus-demux.py", "bus-mcp.py"):
+                shutil.copy2(SCRIPTS / name, installed / name)
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            arguments = [value.replace('"$HOME/.local/bin/cs-bus"', f'"{installed / "cs-bus"}"')
+                         for value in config["args"]]
+            env = {**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONHOME": str(foreign),
+                   "PYTHONPATH": str(foreign / "lib/python3.14")}
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+            result = subprocess.run([config["command"], *arguments], env=env, input=request,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tools = json.loads(result.stdout)["result"]["tools"]
+            self.assertTrue(any(tool["name"] == "codescribe_wait" for tool in tools))
+
     def test_installed_mcp_launch_survives_sparse_path_without_overriding_home(self):
         config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
         with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:

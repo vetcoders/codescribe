@@ -21,6 +21,26 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(preferenceChanges, 0)
   }
 
+  /// Maciej, 2026-10-14: after a start from the tray the panel stayed open over
+  /// the overlay it had just raised.
+  func testTrayStartAndStopCloseThePanelThatWouldCoverTheOverlay() async {
+    let engine = MockTrayEngine()
+    let model = TrayViewModel(engine: engine)
+    var events: [String] = []
+    model.onDictationStartRequested = { events.append("overlay") }
+    model.onIntent = { intent in
+      guard case .closeTray = intent else { return events.append("other") }
+      events.append("close")
+    }
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close"], "the overlay rises before the tray steps aside")
+    for _ in 0..<100 where model.isStartingDictation { await Task.yield() }
+    XCTAssertFalse(model.isStartingDictation)
+    XCTAssertTrue(engine.recording)
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close", "close"], "a stop uncovers it too")
+  }
+
   func testHoldBadgeCyclePersistsAndUpdatesTrayState() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
@@ -450,6 +470,57 @@ final class TrayViewModelTests: XCTestCase {
       FormattingPolicyOption.allCases.map(\.visibleName),
       ["Off", "Correction", "Smart", "Max"]
     )
+  }
+
+  /// Maciej, 2026-10-14: the Agent glyph dot follows the voice like the pointer
+  /// dot. Purple while speaking, white with a purple rim between phrases,
+  /// pulsing amber while words are owed. Dictation keeps its red.
+  func testAgentGlyphDotFollowsTheVoice() throws {
+    let agent = { (voice: CsCursorVoice) in
+      TrayStatusStore.preview(
+        kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true, voice: voice)
+    }
+    XCTAssertEqual(agent(.speaking).menuBarDotColor, CSColor.modeAgent)
+    XCTAssertEqual(agent(.unobserved).menuBarDotColor, CSColor.modeAgent)
+    XCTAssertNil(agent(.speaking).menuBarDotRim)
+    XCTAssertFalse(agent(.speaking).menuBarDotPulses)
+    XCTAssertEqual(agent(.quiet).menuBarDotColor, CSColor.indicatorAgentQuiet)
+    XCTAssertEqual(agent(.quiet).menuBarDotRim, CSColor.modeAgent)
+    XCTAssertFalse(agent(.quiet).menuBarDotPulses)
+    XCTAssertEqual(agent(.lagging).menuBarDotColor, CSColor.indicatorLagging)
+    XCTAssertTrue(agent(.lagging).menuBarDotPulses)
+
+    let dictation = TrayStatusStore.preview(kind: .listening, tone: .active, voice: .lagging)
+    XCTAssertEqual(dictation.menuBarDotColor, CSColor.indicatorRecording)
+    XCTAssertNil(dictation.menuBarDotRim)
+    XCTAssertFalse(dictation.menuBarDotPulses)
+    let thinking = TrayStatusStore.preview(
+      kind: .processing, tone: .active, indicatorMode: .processing, voice: .lagging)
+    XCTAssertFalse(thinking.menuBarDotPulses)
+
+    // The white dot keeps a purple rim, so it stays visible on a light menu bar.
+    let quiet = TrayStatusDotIcon.composite(
+      base: menuBarMark(), dot: CSPalette.indicatorAgentQuiet, rim: CSPalette.assistive)
+    let canvas = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: 72, pixelsHigh: 72, bitsPerSample: 8,
+        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0))
+    canvas.size = quiet.size
+    NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+      NSGraphicsContext.saveGraphicsState()
+      NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: canvas)
+      quiet.draw(in: NSRect(origin: .zero, size: quiet.size))
+      NSGraphicsContext.restoreGraphicsState()
+    }
+    let dot = TrayStatusDotIcon.dotRect(in: NSRect(origin: .zero, size: quiet.size))
+    let center = try menuBarColor(canvas, image: quiet, at: CGPoint(x: dot.midX, y: dot.midY))
+    let rim = try menuBarColor(
+      canvas, image: quiet,
+      at: CGPoint(x: dot.minX + TrayStatusDotIcon.rimWidth / 2, y: dot.midY))
+    XCTAssertGreaterThan(center.greenComponent, 0.85, "the quiet dot is white")
+    XCTAssertGreaterThan(rim.alphaComponent, 0.9)
+    XCTAssertGreaterThan(rim.blueComponent, rim.greenComponent + 0.2, "the rim is purple")
   }
 
   private func menuBarArtwork(_ image: NSImage) -> NSImage {

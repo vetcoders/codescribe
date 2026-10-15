@@ -129,15 +129,27 @@ fn read_manifest(path: &Path) -> io::Result<Option<Manifest>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    if file.metadata()?.len() > MANIFEST_LIMIT {
+    let len = file.metadata()?.len();
+    if len > MANIFEST_LIMIT {
         return Err(invalid());
     }
-    let manifest: Manifest =
-        serde_json::from_reader(file.take(MANIFEST_LIMIT)).map_err(|_| invalid())?;
+    let manifest: Manifest = read_json_bounded(file, len)?;
     if manifest.schema != SCHEMA || manifest.root != absolute(path)? {
         return Err(invalid());
     }
     Ok(Some(manifest))
+}
+/// One read for the whole document. `serde_json::from_reader` over a bare
+/// `File` pulls one byte per `read(2)`, and the manifest is parsed on every
+/// bus append and every generation reader open: a 4.7 KB live manifest cost
+/// ~4,700 syscalls each time (build 1004 CPU sample, 2026-10-14).
+fn read_json_bounded<T: serde::de::DeserializeOwned>(
+    source: impl Read,
+    hint: u64,
+) -> io::Result<T> {
+    let mut bytes = Vec::with_capacity(hint.min(MANIFEST_LIMIT) as usize);
+    source.take(MANIFEST_LIMIT).read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 pub fn write_manifest(path: &Path, manifest: &Manifest) -> io::Result<()> {
     let target = manifest_path(path);
@@ -147,7 +159,7 @@ pub fn write_manifest(path: &Path, manifest: &Manifest) -> io::Result<()> {
         .write(true)
         .mode(0o600)
         .open(&stage)?;
-    serde_json::to_writer(&mut file, manifest).map_err(io::Error::other)?;
+    file.write_all(&serde_json::to_vec(manifest).map_err(io::Error::other)?)?;
     file.sync_all()?;
     fs::rename(&stage, &target)?;
     File::open(target.parent().ok_or_else(invalid)?)?.sync_all()
@@ -1406,11 +1418,11 @@ pub fn prepare_migration(
     }
     if resume {
         let manifest = File::open(preparation_manifest(&output))?;
-        if manifest.metadata()?.len() > MANIFEST_LIMIT {
+        let len = manifest.metadata()?.len();
+        if len > MANIFEST_LIMIT {
             return Err(invalid());
         }
-        let completed: Preparation =
-            serde_json::from_reader(manifest.take(MANIFEST_LIMIT)).map_err(|_| invalid())?;
+        let completed: Preparation = read_json_bounded(manifest, len)?;
         if completed.schema != report.schema
             || completed.source != source
             || completed.identity != identity
@@ -1541,6 +1553,64 @@ pub fn prepare_migration(
 mod integrator_generation_acceptance {
     use super::*;
     use std::collections::BTreeMap;
+
+    struct CountingReader<'a> {
+        bytes: &'a [u8],
+        reads: usize,
+    }
+
+    impl Read for CountingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            let n = buf.len().min(self.bytes.len());
+            buf[..n].copy_from_slice(&self.bytes[..n]);
+            self.bytes = &self.bytes[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_manifest_is_parsed_from_one_read_not_one_per_byte() {
+        let root = std::env::temp_dir().join("codescribe-manifest-read.jsonl");
+        let segment = Segment {
+            id: Uuid::nil().to_string(),
+            path: root.clone(),
+            start: 0,
+            length: 4096,
+            dev: 1,
+            ino: 2,
+            day: Some("2026_1014".into()),
+            compressed: false,
+            sha256: None,
+            superseded: None,
+        };
+        let manifest = Manifest {
+            schema: SCHEMA.into(),
+            root,
+            stream_id: Uuid::nil().to_string(),
+            stream_inode: 2,
+            stream_dev: 1,
+            stream_birthtime: None,
+            volume_uuid: None,
+            segments: vec![segment.clone(); 24],
+            active: segment,
+            pending: None,
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        assert!(bytes.len() > 4096, "a live-sized manifest: {}", bytes.len());
+        let mut reader = CountingReader {
+            bytes: &bytes,
+            reads: 0,
+        };
+        let parsed: Manifest = read_json_bounded(&mut reader, bytes.len() as u64).unwrap();
+        assert_eq!(parsed.segments.len(), 24);
+        assert!(
+            reader.reads <= 3,
+            "{} reads for {} bytes",
+            reader.reads,
+            bytes.len()
+        );
+    }
 
     fn pinned_previous_day(path: &Path, contents: &[u8]) -> File {
         let mut file = super::super::super::transcript_bus::open_bus_append_file(path).unwrap();

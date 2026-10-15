@@ -421,6 +421,8 @@ struct MockSettingsEngine: SettingsEngine {
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
+  /// Live hardware reads (a device switched under an open window); nil serves `audioSnapshot`.
+  var audioSnapshotLoader: (() -> CsAudioInputSnapshot)?
   var admissionReadiness: CsAdmissionReadiness = .sampleGranted
   var calibrationReport: CsEnergyCalibrationReport = .sample
   var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
@@ -492,7 +494,9 @@ struct MockSettingsEngine: SettingsEngine {
   func updateConfigMany(entries: [CsConfigEntry]) throws {
     try updateConfigManyObserver?(entries)
   }
-  func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
+  func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot {
+    audioSnapshotLoader?() ?? audioSnapshot
+  }
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """Native MCP transport over the existing Codescribe mailbox, not an agent runner."""
 from concurrent.futures import ThreadPoolExecutor
 import datetime
@@ -6,6 +6,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -15,9 +17,17 @@ from types import SimpleNamespace
 #: Hosts that load the Codescribe plugin, each with a wait window below its
 #: client's tool-call deadline. Junie 26.10.5 aborts any tool call after
 #: 180 s. Claude Code 2.1.296 aborts a stdio tool call that sends nothing for
-#: 30 min, and any call after 1e8 ms. A window that ends with an explicit idle
-#: receipt keeps server and client agreeing on which wait is pending.
-WAIT_SECONDS = {"claude-code": 900, "junie": 150}
+#: 30 min, and any call after 1e8 ms. OMP 18.10.3 applies no client-side MCP
+#: deadline unless `timeout`/`OMP_MCP_TIMEOUT_MS` is set; its window matches
+#: Claude Code's because the hook, not the wait, is the idle wakeup there too.
+#: A window that ends with an explicit idle receipt keeps server and client
+#: agreeing on which wait is pending.
+WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900}
+
+#: Hosts whose idle wakeup is a hook process holding the lease's wake lock:
+#: Claude Code through its asyncRewake Stop hook, OMP through the bundled
+#: extension running `cs-bus --omp-wake`. Junie has no idle wakeup.
+NATIVE_WAKE_PROVIDERS = frozenset({"claude-code", "omp"})
 
 #: Claude Code's asyncRewake hook wakes the model on exit code 2, which is
 #: also argparse's usage-error code. The wake therefore exits WAKE_EXIT and the
@@ -120,14 +130,21 @@ def local_clock(stamp):
         return "--:--:--"
 
 
+def addressing(row):
+    """Paint the demux's address projection without inventing another address rule."""
+    label = row.get("addressed_to")
+    return f"channel {label}" if isinstance(label, str) and label else "an unrecorded address"
+
+
 def describe_delivery(row):
     """One pending message as the lines an agent needs: who, where, when, the
     whole text, attachment paths and the id it must ACK. A Founder take carries
     no sender field; a peer message names its sender."""
-    who = row.get("sender") or "Founder"
+    sender = row.get("sender")
+    who = (sender.get("name") if isinstance(sender, dict) else sender) or "Founder"
     kind = "draft" if row.get("kind") == "revised" else str(row.get("kind") or "message")
     note = " · acoustic coverage refused (diagnostic, not a gate)" if row.get("coverage") == "refused" else ""
-    lines = [f"Message from {who} on channel {row.get('channel')} ({kind}, {local_clock(row.get('emitted_at'))}{note}):",
+    lines = [f"Message from {who} on {addressing(row)} ({kind}, {local_clock(row.get('emitted_at'))}{note}):",
              str(row.get("text") or "")]
     for item in row.get("attachments") or []:
         if isinstance(item, dict):
@@ -208,16 +225,27 @@ def describe(result):
 
 
 def describe_wake(notice, provider, session, channel, name):
-    where = f"for {name} on channel {channel} ({provider} session {session})"
+    where = f"for {name}, connected on channel {channel} ({provider} session {session})"
     kind = notice.get("kind")
     if kind == "codescribe_listener_problem":
         return f"Codescribe: listener problem {notice.get('problem')} {where}. {notice.get('instructions')}"
     if kind == "codescribe_wait_idle":
         return f"Codescribe: no message {where} in {notice.get('waited_seconds')} s. {notice.get('instructions')}"
     ids = notice.get("new_delivery_ids") or []
+    said = notice.get("addressed") or {}
     problem = f"; problem: {notice['problem']}" if notice.get("problem") else ""
+    listed = ", ".join(f"{identity} [{said[identity]}]" if identity in said else identity for identity in ids)
     return (f"Codescribe: {len(ids)} new message(s) {where}; pending {notice.get('pending_count')}"
-            f"{problem}; new delivery ids: {', '.join(ids)}. {notice.get('instructions')}")
+            f"{problem}; new delivery ids: {listed}. {notice.get('instructions')}")
+
+
+def addressed(rows, ids, demux):
+    """Each announced delivery's channel and audience, keyed by its id."""
+    by_id = {row.get("delivery_id"): row for row in rows}
+    return {
+        identity: addressing({"addressed_to": demux.delivery_address_label(by_id[identity])})
+        for identity in ids if identity in by_id
+    }
 
 
 def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS, interval=1.0):
@@ -228,11 +256,181 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
     while that session owns a channel. One process per lease holds the lock;
     a later Stop finds it armed and returns at once. Announced IDs are kept
     until acknowledged, so a message left unread does not wake every turn.
+    A channel attached on another Mac (`cs-bus --remote HOST --attach`) is
+    waited on there, by that Mac's own waiter, in parallel with this one.
     """
     session = payload.get("session_id") if isinstance(payload, dict) else None
     if not isinstance(session, str) or not session or environ.get("CLAUDE_CODE_SESSION_ID") != session:
         return 0
-    provider = "claude-code"
+    if any(ord(character) < 32 for character in session):
+        return 0
+    hosts = demux.remote_hosts(root, demux.lease_identifier("claude-code", session))
+    if hosts:
+        return wake_here_and_remote(demux, root, bus, session, environ, hosts,
+                                    window=window, interval=interval)
+    return native_wake(demux, root, bus, "claude-code", session, environ.get("CLAUDE_PID", ""),
+                       window=window, interval=interval)
+
+
+#: ssh exits 255 when it cannot connect; the remote waiter is retried.
+SSH_FAILED = 255
+REMOTE_RETRY_SECONDS = 30.0
+
+
+def remote_wake_command(session):
+    """The remote half: that Mac's own `cs-bus --claude-code-wake` for this
+    session (its lock, announced ledger and notice), plus a guard on ssh stdin.
+    When this side goes away, stdin ends and the guard stops the waiter, so no
+    orphan keeps the remote lock and announces a message nobody hears."""
+    script = "\n".join([
+        "exec 3<&0",
+        "(",
+        f"  CLAUDE_CODE_SESSION_ID={shlex.quote(session)}",
+        "  export CLAUDE_CODE_SESSION_ID",
+        f"  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
+        json.dumps({"session_id": session}),
+        "CODESCRIBE_WAKE",
+        ") &",
+        "waiter=$!",
+        '( cat <&3 >/dev/null 2>&1; kill -TERM "$waiter" 2>/dev/null ) >/dev/null 2>&1 &',
+        "guard=$!",
+        "exec 3<&-",
+        'wait "$waiter"; rc=$?',
+        'kill "$guard" 2>/dev/null',
+        'exit "$rc"',
+    ])
+    return "/bin/sh -c " + shlex.quote(script)
+
+
+def remote_wake(demux, host, session, environ, procs, *, window, alive):
+    """Run HOST's waiter over ssh until it answers; retry while ssh cannot connect."""
+    deadline = time.monotonic() + window
+    while time.monotonic() < deadline and alive():
+        try:
+            proc = subprocess.Popen(demux.ssh_command(host, remote_wake_command(session), environ),
+                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, text=True, env=dict(environ))
+        except OSError:
+            return 0, ""
+        procs.append(proc)
+        # Cleanup may have started while Popen was completing. Either it saw
+        # this registered process, or this guard releases the late arrival.
+        if not alive():
+            release_remote(proc)
+            return 0, ""
+        text = proc.stderr.read()
+        code = proc.wait()
+        if code != SSH_FAILED:
+            return code, text
+        retry = time.monotonic() + REMOTE_RETRY_SECONDS
+        while time.monotonic() < min(retry, deadline) and alive():
+            time.sleep(1.0)
+    return 0, ""
+
+
+def release_remote(proc):
+    """Closing ssh stdin ends the remote guard's read; it stops the waiter."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def describe_remote_wake(host, text):
+    said = [line.strip() for line in text.splitlines() if line.strip().startswith("Codescribe:")]
+    head = said[-1] if said else "Codescribe: the waiter answered without a notice."
+    return (f"{head} [Mailbox on {host}, over ssh: read it with `cs-bus --remote {host} --read-pending "
+            f"--provider claude-code` and ACK with `cs-bus --remote {host} --provider claude-code --ack ID`; "
+            "codescribe_read reads only this Mac.]\n")
+
+
+def wake_here_and_remote(demux, root, bus, session, environ, hosts, *, window, interval):
+    """The first waiter to answer wakes the conversation; the others are released."""
+    results = queue.Queue()
+    procs = []
+    workers = []
+    noticed = set()
+    stop = threading.Event()
+    host_pid = environ.get("CLAUDE_PID", "")
+
+    def alive():
+        return not stop.is_set() and (
+            not host_pid.isdigit() or demux.process_is_alive(int(host_pid)))
+
+    sources = 0
+    here = None
+    if bound_channel(demux, root, "claude-code", session)[0] is not None:
+        sources += 1
+        here = threading.Thread(target=lambda: results.put(("", native_wake(
+            demux, root, bus, "claude-code", session, host_pid, window=window, interval=interval,
+            stop=stop), "")), daemon=True)
+        here.start()
+    for host in hosts:
+        sources += 1
+        worker = threading.Thread(target=lambda host=host: results.put((host, *remote_wake(
+            demux, host, session, environ, procs, window=window, alive=alive))), daemon=True)
+        workers.append(worker)
+        worker.start()
+    try:
+        while sources:
+            try:
+                source, code, text = results.get(timeout=max(interval, 1.0))
+            except queue.Empty:
+                if not alive():
+                    return 0
+                continue
+            sources -= 1
+            if code == WAKE_EXIT:
+                if source:
+                    noticed.add(source)
+                    sys.stderr.write(describe_remote_wake(source, text))
+                return WAKE_EXIT
+        return 0
+    finally:
+        stop.set()
+        for proc in list(procs):
+            release_remote(proc)
+        for worker in workers:
+            worker.join(timeout=6)
+        # A remote waiter may already have marked a delivery announced when
+        # the local waiter wins. Preserve its notice after releasing both.
+        while True:
+            try:
+                source, code, text = results.get_nowait()
+            except queue.Empty:
+                break
+            if source and source not in noticed and code == WAKE_EXIT:
+                noticed.add(source)
+                sys.stderr.write(describe_remote_wake(source, text))
+        if here is not None:
+            here.join(timeout=interval + 1.0)
+
+
+def omp_wake(demux, root, bus, session, host_pid, *, window=WAKE_SECONDS, interval=1.0):
+    """OMP extension waiter: `cs-bus --omp-wake --provider omp --session ID --host-pid PID`.
+
+    OMP exports no session id to child processes, so the bundled extension
+    passes the id it read from its own session manager and its host pid. The
+    waiter has the same contract as the Claude Code hook: exit WAKE_EXIT once
+    per unannounced delivery, never read, ACK or reply, one lock per lease,
+    silent exit when the session owns no channel or the host process is gone.
+    """
+    if not isinstance(session, str) or not session.strip() or any(ord(c) < 32 for c in session):
+        return 0
+    return native_wake(demux, root, bus, "omp", session, "" if host_pid is None else str(host_pid),
+                       window=window, interval=interval)
+
+
+def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECONDS, interval=1.0,
+                stop=None):
+    """Hold this lease's wake lock until one notice is due, then exit WAKE_EXIT.
+    A set `stop` (another waiter answered first) ends the wait silently."""
     if bound_channel(demux, root, provider, session)[0] is None:
         return 0
     lease_id = demux.lease_identifier(provider, session)
@@ -244,7 +442,6 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        host = environ.get("CLAUDE_PID", "")
         saved = (demux.read_json(record) or {}).get("announced")
         seen = set(saved) if isinstance(saved, list) else set()
         args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
@@ -253,6 +450,8 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
         deadline = time.monotonic() + window
         try:
             while True:
+                if stop is not None and stop.is_set():
+                    return 0
                 channel, name = bound_channel(demux, root, provider, session)
                 if channel is None:
                     return 0
@@ -275,8 +474,9 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
                 prior, seen = seen, set(unread) | ({problem} if problem else set())
                 if fresh:
                     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
-                              "new_delivery_ids": fresh, **({"problem": problem} if problem else {}),
-                              "instructions": "Read every pending message (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
+                              "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
+                              **({"problem": problem} if problem else {}),
+                              "instructions": f"Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
                 elif problem and problem not in prior:
                     notice = {"kind": "codescribe_listener_problem", "problem": problem,
                               "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
@@ -329,6 +529,7 @@ def claude_code_probe(demux, root, bus, payload, environ):
     record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
+              "addressed": addressed(rows, fresh, demux),
               "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
@@ -433,8 +634,9 @@ class Mailbox:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         rearm = ("Call codescribe_wait again to keep this listening turn open, or end the turn: "
-                                 "the Codescribe Stop hook wakes this conversation on the next message."
-                                 if self.provider == "claude-code" else "Call codescribe_wait again to keep listening.")
+                                 f"the Codescribe {'Stop hook' if self.provider == 'claude-code' else 'OMP extension'} "
+                                 "wakes this conversation on the next message."
+                                 if self.provider in NATIVE_WAKE_PROVIDERS else "Call codescribe_wait again to keep listening.")
                         return {"kind": "wait_idle", "provider": self.provider, "provider_session_id": self.owner,
                                 "waited_seconds": round(time.monotonic() - started), "read_delivery_ids": [],
                                 "acknowledged": False,
@@ -455,7 +657,7 @@ class Mailbox:
 
     def status(self):
         result = self.run(["--status"])
-        if self.provider == "claude-code":
+        if self.provider in NATIVE_WAKE_PROVIDERS:
             result["native_wake_armed"] = wake_armed(self.root, self.demux.lease_identifier(self.provider, self.owner))
         return result
 

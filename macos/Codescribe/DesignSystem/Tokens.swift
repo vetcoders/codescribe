@@ -56,6 +56,10 @@ enum CSPalette {
   /// Capture is live but nothing reaches speaking level. Founder intent
   /// s04-027 (2026-09-25): the indicator is yellow while you are not speaking.
   static let indicatorSilence = NSColor(hex: 0xFFCC00)
+  /// Agent words owed under the cursor: the pointer dot's amber.
+  static let indicatorLagging = NSColor(hex: 0xFF9E00)
+  /// Agent mode between phrases: the pointer dot's white.
+  static let indicatorAgentQuiet = NSColor(white: 0.97, alpha: 1)
   static let danger = NSColor(hex: 0xD84A4A)
 
   // Surfaces — warm ink in dark, warm paper in light.
@@ -156,6 +160,8 @@ enum CSColor {
   static let modeProcessing = Color(nsColor: CSPalette.modeProcessing)
   static let modeReady = oliveLight
   static let indicatorRecording = Color(nsColor: CSPalette.indicatorRecording)
+  static let indicatorLagging = Color(nsColor: CSPalette.indicatorLagging)
+  static let indicatorAgentQuiet = Color(nsColor: CSPalette.indicatorAgentQuiet)
 
   // UI chrome — selection, focus, and interactive controls follow macOS.
   static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }

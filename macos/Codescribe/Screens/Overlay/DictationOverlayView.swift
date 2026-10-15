@@ -401,8 +401,13 @@ struct DictationOverlayView: View {
     ZStack {
       GeometryReader { geometry in
         ZStack {
+          // Both ends are numbers, so the fold interpolates with the window's
+          // morph, over the same duration (it follows the distance since
+          // 2026-10-15). A `nil` height has nothing to animate from: the body
+          // snapped to zero on the first frame while the glass kept shrinking
+          // (presentation ledger, 2026-10-14).
           bodySection
-            .frame(height: state.isCollapsed ? 0 : nil)
+            .frame(height: state.isCollapsed ? 0 : geometry.size.height)
             .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
             .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
             .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
@@ -442,7 +447,10 @@ struct DictationOverlayView: View {
             .accessibilityHidden(state.isCollapsed)
           }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: state.isCollapsed)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
+          value: state.isCollapsed
+        )
         .overlay(alignment: .topTrailing) {
           if state.showsAgentMonitor && !state.isCollapsed {
             ZStack(alignment: .topTrailing) {
@@ -589,7 +597,7 @@ struct DictationOverlayView: View {
             // Glass is confined to each capsule, before the bar's clear margins.
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+            .padding(.horizontal, OverlayResizeChrome.actionsSideInset)
             if state.completedMaxConsultationID != nil {
               Button("Continue in chat", systemImage: "bubble.left") {
                 state.continueMaxConsultationInChat()
@@ -683,14 +691,21 @@ struct DictationOverlayView: View {
     VStack(spacing: 6) {
       if state.isMini {
         miniHeader
+          .transition(.opacity)
       } else {
         ViewThatFits(in: .horizontal) {
           fullHeader
           narrowHeader
         }
+        .transition(.opacity)
       }
-
     }
+    // The mini and the full header cross-fade over the window's morph instead
+    // of swapping on its first frame (presentation ledger, 2026-10-14).
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
+      value: state.presentationMode
+    )
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
@@ -837,7 +852,9 @@ struct DictationOverlayView: View {
           OverlayMicrophoneGlyph(
             character: OverlayHeaderGlyph.transcription,
             tint: transcriptionSelected
-              ? Color(nsColor: .controlAccentColor) : palette.mutedText.color)
+              ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
+              : palette.mutedText.color,
+            plateOpacity: transcriptionSelected ? 0 : 0.12)
         }
         .buttonStyle(.plain)
         .csFocusOutline()
@@ -893,7 +910,8 @@ struct DictationOverlayView: View {
       // `monitorBody(...)` is installed, so a `@State` on it never persists:
       // each HUD tick handed the drawer a fresh, empty search model and the
       // query vanished mid-typing. The overlay state owns the model.
-      searchModel: state.savedConversationSearch
+      searchModel: state.savedConversationSearch,
+      rosterReady: state.hasLoadedChannelRoster
     )
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =
@@ -988,6 +1006,11 @@ struct DictationOverlayView: View {
     if state.formatterCommitPending { return String(localized: "Formatting revision…") }
     if state.revisionCommitPending { return String(localized: "Committing revision…") }
     if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
+    if let seconds = state.agentSendCountdownSeconds {
+      return String(
+        localized: "To Agent in \(seconds) s · edit to hold",
+        comment: "Overlay footer countdown while an armed Agent take waits to send itself")
+    }
     if let notice = state.toast { return notice }
     if let origin = state.archivedTranscriptOrigin { return origin }
     if let status = state.presentationStatus { return status.headline }
