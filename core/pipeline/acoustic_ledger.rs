@@ -343,6 +343,10 @@ pub enum NoAuthorityReason {
     LateAppleWordSealedOwner,
     /// A late Apple word is not in the current slice; retain its own word pin.
     LateAppleWordNotCurrent,
+    /// An authenticated observer measured this capture and reported no speech
+    /// overlapping the claimed range; a decoder's word on measured silence is
+    /// a phantom: kept visible as evidence, granted no document.
+    NoMeasuredSpeech,
 }
 
 impl NoAuthorityReason {
@@ -357,6 +361,7 @@ impl NoAuthorityReason {
             Self::NoRange => "no_range",
             Self::OverlapWithoutWordPins => "overlap_without_word_pins",
             Self::ExclusiveTailAwaitingWholeSpan => "exclusive_tail_awaiting_whole_span",
+            Self::NoMeasuredSpeech => "no_measured_speech",
         }
     }
 }
@@ -3191,6 +3196,27 @@ impl AcousticLedger {
                 occurrence: observation.occurrence.clone(),
                 label: text.to_string(),
                 reason: NoAuthorityReason::OverlapWithoutWordPins,
+            };
+        }
+
+        // An automatic label claiming PCM no authenticated observer measured
+        // as speech is a phantom: it stays visible as evidence and is granted
+        // no document. Only an Observed measurement gates — absent or degraded
+        // evidence changes nothing.
+        if observation.producer != ObservationProducer::ManualHuman
+            && !has_word_pins
+            && let Some(speech) = self.speech_evidence.as_ref()
+            && matches!(speech.availability(), AcousticAvailability::Observed { .. })
+            && !speech.ranges().iter().any(|range| {
+                range.sample_start < observation.occurrence.sample_end
+                    && observation.occurrence.sample_start < range.sample_end
+            })
+        {
+            self.kept_visible += 1;
+            return MutationReceipt::KeepVisibleUnanchored {
+                occurrence: observation.occurrence.clone(),
+                label: text.to_string(),
+                reason: NoAuthorityReason::NoMeasuredSpeech,
             };
         }
 
@@ -9644,6 +9670,66 @@ mod tests {
                 .iter()
                 .any(|slot| slot.text == "plan"),
             "omitted pin vanished without a no-speech receipt"
+        );
+    }
+
+    /// The fdda978f phantom loop: decoder outros on measured silence. An
+    /// automatic whole-label claim with no measured-speech overlap is kept
+    /// visible as evidence and never enters the document; the same word on
+    /// measured speech inserts; a human on silence is never gated.
+    #[test]
+    fn automatic_label_on_measured_silence_is_kept_visible_never_inserted() {
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+        };
+        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        use crate::stt::tail_provider::TailSampleRange;
+
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(48_000);
+        ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("phantom-session", 1),
+            SILERO_BOUNDARIES_PRODUCER,
+            AcousticAvailability::Observed {
+                observed_samples: 960_000,
+            },
+            vec![TailSampleRange {
+                session: "phantom-session".to_string(),
+                capture_epoch: 1,
+                sample_start: 48_000,
+                sample_end: 96_000,
+            }],
+        ));
+        let phantom = OccurrenceIdentity::new("phantom-session", 1, 480_000, 528_000);
+        let receipt = ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, phantom.clone()),
+            "uwagę.",
+        );
+        assert!(matches!(
+            receipt,
+            MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::NoMeasuredSpeech,
+                ..
+            }
+        ));
+        assert_eq!(ledger.text_of(&phantom), None);
+        let real = OccurrenceIdentity::new("phantom-session", 1, 48_000, 96_000);
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::Whisper, 1, real.clone()),
+                    "uwagę."
+                )
+                .is_insert()
+        );
+        let human = OccurrenceIdentity::new("phantom-session", 1, 624_000, 672_000);
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::ManualHuman, 2, human.clone()),
+                    "uwagę."
+                )
+                .is_insert()
         );
     }
 }
