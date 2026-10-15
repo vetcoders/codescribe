@@ -52,7 +52,8 @@ final class OnDeviceFormatterHost: CsOnDeviceFormatter, Sendable {
     }
   }
 
-  private static func generateText(instructions: String, userMessage: String) async throws -> String {
+  private static func generateText(instructions: String, userMessage: String) async throws -> String
+  {
     guard #available(macOS 26.0, *) else {
       throw FormatterUnavailable()
     }
