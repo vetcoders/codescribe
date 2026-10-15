@@ -56,6 +56,35 @@ actor OverlayChannelDeliveryReader {
   private var pinnedCacheBytes = 0
   private static let pinnedCacheBudget = 8 << 20
   private static let pinnedCacheEntries = 24
+  /// Conversation lists actually built. An idle poll reuses the previous list:
+  /// rebuilding and re-sorting unchanged history every 500 ms held two reader
+  /// threads at ~55 % of a core (sample of build 1004, 2026-10-14).
+  private(set) var conversationBuilds: UInt64 = 0
+  private var builtConversations: BuiltConversations?
+  private var nextLineage: UInt64 = 0
+
+  /// Everything the conversation list is built from. Equal inputs build an
+  /// equal list, and returning the same storage lets the main actor's equality
+  /// check end at buffer identity.
+  private struct ConversationInputs: Equatable {
+    let projections: [URL: ProjectionStamp]
+    let openedArchiveBus: URL?
+    let archives: [ArchiveSlot]
+  }
+  private struct ProjectionStamp: Equatable {
+    let lineage: UInt64
+    let revision: UInt64
+  }
+  private struct ArchiveSlot: Equatable {
+    let owner: OverlayConversationOwner
+    let bus: String
+    let loaded: Bool
+  }
+  private struct BuiltConversations {
+    let inputs: ConversationInputs
+    let conversations: [OverlayConversation]
+    let historyReplyIDs: Set<String>
+  }
 
   private struct MetadataObjectStamp: Equatable {
     let device: dev_t
@@ -85,6 +114,9 @@ actor OverlayChannelDeliveryReader {
   }
 
   private struct Cursor {
+    /// Reader-assigned on creation. A replaced cursor restarts its projection's
+    /// revision, so the pair, not the revision alone, names a projection state.
+    var lineage: UInt64 = 0
     var inode: UInt64 = 0
     var offset: UInt64 = 0
     var headHash = ""
@@ -232,7 +264,8 @@ actor OverlayChannelDeliveryReader {
     for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
       if FileManager.default.fileExists(atPath: bus.path) {
         try refresh(bus)
-      } else if buses[bus] == nil, let restored = persistedCursor(for: bus) {
+      } else if buses[bus] == nil, var restored = persistedCursor(for: bus) {
+        adopt(&restored)
         buses[bus] = restored
       }
     }
@@ -310,6 +343,36 @@ actor OverlayChannelDeliveryReader {
     buses = buses.filter { usedBuses.contains($0.key) }
     persistenceAttempts = persistenceAttempts.filter { usedBuses.contains($0.key) }
     savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
+    let inputs = ConversationInputs(
+      projections: buses.mapValues {
+        ProjectionStamp(lineage: $0.lineage, revision: $0.projection.revision)
+      },
+      openedArchiveBus: openedArchiveBus,
+      archives: archives.map { archive in
+        ArchiveSlot(
+          owner: archive.owner, bus: archive.bus,
+          loaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
+      })
+    let built: BuiltConversations
+    if let previous = builtConversations, previous.inputs == inputs {
+      built = previous
+    } else {
+      built = buildConversations(
+        inputs: inputs, archives: archives, openedArchiveBus: openedArchiveBus)
+      builtConversations = built
+    }
+    try checkpoint(at: checkpointTime)
+    return OverlayChannelDeliverySnapshot(
+      deliveries: deliveries, conversations: built.conversations,
+      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs)
+  }
+
+  private func buildConversations(
+    inputs: ConversationInputs,
+    archives: [(owner: OverlayConversationOwner, bus: String)],
+    openedArchiveBus: URL?
+  ) -> BuiltConversations {
+    conversationBuilds &+= 1
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
     var historyReplyIDs: Set<String> = []
@@ -352,14 +415,19 @@ actor OverlayChannelDeliveryReader {
         id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [],
         historyLoaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
     }
-    try checkpoint(at: checkpointTime)
-    return OverlayChannelDeliverySnapshot(
-      deliveries: deliveries,
+    return BuiltConversations(
+      inputs: inputs,
       conversations: [broadcast]
         + named.values.sorted {
           if $0.channel != $1.channel { return $0.channel < $1.channel }
           return $0.id < $1.id
-        }, archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: historyReplyIDs)
+        }, historyReplyIDs: historyReplyIDs)
+  }
+
+  private func adopt(_ cursor: inout Cursor) {
+    guard cursor.lineage == 0 else { return }
+    nextLineage &+= 1
+    cursor.lineage = nextLineage
   }
 
   private static func merge(
@@ -585,6 +653,7 @@ actor OverlayChannelDeliveryReader {
         guard cursor.partial.count <= 1 << 20 else { throw CocoaError(.fileReadCorruptFile) }
       }
     }
+    adopt(&cursor)
     buses[url] = cursor
   }
 
@@ -813,8 +882,8 @@ actor OverlayChannelDeliveryReader {
             "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
             "segments", "active", "pending",
           ]),
-        (manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
-          || (manifest["volume_uuid"] as? String).flatMap { UUID(uuidString: $0) } != nil),
+        manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+          || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,
