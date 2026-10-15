@@ -69,6 +69,17 @@ enum CSPalette {
     dark: NSColor(hex: 0x12141A, alpha: 0.84)
   )
   static let glassUnder = adaptive(light: NSColor(hex: 0xEDEAE3), dark: NSColor(hex: 0x0B0C10))
+  /// The app sheet: the overlay canvas colour, shared by every window's content
+  /// area outside its sidebar so Settings, the Agent window, the wizard, the
+  /// tray menu and the overlay read as one surface (Maciej, ch1 2026-10-15
+  /// 16:26Z: "obszarów poza sidebarami … takich samych"). The hex values are
+  /// the single source for `OverlayAppearancePalette.desktopBackground`; the
+  /// dark sheet keeps the hue of the Vibecrafted terminal's navy (#0B0B12,
+  /// `~/.config/vibecrafted/terminal-theme.toml`) lifted one step above the
+  /// 6 % bubble lift.
+  static let sheetLightHex: UInt32 = 0xF6F3EE
+  static let sheetDarkHex: UInt32 = 0x16161C
+  static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
@@ -112,6 +123,8 @@ enum CSColor {
   static let ink = Color(nsColor: CSPalette.ink)  // page base
   static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
   static let glassUnder = Color(nsColor: CSPalette.glassUnder)
+  /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
+  static let sheet = Color(nsColor: CSPalette.sheet)
 
   /// Lifted surface wash. Dark mode lifts with a white veil; on paper the same
   /// lift is a white card over the warm base, so the veil maps to a stronger
