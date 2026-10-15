@@ -98,12 +98,29 @@ pub use tray_status::{
 /// (overlay quality records).
 #[derive(uniffi::Error, Debug)]
 pub enum CsError {
-    Agent { msg: String },
-    Config { msg: String },
-    Recording { msg: String },
-    License { msg: String },
-    Quality { msg: String },
-    Runtime { msg: String },
+    Agent {
+        msg: String,
+    },
+    Config {
+        msg: String,
+    },
+    Recording {
+        msg: String,
+    },
+    License {
+        msg: String,
+    },
+    Quality {
+        msg: String,
+    },
+    Runtime {
+        msg: String,
+    },
+    /// Guided calibration measured but kept no profile. Swift owns the
+    /// sentence for each refusal (docs/LOCALIZATION.md §5).
+    CalibrationRefused {
+        refusal: CsCalibrationRefusal,
+    },
 }
 
 impl std::fmt::Display for CsError {
@@ -118,6 +135,81 @@ impl std::fmt::Display for CsError {
             | CsError::Runtime { msg } => {
                 write!(f, "{msg}")
             }
+            CsError::CalibrationRefused { refusal } => {
+                write!(f, "calibration_refused: {refusal:?}")
+            }
+        }
+    }
+}
+
+impl CsError {
+    /// A typed refusal crosses as `CalibrationRefused`; any other calibration
+    /// failure keeps its message as `Recording`.
+    fn from_calibration(error: &anyhow::Error) -> Self {
+        match error.downcast_ref::<codescribe_core::config::GuidedCalibrationRefused>() {
+            Some(refused) => {
+                tracing::warn!(%refused, "guided calibration kept no profile");
+                CsError::CalibrationRefused {
+                    refusal: (&refused.0).into(),
+                }
+            }
+            None => CsError::Recording {
+                msg: error.to_string(),
+            },
+        }
+    }
+}
+
+/// Why a guided calibration kept no profile: a code and its arguments. The
+/// four the person can act on are named; a measurement that is only to be
+/// repeated is `Unusable`, its English detail logged where it is mapped.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq)]
+pub enum CsCalibrationRefusal {
+    /// Every sample was exactly zero, e.g. Bluetooth headphones held by
+    /// another device.
+    DigitalSilence {
+        device_name: String,
+        samples: u64,
+    },
+    NoActiveSpeech,
+    InsufficientSpeech {
+        measured_seconds: f32,
+        required_seconds: f32,
+    },
+    InsufficientSeparation {
+        threshold_dbfs: f32,
+        noise_floor_dbfs: f32,
+    },
+    Unusable,
+}
+
+impl From<&codescribe_core::config::EnergyCalibrationRefusal> for CsCalibrationRefusal {
+    fn from(refusal: &codescribe_core::config::EnergyCalibrationRefusal) -> Self {
+        use codescribe_core::config::EnergyCalibrationRefusal as Refusal;
+        match refusal {
+            Refusal::DigitalSilence {
+                device_name,
+                samples,
+            } => Self::DigitalSilence {
+                device_name: device_name.clone(),
+                samples: *samples,
+            },
+            Refusal::NoActiveSpeech => Self::NoActiveSpeech,
+            Refusal::InsufficientSpeech {
+                measured_seconds,
+                required_seconds,
+            } => Self::InsufficientSpeech {
+                measured_seconds: *measured_seconds,
+                required_seconds: *required_seconds,
+            },
+            Refusal::InsufficientSeparation {
+                threshold_dbfs,
+                noise_floor_dbfs,
+            } => Self::InsufficientSeparation {
+                threshold_dbfs: *threshold_dbfs,
+                noise_floor_dbfs: *noise_floor_dbfs,
+            },
+            _ => Self::Unusable,
         }
     }
 }
@@ -342,6 +434,61 @@ impl From<CsLanguage> for codescribe_core::config::Language {
             CsLanguage::Polish => codescribe_core::config::Language::Polish,
             CsLanguage::English => codescribe_core::config::Language::English,
         }
+    }
+}
+
+#[cfg(test)]
+mod calibration_refusal_tests {
+    use super::{CsCalibrationRefusal, CsError};
+    use codescribe_core::config::{EnergyCalibrationRefusal, GuidedCalibrationRefused};
+
+    /// 2026-10-15: the AirPods refusal reached Settings as an English sentence
+    /// inside `Recording(msg:)`. It crosses as a code with its arguments.
+    #[test]
+    fn guided_refusal_crosses_as_a_code_and_other_failures_keep_their_message() {
+        let error = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::DigitalSilence {
+                device_name: "AirPods Pro".into(),
+                samples: 240_000,
+            },
+        ));
+        assert!(
+            error
+                .to_string()
+                .starts_with("calibration_refused: `AirPods Pro` sent no sound")
+        );
+        assert!(matches!(
+            CsError::from_calibration(&error),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::DigitalSilence { ref device_name, samples: 240_000 }
+            } if device_name == "AirPods Pro"
+        ));
+        let thin = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::InsufficientSpeech {
+                measured_seconds: 0.4,
+                required_seconds: 1.0,
+            },
+        ));
+        assert!(matches!(
+            CsError::from_calibration(&thin),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::InsufficientSpeech { .. }
+            }
+        ));
+        let broken = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::NonFinite("peak_db"),
+        ));
+        assert!(matches!(
+            CsError::from_calibration(&broken),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::Unusable
+            }
+        ));
+        let busy = anyhow::anyhow!("energy calibration refused while an agent channel is open");
+        assert!(matches!(
+            CsError::from_calibration(&busy),
+            CsError::Recording { ref msg } if msg.contains("agent channel")
+        ));
     }
 }
 

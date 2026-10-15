@@ -80,7 +80,7 @@ pub use cloud_asr::{
 pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
     EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
-    SealedEnergyCalibration, energy_calibration_path,
+    GuidedCalibrationRefused, SealedEnergyCalibration, energy_calibration_path,
 };
 pub use install_interlock::{
     AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,
