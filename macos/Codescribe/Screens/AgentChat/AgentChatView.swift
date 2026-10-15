@@ -475,7 +475,7 @@ private struct ThreadDetail: View {
       .modifier(AgentScrollBottomBar { composerDock })
       .modifier(CSDetailHeaderGlass())
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(CSColor.windowCanvas)
+      .background(CSColor.sheet)
       .alert(
         "Speech unavailable",
         isPresented: Binding(
