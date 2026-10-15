@@ -595,6 +595,10 @@ def claude_code_probe(demux, root, bus, payload, environ):
 
 
 class Mailbox:
+    # Shared in-process contract for BUS clients shipped in the managed payload.
+    # Additive receipt fields do not change this version; breaking changes do.
+    api_version = 1
+
     def __init__(self, demux, root, bus=None):
         self.demux, self.root, self.bus = demux, root, bus
         self.owner = self.provider = None
