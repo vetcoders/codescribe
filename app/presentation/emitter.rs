@@ -13676,7 +13676,11 @@ mod tests {
         .unwrap();
         let bytes = std::fs::read(format!("{}.revisions.jsonl", path.display())).unwrap();
         assert!(mirror.sync(timeline.steps(), timeline.cursor()).is_err());
-        assert!(mirror.diverged().is_some());
+        assert_eq!(
+            mirror.diverged(),
+            Some(crate::controller::ArchiveRefusal::ArchiveChangedOutside),
+            "the refusal crosses the bridge as a code, never as the error text"
+        );
         assert!(mirror.sync(timeline.steps(), timeline.cursor()).is_err());
         assert_eq!(
             std::fs::read(format!("{}.revisions.jsonl", path.display())).unwrap(),

@@ -38,6 +38,7 @@ mod hotkey_policy;
 /// Best-effort RMS frame feed for the loopback Voice Lab relay.
 mod lab_feed;
 pub(crate) mod live_archive;
+pub use live_archive::ArchiveRefusal;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
@@ -2517,14 +2518,14 @@ impl RecordingController {
     }
 
     /// Why the versions of `session_id` are no longer saved to its archived
-    /// transcript, when the mirror stopped. Shown with the versions control.
-    pub fn live_archive_refusal(&self, session_id: &str) -> Option<String> {
+    /// transcript, when the mirror stopped: a code the overlay words itself.
+    pub fn live_archive_refusal(&self, session_id: &str) -> Option<ArchiveRefusal> {
         self.live_archive
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
             .filter(|mirror| mirror.session_id() == session_id)
-            .and_then(|mirror| mirror.diverged().map(str::to_owned))
+            .and_then(|mirror| mirror.diverged())
     }
 
     /// Accepted steps of the retained take with the selected one and the

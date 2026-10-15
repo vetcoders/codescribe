@@ -10365,10 +10365,6 @@ public func FfiConverterTypeCsDocumentVersion_lower(_ value: CsDocumentVersion) 
 }
 
 
-/**
- * The take's linear history: every accepted version, oldest first, and the
- * selected one. `source_revision` is the CAS a navigation must name.
- */
 public struct CsDocumentVersions: Equatable, Hashable {
     public var sourceRevision: UInt64
     public var cursor: UInt64
@@ -10377,7 +10373,7 @@ public struct CsDocumentVersions: Equatable, Hashable {
      * Why these versions are no longer saved to the take's archived
      * transcript. `None` while every accepted step is durable.
      */
-    public var archiveRefusal: String?
+    public var archiveRefusal: CsArchiveRefusal?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10385,7 +10381,7 @@ public struct CsDocumentVersions: Equatable, Hashable {
         /**
          * Why these versions are no longer saved to the take's archived
          * transcript. `None` while every accepted step is durable.
-         */archiveRefusal: String? = nil) {
+         */archiveRefusal: CsArchiveRefusal? = nil) {
         self.sourceRevision = sourceRevision
         self.cursor = cursor
         self.versions = versions
@@ -10409,7 +10405,7 @@ public struct FfiConverterTypeCsDocumentVersions: FfiConverterRustBuffer {
                 sourceRevision: FfiConverterUInt64.read(from: &buf),
                 cursor: FfiConverterUInt64.read(from: &buf),
                 versions: FfiConverterSequenceTypeCsDocumentVersion.read(from: &buf),
-                archiveRefusal: FfiConverterOptionString.read(from: &buf)
+                archiveRefusal: FfiConverterOptionTypeCsArchiveRefusal.read(from: &buf)
         )
     }
 
@@ -10417,7 +10413,7 @@ public struct FfiConverterTypeCsDocumentVersions: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.sourceRevision, into: &buf)
         FfiConverterUInt64.write(value.cursor, into: &buf)
         FfiConverterSequenceTypeCsDocumentVersion.write(value.versions, into: &buf)
-        FfiConverterOptionString.write(value.archiveRefusal, into: &buf)
+        FfiConverterOptionTypeCsArchiveRefusal.write(value.archiveRefusal, into: &buf)
     }
 }
 
@@ -15544,7 +15540,7 @@ public struct CsUserRevisionResult: Equatable, Hashable {
      * longer saved to the take's archived transcript: why. `None` while the
      * archive holds every accepted step.
      */
-    public var archiveRefusal: String?
+    public var archiveRefusal: CsArchiveRefusal?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -15553,7 +15549,7 @@ public struct CsUserRevisionResult: Equatable, Hashable {
          * The operation was accepted on the live take, but its versions are no
          * longer saved to the take's archived transcript: why. `None` while the
          * archive holds every accepted step.
-         */archiveRefusal: String? = nil) {
+         */archiveRefusal: CsArchiveRefusal? = nil) {
         self.sessionId = sessionId
         self.sourceRevision = sourceRevision
         self.revision = revision
@@ -15581,7 +15577,7 @@ public struct FfiConverterTypeCsUserRevisionResult: FfiConverterRustBuffer {
                 revision: FfiConverterUInt64.read(from: &buf),
                 renderedText: FfiConverterString.read(from: &buf),
                 provenanceReceipt: FfiConverterString.read(from: &buf),
-                archiveRefusal: FfiConverterOptionString.read(from: &buf)
+                archiveRefusal: FfiConverterOptionTypeCsArchiveRefusal.read(from: &buf)
         )
     }
 
@@ -15591,7 +15587,7 @@ public struct FfiConverterTypeCsUserRevisionResult: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.revision, into: &buf)
         FfiConverterString.write(value.renderedText, into: &buf)
         FfiConverterString.write(value.provenanceReceipt, into: &buf)
-        FfiConverterOptionString.write(value.archiveRefusal, into: &buf)
+        FfiConverterOptionTypeCsArchiveRefusal.write(value.archiveRefusal, into: &buf)
     }
 }
 
@@ -16162,6 +16158,113 @@ public func FfiConverterTypeCsApiKeyProbeStatus_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeCsApiKeyProbeStatus_lower(_ value: CsApiKeyProbeStatus) -> RustBuffer {
     return FfiConverterTypeCsApiKeyProbeStatus.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The take's linear history: every accepted version, oldest first, and the
+ * selected one. `source_revision` is the CAS a navigation must name.
+ * Why a take's versions are no longer saved to its archived transcript.
+ * A code only: Swift owns the sentence (LOCALIZATION_LEDGER.md §4); the
+ * error chain behind it is in the app log.
+ */
+
+public enum CsArchiveRefusal: Equatable, Hashable {
+
+    case archiveUnreadable
+    case archiveChangedOutside
+    case archiveHasForeignHistory
+    case stepNotAdmitted
+    case versionNotArchived
+    case versionNotSelected
+    case mirrorFailed
+
+
+
+}
+
+#if compiler(>=6)
+extension CsArchiveRefusal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsArchiveRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchiveRefusal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsArchiveRefusal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .archiveUnreadable
+
+        case 2: return .archiveChangedOutside
+
+        case 3: return .archiveHasForeignHistory
+
+        case 4: return .stepNotAdmitted
+
+        case 5: return .versionNotArchived
+
+        case 6: return .versionNotSelected
+
+        case 7: return .mirrorFailed
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsArchiveRefusal, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .archiveUnreadable:
+            writeInt(&buf, Int32(1))
+
+
+        case .archiveChangedOutside:
+            writeInt(&buf, Int32(2))
+
+
+        case .archiveHasForeignHistory:
+            writeInt(&buf, Int32(3))
+
+
+        case .stepNotAdmitted:
+            writeInt(&buf, Int32(4))
+
+
+        case .versionNotArchived:
+            writeInt(&buf, Int32(5))
+
+
+        case .versionNotSelected:
+            writeInt(&buf, Int32(6))
+
+
+        case .mirrorFailed:
+            writeInt(&buf, Int32(7))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchiveRefusal_lift(_ buf: RustBuffer) throws -> CsArchiveRefusal {
+    return try FfiConverterTypeCsArchiveRefusal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsArchiveRefusal_lower(_ value: CsArchiveRefusal) -> RustBuffer {
+    return FfiConverterTypeCsArchiveRefusal.lower(value)
 }
 
 
@@ -19385,6 +19488,30 @@ fileprivate struct FfiConverterOptionTypeCsTokenUsage: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsTokenUsage.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCsArchiveRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CsArchiveRefusal?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsArchiveRefusal.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsArchiveRefusal.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
