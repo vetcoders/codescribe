@@ -1020,12 +1020,10 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                 || event
                     .get("message_id")
                     .is_some_and(|value| !value.is_null() && !identity_field("message_id"))
-                || event
-                    .get("utterance_id")
-                    .is_some_and(|value| {
-                        !value.is_null()
-                            && (value.as_u64().is_none() || text_field("session_id").is_none())
-                    })
+                || event.get("utterance_id").is_some_and(|value| {
+                    !value.is_null()
+                        && (value.as_u64().is_none() || text_field("session_id").is_none())
+                })
                 || event
                     .get("session_id")
                     .is_some_and(|value| !value.is_null() && text_field("session_id").is_none())
@@ -1175,7 +1173,10 @@ impl TranscriptBus {
         if self.session.session_id != session_id || capture_epoch == 0 {
             return;
         }
-        let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if !writer.ended && writer.capture_epoch.is_none() {
             writer.capture_epoch = Some(capture_epoch);
         }
@@ -2886,7 +2887,10 @@ mod tests {
             );
             assert!(closing.iter().all(|row| row["session_id"] == id));
             assert_eq!(closing[0]["hold_until"], closing[1]["hold_until"]);
-            assert_eq!(rows.last().unwrap()["schema"], "codescribe.channel-session.v1");
+            assert_eq!(
+                rows.last().unwrap()["schema"],
+                "codescribe.channel-session.v1"
+            );
             if seconds == 0 {
                 assert!(closing.iter().all(|row| row.get("hold_until").is_none()));
             } else {
@@ -2920,9 +2924,11 @@ mod tests {
                 "closing is idempotent"
             );
             assert!(
-                !serde_json::to_string(bus.writer.lock().unwrap().last_projection.as_ref().unwrap())
-                    .unwrap()
-                    .contains("hold_until")
+                !serde_json::to_string(
+                    bus.writer.lock().unwrap().last_projection.as_ref().unwrap()
+                )
+                .unwrap()
+                .contains("hold_until")
             );
         }
     }
@@ -3000,7 +3006,10 @@ mod tests {
             assert_eq!(evidence["rendered_text"], sealed.rendered_text);
             assert_eq!(evidence["hold_until"], clean["hold_until"]);
             assert_eq!(evidence.get("hold_until").is_some(), seconds > 0);
-            assert_eq!(rows.last().unwrap()["schema"], "codescribe.channel-session.v1");
+            assert_eq!(
+                rows.last().unwrap()["schema"],
+                "codescribe.channel-session.v1"
+            );
             assert!(
                 rows[..flush - 2]
                     .iter()
