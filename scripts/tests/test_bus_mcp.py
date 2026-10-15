@@ -120,7 +120,8 @@ class MailboxTests(MailboxFixture):
         self.save()
         before = self.lease_path.read_bytes()
         result = self.call("read")
-        self.assertEqual(result["deliveries"], self.pending[:1])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(result["remaining"], 4)
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
@@ -131,7 +132,8 @@ class MailboxTests(MailboxFixture):
     def test_wait_returns_existing_message_without_ack(self):
         before = self.lease_path.read_bytes()
         result = self.call("wait")
-        self.assertEqual(result["deliveries"], self.pending[:1])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
         self.assertEqual(self.lease_path.read_bytes(), before)
@@ -142,7 +144,8 @@ class MailboxTests(MailboxFixture):
         ack_ids = []
         for index, identity in enumerate(self.ids):
             result = self.call("read")
-            self.assertEqual(result["deliveries"], [self.pending[index]])
+            self.assertEqual(result["deliveries"], [
+                {**self.pending[index], "addressed_to": "unknown (source has no address)"}])
             self.assertEqual(result["read_delivery_ids"], [identity])
             self.assertEqual(result["remaining"], 4 - index)
             read_ids.extend(result["read_delivery_ids"])
@@ -229,7 +232,8 @@ class MailboxTests(MailboxFixture):
         kind, result = outcome.get(timeout=5)
         thread.join(timeout=5)
         self.assertEqual(kind, "result", result)
-        self.assertEqual(result["deliveries"], self.pending)
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         self.assertEqual(result["read_delivery_ids"], self.ids[:1])
         self.assertEqual(self.mailbox.read_ids, {self.ids[0]})
         self.assert_not_acknowledged()
@@ -385,7 +389,8 @@ class MailboxTests(MailboxFixture):
     def test_no_bus_override_reads_lease_bus_without_touching_default_bus(self):
         self.mailbox = MCP.Mailbox(DEMUX, self.root, None)
         self.mailbox.owner, self.mailbox.provider = self.session, self.PROVIDER
-        self.assertEqual(self.call("read")["deliveries"], self.pending[:1])
+        self.assertEqual(self.call("read")["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:1]])
         self.call("ack", {"delivery_ids": self.ids[:1]})
         marker = DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{self.ids[0]}.json")
         self.assertEqual(marker["bus"], str(self.bus))
