@@ -1913,10 +1913,8 @@ mod tests {
         let chained = build_responses_input("SYS", Some("resp_123"), user);
         assert_eq!(chained.len(), 2);
         assert_eq!(chained[0].role, "developer");
-        match &chained[0].content[0] {
-            InputContent::Text { text } => assert_eq!(text, "SYS"),
-            other => panic!("developer item must be text, got {other:?}"),
-        }
+        let InputContent::Text { text } = &chained[0].content[0];
+        assert_eq!(text, "SYS");
         assert_eq!(chained[1].role, "user");
 
         let first =

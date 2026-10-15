@@ -586,41 +586,6 @@ mod tests {
         assert_eq!(image_media_type(Path::new("noext")), None);
     }
 
-    /// Plain text without the ATTACHMENTS marker is unchanged with no paths.
-    #[test]
-    fn test_parse_image_attachment_block_passthrough() {
-        // No marker → text returned unchanged, no paths.
-        let text = "just a normal message\nwith two lines";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(cleaned, text);
-        assert!(paths.is_empty());
-    }
-
-    /// Marker block yields paths and strips marker/separator from cleaned text.
-    #[test]
-    fn test_parse_image_attachment_block_extracts_paths() {
-        let text = "Look at these\n\n---\nATTACHMENTS (image paths)\n- /tmp/a.png\n- /tmp/b.jpg\n";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(
-            paths,
-            vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.jpg")]
-        );
-        // The marker block and the dangling separator are stripped.
-        assert!(!cleaned.contains(IMAGE_PATHS_MARKER));
-        assert!(!cleaned.contains("/tmp/a.png"));
-        assert!(cleaned.contains("Look at these"));
-        assert!(!cleaned.trim_end().ends_with("---"));
-    }
-
-    /// Path list ends at a blank line; trailing prose stays in cleaned text.
-    #[test]
-    fn test_parse_image_attachment_block_stops_at_blank_line() {
-        let text = "msg\nATTACHMENTS (image paths)\n- /tmp/a.png\n\ntrailing text kept";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(paths, vec![PathBuf::from("/tmp/a.png")]);
-        assert!(cleaned.contains("trailing text kept"));
-    }
-
     /// Vision load rejects oversize, non-image, and empty PNG payloads.
     #[test]
     fn test_load_image_for_vision_rejects_oversize_and_nonimage() {
