@@ -66,6 +66,8 @@ final class LiveTranscriptTextViewTests: XCTestCase {
   func testConversationActivityKeepsUnicodeSelectionAndCopyWhileGrowingAndResizing() async throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
     let host = NSHostingView(rootView: MarkdownText(raw: "", showsUnderlineCaret: true))
     host.sizingOptions = []
     host.frame = NSRect(x: 0, y: 0, width: 360, height: 260)
@@ -112,7 +114,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
           XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
           XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
           view.setSelectedRange(NSRange(location: 0, length: tail.location))
-          XCTAssertTrue(view.copySelection(to: board))
+          try await settle(view.copySelection())
           XCTAssertEqual(
             Array(try XCTUnwrap(board.string(forType: .string)).utf8), Array(text.utf8))
           view.setSelectedRange(selected)
@@ -195,6 +197,8 @@ final class LiveTranscriptTextViewTests: XCTestCase {
   {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
     for text in [
       "Iwo Iwo Iwo Iwo Iwo", "Żółw 🐢 é", "One line\n", String(repeating: "word ", count: 80),
     ] {
@@ -227,7 +231,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
       fixture.textView.layoutSubtreeIfNeeded()
       XCTAssertEqual(fixture.textView.selectedRange(), selected)
       XCTAssertEqual(fixture.scrollView.contentView.bounds.origin, viewport)
-      XCTAssertTrue(fixture.textView.copySelection(to: board))
+      try await settle(fixture.textView.copySelection())
       XCTAssertEqual(board.string(forType: .string), (text as NSString).substring(with: selected))
       XCTAssertEqual(fixture.textView.string, text)
     }
@@ -799,15 +803,17 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     )
   }
 
-  func testNativeCopyUsesOnlyTheCurrentSelection() throws {
+  func testNativeCopyUsesOnlyTheCurrentSelection() async throws {
     let pasteboard = NSPasteboard(
       name: NSPasteboard.Name("codescribe.tests.live-transcript.\(UUID().uuidString)")
     )
+    let restoreClipboard = ClipboardCapture.route(into: pasteboard)
+    defer { restoreClipboard() }
 
     let textView = LiveTranscriptTextView.makeTextView()
     textView.string = "alpha beta gamma"
     textView.setSelectedRange(NSRange(location: 6, length: 4))
-    XCTAssertTrue(textView.copySelection(to: pasteboard))
+    try await settle(textView.copySelection())
 
     XCTAssertEqual(pasteboard.string(forType: .string), "beta")
   }
