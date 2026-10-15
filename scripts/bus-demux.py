@@ -2872,6 +2872,9 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     """Expose the source address, never the mailbox that received its copy."""
     channel = payload.get("origin_channel", payload.get("channel"))
     audience = payload.get("peer_to") or payload.get("audience")
+    peer_to = payload.get("peer_to")
+    if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
+        return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
     if channel == "0":
         return "0 (all audience)"
     if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":

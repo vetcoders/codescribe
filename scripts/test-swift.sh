@@ -15,6 +15,11 @@ shift 6
 : "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
 export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
 export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
+# The host's overlay polls the agent bridge and its Rust core answers the
+# channel roster from it. A live ~/.codescribe/agent-bridge drew a second
+# overlay with the real conversations during a take (2026-10-13).
+mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge"
+export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"
 
 echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?

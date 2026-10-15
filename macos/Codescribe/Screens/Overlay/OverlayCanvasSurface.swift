@@ -78,7 +78,16 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
     if view.appearance?.name != name {
       view.appearance = NSAppearance(named: name)
     }
+    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView {
+      let tint = palette.desktopBackground.nsColor.withAlphaComponent(Self.glassTint)
+      if glass.tintColor != tint { glass.tintColor = tint }
+    }
   }
+
+  /// A light veil of the palette's own sheet colour. 72 % (removed in
+  /// 469b701b8, 2026-10-12) turned the glass into a solid sheet; bare glass
+  /// read a little too transparent (Maciej, 2026-10-14).
+  static let glassTint: CGFloat = 0.22
 }
 
 /// One stable background, independent of recording, editing, and toolbelt state.

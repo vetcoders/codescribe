@@ -105,6 +105,13 @@ final class TrayViewModel: ObservableObject {
   func onShowAgent() { onIntent(.openChat) }
   func onOpenWidget() { onIntent(.openWidget) }
 
+  /// The tray row's start/stop. Its result shows on the overlay, which the
+  /// panel sits over, so the tray closes behind the action.
+  func toggleDictationFromTray() {
+    toggleDictation()
+    onIntent(.closeTray)
+  }
+
   /// A popover is a short-lived surface. Do not carry an expanded wall of
   /// history/settings into the operator's next tray visit.
   func collapseDisclosures() {
