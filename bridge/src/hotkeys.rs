@@ -251,9 +251,34 @@ fn route_hotkey_event<F, G>(
 /// happened — a silent no-op on an explicit user gesture reads as a broken
 /// hotkey, so nothing-to-insert and expiry both surface a notification.
 fn deliver_deferred_insert_and_notify() {
-    match clipboard::deliver_deferred_insert() {
+    // The hotkey tap holds no controller; the runtime snapshot carries the same
+    // clipboard restore settings the controller passes on its own paste path.
+    let (restore_clipboard, restore_clipboard_delay_ms) =
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(settings) => (
+                settings.values().restore_clipboard,
+                settings.values().restore_clipboard_delay_ms,
+            ),
+            Err(error) => {
+                let defaults = Config::default();
+                tracing::warn!(
+                    %error,
+                    restore_clipboard = defaults.restore_clipboard,
+                    "Runtime settings snapshot refused; deferred insert uses the default clipboard restore"
+                );
+                (
+                    defaults.restore_clipboard,
+                    defaults.restore_clipboard_delay_ms,
+                )
+            }
+        };
+    match clipboard::deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms) {
         Ok(clipboard::DeferredInsertDelivery::Delivered) => {
-            tracing::info!("Deferred transcript delivered and clipboard restore scheduled");
+            tracing::info!(
+                restore_clipboard,
+                restore_clipboard_delay_ms,
+                "Deferred transcript delivered"
+            );
         }
         Ok(
             clipboard::DeferredInsertDelivery::NothingToInsert
