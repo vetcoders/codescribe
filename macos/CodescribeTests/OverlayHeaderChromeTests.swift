@@ -610,6 +610,24 @@ final class OverlayHeaderChromeTests: XCTestCase {
     return (red * red + green * green + blue * blue).squareRoot()
   }
 
+  /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
+  /// glass and the symbol wore the same violet. A lit control washes its glass
+  /// with a pastel of the colour; the glyph keeps the whole colour. (An
+  /// offscreen raster does not draw glass tint, so this pins the contract.)
+  func testLitAgentControlWashesItsGlassWithAPastelOfItsColour() {
+    for palette in [OverlayAppearancePalette.dark, .light] {
+      let accent = palette.agentAccent.color
+      let glass = OverlayAgentAudioControls.litGlass(accent)
+      XCTAssertEqual(glass, accent.opacity(OverlayAgentAudioControls.litGlassOpacity))
+      XCTAssertNotEqual(glass, accent)
+    }
+    XCTAssertEqual(
+      OverlayAgentAudioControls.litGlass(.red),
+      Color.red.opacity(OverlayAgentAudioControls.litGlassOpacity))
+    XCTAssertLessThanOrEqual(OverlayAgentAudioControls.litGlassOpacity, 0.35)
+    XCTAssertNil(OverlayAgentAudioControls.litGlass(nil), "an unlit control keeps plain glass")
+  }
+
   private func source(_ relative: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
