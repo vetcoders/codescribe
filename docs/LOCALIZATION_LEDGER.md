@@ -209,6 +209,13 @@ every site was read; "estimated" is marked.
 of an interface language and should not gain one: every seam below is resolved
 by moving the wording to Swift, not by teaching Rust to translate.
 
+The `prose` list in `scripts/data/l10n-bridge-fields.txt` is ratchetted against
+a base ref from here on (`make verify-l10n-bridge L10N_BASE=…`,
+`docs/LOCALIZATION.md`): it is a burn-down, so a new `prose` line is refused
+rather than counted, and the only arrival it forgives is a seam the base's own
+bindings already carried — debt the census has just learned to see, not debt a
+cut is adding.
+
 ### B1 — Tray status (done)
 
 Rust used to compose 20 tray strings (`TrayStatus::tooltip()` /
