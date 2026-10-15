@@ -660,7 +660,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
         comment: "The placeholder is an input device name"),
       detail: String(
         localized:
-          "Saved: \(saved). Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active.",
+          "Saved: \(saved). The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override.",
         comment: "The placeholder is the saved input device name")
     )
   }

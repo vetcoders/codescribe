@@ -127,6 +127,7 @@ struct MarkdownText: View {
   /// inline runs), which are all derived from `s` — so the whole markdown body
   /// scales together instead of per-style hand-tuning.
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.markdownLinkOpener) private var linkOpener
   private var s: CGFloat { size * textScale }
 
   var body: some View {
@@ -153,7 +154,7 @@ struct MarkdownText: View {
     .environment(
       \.openURL,
       OpenURLAction { url in
-        NSWorkspace.shared.open(ConversationLocalFileLinks.urlForOpening(url))
+        linkOpener(url)
         return .handled
       })
   }
@@ -233,7 +234,7 @@ struct MarkdownText: View {
     let attr = Self.inlineAttributed(
       text, fontSize: fontSize,
       baseFont: baseFont, baseColor: baseColor)
-    let content = Text(attr).lineSpacing(5)
+    let content = inlineRuns(attr, lineSpacing: 5)
     if isLast, showsCaret {
       HStack(alignment: .bottom, spacing: 2) {
         content.fixedSize(horizontal: false, vertical: true)
@@ -243,6 +244,16 @@ struct MarkdownText: View {
       content
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  /// Plain `Text` unless the runs carry links; links answer the pointer.
+  @ViewBuilder
+  private func inlineRuns(_ attr: AttributedString, lineSpacing: CGFloat) -> some View {
+    if MarkdownLinkText.hasLinks(attr) {
+      MarkdownLinkText(attributed: attr, lineSpacing: lineSpacing)
+    } else {
+      Text(attr).lineSpacing(lineSpacing)
     }
   }
 
@@ -396,8 +407,7 @@ struct MarkdownText: View {
     let attr = Self.inlineAttributed(
       text, fontSize: cellSize,
       baseFont: font, baseColor: color)
-    Text(attr)
-      .lineSpacing(3)
+    inlineRuns(attr, lineSpacing: 3)
       .multilineTextAlignment(.leading)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
