@@ -356,6 +356,21 @@ impl fmt::Display for EnergyCalibrationRefusal {
 
 impl std::error::Error for EnergyCalibrationRefusal {}
 
+/// A guided measurement that kept no profile. It carries the refusal typed
+/// through `anyhow`, so the bridge hands Swift a code and arguments instead of
+/// an English sentence (docs/LOCALIZATION.md §5). Its text is the former
+/// `calibration_refused: …` message, unchanged for logs and status rows.
+#[derive(Debug)]
+pub struct GuidedCalibrationRefused(pub EnergyCalibrationRefusal);
+
+impl fmt::Display for GuidedCalibrationRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "calibration_refused: {}", self.0)
+    }
+}
+
+impl std::error::Error for GuidedCalibrationRefused {}
+
 /// Loader verdict frozen into the snapshot. Consumers display it; they may not
 /// upgrade `Missing`/`Refused` into a floor of their own.
 #[derive(Debug, Clone, PartialEq)]

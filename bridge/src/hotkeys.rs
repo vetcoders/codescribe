@@ -2813,9 +2813,7 @@ impl CodescribeHotkeys {
             let report = controller
                 .capture_energy_calibration(duration)
                 .await
-                .map_err(|error| CsError::Recording {
-                    msg: error.to_string(),
-                })?;
+                .map_err(|error| CsError::from_calibration(&error))?;
             Ok(CsEnergyCalibrationReport {
                 device_name: report.device_name,
                 sample_rate: report.sample_rate,
