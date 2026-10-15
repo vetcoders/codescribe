@@ -17830,13 +17830,79 @@
         }
       }
     },
-    "Versions of this take are no longer saved to history: %@" : {
-      "comment" : "The placeholder is the archive's own refusal text",
+    "Versions of this take are no longer saved to history." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wersje tego nagrania nie są już zapisywane w historii: %@"
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the archive refused to record a version." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: archiwum odmówiło zapisania wersji."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the archive refused to select this version." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: archiwum odmówiło wybrania tej wersji."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: zarchiwizowana transkrypcja miała już historię, której to nagranie nie zapisało."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the archived transcript changed outside this take." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: zarchiwizowana transkrypcja zmieniła się poza tym nagraniem."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the archived transcript could not be read." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: nie udało się odczytać zarchiwizowanej transkrypcji."
+          }
+        }
+      }
+    },
+    "Versions of this take are no longer saved to history: the selected version has no archived copy." : {
+      "comment" : "Shown with the versions control after the live history stopped mirroring to the archive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersje tego nagrania nie są już zapisywane w historii: wybrana wersja nie ma kopii w archiwum."
           }
         }
       }
