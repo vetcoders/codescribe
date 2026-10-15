@@ -2996,6 +2996,14 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
             "addressed_to": delivery_address_label(payload)}
 
 
+class MailboxReadError(ValueError):
+    """A fixed diagnostic category at the canonical mailbox admission gate."""
+
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(message)
+
+
 def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Validate the owned mailbox and return unread non-draft envelopes."""
     lease_id = lease_identifier(args.provider, args.session)
@@ -3003,12 +3011,13 @@ def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[
     if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
             or state.get("provider") != args.provider
             or state.get("provider_session_id") != args.session
-            or not isinstance(state.get("bus"), str)
-            or args.bus_overridden and state["bus"] != str(args.bus.expanduser().resolve(strict=False))):
-        raise ValueError("mailbox does not belong to this provider session and bus")
+            or not isinstance(state.get("bus"), str)):
+        raise MailboxReadError("mailbox_owner_mismatch", "mailbox does not belong to this provider session and bus")
+    if args.bus_overridden and state["bus"] != str(args.bus.expanduser().resolve(strict=False)):
+        raise MailboxReadError("mailbox_bus_mismatch", "mailbox does not belong to this provider session and bus")
     pending = state.get("pending")
     if not isinstance(pending, list) or any(not isinstance(row, dict) for row in pending):
-        raise ValueError("invalid pending mailbox; nothing read")
+        raise MailboxReadError("mailbox_pending_invalid", "invalid pending mailbox; nothing read")
     rows = []
     for row in pending:
         identity = row.get("delivery_id")
@@ -3018,11 +3027,11 @@ def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[
                 or row.get("lease_id") != lease_id or row.get("provider") != args.provider
                 or row.get("provider_session_id") != args.session
                 or row.get("bus", state["bus"]) != state["bus"]):
-            raise ValueError("foreign or invalid pending envelope; nothing read")
+            raise MailboxReadError("mailbox_envelope_invalid", "foreign or invalid pending envelope; nothing read")
         owner = row.get("delivery_owner")
         if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
                 "lease_id", "provider", "provider_session_id")):
-            raise ValueError("foreign pending delivery owner; nothing read")
+            raise MailboxReadError("mailbox_delivery_owner_mismatch", "foreign pending delivery owner; nothing read")
         if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
             rows.append(row)
     return state, rows
