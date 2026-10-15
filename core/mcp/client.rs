@@ -1622,7 +1622,8 @@ mod tests {
         );
     }
 
-    /// Garbage JSON-RPC from the server surfaces as a Malformed MCP error, not a hang.
+    /// Garbage JSON-RPC from the server surfaces as the `mcp_invalid_stdio_json`
+    /// code, not a hang.
     #[tokio::test]
     async fn mcp_malformed_response_errors() {
         let client =
@@ -1634,7 +1635,7 @@ mod tests {
             .expect_err("malformed server output should fail");
 
         assert!(
-            error.to_string().contains("Malformed MCP JSON-RPC"),
+            error.to_string().contains("mcp_invalid_stdio_json"),
             "unexpected error: {error}"
         );
     }
