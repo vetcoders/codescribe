@@ -261,6 +261,16 @@ struct OverlayAgentAudioControls: View {
 
   private var speakingNow: Bool { speaking && muted == false }
 
+  /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
+  /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
+  /// wyraziste". A lit control washes its glass with a pastel of the colour
+  /// and keeps the glyph in the whole colour.
+  static let litGlassOpacity = 0.3
+
+  static func litGlass(_ color: Color?) -> Color? {
+    color?.opacity(litGlassOpacity)
+  }
+
   private var microphoneLabel: String {
     if broadcast {
       return open
@@ -301,7 +311,7 @@ struct OverlayAgentAudioControls: View {
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(width: 16, height: 16)
       }
-      .tint(open ? Color.red : nil)
+      .tint(Self.litGlass(open ? Color.red : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
@@ -323,7 +333,7 @@ struct OverlayAgentAudioControls: View {
         .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: 16, height: 16)
       }
-      .tint(speakingNow ? palette.agentAccent.color : nil)
+      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
       .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
