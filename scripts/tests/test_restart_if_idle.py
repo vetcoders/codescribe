@@ -124,27 +124,19 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if Path(call[0]).name == "open"]), 1)
 
     def test_exported_codescribe_gates_ride_the_relaunch_process(self):
-        def spawn(arguments, **kwargs):
-            self.running = {456}
-            self.publish_ready(456, "new-generation")
-            process = unittest.mock.Mock()
-            process.returncode = None
-            return process
-
         with patch.dict(os.environ, {"CODESCRIBE_APPLE_DICTATION_TRANSCRIBER": "1"}):
-            with patch("subprocess.Popen", side_effect=spawn) as popen:
-                result = self.invoke()
+            result = self.invoke()
         self.assertEqual(result["status"], "restarted")
         self.assertEqual(
             result["carried_environment"], ["CODESCRIBE_APPLE_DICTATION_TRANSCRIBER"]
         )
-        popen.assert_called_once()
-        arguments, kwargs = popen.call_args
-        self.assertEqual(arguments[0], [str(self.main)])
-        self.assertTrue(kwargs["start_new_session"])
         opens = [call for call in self.calls if Path(call[0]).name == "open"]
-        self.assertEqual(len(opens), 1)
+        self.assertEqual(len(opens), 2)
         self.assertIn("codescribe://restart-if-idle", opens[0][-1])
+        relaunch = opens[1]
+        self.assertIn("--env", relaunch)
+        self.assertIn("CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1", relaunch)
+        self.assertEqual(relaunch[-1], str(self.app))
 
 
 if __name__ == "__main__":
