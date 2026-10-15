@@ -150,7 +150,7 @@ final class OverlayChromeV3Tests: XCTestCase {
         XCTAssertEqual(
           glass.tintColor,
           OverlayAppearancePalette.resolve(scheme).desktopBackground.nsColor.withAlphaComponent(
-            0.22))
+            0.84))
         XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
         XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
       } else {

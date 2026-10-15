@@ -85,7 +85,7 @@ final class SetupAppearanceTests: XCTestCase {
             XCTAssertEqual(
               glass.tintColor,
               (dark ? OverlayAppearancePalette.dark : .light)
-                .desktopBackground.nsColor.withAlphaComponent(0.22),
+                .desktopBackground.nsColor.withAlphaComponent(0.84),
               "Setup must use the same bounded palette veil as the overlay")
             XCTAssertNil(glass.hitTest(NSPoint(x: glass.bounds.midX, y: glass.bounds.midY)))
           }
