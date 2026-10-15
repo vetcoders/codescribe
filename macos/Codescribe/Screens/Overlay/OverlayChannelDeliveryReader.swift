@@ -591,7 +591,8 @@ actor OverlayChannelDeliveryReader {
   private func persistedCursor(for url: URL) -> Cursor? {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
     guard let mark = persisted?[url.path], let data = mark.projection,
-      let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data)
+      let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data),
+      projection.destinationVersion == 1
     else { return nil }
     guard (0...256).contains(mark.headLength) else { return nil }
     savedRevisions[url] = projection.revision
