@@ -415,6 +415,190 @@ final class OverlayStateTests: XCTestCase {
       owner: conversation.owner, messages: [message])
   }
 
+  func testDrawerWaitsForAuthoritativeRosterBeforeOfferingConnectionHint() {
+    let state = OverlayState()
+    func drawer() -> OverlayChannelStatusView {
+      DictationOverlayView(state: state).channelStatusView
+    }
+    XCTAssertFalse(state.hasLoadedChannelRoster)
+    XCTAssertTrue(drawer().showsRosterLoading)
+    XCTAssertFalse(drawer().showsConnectionHint)
+    state.applyChannelRoster([])
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [
+          OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+        ]))
+    XCTAssertTrue(drawer().showsRosterLoading, "History cannot establish controller readiness")
+    XCTAssertFalse(drawer().showsConnectionHint)
+
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast])
+    XCTAssertTrue(state.hasLoadedChannelRoster)
+    XCTAssertFalse(drawer().showsRosterLoading)
+    XCTAssertTrue(drawer().showsConnectionHint, "Channel 0 confirms a ready, unbound controller")
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    XCTAssertFalse(drawer().showsConnectionHint)
+    state.applyChannelRoster([broadcast])
+    XCTAssertTrue(drawer().showsConnectionHint, "Removing the last binding restores the hint")
+  }
+
+  func testChannelRosterRefreshesWhileHistoryIsSuspended() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let historyEntered = expectation(description: "history read suspended")
+    let initialRoster = expectation(description: "pre-controller roster requested")
+    let readyRoster = expectation(description: "ready roster requested despite suspended history")
+    let changedRoster = expectation(description: "changed roster requested")
+    let readyPainted = expectation(description: "newly ready roster painted")
+    let changePainted = expectation(description: "changed roster painted")
+    var rosterResponse: CheckedContinuation<[CsChannelRosterState], Never>?
+    var historyResponse: CheckedContinuation<OverlayChannelDeliverySnapshot, Never>?
+    var rosterReads = 0
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation { continuation in
+        rosterResponse = continuation
+        rosterReads += 1
+        switch rosterReads {
+        case 1: initialRoster.fulfill()
+        case 2: readyRoster.fulfill()
+        case 3: changedRoster.fulfill()
+        default: XCTFail("Unexpected roster read")
+        }
+      }
+    }
+    state.onChannelPresentationChanged = {
+      if state.channelRosterNames["2"] != nil { readyPainted.fulfill() }
+      if state.channelRosterNames["3"] != nil { changePainted.fulfill() }
+    }
+    let observation = state.observeChannelDelivery { _ in
+      await withCheckedContinuation { continuation in
+        historyResponse = continuation
+        historyEntered.fulfill()
+      }
+    }
+    defer {
+      state.stopObservingChannelDelivery()
+      state.onChannelPresentationChanged = nil
+      rosterResponse?.resume(returning: [])
+      historyResponse?.resume(returning: .init(deliveries: [], conversations: []))
+    }
+    await fulfillment(of: [initialRoster, historyEntered], timeout: 2)
+    let first = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    first.resume(returning: [])
+    await fulfillment(of: [readyRoster], timeout: 2)
+    XCTAssertFalse(state.hasLoadedChannelRoster)
+    let broadcast = navigationRoster(channel: "0", open: false)
+    let second = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    second.resume(returning: [broadcast, navigationRoster(open: false)])
+    await fulfillment(of: [readyPainted, changedRoster], timeout: 2)
+    XCTAssertTrue(state.hasLoadedChannelRoster)
+    XCTAssertNotNil(historyResponse, "History is still held at the same barrier")
+    XCTAssertTrue(state.conversations.isEmpty)
+    let third = try XCTUnwrap(rosterResponse)
+    rosterResponse = nil
+    third.resume(returning: [broadcast, navigationRoster(channel: "3", open: false)])
+    await fulfillment(of: [changePainted], timeout: 2)
+    XCTAssertEqual(Set(state.channelRosterNames.keys), ["0", "3"])
+    XCTAssertFalse(DictationOverlayView(state: state).channelStatusView.showsConnectionHint)
+
+    state.stopObservingChannelDelivery()
+    let history = try XCTUnwrap(historyResponse)
+    historyResponse = nil
+    history.resume(returning: .init(deliveries: [], conversations: []))
+    await observation.value
+  }
+
+  func testStoppedChannelObservationRejectsLateRosterAndHistory() async throws {
+    try await assertCancelledChannelObservation(reobserve: false, historyFails: false)
+  }
+
+  func testReobservedChannelRejectsLateRosterAndHistory() async throws {
+    try await assertCancelledChannelObservation(reobserve: true, historyFails: false)
+  }
+
+  func testReobservedChannelRejectsLateHistoryFailure() async throws {
+    try await assertCancelledChannelObservation(reobserve: true, historyFails: true)
+  }
+
+  private func assertCancelledChannelObservation(reobserve: Bool, historyFails: Bool) async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(channel: "3", open: false)])
+    let oldRosterEntered = expectation(description: "old roster suspended")
+    let oldHistoryEntered = expectation(description: "old history suspended")
+    var oldRoster: CheckedContinuation<[CsChannelRosterState], Never>?
+    var oldHistory: CheckedContinuation<OverlayChannelDeliverySnapshot, Error>?
+    var newHistory: CheckedContinuation<OverlayChannelDeliverySnapshot, Never>?
+    var replacement: Task<Void, Never>?
+    engine.rosterSnapshotHandler = {
+      await withCheckedContinuation { continuation in
+        oldRoster = continuation
+        oldRosterEntered.fulfill()
+      }
+    }
+    let old = state.observeChannelDelivery { _ in
+      try await withCheckedThrowingContinuation { continuation in
+        oldHistory = continuation
+        oldHistoryEntered.fulfill()
+      }
+    }
+    defer {
+      state.stopObservingChannelDelivery()
+      state.onChannelPresentationChanged = nil
+      oldRoster?.resume(returning: [])
+      oldHistory?.resume(throwing: CancellationError())
+      newHistory?.resume(returning: .init(deliveries: [], conversations: []))
+    }
+    await fulfillment(of: [oldRosterEntered, oldHistoryEntered], timeout: 2)
+    if reobserve {
+      let replacementPainted = expectation(description: "replacement roster painted")
+      let replacementHistoryEntered = expectation(description: "replacement history suspended")
+      engine.rosterSnapshotHandler = nil
+      engine.rosterSnapshot = [broadcast, navigationRoster(channel: "4", open: false)]
+      state.onChannelPresentationChanged = {
+        if state.channelRosterNames["4"] != nil { replacementPainted.fulfill() }
+      }
+      replacement = state.observeChannelDelivery { _ in
+        await withCheckedContinuation { continuation in
+          newHistory = continuation
+          replacementHistoryEntered.fulfill()
+        }
+      }
+      await fulfillment(of: [replacementPainted, replacementHistoryEntered], timeout: 2)
+    } else {
+      state.stopObservingChannelDelivery()
+    }
+    state.onChannelPresentationChanged = nil
+    let roster = try XCTUnwrap(oldRoster)
+    oldRoster = nil
+    roster.resume(returning: [broadcast, navigationRoster(open: true)])
+    let history = try XCTUnwrap(oldHistory)
+    oldHistory = nil
+    if historyFails {
+      history.resume(throwing: CocoaError(.fileReadCorruptFile))
+    } else {
+      history.resume(
+        returning: .init(deliveries: [], conversations: [try navigationConversation()]))
+    }
+    // Joining the cancelled observation proves both late results were handled;
+    // no yield count, delay or inverted timeout stands in for completion.
+    await old.value
+    XCTAssertEqual(Set(state.channelRosterNames.keys), ["0", reobserve ? "4" : "3"])
+    XCTAssertFalse(state.hasOpenChannel)
+    XCTAssertTrue(state.conversations.isEmpty)
+    XCTAssertFalse(state.channelStatusUnavailable)
+    state.stopObservingChannelDelivery()
+    newHistory?.resume(returning: .init(deliveries: [], conversations: []))
+    newHistory = nil
+    if let replacement { await replacement.value }
+  }
+
   func testReplyAdmissionEmptyFirstSnapshotDoesNotHideFirstFreshReply() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
