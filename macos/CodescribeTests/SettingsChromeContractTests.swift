@@ -1123,7 +1123,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "About the app and your data": "O aplikacji i danych",
       "Codescribe version, local data and privacy.":
         "Wersja Codescribe, lokalne dane i prywatność.",
-      "Build %@": "Build %@",
+      "Build %@": "Kompilacja %@",
       "Version details": "Szczegóły wersji",
       "The configuration needs a review": "Konfiguracja wymaga sprawdzenia",
       "See which setting is out of date": "Zobacz, które ustawienie jest nieaktualne",

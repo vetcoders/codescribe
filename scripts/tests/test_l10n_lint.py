@@ -345,6 +345,74 @@ class SpellingTests(unittest.TestCase):
         self.assertIn("[files.plural.other]", errors[0])
 
 
+class IdenticalToSourceTests(unittest.TestCase):
+    """A `translated` unit carrying the English words back is how an untranslated
+    string passed the coverage gate: the state claimed somebody handled it."""
+
+    PANEL = "Open the panel"
+
+    def test_a_translation_that_reads_as_the_english_source_is_refused(self):
+        errors = problems({self.PANEL: {"localizations": {"pl": unit(self.PANEL)}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("pl: reads exactly as the English source", errors[0])
+        self.assertIn(repr(self.PANEL), errors[0])
+
+    def test_surrounding_space_does_not_hide_it(self):
+        errors = problems({self.PANEL: {"localizations": {"pl": unit(f"  {self.PANEL}\n")}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("reads exactly as the English source", errors[0])
+
+    def test_a_draft_may_be_rough_and_may_not_be_english(self):
+        draft = {"stringUnit": {"state": "needs_review", "value": self.PANEL}}
+        errors = problems({self.PANEL: {"localizations": {"pl": draft}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("state is 'needs_review'", errors[0])
+
+    def test_a_real_translation_passes(self):
+        self.assertEqual(problems({self.PANEL: {"localizations": {"pl": unit("Otwórz panel")}}}), [])
+
+    def test_an_untranslated_unit_is_left_to_the_coverage_gate(self):
+        # Coverage already refuses it; saying it twice would teach nobody anything.
+        new = {"stringUnit": {"state": "new", "value": self.PANEL}}
+        errors = problems({self.PANEL: {"localizations": {"pl": new}}})
+        self.assertFalse([error for error in errors if "reads exactly" in error], errors)
+
+    def test_the_source_language_is_not_held_against_itself(self):
+        self.assertEqual(problems({self.PANEL: {"localizations": {"en": unit(self.PANEL)}}}), [])
+
+    def test_a_string_with_no_letter_in_it_is_evidence_of_nothing(self):
+        self.assertEqual(problems({"%@ / %@": {"localizations": {"pl": unit("%@ / %@")}}}), [])
+        self.assertFalse(lint.says_something("%1$lld/%2$lld — 100%%"))
+        self.assertTrue(lint.says_something("%lld files"))
+
+    def test_an_allowlisted_key_may_read_as_the_english_source(self):
+        self.assertIn("OK", lint.identical_allowed())
+        self.assertEqual(problems({"OK": {"localizations": {"pl": unit("OK")}}}), [])
+
+    def test_each_plural_form_is_held_against_its_own_english_form(self):
+        entry = {
+            "localizations": {
+                "en": plural(one="%lld file", other=FILES),
+                "pl": plural(one="%lld plik", few="%lld pliki", many="%lld plików", other=FILES),
+            }
+        }
+        errors = problems({FILES: entry})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("pl [plural.other]", errors[0])
+
+
+class IdentityAllowlistTests(unittest.TestCase):
+    def test_every_allowlisted_key_is_still_in_a_shipped_catalog(self):
+        shipped: set[str] = set()
+        for path in lint.CATALOG_DIR.glob("*.xcstrings"):
+            shipped |= set(json.loads(path.read_text(encoding="utf-8"))["strings"])
+        self.assertEqual(sorted(lint.identical_allowed() - shipped), [])
+
+    def test_the_allowlist_is_not_a_wildcard(self):
+        self.assertNotIn("", lint.identical_allowed())
+        self.assertTrue(all(key.strip() == key for key in lint.identical_allowed()))
+
+
 class ShippedCatalogTests(unittest.TestCase):
     def test_shipped_catalogs_pass(self):
         errors: list[str] = []
