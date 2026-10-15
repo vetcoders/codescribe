@@ -364,12 +364,10 @@ pub struct SileroIngress {
     /// so some captured audio never reached this observer. The hole cannot be
     /// certified as speech or as silence.
     discontinuous: bool,
-    /// Session sample index of the first non-finite sample fed to this ingress.
+    /// First capture sample whose PCM/model view is invalid or misaligned.
     ///
-    /// The VAD reads whatever arrives; NaN and infinities produce a probability
-    /// that fails every threshold comparison, so invalid PCM leaves no crossing
-    /// and would be reported as measured silence. Recording where validity
-    /// ended keeps that region unmeasured instead.
+    /// Invalid PCM or a misaligned projection cannot certify a speech valley.
+    /// Recording where validity ended keeps that region unmeasured.
     first_invalid_sample: Option<u64>,
 }
 
@@ -470,6 +468,13 @@ impl SileroIngress {
                 AcousticAvailability::NotObserved,
             );
         }
+        if self.vad.vad_measurement_failed() {
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                SILERO_BOUNDARIES_PRODUCER,
+                AcousticAvailability::InvalidMeasurement { valid_samples: 0 },
+            );
+        }
         // Validity before continuity: a hole is audio this observer never got,
         // while invalid PCM is audio it got and could not read. Both refuse,
         // and the reason names which one actually happened.
@@ -537,9 +542,14 @@ impl SileroIngress {
         self.vad.push_scripted_speech_prob_for_test(prob);
     }
 
-    /// Feed one capture chunk. `samples_seen` is the session cursor *after*
-    /// this chunk (same counter `apple_stream_worker` already owns).
-    pub fn ingest(&mut self, samples: &[f32], samples_seen: u64) -> SileroIngest {
+    /// Feed capture identity and its time-aligned recognizer projection.
+    /// `samples_seen` remains the raw capture cursor after this chunk.
+    pub fn ingest(
+        &mut self,
+        samples: &[f32],
+        model_audio: &[f32],
+        samples_seen: u64,
+    ) -> SileroIngest {
         if samples.is_empty() {
             // Nothing was observed, so nothing is recorded. An empty call must
             // not advance the extent this ingress claims to have heard.
@@ -549,7 +559,27 @@ impl SileroIngress {
         // before any speech decision reads it.
         self.note_observed_pcm(samples.len() as u64, samples_seen);
         self.note_pcm_validity(samples, samples_seen);
-        let events = self.vad.feed(samples, 0);
+        if model_audio.len() != samples.len()
+            || model_audio.iter().any(|sample| !sample.is_finite())
+        {
+            self.first_invalid_sample
+                .get_or_insert(samples_seen.saturating_sub(samples.len() as u64));
+        }
+        // Once this epoch has an unreadable view, do not emit later boundaries
+        // from a model clock that missed part of its capture stream.
+        if self.first_invalid_sample.is_some() {
+            return SileroIngest {
+                open: self
+                    .ledger
+                    .utterances
+                    .last()
+                    .filter(|owner| !owner.closed)
+                    .map(|owner| owner.id),
+                speech_live: self.vad.open_segment_raw_range().is_some(),
+                ..SileroIngest::default()
+            };
+        }
+        let events = self.vad.feed(samples, model_audio);
         let boundaries = self.vad.take_vad_boundaries();
         let closed_here = events
             .iter()
@@ -575,6 +605,7 @@ impl SileroIngress {
         min_valley_samples: u64,
     ) -> SileroIngest {
         if !self.vad_available()
+            || self.vad.vad_measurement_failed()
             || self.discontinuous
             || self.first_invalid_sample.is_some()
             || self.observed_samples == 0
@@ -603,6 +634,7 @@ impl SileroIngress {
             || next_start < previous_end
             || next_start > self.observed_samples
             || !self.vad_available()
+            || self.vad.vad_measurement_failed()
             || self.discontinuous
             || self.first_invalid_sample.is_some()
         {
@@ -848,6 +880,37 @@ pub fn slice_apple_words(
 mod tests {
     use super::*;
 
+    #[test]
+    fn misaligned_projection_is_unmeasured_not_silence() {
+        let mut ingress = SileroIngress::new(16_000, "projection-mismatch", 1);
+        ingress.ingest(&[0.1; 400], &[0.1; 399], 400);
+        assert!(matches!(
+            ingress.acoustic_speech_evidence().availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 0 }
+        ));
+    }
+
+    #[test]
+    fn misaligned_projection_keeps_the_open_epoch_without_inventing_silence() {
+        let mut ingress = SileroIngress::new(16_000, "projection-open", 1);
+        ingress.push_scripted_speech_prob_for_test(0.9);
+        let onset = ingress.ingest(&[0.2; 512], &[0.2; 512], 512);
+        assert!(onset.speech_live);
+        assert!(onset.open.is_some());
+        for cursor in [1024, 1536] {
+            let invalid = ingress.ingest(&[0.0; 512], &[0.0; 511], cursor);
+            assert!(
+                invalid.speech_live,
+                "unread audio cannot sleep an open epoch"
+            );
+            assert_eq!(invalid.open, onset.open);
+            assert!(invalid.closed.is_empty());
+            assert!(invalid.sideband.is_empty());
+        }
+        assert!(!ingress.has_phrase_valley(0, 1536, 512));
+        assert!(ingress.confirm_phrase_valley(512, 512).closed.is_empty());
+    }
+
     fn word(text: &str, start: u64, end: u64) -> FusionWord {
         FusionWord {
             confidence: None,
@@ -900,12 +963,12 @@ mod tests {
             for _ in 0..20 {
                 ingress.push_scripted_speech_prob_for_test(0.9);
                 cursor += 512;
-                ingress.ingest(&[0.2; 512], cursor);
+                ingress.ingest(&[0.2; 512], &[0.2; 512], cursor);
             }
             for _ in 0..30 {
                 ingress.push_scripted_speech_prob_for_test(0.01);
                 cursor += 512;
-                ingress.ingest(&[0.0; 512], cursor);
+                ingress.ingest(&[0.0; 512], &[0.0; 512], cursor);
             }
         }
         let owners = ingress.ledger().utterances();
@@ -940,13 +1003,13 @@ mod tests {
         for _ in 0..20 {
             ingress.push_scripted_speech_prob_for_test(0.9);
             cursor += 512;
-            ingress.ingest(&[0.2; 512], cursor);
+            ingress.ingest(&[0.2; 512], &[0.2; 512], cursor);
         }
         let mut closed = None;
         for _ in 0..30 {
             ingress.push_scripted_speech_prob_for_test(0.01);
             cursor += 512;
-            let out = ingress.ingest(&[0.0; 512], cursor);
+            let out = ingress.ingest(&[0.0; 512], &[0.0; 512], cursor);
             if let Some(id) = out.closed.first() {
                 closed = Some(*id);
                 break;
@@ -967,7 +1030,7 @@ mod tests {
     fn fusion_stop_records_end_of_capture_only_for_the_open_utterance() {
         let mut ingress = SileroIngress::new(16_000, "stop-receipt", 8);
         ingress.push_scripted_speech_prob_for_test(0.9);
-        let out = ingress.ingest(&[0.2; 512], 512);
+        let out = ingress.ingest(&[0.2; 512], &[0.2; 512], 512);
         let id = out.open.expect("speech opens a live utterance");
         assert!(ingress.ledger().close_receipt(id).is_none());
         assert_eq!(ingress.flush(512), Some(id));
@@ -1533,7 +1596,7 @@ mod tests {
         );
 
         // An empty chunk observes nothing and must not advance the extent.
-        ingress.ingest(&[], 16_000);
+        ingress.ingest(&[], &[], 16_000);
         assert_eq!(ingress.observed_samples(), 0);
         assert_eq!(
             ingress.acoustic_speech_evidence().availability(),
@@ -1639,7 +1702,11 @@ mod tests {
 
         // `ingest` records validity itself, before the model reads the chunk.
         let mut fed = SileroIngress::new(16_000, "validity-ingest", 5);
-        fed.ingest(&vec![f32::NEG_INFINITY; 1_600], 1_600);
+        fed.ingest(
+            &vec![f32::NEG_INFINITY; 1_600],
+            &vec![f32::NEG_INFINITY; 1_600],
+            1_600,
+        );
         assert_eq!(fed.observed_samples(), 1_600);
         assert_eq!(
             fed.acoustic_speech_evidence().availability(),
@@ -1648,7 +1715,7 @@ mod tests {
 
         // A finite chunk is not marked, so valid captures are untouched.
         let mut clean = SileroIngress::new(16_000, "validity-clean", 5);
-        clean.ingest(&vec![0.0f32; 1_600], 1_600);
+        clean.ingest(&vec![0.0f32; 1_600], &vec![0.0f32; 1_600], 1_600);
         assert_eq!(
             clean.acoustic_speech_evidence().availability(),
             AcousticAvailability::Observed {

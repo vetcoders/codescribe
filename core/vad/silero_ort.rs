@@ -77,58 +77,87 @@ const CONTEXT_SIZE: usize = 64;
 /// v4 used separate h/c tensors with dim 64; v5+ merged them.
 const STATE_SHAPE: [usize; 3] = [2, 1, 128];
 
-/// Resampler for converting audio to 16kHz
+/// Continuous linear resampling onto Silero's 16 kHz sample clock.
+/// Packet boundaries never reset phase or invent a right-hand sample.
 pub struct Resampler {
-    buffer: Vec<f32>,
-    ratio: f32,
+    input_rate: u32,
+    input_cursor: u128,
+    next_source_numerator: u128,
+    previous_sample: Option<f32>,
 }
 
 impl Resampler {
     /// Build a resampler from `input_rate` to the fixed 16 kHz Silero expects.
-    ///
-    /// The scratch buffer is pre-sized so steady-state resampling does not
-    /// allocate on the audio path.
     pub fn new(input_rate: u32) -> Self {
-        let ratio = VAD_SAMPLE_RATE as f32 / input_rate as f32;
+        assert!(input_rate > 0, "resampling requires a nonzero input rate");
         Self {
-            buffer: Vec::with_capacity(CHUNK_SIZE * 2),
-            ratio,
+            input_rate,
+            input_cursor: 0,
+            next_source_numerator: 0,
+            previous_sample: None,
         }
     }
 
     /// Resample audio to 16kHz (linear interpolation).
     pub fn resample(&mut self, samples: &[f32]) -> Vec<f32> {
-        if (self.ratio - 1.0).abs() < 0.001 {
-            // No resampling needed - return copy
-            return samples.to_vec();
+        if samples.is_empty() {
+            return Vec::new();
         }
-
-        let output_len = (samples.len() as f32 * self.ratio) as usize;
-        // Reuse the persistent scratch buffer (no per-call Vec allocation), then
-        // hand ownership to the caller via mem::take. The next call re-reserves
-        // into a fresh empty buffer, so no clone is paid on this hot path.
-        self.buffer.clear();
-        self.buffer.reserve(output_len);
-
-        for i in 0..output_len {
-            let src_idx = i as f32 / self.ratio;
-            let idx0 = src_idx.floor() as usize;
-            let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
-            let frac = src_idx - idx0 as f32;
-
-            let sample = if idx0 < samples.len() {
-                samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac
+        let start = self.input_cursor;
+        let end = start + samples.len() as u128;
+        let clock = u128::from(VAD_SAMPLE_RATE);
+        let capacity = (samples.len() as u128 * clock).div_ceil(u128::from(self.input_rate));
+        let mut output = Vec::with_capacity(capacity as usize);
+        loop {
+            let left = self.next_source_numerator / clock;
+            let remainder = self.next_source_numerator % clock;
+            let right = left + u128::from(remainder != 0);
+            if right >= end {
+                break;
+            }
+            let a = if left < start {
+                self.previous_sample
+                    .expect("continuous resampler predecessor")
             } else {
-                0.0
+                samples[(left - start) as usize]
             };
-            self.buffer.push(sample);
+            let b = if right == left {
+                a
+            } else {
+                samples[(right - start) as usize]
+            };
+            let fraction = remainder as f32 / VAD_SAMPLE_RATE as f32;
+            output.push(a * (1.0 - fraction) + b * fraction);
+            self.next_source_numerator += u128::from(self.input_rate);
         }
+        self.input_cursor = end;
+        self.previous_sample = samples.last().copied();
+        output
+    }
 
-        std::mem::take(&mut self.buffer)
+    /// Close the stream's exact duration with its final real sample.
+    /// Never finish at an intermediate capture-packet boundary.
+    pub fn finish(&mut self) -> Vec<f32> {
+        let mut output = Vec::new();
+        if let Some(last) = self.previous_sample {
+            let end = self.input_cursor * u128::from(VAD_SAMPLE_RATE);
+            while self.next_source_numerator < end {
+                output.push(last);
+                self.next_source_numerator += u128::from(self.input_rate);
+            }
+        }
+        output
+    }
+
+    /// Start a new capture/file on a fresh clock.
+    pub fn reset(&mut self) {
+        self.input_cursor = 0;
+        self.next_source_numerator = 0;
+        self.previous_sample = None;
     }
 }
 
-/// Silero VAD v6 model wrapper (backwards-compatible with v5 ONNX API).
+/// Silero v5/v6 ONNX frame contract: 512 new samples at 16 kHz.
 ///
 /// v5+ API differences from v4:
 ///  - Unified state tensor `[2, 1, 128]` (v4 had separate h/c `[2, 1, 64]`)
@@ -144,7 +173,6 @@ pub struct SileroVad {
     state: ArrayD<f32>,
     context: Vec<f32>,
     config: VadConfig,
-    resampler: Option<Resampler>,
 }
 
 impl SileroVad {
@@ -168,7 +196,6 @@ impl SileroVad {
             state: ArrayD::zeros(STATE_SHAPE.as_slice()),
             context: vec![0.0; CONTEXT_SIZE],
             config,
-            resampler: None,
         })
     }
 
@@ -186,48 +213,24 @@ impl SileroVad {
             state: ArrayD::zeros(STATE_SHAPE.as_slice()),
             context: vec![0.0; CONTEXT_SIZE],
             config,
-            resampler: None,
         })
-    }
-
-    /// Declare the sample rate of audio handed to [`Self::predict`].
-    ///
-    /// Installs a resampler only when the rate differs from 16 kHz; passing
-    /// [`VAD_SAMPLE_RATE`] clears it, keeping the native-rate path allocation-free.
-    pub fn set_input_sample_rate(&mut self, rate: u32) {
-        if rate != VAD_SAMPLE_RATE {
-            self.resampler = Some(Resampler::new(rate));
-        } else {
-            self.resampler = None;
-        }
     }
 
     /// Get speech probability for a single CHUNK_SIZE (512) frame at 16kHz.
     ///
     /// The caller is responsible for providing exactly CHUNK_SIZE samples
-    /// already at 16kHz.  The internal resampler path is kept for
-    /// backwards-compat but callers in streaming_recorder pre-resample.
+    /// already at 16kHz. Capture resampling and accumulation belong to the
+    /// caller; an incomplete frame is not a successful silence observation.
     pub fn predict(&mut self, samples: &[f32]) -> Result<f32> {
-        if samples.is_empty() {
-            return Ok(0.0);
-        }
-
-        // Resample if needed
-        let samples_16k: Vec<f32> = if let Some(ref mut resampler) = self.resampler {
-            resampler.resample(samples)
-        } else {
-            samples.to_vec()
-        };
-
-        let mut max_prob = 0.0f32;
-        for chunk in samples_16k.chunks(CHUNK_SIZE) {
-            if chunk.len() < CHUNK_SIZE {
-                break;
-            }
-            let prob = self.predict_chunk(chunk)?;
-            max_prob = max_prob.max(prob);
-        }
-        Ok(max_prob)
+        anyhow::ensure!(
+            samples.len() == CHUNK_SIZE,
+            "Silero requires exactly {CHUNK_SIZE} samples at {VAD_SAMPLE_RATE} Hz"
+        );
+        anyhow::ensure!(
+            samples.iter().all(|sample| sample.is_finite()),
+            "Silero input contains nonfinite PCM"
+        );
+        self.predict_chunk(samples)
     }
 
     /// Predict on a single 512-sample chunk using Silero v6 API.
@@ -240,15 +243,12 @@ impl SileroVad {
         input_data.extend_from_slice(&self.context);
         input_data.extend_from_slice(chunk);
 
-        // Update context for next call
-        let ctx_start = chunk.len().saturating_sub(CONTEXT_SIZE);
-        self.context[..].copy_from_slice(&chunk[ctx_start..]);
-
         // Input tensors — v5+ order: input, state, sr
         let input = ndarray::Array2::from_shape_vec([1, input_data.len()], input_data)
             .map_err(|e| anyhow::anyhow!("input shape: {}", e))?;
         let sr = ndarray::Array1::from_vec(vec![VAD_SAMPLE_RATE as i64]);
-        let state = std::mem::replace(&mut self.state, ArrayD::zeros(STATE_SHAPE.as_slice()));
+        // Commit state and context together only after a valid result.
+        let state = self.state.clone();
 
         let input_value = Value::from_array(input)?;
         let state_value = Value::from_array(state)?;
@@ -275,7 +275,16 @@ impl SileroVad {
                     .get("output")
                     .context("Silero model missing 'output' tensor")?;
                 let (_shape, data) = output.try_extract_tensor::<f32>()?;
-                data.first().copied().unwrap_or(0.0)
+                anyhow::ensure!(
+                    data.len() == 1,
+                    "Silero probability tensor must contain one value"
+                );
+                let probability = data[0];
+                anyhow::ensure!(
+                    probability.is_finite() && (0.0..=1.0).contains(&probability),
+                    "Silero probability is invalid"
+                );
+                probability
             };
 
             // Read updated state from "stateN" (safe access — no panic on missing key)
@@ -285,15 +294,24 @@ impl SileroVad {
                     .context("Silero model missing 'stateN' tensor")?;
                 let (shape, data) = state_output.try_extract_tensor::<f32>()?;
                 let shape_usize: Vec<usize> = shape.as_ref().iter().map(|&d| d as usize).collect();
-                ArrayD::from_shape_vec(shape_usize.as_slice(), data.to_vec()).ok()
+                anyhow::ensure!(
+                    shape_usize == STATE_SHAPE,
+                    "Silero recurrent state has an unexpected shape"
+                );
+                anyhow::ensure!(
+                    data.iter().all(|value| value.is_finite()),
+                    "Silero recurrent state is nonfinite"
+                );
+                ArrayD::from_shape_vec(shape_usize.as_slice(), data.to_vec())
+                    .context("Silero recurrent state tensor is malformed")?
             };
 
             (prob, next_state)
         };
 
-        if let Some(arr) = next_state {
-            self.state = arr;
-        }
+        self.state = next_state;
+        self.context
+            .copy_from_slice(&chunk[CHUNK_SIZE - CONTEXT_SIZE..]);
 
         Ok(prob)
     }
@@ -383,7 +401,7 @@ impl AccumulatingVad {
         // Process every complete 512-sample chunk
         while self.accumulator.len() >= CHUNK_SIZE {
             let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
-            // predict() on a 16kHz chunk with no resampler set → single predict_chunk()
+            // The accumulator hands the model exactly one 16 kHz frame.
             if let Ok(prob) = self.vad.predict(&chunk) {
                 self.last_prob = prob;
             }
@@ -480,6 +498,9 @@ impl AccumulatingVad {
     /// Reset internal Silero state and accumulator.
     pub fn reset(&mut self) {
         self.vad.reset();
+        if let Some(resampler) = self.resampler.as_mut() {
+            resampler.reset();
+        }
         self.accumulator.clear();
         self.last_prob = 0.0;
     }
@@ -524,6 +545,82 @@ pub fn default_model_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_frames_refuse_without_mutating_stream_state() {
+        let mut vad = SileroVad::new_embedded(VadConfig::default()).expect("embedded graph");
+        vad.state.fill(0.25);
+        vad.context.fill(0.125);
+        let state = vad.state.clone();
+        let context = vad.context.clone();
+        for invalid in [vec![], vec![0.0; 511], vec![0.0; 513], vec![f32::NAN; 512]] {
+            assert!(vad.predict(&invalid).is_err());
+            assert_eq!(vad.state, state);
+            assert_eq!(vad.context, context);
+        }
+    }
+
+    #[test]
+    fn resampler_capture_partition_does_not_change_pcm() {
+        let input: Vec<f32> = (0..48_013).map(|i| (i as f32 * 0.013).sin()).collect();
+        for rate in [8_000, 16_000, 44_100, 48_000] {
+            let whole = Resampler::new(rate).resample(&input);
+            for partition in [1, 17, 480, 960, 1024, 1536] {
+                let mut resampler = Resampler::new(rate);
+                let actual: Vec<f32> = input
+                    .chunks(partition)
+                    .flat_map(|chunk| resampler.resample(chunk))
+                    .collect();
+                assert_eq!(actual, whole, "rate={rate}, partition={partition}");
+            }
+        }
+    }
+
+    #[test]
+    fn resampler_keeps_five_physical_speech_bursts() {
+        let mut input = vec![0.0; 48_000];
+        for start in [2400, 11040, 19680, 28320, 36960] {
+            input[start..start + 2400].fill(0.25);
+        }
+        let expected: Vec<f32> = input.iter().step_by(3).copied().collect();
+        let mut resampler = Resampler::new(48_000);
+        let actual: Vec<f32> = input
+            .chunks(1024)
+            .flat_map(|chunk| resampler.resample(chunk))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "physical PCM positions must survive framing"
+        );
+        let bursts = actual
+            .iter()
+            .enumerate()
+            .filter(|(i, sample)| **sample > 0.0 && (*i == 0 || actual[*i - 1] == 0.0))
+            .count();
+        assert_eq!(bursts, 5);
+    }
+
+    #[test]
+    fn resampler_finish_and_reset_preserve_exact_capture_duration() {
+        let input: Vec<f32> = (0..4409).map(|i| i as f32 / 4410.0).collect();
+        for rate in [8000, 16000, 44100, 48000] {
+            let mut resampler = Resampler::new(rate);
+            let mut output: Vec<f32> = input
+                .chunks(17)
+                .flat_map(|chunk| resampler.resample(chunk))
+                .collect();
+            output.extend(resampler.finish());
+            assert_eq!(output.len(), (input.len() * 16000).div_ceil(rate as usize));
+            assert!(resampler.finish().is_empty());
+            resampler.reset();
+            let mut repeated = resampler.resample(&input);
+            repeated.extend(resampler.finish());
+            assert_eq!(
+                output, repeated,
+                "new stream must not inherit interpolation phase"
+            );
+        }
+    }
+
     /// 48 kHz frames downsample to ~16 kHz length for Silero VAD input.
     #[test]
     fn test_resampler_48k_to_16k() {
@@ -537,40 +634,15 @@ mod tests {
         assert!((output.len() as i32 - 160).abs() <= 1);
     }
 
-    /// Resampler matches linear-interpolation reference across repeated calls.
+    /// Integer-rate decimation retains the physical samples, without rounding
+    /// the frame's fractional phase back to zero on each callback.
     #[test]
     fn resample_value_parity_and_repeatable() {
-        // Reference linear interpolation (matches the pre-optimization math).
-        /// Reference linear resampler used only to assert production parity.
-        fn reference(samples: &[f32], ratio: f32) -> Vec<f32> {
-            if (ratio - 1.0).abs() < 0.001 {
-                return samples.to_vec();
-            }
-            let output_len = (samples.len() as f32 * ratio) as usize;
-            let mut out = Vec::with_capacity(output_len);
-            for i in 0..output_len {
-                let src_idx = i as f32 / ratio;
-                let idx0 = src_idx.floor() as usize;
-                let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
-                let frac = src_idx - idx0 as f32;
-                let sample = if idx0 < samples.len() {
-                    samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac
-                } else {
-                    0.0
-                };
-                out.push(sample);
-            }
-            out
-        }
-
         let mut resampler = Resampler::new(48000);
-        let ratio = VAD_SAMPLE_RATE as f32 / 48000.0;
         let input: Vec<f32> = (0..480).map(|i| (i as f32 * 0.013).sin()).collect();
-
-        // mem::take must not corrupt repeated calls; values match the reference.
         for _ in 0..3 {
             let out = resampler.resample(&input);
-            assert_eq!(out, reference(&input, ratio), "resample value parity");
+            assert_eq!(out, input.iter().step_by(3).copied().collect::<Vec<_>>());
         }
     }
 

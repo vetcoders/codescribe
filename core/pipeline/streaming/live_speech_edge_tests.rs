@@ -32,7 +32,7 @@ impl Driver {
         self.ingress.push_scripted_speech_prob_for_test(prob);
         let pcm = vec![0.2_f32; FRAME];
         self.seen += FRAME as u64;
-        let ingest = self.ingress.ingest(&pcm, self.seen);
+        let ingest = self.ingress.ingest(&pcm, &pcm, self.seen);
         if ingest.speech_live {
             self.false_run = 0;
         } else {
@@ -108,7 +108,7 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
     for prob in probabilities {
         ingress.push_scripted_speech_prob_for_test(prob);
         seen += FRAME as u64;
-        let observed = ingress.ingest(&[0.2; FRAME], seen);
+        let observed = ingress.ingest(&[0.2; FRAME], &[0.2; FRAME], seen);
         if !observed.closed.is_empty() {
             split_cursor = Some(seen);
             break;
@@ -117,7 +117,7 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
     let split_cursor = split_cursor.expect("script must force a retroactive split");
     ingress.push_scripted_speech_prob_for_test(0.90);
     seen += FRAME as u64;
-    ingress.ingest(&[0.2; FRAME], seen);
+    ingress.ingest(&[0.2; FRAME], &[0.2; FRAME], seen);
     let utterances = ingress.ledger().utterances();
     assert_eq!(utterances.len(), 2, "reopen must mint another occurrence");
     let closed_end = utterances[0].range.sample_end;
