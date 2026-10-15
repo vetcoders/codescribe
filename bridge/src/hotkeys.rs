@@ -75,6 +75,35 @@ pub struct CsDocumentVersion {
 
 /// The take's linear history: every accepted version, oldest first, and the
 /// selected one. `source_revision` is the CAS a navigation must name.
+/// Why a take's versions are no longer saved to its archived transcript.
+/// A code only: Swift owns the sentence (LOCALIZATION_LEDGER.md §4); the
+/// error chain behind it is in the app log.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchiveRefusal {
+    ArchiveUnreadable,
+    ArchiveChangedOutside,
+    ArchiveHasForeignHistory,
+    StepNotAdmitted,
+    VersionNotArchived,
+    VersionNotSelected,
+    MirrorFailed,
+}
+
+impl From<codescribe::controller::ArchiveRefusal> for CsArchiveRefusal {
+    fn from(value: codescribe::controller::ArchiveRefusal) -> Self {
+        use codescribe::controller::ArchiveRefusal as R;
+        match value {
+            R::ArchiveUnreadable => Self::ArchiveUnreadable,
+            R::ArchiveChangedOutside => Self::ArchiveChangedOutside,
+            R::ArchiveHasForeignHistory => Self::ArchiveHasForeignHistory,
+            R::StepNotAdmitted => Self::StepNotAdmitted,
+            R::VersionNotArchived => Self::VersionNotArchived,
+            R::VersionNotSelected => Self::VersionNotSelected,
+            R::MirrorFailed => Self::MirrorFailed,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsDocumentVersions {
     pub source_revision: u64,
@@ -83,7 +112,7 @@ pub struct CsDocumentVersions {
     /// Why these versions are no longer saved to the take's archived
     /// transcript. `None` while every accepted step is durable.
     #[uniffi(default = None)]
-    pub archive_refusal: Option<String>,
+    pub archive_refusal: Option<CsArchiveRefusal>,
 }
 
 impl CsDocumentVersions {
@@ -1308,7 +1337,7 @@ impl CodescribeHotkeys {
             };
             let (revision, timeline) = controller.document_versions(&session_id).await;
             CsDocumentVersions {
-                archive_refusal: controller.live_archive_refusal(&session_id),
+                archive_refusal: controller.live_archive_refusal(&session_id).map(Into::into),
                 ..CsDocumentVersions::from_timeline(revision, &timeline)
             }
         })
@@ -1924,7 +1953,7 @@ pub struct CsUserRevisionResult {
     /// longer saved to the take's archived transcript: why. `None` while the
     /// archive holds every accepted step.
     #[uniffi(default = None)]
-    pub archive_refusal: Option<String>,
+    pub archive_refusal: Option<CsArchiveRefusal>,
 }
 
 impl CsUserRevisionResult {
@@ -1935,7 +1964,9 @@ impl CsUserRevisionResult {
         controller: &RecordingController,
     ) -> Self {
         Self {
-            archive_refusal: controller.live_archive_refusal(&value.session_id),
+            archive_refusal: controller
+                .live_archive_refusal(&value.session_id)
+                .map(Into::into),
             ..Self::from(value)
         }
     }

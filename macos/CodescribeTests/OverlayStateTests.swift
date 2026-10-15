@@ -63,7 +63,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onHistoryRead: (() -> Void)?
   var historyCursor: UInt64?
   var historySourceRevision: UInt64?
-  var formatterArchiveRefusal: String?
+  var formatterArchiveRefusal: CsArchiveRefusal?
   var onRestore: (() -> Void)?
   var restoredSelections: [UInt64] = []
   var rosterSnapshot: [CsChannelRosterState] = []
@@ -4296,7 +4296,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.engine = engine
     projectText("raw", to: state, canFormat: true, terminal: true, reducerRevision: 7)
-    engine.formatterArchiveRefusal = "disk full"
+    engine.formatterArchiveRefusal = .stepNotAdmitted
     engine.onFormatter = {
       self.projectText(
         "raw", to: state, canFormat: true, terminal: true,
@@ -4307,8 +4307,9 @@ final class OverlayStateTests: XCTestCase {
     state.formatTranscript(at: .smart)
     for _ in 0..<50 { await Task.yield() }
     XCTAssertFalse(state.formatterCommitPending)
-    XCTAssertTrue(
-      state.revisionCommitError?.contains("disk full") == true,
+    XCTAssertEqual(
+      state.revisionCommitError,
+      OverlayState.archiveRefusalSentence(.stepNotAdmitted),
       "the later receipt must reveal failed durability even after paint cleared pending")
   }
 

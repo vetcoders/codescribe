@@ -17,6 +17,56 @@ use codescribe_core::state::history::{self, ArchiveRevisionProvenance};
 
 use crate::presentation::emitter::DocumentVersionStep;
 
+/// Why the mirror stopped: a code the overlay turns into its own sentence.
+/// The error chain behind it stays in the log; no user-visible wording is
+/// composed on this side of the bridge (LOCALIZATION_LEDGER.md §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveRefusal {
+    /// The archived transcript or its revision chain could not be read.
+    ArchiveUnreadable,
+    /// The chain's head moved outside the live take.
+    ArchiveChangedOutside,
+    /// The archive already carried revisions the live take never wrote.
+    ArchiveHasForeignHistory,
+    /// The chain refused an accepted live step.
+    StepNotAdmitted,
+    /// The selected live version has no step in the chain.
+    VersionNotArchived,
+    /// The chain refused to select the live version.
+    VersionNotSelected,
+    /// The mirror failed before any of the above was decided.
+    MirrorFailed,
+}
+
+impl ArchiveRefusal {
+    /// Stable wire name; also what the log shows.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ArchiveUnreadable => "archive_unreadable",
+            Self::ArchiveChangedOutside => "archive_changed_outside",
+            Self::ArchiveHasForeignHistory => "archive_has_foreign_history",
+            Self::StepNotAdmitted => "step_not_admitted",
+            Self::VersionNotArchived => "version_not_archived",
+            Self::VersionNotSelected => "version_not_selected",
+            Self::MirrorFailed => "mirror_failed",
+        }
+    }
+
+    /// The code a failed sync carries as its outermost context.
+    fn of(error: &anyhow::Error) -> Self {
+        error
+            .downcast_ref::<Self>()
+            .copied()
+            .unwrap_or(Self::MirrorFailed)
+    }
+}
+
+impl std::fmt::Display for ArchiveRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
 /// Identity of one live step: the receipt that accepted it and when. Bytes
 /// are never part of it, so two equal attempts stay two steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +106,7 @@ pub(crate) struct LiveArchiveMirror {
     head: Option<u64>,
     mirrored: Vec<Mirrored>,
     /// Why the mirror stopped. Once set, nothing more is written.
-    diverged: Option<String>,
+    diverged: Option<ArchiveRefusal>,
 }
 
 impl LiveArchiveMirror {
@@ -79,8 +129,8 @@ impl LiveArchiveMirror {
         &self.transcript
     }
 
-    pub(crate) fn diverged(&self) -> Option<&str> {
-        self.diverged.as_deref()
+    pub(crate) fn diverged(&self) -> Option<ArchiveRefusal> {
+        self.diverged
     }
 
     /// Bring the chain up to the live timeline `steps` with `cursor`
@@ -97,20 +147,23 @@ impl LiveArchiveMirror {
         }
         let result = self.sync_inner(steps, cursor);
         if let Err(error) = &result {
-            self.diverged = Some(format!("{error:#}"));
+            self.diverged = Some(ArchiveRefusal::of(error));
         }
         result
     }
 
     fn sync_inner(&mut self, steps: &[DocumentVersionStep], cursor: usize) -> Result<()> {
-        let document = history::read_archived_document(&self.transcript)?;
+        let document = history::read_archived_document(&self.transcript)
+            .context(ArchiveRefusal::ArchiveUnreadable)?;
         let mut head = match self.head {
             Some(expected) => {
-                anyhow::ensure!(
-                    document.head_revision() == expected,
-                    "the archived history of this take changed outside the live take (head {} instead of {expected})",
-                    document.head_revision()
-                );
+                if document.head_revision() != expected {
+                    return Err(anyhow::anyhow!(
+                        "the archived history of this take changed outside the live take (head {} instead of {expected})",
+                        document.head_revision()
+                    )
+                    .context(ArchiveRefusal::ArchiveChangedOutside));
+                }
                 expected
             }
             None => self.seed(&document, steps)?,
@@ -148,7 +201,8 @@ impl LiveArchiveMirror {
                         "live {} step was not admitted to the archive",
                         step.provenance
                     )
-                })?;
+                })
+                .context(ArchiveRefusal::StepNotAdmitted)?;
                 head = record.revision;
                 self.head = Some(head);
                 self.mirrored.push(Mirrored {
@@ -162,7 +216,8 @@ impl LiveArchiveMirror {
             .mirrored
             .get(cursor)
             .map(|mirrored| mirrored.revision)
-            .context("the selected live version has no archived step")?;
+            .context("the selected live version has no archived step")
+            .context(ArchiveRefusal::VersionNotArchived)?;
         self.select(head, target)?;
         Ok(())
     }
@@ -177,10 +232,12 @@ impl LiveArchiveMirror {
         document: &history::ArchivedDocument,
         steps: &[DocumentVersionStep],
     ) -> Result<u64> {
-        anyhow::ensure!(
-            document.revisions.is_empty(),
-            "the archived transcript already has a history the live take did not write"
-        );
+        if !document.revisions.is_empty() {
+            return Err(anyhow::anyhow!(
+                "the archived transcript already has a history the live take did not write"
+            )
+            .context(ArchiveRefusal::ArchiveHasForeignHistory));
+        }
         // Position decides; the byte check only refuses to call a version
         // the original when the archive was written from something else.
         let original = Some(self.archived_step).filter(|&index| {
@@ -206,7 +263,8 @@ impl LiveArchiveMirror {
                         "live {} step before the archived transcript was not admitted",
                         step.provenance
                     )
-                })?;
+                })
+                .context(ArchiveRefusal::StepNotAdmitted)?;
                 head = record.revision;
                 self.head = Some(head);
                 self.mirrored.push(Mirrored {
@@ -230,12 +288,14 @@ impl LiveArchiveMirror {
     /// Select chain step `target` unless it is already selected; returns the
     /// new head.
     fn select(&mut self, head: u64, target: u64) -> Result<u64> {
-        let document = history::read_archived_document(&self.transcript)?;
+        let document = history::read_archived_document(&self.transcript)
+            .context(ArchiveRefusal::ArchiveUnreadable)?;
         if document.timeline().selected_revision() == target {
             return Ok(head);
         }
         let record = history::navigate_archived_revision(&self.transcript, head, target)
-            .context("the selected live version was not selected in the archive")?;
+            .context("the selected live version was not selected in the archive")
+            .context(ArchiveRefusal::VersionNotSelected)?;
         self.head = Some(record.revision);
         Ok(record.revision)
     }
