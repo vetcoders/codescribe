@@ -4,7 +4,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec env -u PYTHONHOME -u PYTHONPATH \"$HOME/.local/bin/cs-bus\" --mcp"
+        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec \"$HOME/.local/bin/cs-bus\" --mcp"
       ]
     }
   }

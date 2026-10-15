@@ -1018,27 +1018,42 @@ class ClaudeCodeWakeTests(MailboxFixture):
         (home / "lib/python3.14").mkdir(parents=True)
         return {"PYTHONHOME": str(home), "PYTHONPATH": str(home / "lib/python3.14")}
 
-    def test_foreign_python_home_cannot_silence_the_wake(self):
+    def installed_helper(self):
+        """cs-bus exactly as the app installer writes it: its generated header, then the helper body."""
+        installer = (SCRIPTS.parent / "macos/Codescribe/Services/AgentBridgeInstaller.swift").read_text()
+        shebang = re.search(r'let header =\s*"(#![^"]*)\\n" \+ Self\.commandMarker', installer)[1]
+        directory = Path(self.temp.name) / "installed bin"
+        directory.mkdir(exist_ok=True)
+        body = (SCRIPTS / "bus-demux.py").read_text().split("\n", 1)[1]
+        helper = directory / "cs-bus"
+        helper.write_text(f'{shebang}\n# codescribe-managed-command: {{"managed_id":"test"}}\n{body}')
+        helper.chmod(0o755)
+        shutil.copy2(SCRIPTS / "bus-mcp.py", directory / "bus-mcp.py")
+        return helper
+
+    def test_installed_helper_wakes_under_a_foreign_python_home(self):
         poison = self.foreign_interpreter()
         # The plugin's managed PATH, as the hook sees it; a pinned door earlier on
         # this test's own PATH could otherwise repair the interpreter for us.
         managed = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
         env = {**os.environ, **self.environ, **poison, "CODESCRIBE_AGENT_BRIDGE_HOME": str(self.root), "PATH": managed}
         payload = json.dumps({"session_id": self.session, "hook_event_name": "Stop"})
-        bare = subprocess.run([str(SCRIPTS / "cs-bus"), "--claude-code-wake"], input=payload, env=env,
+        helper = self.installed_helper()
+        python = shutil.which("python3", path=managed)
+        bare = subprocess.run([python, str(helper), "--claude-code-wake"], input=payload, env=env,
                               capture_output=True, text=True, timeout=20)
-        self.assertNotIn(bare.returncode, (0, MCP.WAKE_EXIT), "the fixture must poison a bare helper")
-        entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
-        helper = re.search(r'env -u PYTHONHOME -u PYTHONPATH .*?--claude-code-wake', entry["command"])[0]
+        self.assertNotIn(bare.returncode, (0, MCP.WAKE_EXIT), "the fixture must poison an unisolated interpreter")
+        wake = subprocess.run([str(helper), "--claude-code-wake"], input=payload, env=env,
+                              capture_output=True, text=True, timeout=20)
+        self.assertEqual(wake.returncode, MCP.WAKE_EXIT, wake.stderr)
+        self.assertIn("new message(s) for fable on channel 7", wake.stderr)
         for shell in ("/bin/bash", "/bin/zsh"):
             with self.subTest(shell=shell):
                 for path in (self.root / "runtime" / "native-wake").glob("*"):
                     path.unlink()
-                wake = self.hook(shell, command=helper, environ={**self.environ, **poison})
-                self.assertEqual(wake.returncode, MCP.WAKE_EXIT, wake.stderr)
-                for path in (self.root / "runtime" / "native-wake").glob("*"):
-                    path.unlink()
-                result = self.hook(shell, environ={**self.environ, **poison})
+                entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
+                result = self.hook(shell, command=entry["command"].replace('"$HOME/.local/bin/cs-bus"', f'"{helper}"'),
+                                   environ={**self.environ, **poison})
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("new message(s) for fable on channel 7", result.stderr)
         self.assertFalse((self.root / "runtime/hook-failures.log").exists())
@@ -1188,8 +1203,7 @@ class PluginContractTests(unittest.TestCase):
         extension = (self.PLUGIN / "hooks/pre/codescribe-omp.ts").read_text()
         launcher = self.load(".mcp.json")["mcpServers"]["codescribe"]["args"][-1]
         self.assertIn('"$HOME/.local/bin/cs-bus"', launcher)
-        self.assertIn('exec env -u PYTHONHOME -u PYTHONPATH "$HOME/.local/bin/cs-bus" --omp-wake --provider omp '
-                      '--session "$1" --host-pid "$2"', extension)
+        self.assertIn('exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
         self.assertIn('export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"', extension)
         self.assertEqual(int(re.search(r"const WAKE_EXIT = (\d+)", extension)[1]), MCP.WAKE_EXIT)
         self.assertGreater(int(re.search(r"const WAKE_TIMEOUT_MS = ([\d_]+)", extension)[1].replace("_", "")),
@@ -1414,17 +1428,28 @@ class SessionHookTests(unittest.TestCase):
 
 
 class NativeLaunchTests(unittest.TestCase):
-    def test_every_plugin_command_drops_the_host_interpreter_variables(self):
-        plugin = SCRIPTS.parent / "plugins/codescribe"
-        hooks = json.loads((plugin / "hooks/claude-code.json").read_text())["hooks"]
-        commands = [entry["command"] for event in hooks.values() for group in event for entry in group["hooks"]]
-        commands += [entry["command"] for event in json.loads((plugin / "hooks/hooks.json").read_text())["hooks"].values()
-                     for group in event for entry in group["hooks"]]
-        commands.append(json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["codescribe"]["args"][-1])
-        commands.append((plugin / "hooks/pre/codescribe-omp.ts").read_text())
-        for command in commands:
-            with self.subTest(command=command[:60]):
-                self.assertRegex(command, r'env -u PYTHONHOME -u PYTHONPATH (PATH="[^"]+" )?("\$HOME/\.local/bin/cs-bus"|python3)')
+    def test_every_helper_entrypoint_starts_isolated_from_host_interpreter_variables(self):
+        for name in ("cs-bus", "cs-say", "cs-junie", "bus-demux.py", "bus-mcp.py"):
+            with self.subTest(entrypoint=name):
+                self.assertEqual((SCRIPTS / name).read_text().split("\n", 1)[0], "#!/usr/bin/env -S python3 -E")
+        session = json.loads((SCRIPTS.parent / "plugins/codescribe/hooks/hooks.json").read_text())
+        self.assertIn('exec python3 -E "${CLAUDE_PLUGIN_ROOT}/hooks/session.py"',
+                      session["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+
+    def test_helper_children_never_inherit_a_foreign_python_home(self):
+        # cs-say re-runs sys.executable on cs-bus without -E; the parent must hand
+        # it an environment without the host's interpreter variables.
+        with tempfile.TemporaryDirectory(prefix=".helper-child-", dir=Path(__file__).parent) as temporary:
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            env = {**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                   "PYTHONHOME": str(foreign), "PYTHONPATH": str(foreign / "lib/python3.14")}
+            for name in ("cs-say", "cs-bus"):
+                with self.subTest(entrypoint=name):
+                    result = subprocess.run([str(SCRIPTS / name), "--version"], env=env,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(result.stdout.startswith(f"{name} "), result.stdout)
 
     def test_installed_mcp_launch_survives_a_foreign_python_home(self):
         config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
