@@ -18,7 +18,7 @@ export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
 # The host's overlay polls the agent bridge and its Rust core answers the
 # channel roster from it. A live ~/.codescribe/agent-bridge drew a second
 # overlay with the real conversations during a take (2026-10-13).
-mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge"
+mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?
 export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"
 
 echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
