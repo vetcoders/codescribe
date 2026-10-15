@@ -493,8 +493,10 @@ extension RealAgentBridgeInstaller {
   static func busTextArguments(
     holdSeconds: UInt32, owner: OverlayConversationOwner?, root: URL
   ) throws -> [String] {
-    ["--send-text", "--hold-seconds", String(holdSeconds)]
-      + (try busOwnerArguments(owner: owner, root: root))
+    // The owner block stays right behind --send-text; the hold is a trailing
+    // option, so existing publisher receipts keep their argument prefix.
+    ["--send-text"] + (try busOwnerArguments(owner: owner, root: root))
+      + ["--hold-seconds", String(holdSeconds)]
   }
 
   static func deliveryControlArguments(
