@@ -100,6 +100,10 @@ pub struct CsSettings {
     pub whisper_adaptive_buffer: bool,
     /// `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
     pub format_on_device: bool,
+    /// Voice Lab: the DictationTranscriber witness re-checks unresolved
+    /// recovery debt after each sealed utterance. Effective value after the
+    /// settings key plus the power-user env override.
+    pub dictation_witness_armed: bool,
     pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
@@ -227,6 +231,7 @@ impl CsSettings {
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
             format_on_device: config.format_on_device,
+            dictation_witness_armed: runtime.dictation_witness_armed(),
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),

@@ -987,6 +987,7 @@ extension CsSettings {
     whisperContextWindowSec: 8,
     whisperAdaptiveBuffer: false,
     formatOnDevice: false,
+    dictationWitnessArmed: false,
     lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",

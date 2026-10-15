@@ -13545,6 +13545,12 @@ public struct CsSettings: Equatable, Hashable {
      * `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
      */
     public var formatOnDevice: Bool
+    /**
+     * Voice Lab: the DictationTranscriber witness re-checks unresolved
+     * recovery debt after each sealed utterance. Effective value after the
+     * settings key plus the power-user env override.
+     */
+    public var dictationWitnessArmed: Bool
     public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
@@ -13676,7 +13682,12 @@ public struct CsSettings: Equatable, Hashable {
          */whisperContextWindowSec: Float, whisperAdaptiveBuffer: Bool,
         /**
          * `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
-         */formatOnDevice: Bool, lightPlusSentencePauseSec: Float,
+         */formatOnDevice: Bool,
+        /**
+         * Voice Lab: the DictationTranscriber witness re-checks unresolved
+         * recovery debt after each sealed utterance. Effective value after the
+         * settings key plus the power-user env override.
+         */dictationWitnessArmed: Bool, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -13746,6 +13757,7 @@ public struct CsSettings: Equatable, Hashable {
         self.whisperContextWindowSec = whisperContextWindowSec
         self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
         self.formatOnDevice = formatOnDevice
+        self.dictationWitnessArmed = dictationWitnessArmed
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
@@ -13828,6 +13840,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
                 whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
                 formatOnDevice: FfiConverterBool.read(from: &buf),
+                dictationWitnessArmed: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
@@ -13898,6 +13911,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
         FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
         FfiConverterBool.write(value.formatOnDevice, into: &buf)
+        FfiConverterBool.write(value.dictationWitnessArmed, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
