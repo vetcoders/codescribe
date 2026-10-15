@@ -142,60 +142,93 @@ const server = createServer((req, res) => {
     raw += chunk;
     if (raw.length > 4096) req.destroy();
   });
-  req.on("end", async () => {
-    let email;
-    try {
-      ({ email } = JSON.parse(raw));
-    } catch {
-      respond(res, 400, { error: 'body must be JSON: {"email":"..."}' });
-      return;
-    }
-    email = (email ?? "").trim().toLowerCase();
-    // Syntactic sanity only — the real gate is eligibility() above.
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-      respond(res, 400, { error: "that does not look like an email address" });
-      return;
-    }
-    const verdict = await eligibility(email);
-    if (!verdict.ok) {
-      respond(res, 403, { error: verdict.reason });
-      return;
-    }
-
-    const today = new Date();
-    const claims = {
-      v: 1,
-      sku: process.env.LICENSE_SKU || "agentic-lifetime",
-      email_hash: createHash("sha256").update(email).digest("hex"),
-      issued: isoDate(today),
-      updates_until: isoDate(
-        addMonthsClamped(
-          today,
-          parseInt(process.env.UPDATES_MONTHS ?? "12", 10)
-        )
-      ),
-      seat_limit: parseInt(process.env.SEAT_LIMIT ?? "3", 10),
-    };
-    const payload = Buffer.from(JSON.stringify(claims), "utf8");
-    const signature = edSign(null, payload, signingKey);
-
-    console.log(
-      JSON.stringify({
-        at: new Date().toISOString(),
-        issued_for_hash: claims.email_hash,
-        ip,
-      })
-    );
-    respond(res, 200, {
-      license: `CSK1.${b64url(payload)}.${b64url(signature)}`,
-      sku: claims.sku,
-      issued: claims.issued,
-      updates_until: claims.updates_until,
-      seat_limit: claims.seat_limit,
+  req.on("end", () => {
+    // The whole async path is caught: an unhandled rejection would end the
+    // Node process, and the systemd restart would also reset the cooldown.
+    issue(raw, ip, res).catch((error) => {
+      console.error(
+        JSON.stringify({
+          at: new Date().toISOString(),
+          issue_failed: String(error?.message ?? error),
+          ip,
+        })
+      );
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        respond(res, 500, {
+          error: "licence issuer failed — try again in a moment",
+        });
+      }
     });
   });
 });
 
+/// The body contract: a JSON object whose `email` is a string. A number, an
+/// object, an array, a bare value or broken JSON is null, never a thrown
+/// TypeError on `.trim()` (which took the process down before).
+function requestedEmail(raw) {
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return null;
+  }
+  return typeof body.email === "string" ? body.email : null;
+}
+
+async function issue(raw, ip, res) {
+  const requested = requestedEmail(raw);
+  if (requested === null) {
+    respond(res, 400, { error: 'body must be JSON: {"email":"..."}' });
+    return;
+  }
+  const email = requested.trim().toLowerCase();
+  // Syntactic sanity only — the real gate is eligibility() above.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    respond(res, 400, { error: "that does not look like an email address" });
+    return;
+  }
+  const verdict = await eligibility(email);
+  if (!verdict.ok) {
+    respond(res, 403, { error: verdict.reason });
+    return;
+  }
+
+  const today = new Date();
+  const claims = {
+    v: 1,
+    sku: process.env.LICENSE_SKU || "agentic-lifetime",
+    email_hash: createHash("sha256").update(email).digest("hex"),
+    issued: isoDate(today),
+    updates_until: isoDate(
+      addMonthsClamped(today, parseInt(process.env.UPDATES_MONTHS ?? "12", 10))
+    ),
+    seat_limit: parseInt(process.env.SEAT_LIMIT ?? "3", 10),
+  };
+  const payload = Buffer.from(JSON.stringify(claims), "utf8");
+  const signature = edSign(null, payload, signingKey);
+
+  console.log(
+    JSON.stringify({
+      at: new Date().toISOString(),
+      issued_for_hash: claims.email_hash,
+      ip,
+    })
+  );
+  respond(res, 200, {
+    license: `CSK1.${b64url(payload)}.${b64url(signature)}`,
+    sku: claims.sku,
+    issued: claims.issued,
+    updates_until: claims.updates_until,
+    seat_limit: claims.seat_limit,
+  });
+}
+
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`license-issuer listening on 127.0.0.1:${PORT}`);
+  // The bound port, so PORT=0 (an ephemeral port, as the tests use) is reported truthfully.
+  console.log(`license-issuer listening on 127.0.0.1:${server.address().port}`);
 });

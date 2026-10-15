@@ -305,9 +305,11 @@ USE_LOCAL_STT=1
 
 ```
 AI_FORMATTING_ENABLED=1
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain.
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
+LLM_FORMATTING_MODEL=gpt-4.1
+# Klucz: Settings › Providers (Keychain); LLM_OPENAI_API_KEY w env tylko jako fallback.
+# Endpoint jest dostawcy i nie podlega nadpisaniu; LLM_ENDPOINT / LLM_MODEL są
+# wycofane (jedno ostrzeżenie, bez skutku).
 ```
 
 **3) Cloud‑only STT**

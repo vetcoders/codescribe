@@ -57,6 +57,19 @@ pub fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether `path` names credential-bearing content: env files, MCP config, key
+/// material, credential directories.
+///
+/// The same classifier the permission gate escalates on, so a tool that must
+/// skip secrets mid-walk (search) agrees with the gate on what a secret is.
+/// Pass a canonical path — an alias must be judged by the file it opens.
+pub fn is_secret_bearing(path: &Path) -> bool {
+    codescribe_core::agent::secret_paths::find_secret_path(&serde_json::Value::String(
+        path.to_string_lossy().into_owned(),
+    ))
+    .is_some()
+}
+
 /// Resolve an **existing** path and prove it lies inside `roots`.
 ///
 /// Requires an absolute input, then canonicalizes before the containment check —
@@ -217,12 +230,17 @@ const FORBIDDEN_PROGRAMS: &[&str] = &[
 ///    not per-token stripping — stripping was the P1-05 bypass that let
 ///    `curl … | bash` through as three innocent words.
 /// 3. No token resolves to a `FORBIDDEN_PROGRAMS` entry, checked by basename so
-///    `/bin/bash` is caught alongside `bash`.
+///    `/bin/bash` is caught alongside `bash`, and after quote and escape
+///    characters are removed ([`unquote_token`]) so quoting cannot disguise one.
 /// 4. Targeted refusals for commands that are individually fine but destructive
 ///    in specific shapes: `dd of=/dev/…`, `rm -rf`, `git reset --hard`,
 ///    `git clean -f`, and anything naming keychains, browser profiles, or the
 ///    policy settings themselves.
-/// 5. Every path-shaped argument is sanitized and pushed back through the
+/// 5. A `git` token (including one behind a launcher such as `xcrun`) also
+///    passes the argv profile in [`validate_git_argv`]: Git can run programs
+///    through config, aliases, and transport options, which would void the
+///    program denylist above.
+/// 6. Every path-shaped argument is sanitized and pushed back through the
 ///    containment gates, so arguments cannot reach outside the workspace.
 ///
 /// Returns the canonical `cwd` on success; any failure is a denial.
@@ -244,14 +262,14 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
             "Shell control and expansion operators (| ; & < > ( ) $ `) are blocked by Codescribe terminal policy"
         );
     }
-    let tokens = command
+    let raw_tokens = command
         .split_whitespace()
-        .map(|token| {
-            token
-                .trim_matches(|ch: char| matches!(ch, '\'' | '"'))
-                .to_ascii_lowercase()
-        })
+        .map(unquote_token)
         .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let tokens = raw_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
         .collect::<Vec<_>>();
     let Some(program) = tokens.first().map(String::as_str) else {
         bail!("Terminal command is empty");
@@ -307,6 +325,17 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
     {
         bail!("Destructive Git cleanup is blocked by Codescribe terminal policy");
     }
+    // The first `git` token anywhere, not only in program position: a launcher
+    // such as `xcrun git …` or `timeout 5 git …` still ends up running Git.
+    // Case-preserving tokens, because Git options are case sensitive (`-C` is
+    // not `-c`).
+    if let Some(index) = raw_tokens.iter().position(|token| is_git_program(token)) {
+        let argv = raw_tokens[index + 1..]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        validate_git_argv(&argv)?;
+    }
     for token in tokens.iter().skip(1) {
         let candidate = token
             .split_once('=')
@@ -326,6 +355,236 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
         }
     }
     Ok(cwd)
+}
+
+/// A command token as the shell will hand it to the program: quote and escape
+/// characters removed wherever they sit. Trimming only the ends let `s\h` or
+/// `"g"it` read as harmless words while a shell ran `sh` or `git`.
+fn unquote_token(token: &str) -> String {
+    token
+        .chars()
+        .filter(|ch| !matches!(ch, '\'' | '"' | '\\'))
+        .collect()
+}
+
+/// Whether `token` names the `git` executable, by basename (`/usr/bin/git`).
+pub(crate) fn is_git_program(token: &str) -> bool {
+    Path::new(token)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("git"))
+}
+
+/// Switches `git` may carry before its subcommand: none takes a value and none
+/// names a program. `-c`, `--config-env`, `--exec-path`, `-C`, `--git-dir`,
+/// `--work-tree` and every other global option are absent on purpose.
+const GIT_GLOBAL_SWITCHES: &[&str] = &[
+    "--no-pager",
+    "--no-optional-locks",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--version",
+];
+
+/// Built-in Git subcommands the terminal tool admits.
+///
+/// An allowlist, not a denylist: Git resolves an unknown subcommand as a
+/// user-defined alias (`alias.x = !sh`) or an external `git-x` executable, and
+/// a built-in always wins over an alias, so naming only built-ins closes both.
+/// Commands that run caller-supplied programs (`submodule foreach`,
+/// `bisect run`, `filter-branch`, `difftool`, `mergetool`, `daemon`,
+/// `instaweb`, `help`) are left out; `config` is admitted for reads only.
+const GIT_SUBCOMMANDS: &[&str] = &[
+    "add",
+    "am",
+    "annotate",
+    "apply",
+    "archive",
+    "blame",
+    "branch",
+    "cat-file",
+    "check-attr",
+    "check-ignore",
+    "checkout",
+    "cherry",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "count-objects",
+    "describe",
+    "diff",
+    "diff-files",
+    "diff-index",
+    "diff-tree",
+    "fetch",
+    "for-each-ref",
+    "format-patch",
+    "fsck",
+    "gc",
+    "grep",
+    "init",
+    "log",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "merge",
+    "merge-base",
+    "mv",
+    "name-rev",
+    "notes",
+    "pull",
+    "push",
+    "range-diff",
+    "rebase",
+    "reflog",
+    "remote",
+    "reset",
+    "restore",
+    "rev-list",
+    "rev-parse",
+    "revert",
+    "rm",
+    "shortlog",
+    "show",
+    "show-branch",
+    "show-ref",
+    "sparse-checkout",
+    "stash",
+    "status",
+    "switch",
+    "symbolic-ref",
+    "tag",
+    "verify-commit",
+    "verify-tag",
+    "version",
+    "whatchanged",
+    "worktree",
+];
+
+/// Long options (without the leading dashes) that hand Git a program or a
+/// config entry to run. Git accepts any unambiguous abbreviation of a long
+/// option, so [`validate_git_argv`] refuses every prefix of these names.
+const GIT_EXEC_OPTIONS: &[&str] = &[
+    "upload-pack",
+    "receive-pack",
+    "exec",
+    "open-files-in-pager",
+    "ext-diff",
+    "config",
+    "config-env",
+    // Signature checks run `gpg.program`; textconv and clean filters run the
+    // drivers named in configuration and attributes. `process.rs` switches
+    // them off for the spawn, and the last option on a command line wins.
+    "show-signature",
+    "textconv",
+    "filters",
+];
+
+/// `git config` flags that only read.
+const GIT_CONFIG_READ_FLAGS: &[&str] = &[
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--get-urlmatch",
+    "--list",
+    "-l",
+];
+
+/// `git config` flags that change configuration or open an editor.
+const GIT_CONFIG_WRITE_FLAGS: &[&str] = &[
+    "--add",
+    "--unset",
+    "--unset-all",
+    "--replace-all",
+    "--edit",
+    "-e",
+    "--rename-section",
+    "--remove-section",
+];
+
+/// Short options that hand a program or config entry to `subcommand`.
+fn git_exec_letters(subcommand: &str) -> &'static [char] {
+    match subcommand {
+        // `-u <upload-pack>`, and `-c <key=value>` applied before the fetch.
+        "clone" => &['u', 'c'],
+        // `-O<pager>`.
+        "grep" => &['O'],
+        // `-x <cmd>`, the short form of `--exec`.
+        "rebase" => &['x'],
+        _ => &[],
+    }
+}
+
+/// Admit a `git` argv (program name already removed) only if Git cannot be
+/// made to run a program through it.
+///
+/// Git executes commands from several places a program denylist never sees:
+/// `-c alias.x=!sh x` runs a shell, `-c core.sshCommand=…` or `core.pager=…`
+/// run arbitrary programs, `--upload-pack=…` and `--exec=…` name one outright,
+/// and an alias defined in config makes `git x` a shell without any suspicious
+/// token. The profile therefore refuses all global options except the value-less
+/// switches in [`GIT_GLOBAL_SWITCHES`], admits only the built-in subcommands in
+/// [`GIT_SUBCOMMANDS`], refuses program-carrying options for every subcommand,
+/// and permits `git config` for reads only. Ordinary operations (`status`,
+/// `diff`, `log`, `add`, `commit`, `fetch`, …) keep working.
+fn validate_git_argv(args: &[&str]) -> Result<()> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index)
+        && arg.starts_with('-')
+    {
+        if !GIT_GLOBAL_SWITCHES.contains(arg) {
+            bail!("Git option is blocked by Codescribe terminal policy: {arg}");
+        }
+        index += 1;
+    }
+    let Some(&subcommand) = args.get(index) else {
+        // Bare `git` or only global switches (`git --version`): nothing to run.
+        return Ok(());
+    };
+    if !GIT_SUBCOMMANDS.contains(&subcommand) {
+        bail!("Git subcommand is not admitted by Codescribe terminal policy: {subcommand}");
+    }
+
+    let options = &args[index + 1..];
+    let exec_letters = git_exec_letters(subcommand);
+    for option in options {
+        // Everything after `--` is a pathspec, never an option.
+        if *option == "--" {
+            break;
+        }
+        let Some(flag) = option.strip_prefix('-') else {
+            continue;
+        };
+        if let Some(long) = flag.strip_prefix('-') {
+            let name = long.split('=').next().unwrap_or(long);
+            if GIT_EXEC_OPTIONS
+                .iter()
+                .any(|dangerous| dangerous.starts_with(name))
+            {
+                bail!("Git option is blocked by Codescribe terminal policy: {option}");
+            }
+        } else if flag.chars().any(|letter| exec_letters.contains(&letter)) {
+            bail!("Git option is blocked by Codescribe terminal policy: {option}");
+        }
+    }
+
+    if subcommand == "config" {
+        let reads = options
+            .iter()
+            .any(|option| GIT_CONFIG_READ_FLAGS.contains(option));
+        let writes = options
+            .iter()
+            .any(|option| GIT_CONFIG_WRITE_FLAGS.contains(option));
+        if !reads || writes {
+            bail!("Git config changes are blocked by Codescribe terminal policy");
+        }
+    }
+    Ok(())
 }
 
 /// Version-suffix-aware denylist match. Exact names alone let every versioned

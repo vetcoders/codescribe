@@ -324,9 +324,7 @@ final class TrayViewModel: ObservableObject {
   /// Copy a chosen recent transcript's full text to the system pasteboard.
   func copyTranscript(path: String) {
     guard let text = engine?.transcriptText(forPath: path) else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+    copyTranscriptText(text)
   }
 
   /// Reveal the folder holding the most recent transcript in Finder.
@@ -339,15 +337,25 @@ final class TrayViewModel: ObservableObject {
   /// Copy the most recent transcript's text to the system pasteboard.
   func copyLastTranscript() {
     guard let text = engine?.latestTranscriptText() else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+    copyTranscriptText(text)
+  }
+
+  private func copyTranscriptText(_ text: String) {
+    Task { @MainActor in
+      do {
+        try await UserTextClipboard.copy(text)
+        showCopyStatus(
+          String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+      } catch {
+        showCopyStatus(error.userFacingMessage, kind: .failure)
+      }
+    }
   }
 
   /// Flash a transient "Copied" banner beside the copy actions, then auto-clear
   /// it (cancelling any in-flight clear so rapid copies keep the newest banner).
-  private func showCopyStatus(_ message: String) {
-    copyStatus = TrayActionStatus(kind: .success, message: message)
+  private func showCopyStatus(_ message: String, kind: TrayActionStatus.Kind = .success) {
+    copyStatus = TrayActionStatus(kind: kind, message: message)
     copyStatusClearTask?.cancel()
     copyStatusClearTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 4_000_000_000)

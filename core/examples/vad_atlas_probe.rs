@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
 
     let (samples, capture_rate) = load_audio_file(std::path::Path::new(&wav))?;
     let capture_len = samples.len() as u64;
-    let mono16k = resample_to_16k(&samples, capture_rate);
+    let mono16k = resample_to_16k(&samples, capture_rate)?;
 
     // 16 kHz input → AccumulatingVad never resamples again; each feed of one
     // full chunk runs exactly one Silero inference, so probs[i] belongs to

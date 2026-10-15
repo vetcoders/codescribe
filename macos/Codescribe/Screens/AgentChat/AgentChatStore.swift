@@ -64,10 +64,20 @@ protocol AgentChatEngine: AnyObject {
     onToolResult:
       @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String
-  /// Max replies stay on the consultation's retained owner. The acceptance id
-  /// is a durable replay guard, not a fresh id generated on each UI retry.
+  /// Max replies stay on the consultation's retained owner and stream like an
+  /// Agent reply: the callbacks carry exactly this turn's text, reasoning and
+  /// tool events. The acceptance id is a durable replay guard, not a fresh id
+  /// generated on each UI retry, and it keys the events to this turn.
   func consultationReply(
-    _ text: String, threadId: String, turnID: String, attachmentPaths: [String]
+    _ text: String,
+    threadId: String,
+    turnID: String,
+    attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String
   /// Abort the engine-side turn running for `threadId` (safe no-op when idle).
   /// Cancelling the Swift `Task` that awaits `streamReply` is NOT enough: the
@@ -96,7 +106,15 @@ protocol AgentChatEngine: AnyObject {
 
 extension AgentChatEngine {
   func consultationReply(
-    _ text: String, threadId: String, turnID: String, attachmentPaths: [String]
+    _ text: String,
+    threadId: String,
+    turnID: String,
+    attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String {
     throw NSError(
       domain: "Codescribe.Max", code: 1,
@@ -2173,58 +2191,74 @@ final class AgentChatStore: ObservableObject {
       }
       let start = Date()
       do {
-        // REAL streaming: tokens land live as the agent emits them.
+        // REAL streaming: tokens land live as the agent emits them. A Max turn
+        // renders through the same handlers, so its text, reasoning and tool
+        // rows stream exactly like an Agent turn.
+        let onDelta: @MainActor (String) -> Void = { [self] delta in
+          guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+            return
+          }
+          setComposerPhase(.streaming, for: turnID)
+          noteHeaderLexical(.answering, in: threadID)
+          update(assistantID, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = true
+            if $0.reasonedSeconds == nil {
+              $0.reasonedSeconds = Date().timeIntervalSince(start)
+            }
+            $0.text += delta
+          }
+        }
+        let onReasoning: @MainActor (String) -> Void = { [self] delta in
+          guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+            return
+          }
+          noteHeaderLexical(.thinking, in: threadID)
+          appendReasoning(delta, to: assistantID, in: threadID)
+        }
+        let onToolExecuting: @MainActor (_ name: String, _ id: String) -> Void = {
+          [self] name, id in
+          guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+            return
+          }
+          noteHeaderToolStarted(callID: id, in: threadID)
+          recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
+        }
+        let onToolResult:
+          @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void = {
+            [self] name, id, isError, reason in
+            pendingToolApprovals.removeAll {
+              $0.threadID == backendId && $0.callID == id
+            }
+            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
+              return
+            }
+            noteHeaderToolSettled(callID: id, in: threadID)
+            recordToolResult(
+              name: name, callID: id, isError: isError, reason: reason,
+              before: assistantID, in: threadID)
+          }
         let finalText: String
         if isMaxConsultation {
           finalText = try await engine.consultationReply(
-            text, threadId: backendId, turnID: turnID.uuidString,
-            attachmentPaths: attachmentPaths)
+            text,
+            threadId: backendId,
+            turnID: turnID.uuidString,
+            attachmentPaths: attachmentPaths,
+            onDelta: onDelta,
+            onReasoning: onReasoning,
+            onToolExecuting: onToolExecuting,
+            onToolResult: onToolResult
+          )
         } else {
           finalText = try await engine.streamReply(
             text,
             threadId: backendId,
             attachmentPaths: attachmentPaths,
-            onDelta: { [self] delta in
-              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-                return
-              }
-              setComposerPhase(.streaming, for: turnID)
-              noteHeaderLexical(.answering, in: threadID)
-              update(assistantID, in: threadID) {
-                $0.isThinking = false
-                $0.isStreaming = true
-                if $0.reasonedSeconds == nil {
-                  $0.reasonedSeconds = Date().timeIntervalSince(start)
-                }
-                $0.text += delta
-              }
-            },
-            onReasoning: { [self] delta in
-              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-                return
-              }
-              noteHeaderLexical(.thinking, in: threadID)
-              appendReasoning(delta, to: assistantID, in: threadID)
-            },
-            onToolExecuting: { [self] name, id in
-              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-                return
-              }
-              noteHeaderToolStarted(callID: id, in: threadID)
-              recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
-            },
-            onToolResult: { [self] name, id, isError, reason in
-              pendingToolApprovals.removeAll {
-                $0.threadID == backendId && $0.callID == id
-              }
-              guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
-                return
-              }
-              noteHeaderToolSettled(callID: id, in: threadID)
-              recordToolResult(
-                name: name, callID: id, isError: isError, reason: reason,
-                before: assistantID, in: threadID)
-            }
+            onDelta: onDelta,
+            onReasoning: onReasoning,
+            onToolExecuting: onToolExecuting,
+            onToolResult: onToolResult
           )
         }
         settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)

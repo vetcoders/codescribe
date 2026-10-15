@@ -58,11 +58,34 @@ final class RealChatEngine: AgentChatEngine {
     try await agent.generateThreadTitle(text: text)
   }
 
+  /// A typed Max turn runs on the consultation's retained owner under its
+  /// durable acceptance id, whatever dictation formatting level is selected.
+  /// The owner's events for exactly this turn stream through the same
+  /// listener the Agent lane uses, so text, reasoning, tools and approval
+  /// cards render live instead of after the final reply.
   func consultationReply(
-    _ text: String, threadId: String, turnID: String, attachmentPaths: [String]
+    _ text: String,
+    threadId: String,
+    turnID: String,
+    attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String {
-    let result = try await assistiveRouting.continueMaxConsultation(
-      text: text, threadId: threadId, turnId: turnID, attachmentPaths: attachmentPaths)
+    let result = try await withListenedTurn(
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult
+    ) { listener in
+      try await agent.streamMaxConsultation(
+        text: text,
+        threadId: threadId,
+        turnId: turnID,
+        attachments: attachmentPaths.map { CsAttachment(path: $0) },
+        listener: listener
+      )
+    }
     ThreadsChangeBus.postThreadsChanged()
     return result
   }
@@ -86,6 +109,41 @@ final class RealChatEngine: AgentChatEngine {
         domain: "Codescribe.Max", code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Continue this conversation through its Max owner."])
     }
+    return try await withListenedTurn(
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult
+    ) { listener in
+      // Text-only path stays byte-identical to before; only route through the
+      // vision method when the composer actually staged an image.
+      if attachmentPaths.isEmpty {
+        attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
+        return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
+      }
+      attachLog.info(
+        "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
+      )
+      let attachments = attachmentPaths.map { CsAttachment(path: $0) }
+      return try await agent.streamReplyWithAttachments(
+        text: text,
+        threadId: threadId,
+        attachments: attachments,
+        listener: listener
+      )
+    }
+  }
+
+  /// Run one bridge turn with its listener events replayed, in order, on the
+  /// main actor: the Agent stream and the Max consultation stream render text,
+  /// reasoning, tools and approval cards through this one path. The channel is
+  /// drained before the call returns or throws, so no event trails the result.
+  private func withListenedTurn(
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void,
+    run: (StreamListener) async throws -> String
+  ) async throws -> String {
     let channel = AsyncStream<StreamListenerEvent>.makeStream()
     let listener = StreamListener(continuation: channel.continuation)
     let consumer = Task { @MainActor [onToolApprovalRequested] in
@@ -114,24 +172,7 @@ final class RealChatEngine: AgentChatEngine {
       }
     }
     do {
-      let result: String
-      // Text-only path stays byte-identical to before; only route through the
-      // vision method when the composer actually staged an image.
-      if attachmentPaths.isEmpty {
-        attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
-        result = try await agent.streamReply(text: text, threadId: threadId, listener: listener)
-      } else {
-        attachLog.info(
-          "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
-        )
-        let attachments = attachmentPaths.map { CsAttachment(path: $0) }
-        result = try await agent.streamReplyWithAttachments(
-          text: text,
-          threadId: threadId,
-          attachments: attachments,
-          listener: listener
-        )
-      }
+      let result = try await run(listener)
       channel.continuation.finish()
       await consumer.value
       return result

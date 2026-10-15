@@ -1659,7 +1659,7 @@ final class SettingsViewModel: ObservableObject {
             )
         self.configurationInvalidation?.settingsWritten(by: self)
       } catch {
-        self.whisperModelError = String(describing: error)
+        self.whisperModelError = error.userFacingMessage
       }
       self.refreshWhisperModelCatalog()
       self.refreshWhisperModelStatus()
@@ -1836,7 +1836,7 @@ final class SettingsViewModel: ObservableObject {
       do {
         try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
       } catch {
-        if failureDetail == nil { failureDetail = String(describing: error) }
+        if failureDetail == nil { failureDetail = error.userFacingMessage }
       }
     }
 
@@ -1866,7 +1866,7 @@ final class SettingsViewModel: ObservableObject {
       try hotkeys.resetToDefaults()
       loadHotkeys()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -1879,7 +1879,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       mcpServers = try mcpAdmin.listServers()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       mcpServers = []
     }
   }
@@ -1933,7 +1933,7 @@ final class SettingsViewModel: ObservableObject {
       )
       reloadToolPermissions()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -1943,7 +1943,7 @@ final class SettingsViewModel: ObservableObject {
       try mcpAdmin.setToolPermission(identity: identity, level: level)
       reloadToolPermissions()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -1955,7 +1955,7 @@ final class SettingsViewModel: ObservableObject {
       try mcpAdmin.clearToolPermission(identity: identity)
       reloadToolPermissions()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -2025,7 +2025,7 @@ final class SettingsViewModel: ObservableObject {
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -2038,7 +2038,7 @@ final class SettingsViewModel: ObservableObject {
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -2152,7 +2152,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
     } catch {
-      let description = String(describing: error)
+      let description = error.userFacingMessage
       lastError = description
       if resetFailureRequiresRelaunch(description) {
         AppRelaunch.clearDefaultsAndRelaunch()
@@ -2213,7 +2213,7 @@ final class SettingsViewModel: ObservableObject {
       refreshAgentResetPreview()
       AppRelaunch.clearAgentDefaultsAndRelaunch()
     } catch {
-      let description = String(describing: error)
+      let description = error.userFacingMessage
       lastError = description
       if agentResetFailureRequiresRelaunch(description) {
         AppRelaunch.clearAgentDefaultsAndRelaunch()
@@ -2229,7 +2229,7 @@ final class SettingsViewModel: ObservableObject {
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -2409,7 +2409,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.setLaneProvider(lane: lane.bridgeLane, providerId: providerId)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return
     }
     laneResetNotice = nil
@@ -2694,7 +2694,7 @@ final class SettingsViewModel: ObservableObject {
         fallbackToDefault: false,
         runtimeConfigurationMatches: false
       )
-      audioInputReadError = String(describing: error)
+      audioInputReadError = error.userFacingMessage
     }
   }
 
@@ -2730,7 +2730,7 @@ final class SettingsViewModel: ObservableObject {
       admission = try await engine.loadAdmissionReadiness()
       admissionReadError = nil
     } catch {
-      admissionReadError = String(describing: error)
+      admissionReadError = error.userFacingMessage
     }
   }
 
@@ -2789,7 +2789,7 @@ final class SettingsViewModel: ObservableObject {
       applyLoadedSettings(engine.loadSettings())
       refreshAudioInput()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -2837,7 +2837,7 @@ final class SettingsViewModel: ObservableObject {
       totalQualityCorrections = 0
       customLexiconEntries = []
       ruleCandidates = []
-      voiceLabReadError = String(describing: error)
+      voiceLabReadError = error.userFacingMessage
     }
   }
 
@@ -2856,7 +2856,7 @@ final class SettingsViewModel: ObservableObject {
         self.refreshVoiceLab()
       } catch {
         self.voiceLabTeachPending = false
-        let message = String(describing: error)
+        let message = error.userFacingMessage
         self.voiceLabTeachMessage = String(
           localized: "Teach failed: \(message)",
           comment: "The placeholder is a technical failure description"
@@ -2896,7 +2896,7 @@ final class SettingsViewModel: ObservableObject {
         self.refreshVoiceLab()
       } catch {
         self.voiceLabTeachPending = false
-        let message = String(describing: error)
+        let message = error.userFacingMessage
         self.voiceLabTeachMessage = String(
           localized: "Teach failed: \(message)",
           comment: "The placeholder is a technical failure description"
@@ -2922,7 +2922,7 @@ final class SettingsViewModel: ObservableObject {
       refreshVoiceLab()
       return voiceLabReadError == nil
     } catch {
-      let message = String(describing: error)
+      let message = error.userFacingMessage
       voiceLabEditErrors[id] = message
       lastError = message
       return false
@@ -3194,7 +3194,7 @@ final class SettingsViewModel: ObservableObject {
         try viaHotkeys()
         if let engine { applyLoadedSettings(engine.loadSettings()) }
       } catch {
-        lastError = String(describing: error)
+        lastError = error.userFacingMessage
       }
       return
     }
@@ -3268,7 +3268,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try persistOrThrow(key, value)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -3287,7 +3287,7 @@ final class SettingsViewModel: ObservableObject {
       applyLoadedSettings(engine.loadSettings())
       configurationInvalidation?.settingsWritten(by: self)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
     }
   }
 
@@ -3516,10 +3516,10 @@ final class SettingsViewModel: ObservableObject {
         self.keyProbeResults[account] = CsApiKeyProbeResult(
           account: account,
           status: .network,
-          message: String(describing: error),
+          message: error.userFacingMessage,
           probedEndpoint: nil
         )
-        self.lastError = String(describing: error)
+        self.lastError = error.userFacingMessage
       }
     }
   }
@@ -3536,7 +3536,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       result = try engine.startAccountLogin(providerId: providerId)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return
     }
     guard let authUrl = result.authUrl, let url = URL(string: authUrl) else {
@@ -3561,7 +3561,7 @@ final class SettingsViewModel: ObservableObject {
           login.status == "signed_in" ? nil : login.message
       } catch {
         self.accountLoginPending.remove(providerId)
-        self.accountLoginNotices[providerId] = String(describing: error)
+        self.accountLoginNotices[providerId] = error.userFacingMessage
       }
       self.providerAccessGeneration &+= 1
       if let currentEngine = self.engine { self.reloadProviders(currentEngine) }
@@ -3665,7 +3665,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       return try engine.formattingPromptSnapshot(level: level.rawValue)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return nil
     }
   }
@@ -3694,7 +3694,7 @@ final class SettingsViewModel: ObservableObject {
       try engine.setFormattingPrompt(level: level.rawValue, content: content)
       return try engine.formattingPromptSnapshot(level: level.rawValue)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return nil
     }
   }
@@ -3706,7 +3706,7 @@ final class SettingsViewModel: ObservableObject {
       try engine.setAssistivePrompt(content: content)
       return engine.assistivePromptSnapshot()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return nil
     }
   }
@@ -3725,7 +3725,7 @@ final class SettingsViewModel: ObservableObject {
       try engine.restoreFormattingPromptToDefault(level: level.rawValue)
       return try engine.formattingPromptSnapshot(level: level.rawValue)
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return nil
     }
   }
@@ -3737,7 +3737,7 @@ final class SettingsViewModel: ObservableObject {
       try engine.restoreAssistivePromptToDefault()
       return engine.assistivePromptSnapshot()
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
       return nil
     }
   }

@@ -201,9 +201,17 @@ struct Composer: View {
             .disabled(store.selectedThreadID == nil)
             .accessibilityIdentifier("composer.recovery.insert." + document.id)
             Button("Copy") {
-              store.copyComposerRecovery(document.id) { text in
-                NSPasteboard.general.clearContents()
-                return NSPasteboard.general.setString(text, forType: .string)
+              Task { @MainActor in
+                do {
+                  try await UserTextClipboard.copy(document.text, preservingWhitespace: true)
+                  // Acknowledge only the snapshot Rust successfully copied.
+                  // A newer recovery document must remain retained.
+                  store.copyComposerRecovery(document.id) { text in
+                    text.utf8.elementsEqual(document.text.utf8)
+                  }
+                } catch {
+                  NSSound.beep()
+                }
               }
             }
             .accessibilityIdentifier("composer.recovery.copy." + document.id)
