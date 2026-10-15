@@ -42,6 +42,11 @@ pub fn default_whisper_context_window_sec() -> f32 {
 ///
 /// Distinct from the file-upload lane. The Founder's file endpoint may be an
 /// NDJSON stream; this default is the REST `verbose_json` transcriptions path.
+///
+/// The default names the Libraxis origin, so only a key configured for that
+/// origin (the live lane at `api.libraxis.cloud`) authenticates it. A live key
+/// for any other host is never sent here: see
+/// [`super::Config::cloud_tail_refine`].
 pub const DEFAULT_CLOUD_REFINE_ENDPOINT: &str =
     "https://api.libraxis.cloud/v1/audio/transcriptions";
 

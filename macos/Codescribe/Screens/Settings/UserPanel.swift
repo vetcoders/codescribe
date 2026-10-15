@@ -64,7 +64,8 @@ struct UserPanel: View {
               .accessibilityIdentifier("about-version")
             Text(
               "Build \(model.buildInfo.build)",
-              comment: "About panel: the build number under the version")
+              comment: "About panel: the build number under the version"
+            )
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
@@ -395,8 +396,9 @@ struct UserPanel: View {
   private var informationSection: some View {
     VStack(alignment: .leading, spacing: 0) {
       ProvidersSectionHeader(
-        String(localized: "Information and documentation", comment: "About panel section"))
-        .padding(.top, CSSpace.section)
+        String(localized: "Information and documentation", comment: "About panel section")
+      )
+      .padding(.top, CSSpace.section)
       VStack(alignment: .leading, spacing: CSSpace.xxs) {
         externalLink(
           String(localized: "Privacy Policy"), Self.privacyURL,
@@ -525,6 +527,7 @@ struct UserPanel: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       if loaded {
         Button {
+          // Tool metadata, not user content: preserve the literal path.
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(path, forType: .string)
         } label: {

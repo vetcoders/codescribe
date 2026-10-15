@@ -333,13 +333,16 @@ TOGGLE_SILENCE_SEC=5.0
 
 # AI Formatting
 AI_FORMATTING_ENABLED=1
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain.
 
-# Optional: Mode-specific OpenAI overrides
-LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=...
-LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=...
+# LLM lanes: a provider and a model per lane. The endpoint is the provider's
+# own; keys live in Settings › Providers (Keychain), env is only a fallback
+# (LLM_OPENAI_API_KEY, LLM_XAI_API_KEY, LLM_ANTHROPIC_API_KEY).
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
+LLM_FORMATTING_MODEL=gpt-4.1
+LLM_ASSISTIVE_PROVIDER=openai-responses
+LLM_ASSISTIVE_MODEL=gpt-5.5
+# Retired, ignored with one warning: LLM_ENDPOINT, LLM_MODEL, LLM_*_ENDPOINT,
+# LLM_API_KEY, LLM_FORMATTING_API_KEY, LLM_ASSISTIVE_API_KEY.
 ```
 
 ## Bundle Structure

@@ -154,11 +154,21 @@ private struct TrayPanelSurface<Content: View>: View {
   let content: Content
   let onHeightChange: (CGFloat) -> Void
 
+  /// The menu's glass carries the app-window material tint (`CSColor.glassBase`:
+  /// near-black at 84 % in dark mode, white at 78 % on paper), so the menu reads
+  /// as a dark sheet over light pages instead of a grey veil (Maciej, 2026-10-15:
+  /// "bardziej czarno"). Bare glass took the page's own brightness.
   var body: some View {
     if #available(macOS 26, *) {
-      menu.glassEffect(.regular, in: .rect(cornerRadius: 22))
+      menu.glassEffect(.regular.tint(CSColor.glassBase), in: .rect(cornerRadius: 22))
     } else {
-      menu.background(.regularMaterial, in: .rect(cornerRadius: 22))
+      menu.background {
+        ZStack {
+          Rectangle().fill(.regularMaterial)
+          CSColor.glassBase
+        }
+        .clipShape(.rect(cornerRadius: 22))
+      }
     }
   }
 

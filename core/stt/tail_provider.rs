@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::{Message, accept, client};
 use uuid::Uuid;
 
+use crate::config::cloud_asr::CloudRefineRefusal;
 use crate::pipeline::contracts::RawTranscript;
 
 /// Environment key selecting the tail-patch provider.
@@ -78,6 +79,11 @@ const SIDECAR_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_LOCAL_REMOTE_ENDPOINT: &str = "http://127.0.0.1:8000/v1/audio/transcriptions";
 const MAX_TAIL_PROVIDER_PCM_BYTES: usize = 32 * 1024 * 1024;
+/// Byte budget for one remote tail response, spent while it is received. The
+/// payload bounds below admit 64 KiB of text and 2 048 timed rows, which is a
+/// few hundred KiB of JSON even with word timings; more is not a tail
+/// transcript.
+const MAX_REMOTE_TAIL_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// Maximum transcript bytes accepted across the provider seam.
 pub const MAX_TAIL_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
@@ -1283,15 +1289,19 @@ impl RemoteTailProvider {
         Ok(Self { endpoint, api_key })
     }
 
+    /// The provider for the sealed configuration. A selected CLOUD lane whose
+    /// refine origin owns no credential fails with the typed
+    /// [`CloudRefineRefusal`] (see [`transcribe_selected_controlled`]): no
+    /// provider exists, so no request can carry another origin's key.
     fn from_config() -> Result<Self> {
         let config = crate::config::Config::load();
-        let (endpoint, api_key) = if let Some(admission) = config.cloud_tail_refine() {
-            (admission.endpoint, admission.api_key)
-        } else {
-            config
+        let (endpoint, api_key) = match config.cloud_tail_refine() {
+            Ok(admission) => (admission.endpoint, admission.api_key),
+            Err(CloudRefineRefusal::NotSelected) => config
                 .stt_lane(super::SttLane::File)
                 .map(|row| (row.endpoint, row.api_key.unwrap_or_default()))
-                .unwrap_or_else(|| (DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string(), String::new()))
+                .unwrap_or_else(|| (DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string(), String::new())),
+            Err(refusal) => return Err(refusal.into()),
         };
         Self::new(endpoint, api_key)
     }
@@ -1413,9 +1423,24 @@ impl TailProvider for RemoteTailProvider {
         if !response.status().is_success() {
             bail!("remote tail endpoint returned status {}", response.status());
         }
-        let response: RemoteTailResponse = response
-            .json()
+        // The budget is spent on the bytes that actually arrive, before serde
+        // sees any of them; overflow drops the response (closing the request)
+        // and surfaces `ResponseTooLarge` without a byte of the body.
+        let body = crate::llm::client::read_blocking_response_bounded(
+            response,
+            MAX_REMOTE_TAIL_RESPONSE_BYTES,
+        )
+        .context("remote tail response could not be received")?;
+        let response: RemoteTailResponse = serde_json::from_slice(&body)
             .context("remote tail response was not compatible JSON")?;
+        // The payload bounds below hold again after mapping; checking the
+        // parsed rows first keeps an oversize answer from being cloned into
+        // timed segments at all.
+        if response.text.len() > MAX_TAIL_PROVIDER_TEXT_BYTES
+            || response.segments.len() > MAX_TAIL_PROVIDER_SEGMENTS
+        {
+            bail!("remote tail response exceeds the provider payload bounds");
+        }
         let (segments, segment_grain) = remote_tail_segments(&response, request);
         tracing::info!(
             provider = TailProviderId::Remote.as_str(),
@@ -1770,6 +1795,12 @@ pub(crate) fn transcribe_selected_controlled(
                 request,
                 pcm,
             )?,
+            // A refine origin that owns no credential is a configuration
+            // refusal, not a transport failure: no request is built, and the
+            // in-process provider does not stand in for a CLOUD lane. The
+            // window keeps its Apple text and the typed refusal reaches the
+            // job's failure log.
+            Err(error) if error.is::<CloudRefineRefusal>() => return Err(error),
             Err(_) => transcribe_with_fallback(
                 &UnavailableTailProvider(TailProviderId::Remote),
                 &inprocess,

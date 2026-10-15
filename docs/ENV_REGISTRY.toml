@@ -262,14 +262,14 @@ default = "https://api.openai.com/v1/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Shared OpenAI-compatible endpoint fallback for LLM lanes; normalized to /v1/responses"
+description = "RETIRED (ignored with one warning): the lane seals on its provider's pinned endpoint; pick the provider with LLM_FORMATTING_PROVIDER / LLM_ASSISTIVE_PROVIDER"
 
 [vars.LLM_MODEL]
 default = "gpt-4.1"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Shared OpenAI model fallback for LLM lanes"
+description = "RETIRED (ignored with one warning): models are per lane, LLM_FORMATTING_MODEL / LLM_ASSISTIVE_MODEL"
 
 [vars.LLM_LIBRAXIS_API_KEY]
 default = ""
@@ -312,7 +312,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Formatting-lane endpoint override; falls back to shared LLM_ENDPOINT"
+description = "RETIRED (ignored with one warning): the formatting lane seals on its provider's pinned endpoint (LLM_FORMATTING_PROVIDER)"
 
 [vars.LLM_FORMATTING_MODEL]
 default = "gpt-4.1"
@@ -340,7 +340,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Assistive/agent-lane endpoint override; falls back to shared LLM_ENDPOINT"
+description = "RETIRED (ignored with one warning): the assistive/agent lane seals on its provider's pinned endpoint (LLM_ASSISTIVE_PROVIDER)"
 
 [vars.LLM_ASSISTIVE_MODEL]
 default = "gpt-5.5"
@@ -936,7 +936,7 @@ default = "https://api.anthropic.com/v1/messages"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
+description = "RETIRED (ignored with one warning): the Anthropic lane seals on the Messages API endpoint of the provider"
 
 [vars.CODESCRIBE_OPENAI_OAUTH_CLIENT_ID]
 default = ""
@@ -971,7 +971,7 @@ default = "https://api.x.ai/v1/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "xAI Responses API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses (override for proxies). xAI speaks the OpenAI Responses protocol, so this lane uses the Responses request builder unchanged"
+description = "RETIRED (ignored with one warning): the xAI lane seals on https://api.x.ai/v1/responses; xAI speaks the OpenAI Responses protocol, so the lane uses the Responses request builder unchanged"
 
 [vars.CODESCRIBE_XAI_OAUTH_CLIENT_ID]
 default = ""

@@ -319,10 +319,15 @@ impl GatewaySessionMint {
     }
 }
 
-/// Endpoint plus credential for one CLOUD multipart tail patch.
+/// Endpoint plus the credential its own origin owns, for one CLOUD multipart
+/// tail patch.
 ///
-/// The key is `Config::stt_live_api_key`, the same field the live WebSocket
-/// lane passes to `GatewayConnection`. Debug redacts the key.
+/// [`super::Config::cloud_tail_refine`] resolves the two together; no caller
+/// pairs a refine endpoint with a key taken from a row aimed at another
+/// recipient. `api_key` is empty when the endpoint carries no key of its own:
+/// a loopback endpoint sends none, and an official vendor origin resolves that
+/// vendor's signed-in account or stored key at send time. Debug redacts the
+/// key.
 pub struct CloudRefineAdmission {
     pub endpoint: String,
     pub api_key: String,
@@ -345,6 +350,52 @@ impl PartialEq for CloudRefineAdmission {
 
 impl Eq for CloudRefineAdmission {}
 
+/// Why the CLOUD refine lane cannot send a request. Typed and content-free:
+/// no variant carries an endpoint or a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudRefineRefusal {
+    /// The product mode is not Cloud, or its consent is missing: no refine
+    /// lane exists for this snapshot.
+    NotSelected,
+    /// The refine origin owns no credential. A key configured for one origin
+    /// is never copied to another, so a refine host that is neither loopback,
+    /// an official vendor, nor the live lane's own origin has nothing to
+    /// authenticate with, and no request is built.
+    CredentialNotOwned,
+}
+
+impl fmt::Display for CloudRefineRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Self::NotSelected => "CLOUD refine lane is not selected",
+            Self::CredentialNotOwned => "CLOUD refine endpoint owns no credential",
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for CloudRefineRefusal {}
+
+/// Whether two endpoint URLs name the same recipient: same host and port,
+/// whatever the scheme (a `wss` live lane and an `https` refine path on one
+/// gateway are one origin). A URL without a host and a port is no origin.
+fn same_credential_origin(left: &str, right: &str) -> bool {
+    let (Ok(left), Ok(right)) = (reqwest::Url::parse(left), reqwest::Url::parse(right)) else {
+        return false;
+    };
+    match (
+        left.host_str(),
+        left.port_or_known_default(),
+        right.host_str(),
+        right.port_or_known_default(),
+    ) {
+        (Some(left_host), Some(left_port), Some(right_host), Some(right_port)) => {
+            left_host.eq_ignore_ascii_case(right_host) && left_port == right_port
+        }
+        _ => false,
+    }
+}
+
 impl super::Config {
     /// Resolved refine endpoint. Empty storage uses the shipped default.
     pub fn cloud_refine_endpoint(&self) -> &str {
@@ -356,16 +407,44 @@ impl super::Config {
         }
     }
 
-    /// CLOUD tail-patch admission. `None` unless the product mode resolved to
-    /// Cloud, which [`resolve_asr_product_mode`] allows only with granted consent.
-    /// The credential is the live lane key, never the file-upload lane key.
-    pub fn cloud_tail_refine(&self) -> Option<CloudRefineAdmission> {
+    /// CLOUD tail-patch admission: the refine endpoint together with the
+    /// credential that endpoint's origin owns.
+    ///
+    /// [`CloudRefineRefusal::NotSelected`] unless the product mode resolved to
+    /// Cloud, which [`resolve_asr_product_mode`] allows only with granted
+    /// consent. The refine endpoint stays independent of the live and file
+    /// lanes, and so does its credential: a key authenticates only the origin
+    /// it was configured for, never the file-upload lane's and never another
+    /// host's. In order:
+    /// - a loopback endpoint carries no key;
+    /// - the live lane's key goes only to the live lane's own origin;
+    /// - an official vendor origin resolves that vendor's own account or
+    ///   stored key at send time, so nothing is copied from the live row;
+    /// - any other host owns no credential and is refused with
+    ///   [`CloudRefineRefusal::CredentialNotOwned`] before a request exists.
+    pub fn cloud_tail_refine(&self) -> Result<CloudRefineAdmission, CloudRefineRefusal> {
+        use crate::stt::tail_provider::{SttAuthMode, stt_auth_mode};
+
         if !self.cloud_refine_selected {
-            return None;
+            return Err(CloudRefineRefusal::NotSelected);
         }
-        Some(CloudRefineAdmission {
-            endpoint: self.cloud_refine_endpoint().to_string(),
-            api_key: self.stt_live_api_key.clone().unwrap_or_default(),
+        let endpoint = self.cloud_refine_endpoint();
+        let api_key = if stt_auth_mode(endpoint) == SttAuthMode::Unauthenticated {
+            String::new()
+        } else if let Some(live_key) = self
+            .stt_lane(crate::stt::SttLane::Live)
+            .filter(|live| same_credential_origin(&live.endpoint, endpoint))
+            .and_then(|live| live.api_key)
+        {
+            live_key
+        } else if crate::llm::speech::vendor_for_endpoint(endpoint).is_some() {
+            String::new()
+        } else {
+            return Err(CloudRefineRefusal::CredentialNotOwned);
+        };
+        Ok(CloudRefineAdmission {
+            endpoint: endpoint.to_string(),
+            api_key,
         })
     }
 }
@@ -558,8 +637,9 @@ mod tests {
         }
     }
 
-    /// The refine accessor uses the live-lane key and the refine endpoint.
-    /// An unselected cloud mode returns nothing, even when a file key is set.
+    /// The refine accessor uses the live-lane key only for the live lane's own
+    /// origin and the refine endpoint. An unselected cloud mode is refused even
+    /// when a file key is set; a foreign refine host owns no credential.
     #[test]
     fn cloud_tail_refine_uses_live_key_and_refine_endpoint() {
         use super::super::Config;
@@ -571,11 +651,15 @@ mod tests {
             stt_live_api_key: Some("live-key".into()),
             ..Config::default()
         };
-        assert!(idle.cloud_tail_refine().is_none());
+        assert!(matches!(
+            idle.cloud_tail_refine(),
+            Err(CloudRefineRefusal::NotSelected)
+        ));
 
         let selected = Config {
             cloud_refine_selected: true,
             stt_cloud_refine_endpoint: String::new(),
+            stt_live_endpoint: Some(DEFAULT_CLOUD_REFINE_ENDPOINT.into()),
             stt_live_api_key: Some("live-key".into()),
             stt_file_api_key: Some("file-key".into()),
             ..Config::default()
@@ -586,5 +670,19 @@ mod tests {
         let formatted = format!("{admission:?}");
         assert!(!formatted.contains("live-key"));
         assert!(formatted.contains("api_key_present"));
+
+        // CS160-F003: the live key never travels to a refine host that is not
+        // the live lane's origin, so a foreign host is refused before a request.
+        let foreign = Config {
+            cloud_refine_selected: true,
+            stt_cloud_refine_endpoint: "https://refine.invalid/v1/audio/transcriptions".into(),
+            stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
+            stt_live_api_key: Some("live-key".into()),
+            ..Config::default()
+        };
+        assert!(matches!(
+            foreign.cloud_tail_refine(),
+            Err(CloudRefineRefusal::CredentialNotOwned)
+        ));
     }
 }

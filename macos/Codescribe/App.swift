@@ -722,6 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           settingsFile: config.settingsFilePath(), dataDirectory: config.configDir(),
           notesDirectory: notes.notesDir()
         )
+        // Diagnostic metadata, not user content: copy the report verbatim.
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
@@ -1211,7 +1212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           appLogger.info("Codescribe Max provider ready; protocol uses full-history replay")
         }
       } catch {
-        model.overlay.state.setMaxPreparationError(String(describing: error))
+        model.overlay.state.setMaxPreparationError(error.userFacingMessage)
         appLogger.error(
           "Codescribe Max preparation requires attention: \(String(describing: error), privacy: .public)"
         )
@@ -1226,7 +1227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.overlay.state.setTranscriptStorageError(nil)
         appLogger.info("Codescribe transcript storage ready; device recovery: \(recovered)")
       } catch {
-        model.overlay.state.setTranscriptStorageError(String(describing: error))
+        model.overlay.state.setTranscriptStorageError(error.userFacingMessage)
         appLogger.error(
           "Codescribe transcript storage preparation failed: \(String(describing: error), privacy: .public)"
         )

@@ -145,20 +145,20 @@ WHISPER_LANGUAGE=auto
 # AI formatting (optional) - OpenAI Responses by default
 AI_FORMATTING_ENABLED=1
 
+# Each lane picks a provider and a model. The endpoint is the provider's own;
+# keys live in Settings › Providers (Keychain), env is only a fallback
+# (LLM_OPENAI_API_KEY, LLM_XAI_API_KEY, LLM_ANTHROPIC_API_KEY).
+
 # Formatting mode - used by cleanup/formatting paths
-LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
 LLM_FORMATTING_MODEL=gpt-4.1
-# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode - dictation-driven agent
-LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_PROVIDER=openai-responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
 
-# Shared fallback (if mode-specific not set)
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain.
+# Retired, ignored with one warning: LLM_ENDPOINT, LLM_MODEL, LLM_*_ENDPOINT,
+# LLM_API_KEY, LLM_FORMATTING_API_KEY, LLM_ASSISTIVE_API_KEY.
 ```
 
 ### Custom Prompts
