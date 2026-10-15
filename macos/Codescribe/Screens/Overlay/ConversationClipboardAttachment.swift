@@ -99,3 +99,23 @@ enum ConversationAttachmentPointer {
     return (lines.joined(separator: "\n"), paths)
   }
 }
+
+/// The composer shows the prose and a pill per attachment. Founder, 2026-10-15:
+/// a pasted image "powinien się zwijać" to a pill, as in the Agent window's
+/// input, instead of a raw path. The draft stays one string; the pills are its
+/// pointer lines into Codescribe's stores, kept after the prose.
+enum ConversationDraft {
+  static func split(
+    _ draft: String,
+    configDirectory: URL = URL(fileURLWithPath: CodescribeConfig().configDir())
+  ) -> (text: String, attachments: [String]) {
+    let parts = ConversationAttachmentPointer.extract(from: draft, configDirectory: configDirectory)
+    return (parts.text, parts.paths)
+  }
+
+  static func compose(text: String, attachments: [String]) -> String {
+    guard !attachments.isEmpty else { return text }
+    let lines = attachments.map { ConversationAttachmentPointer.line(URL(fileURLWithPath: $0)) }
+    return text + "\n" + lines.joined(separator: "\n")
+  }
+}

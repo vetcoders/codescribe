@@ -1572,6 +1572,24 @@ impl CodescribeHotkeys {
         }
     }
 
+    /// Per-process restart handshakes live beside the canonical runtime lease.
+    pub fn idle_restart_directory(&self) -> String {
+        codescribe_core::config::install_interlock_path()
+            .with_file_name("restart-if-idle")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Atomically reject busy capture or close future admission for this process.
+    /// This never constructs a new controller and never stops an active take.
+    pub async fn reserve_idle_restart(&self) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            current_controller(&shared_controller())
+                .is_some_and(|controller| controller.reserve_idle_restart())
+        })
+        .await
+    }
+
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
         match application_runtime::run(async move {
@@ -2813,9 +2831,7 @@ impl CodescribeHotkeys {
             let report = controller
                 .capture_energy_calibration(duration)
                 .await
-                .map_err(|error| CsError::Recording {
-                    msg: error.to_string(),
-                })?;
+                .map_err(|error| CsError::from_calibration(&error))?;
             Ok(CsEnergyCalibrationReport {
                 device_name: report.device_name,
                 sample_rate: report.sample_rate,
@@ -3696,6 +3712,7 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            voice: codescribe::presentation::emitter::CursorVoice::Lagging,
             evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
                 sample_start: 16_000,
                 sample_end: 32_000,

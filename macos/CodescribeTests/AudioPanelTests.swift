@@ -165,7 +165,7 @@ final class AudioPanelTests: XCTestCase {
         tone: .fallback,
         title: "Currently using: MacBook Pro Microphone",
         detail:
-          "Saved: USB Studio Mic. Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active."
+          "Saved: USB Studio Mic. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override."
       )
     )
   }
@@ -308,7 +308,9 @@ final class AudioPanelTests: XCTestCase {
       ))
     XCTAssertEqual(unapplied.current, "Currently using: MacBook Pro Microphone")
     XCTAssertEqual(unapplied.noticeTone, .fallback)
-    XCTAssertTrue(unapplied.notice?.contains("Restart Codescribe") == true)
+    // A saved choice applies to the next take; only a launch override wins over it.
+    XCTAssertTrue(unapplied.notice?.contains("launch environment pins AUDIO_INPUT_DEVICE") == true)
+    XCTAssertFalse(unapplied.notice?.contains("Restart") == true)
 
     let noHardware = audioInputCardState(
       CsAudioInputSnapshot(
@@ -709,21 +711,92 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 12), 0)
   }
 
+  func testHardwareChangeRereadsInputAndDropsRefusalOfPreviousDevice() async {
+    // 2026-10-15: the system input moved to AirPods under an open window;
+    // Settings kept the old device, its "ready" and a refusal measured elsewhere.
+    let live = AudioSnapshotBox(Self.liveSnapshot(runtime: "AirPods Pro"))
+    var engine = MockSettingsEngine()
+    engine.audioSnapshotLoader = { live.snapshot }
+    engine.admissionReadiness = .sampleMissing
+    engine.calibrateEnergyObserver = { _ in
+      throw CsError.CalibrationRefused(
+        refusal: .digitalSilence(deviceName: "AirPods Pro", samples: 240_000))
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    model.refreshAudioInput()
+    await model.runCalibration()
+    XCTAssertTrue(model.calibrationNotice?.contains("“AirPods Pro”") == true)
+
+    await model.audioHardwareChanged()
+    XCTAssertNotNil(model.calibrationNotice, "same input: its refusal stays")
+
+    live.snapshot = Self.liveSnapshot(runtime: "MacBook Pro Microphone")
+    await model.audioHardwareChanged()
+    XCTAssertEqual(model.audioInput.runtimeDevice, "MacBook Pro Microphone")
+    XCTAssertNil(model.calibrationNotice)
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+  }
+
+  func testDeviceMonitorCoalescesBurstsAndStopsCleanly() async throws {
+    var changes = 0
+    let monitor = AudioInputDeviceMonitor { changes += 1 }
+    monitor.start()
+    XCTAssertTrue(monitor.isObserving)
+
+    // A Bluetooth headset adds devices and moves defaults in one burst.
+    monitor.hardwareChanged()
+    monitor.hardwareChanged()
+    monitor.hardwareChanged()
+    try await Task.sleep(for: .milliseconds(700))
+    XCTAssertEqual(changes, 1)
+
+    monitor.hardwareChanged()
+    monitor.stop()
+    XCTAssertFalse(monitor.isObserving)
+    try await Task.sleep(for: .milliseconds(500))
+    XCTAssertEqual(changes, 1, "stop cancels a pending edge")
+  }
+
+  private static func liveSnapshot(runtime: String) -> CsAudioInputSnapshot {
+    CsAudioInputSnapshot(
+      devices: ["AirPods Pro", "MacBook Pro Microphone"],
+      configuredDevice: nil,
+      runtimeDevice: runtime,
+      configuredDeviceAvailable: true,
+      fallbackToDefault: false,
+      runtimeConfigurationMatches: true
+    )
+  }
+
   func testRunCalibrationRefusalIsSurfacedNotHidden() async {
     var engine = MockSettingsEngine()
     engine.admissionReadiness = .sampleMissing
     engine.calibrateEnergyObserver = { _ in
-      throw NSError(
-        domain: "Calibration", code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"
-        ])
+      throw CsError.CalibrationRefused(
+        refusal: .insufficientSpeech(measuredSeconds: 0.4, requiredSeconds: 1))
     }
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
 
     await model.runCalibration()
 
     XCTAssertTrue(model.calibrationNotice?.hasPrefix("Calibration refused") == true)
+    XCTAssertTrue(model.calibrationNotice?.contains("0.4 s of speech") == true)
     XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+
+    // 2026-10-15: an untyped bridge failure printed `Recording(msg: …)`.
+    engine.calibrateEnergyObserver = { _ in
+      throw CsError.Recording(msg: "energy calibration refused while an agent channel is open")
+    }
+    let busy = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    await busy.runCalibration()
+    XCTAssertEqual(
+      busy.calibrationNotice,
+      "Calibration refused: energy calibration refused while an agent channel is open")
   }
+}
+
+/// Hardware state the mock engine reads live, as the bridge does.
+private final class AudioSnapshotBox {
+  var snapshot: CsAudioInputSnapshot
+  init(_ snapshot: CsAudioInputSnapshot) { self.snapshot = snapshot }
 }

@@ -1123,7 +1123,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "About the app and your data": "O aplikacji i danych",
       "Codescribe version, local data and privacy.":
         "Wersja Codescribe, lokalne dane i prywatność.",
-      "Build %@": "Build %@",
+      "Build %@": "Kompilacja %@",
       "Version details": "Szczegóły wersji",
       "The configuration needs a review": "Konfiguracja wymaga sprawdzenia",
       "See which setting is out of date": "Zobacz, które ustawienie jest nieaktualne",
@@ -1198,6 +1198,14 @@ final class SettingsChromeContractTests: XCTestCase {
     )
     XCTAssertTrue(panel.contains("corrections: Int(clamping: model.totalQualityCorrections),"))
     XCTAssertFalse(panel.contains("learnScopeMessage(corrections: corrections.count)"))
+
+    // Founder, 2026-10-15: the pane leads with the current take's word pins,
+    // open on arrival, above the newest correction however old it is.
+    XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
+    let pins = try XCTUnwrap(panel.range(of: "DictionaryWordPins(configDir: model.configDir)"))
+    let recent = try XCTUnwrap(
+      panel.range(of: "ProvidersSectionHeader(String(localized: \"Recent corrections\"))"))
+    XCTAssertLessThan(pins.lowerBound, recent.lowerBound)
 
     let polish = try polishCatalog()
     let expected: [String: String] = [

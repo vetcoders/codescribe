@@ -793,6 +793,10 @@ impl RecordingController {
             return Ok(false);
         }
 
+        if self.shutdown_requested.load(Ordering::SeqCst) {
+            return Err(anyhow!("capture admission closed for shutdown"));
+        }
+
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
         let mut recipients = frozen_channel_recipients(digit, binding_file, shared_bus);
         if digit != 0 {
@@ -901,7 +905,11 @@ impl RecordingController {
                         hold_badge::update_transcript(cursor_token, text);
                     }))
                     .with_cursor_observer(Arc::new(move |projection| {
-                        hold_badge::update_warning_state(cursor_token, projection.degraded);
+                        hold_badge::update_voice_state(cursor_token, projection.voice);
+                        crate::os::tray_status::set_tray_voice_for_take(
+                            cursor_token,
+                            projection.voice,
+                        );
                         if projection.text.trim().is_empty() {
                             return;
                         }

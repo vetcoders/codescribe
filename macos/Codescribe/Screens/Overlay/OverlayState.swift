@@ -633,6 +633,14 @@ final class OverlayState {
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
+  /// The window's morph duration for the current change, written by the panel
+  /// inside `onPresentationModeChanged` so the header cross-fade matches it.
+  @ObservationIgnored var presentationMorphDuration: TimeInterval =
+    DictationOverlayWindow.presentationDuration
+  /// The automatic return while its morph is still on screen: the compact
+  /// form it folds to, the drawer it closed and when the window lands.
+  @ObservationIgnored private var automaticFoldInFlight:
+    (mode: OverlayPresentationMode, agentMonitor: Bool, landsAt: TimeInterval)?
   /// Presentation changes come from explicit controls; pointer motion never morphs the window.
   func toggleCollapsed() {
     switch presentationMode {
@@ -661,6 +669,11 @@ final class OverlayState {
     _ mode: OverlayPresentationMode, cause: OverlayPresentationCause
   ) {
     let automaticExpansion = cause == .automatic && mode == .expanded
+    OverlayPresentationTrace.shared.record(
+      .modeRequested, from: presentationMode, mode: mode,
+      note: (cause == .user ? "user" : "automatic") + (presentationMode == mode ? " same" : ""))
+    // Any later presentation write supersedes a fold that could be undone.
+    automaticFoldInFlight = nil
     if automaticExpansion {
       autoCollapse.noteAutomaticExpansion(from: presentationMode)
     } else {
@@ -763,7 +776,22 @@ final class OverlayState {
       autoCollapse.suspend()
       return
     }
+    let agentMonitor = showsAgentMonitor
     applyPresentationMode(restore, cause: .automatic)
+    // The panel wrote this fold's duration while the mode changed.
+    automaticFoldInFlight = (restore, agentMonitor, nowProvider() + presentationMorphDuration)
+  }
+
+  /// Founder, 2026-10-15: entering the overlay while it folds itself brings
+  /// back the form it had before the fold and arms its idle return again. The
+  /// expansion is automatic once more, so the hover holds it and leaving
+  /// starts a full interval. A fold the user chose is never undone.
+  private func undoAutomaticFoldInFlight() {
+    guard let fold = automaticFoldInFlight else { return }
+    automaticFoldInFlight = nil
+    guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
+    applyPresentationMode(.expanded, cause: .automatic)
+    showsAgentMonitor = fold.agentMonitor
   }
 
   func clearPointerHover() {
@@ -961,6 +989,12 @@ final class OverlayState {
   // MARK: Activity-anchored auto-hide for terminal outcomes
   private var autoHideTask: Task<Void, Never>?
   private(set) var autoHideDeadline: TimeInterval?
+  /// Whole seconds until an armed, untouched Agent take sends itself. The
+  /// footer shows it; `nil` while no such countdown runs (auto-send off, the
+  /// take under edit, delivery started). An edit cancels the deadline, so the
+  /// countdown disappears with it and returns when the revision is committed.
+  private(set) var agentSendCountdownSeconds: Int?
+  @ObservationIgnored private var agentCountdownTask: Task<Void, Never>?
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
@@ -1014,10 +1048,11 @@ final class OverlayState {
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
+      let root = OverlayChannelDeliveryReader.productionRoot()
+      restoreReadState(root: root)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
-          root: OverlayChannelDeliveryReader.productionRoot(),
-          sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
+          root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
     }
   }
 
@@ -1025,6 +1060,8 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
+  /// An empty pre-controller response is not evidence of disconnected agents.
+  private(set) var hasLoadedChannelRoster = false
   private(set) var channelToggleError: String?
   private(set) var pendingChannelToggles: Set<String> = []
   private(set) var conversations: [OverlayConversation] = []
@@ -1037,6 +1074,9 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// The agent conversation viewed last. The transcription clears the
+  /// selection; this keeps the way back for the Agents button.
+  @ObservationIgnored private var lastAgentConversationID: String?
   private(set) var showsAgentMonitor = false
   /// Saved-conversation search in the agent drawer. Owned here because the
   /// drawer value is rebuilt on every overlay body pass and only its
@@ -1055,7 +1095,15 @@ final class OverlayState {
   private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
+  /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
+  /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
+  @ObservationIgnored private var readStateRoot: URL?
+  /// No marks were ever stored at `readStateRoot`. The first inventory is
+  /// adopted as read once, so an update does not resurface the whole history.
+  @ObservationIgnored private var readStateNeedsAdoption = false
+  /// Marks are pruned to what is still retained only past this size.
+  static let readStateRetentionLimit = 8192
   /// Canonical reply message ids this surface has already loaded or admitted.
   /// The first inventory is history. Later ids are admissions. Membership
   /// survives pruning of the retained snapshot: replacing the set with whatever
@@ -1152,11 +1200,7 @@ final class OverlayState {
   /// bridge verbatim; the facade's preflight failures are named here.
   static func archiveFailureReason(_ error: Error) -> String {
     if let error = error as? CsError {
-      switch error {
-      case .Agent(let msg), .Config(let msg), .Recording(let msg), .License(let msg),
-        .Quality(let msg), .Runtime(let msg):
-        return msg.trimmingCharacters(in: .whitespacesAndNewlines)
-      }
+      return error.userFacingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     if let error = error as? CocoaError {
       switch error.code {
@@ -1376,6 +1420,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
     pendingChannelConversation = nil
@@ -1403,8 +1448,41 @@ final class OverlayState {
     if let expansion { expandAgentSurface(cause: expansion) }
   }
 
+  /// The Agents button. Founder, 2026-10-15: reaching an agent took mini →
+  /// midi → drawer → conversation. One press opens the conversation itself;
+  /// in a conversation the press opens the drawer to change agents, and on
+  /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
-    if showsAgentMonitor && !isCollapsed { hideAgentSidebar() } else { showAgentMonitor() }
+    if showsAgentMonitor && !isCollapsed {
+      hideAgentSidebar()
+    } else if !isCollapsed && selectedConversationID != nil {
+      showAgentMonitor()
+    } else if let destination = agentDestinationConversationID {
+      selectConversation(destination)
+    } else {
+      showAgentMonitor()
+    }
+  }
+
+  /// Where one press on Agents lands: the conversation with the newest unread
+  /// reply, else the one viewed last, else the most recent live conversation (or the
+  /// only one, even empty).
+  var agentDestinationConversationID: String? {
+    let live = conversations.filter { conversation in
+      guard let owner = conversation.owner else { return true }
+      return !archivedAgentOwners.contains { $0.id == owner.id && $0.channel == owner.channel }
+    }
+    func newest(_ candidates: [OverlayConversation]) -> OverlayConversation? {
+      candidates.max {
+        ($0.messages.map(\.order).max() ?? 0) < ($1.messages.map(\.order).max() ?? 0)
+      }
+    }
+    if let unread = newest(live.filter { unreadReplies(in: $0) > 0 }) { return unread.id }
+    if let last = lastAgentConversationID, conversations.contains(where: { $0.id == last }) {
+      return last
+    }
+    if live.count == 1 { return live[0].id }
+    return newest(live.filter { !$0.messages.isEmpty })?.id
   }
 
   func hideAgentSidebar() {
@@ -1458,7 +1536,49 @@ final class OverlayState {
     guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else {
       return
     }
-    viewedReplyIDs.formUnion(selectedConversation.replyIDs)
+    let unread = Set(selectedConversation.replyIDs).subtracting(viewedReplyIDs)
+    guard !unread.isEmpty else { return }
+    viewedReplyIDs.formUnion(unread)
+    persistReadState()
+  }
+
+  /// Read marks live next to the delivery cursor, whose projections restore
+  /// the history. Call before the first conversation snapshot.
+  func restoreReadState(root: URL) {
+    readStateRoot = root
+    if let stored = OverlayReadStateStore.load(root: root) {
+      viewedReplyIDs.formUnion(stored)
+      readStateNeedsAdoption = false
+    } else {
+      readStateNeedsAdoption = !replyInventoryBaselined
+    }
+  }
+
+  /// Without stored marks, everything already in the first inventory counts
+  /// as read. Replies admitted after it stay unread until they are seen.
+  private func adoptFirstInventoryAsReadIfUnmarked() {
+    guard readStateNeedsAdoption else { return }
+    readStateNeedsAdoption = false
+    viewedReplyIDs.formUnion(conversations.flatMap(\.replyIDs))
+    persistReadState()
+  }
+
+  /// A mark outlives its reply leaving the retained snapshot, so a reopened
+  /// archive or a replayed id is still read. Past the limit, only marks of
+  /// replies still retained are kept.
+  private func pruneReadState(retaining retained: Set<String>) {
+    guard viewedReplyIDs.count > Self.readStateRetentionLimit else { return }
+    viewedReplyIDs.formIntersection(retained)
+    persistReadState()
+  }
+
+  private func persistReadState() {
+    guard let readStateRoot else { return }
+    do {
+      try OverlayReadStateStore.save(root: readStateRoot, readReplyIDs: viewedReplyIDs)
+    } catch {
+      NSLog("codescribe: overlay read state not saved: \(error)")
+    }
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
@@ -1476,6 +1596,7 @@ final class OverlayState {
       if !replyInventoryBaselined {
         observedReplyIDs.formUnion(Set(conversations.flatMap(\.replyIDs)))
         replyInventoryBaselined = true
+        adoptFirstInventoryAsReadIfUnmarked()
       }
       return
     }
@@ -1496,7 +1617,7 @@ final class OverlayState {
     }
     resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
-    viewedReplyIDs.formIntersection(retained)
+    pruneReadState(retaining: retained)
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
     followNewlyReceivedReply(preservingControllerFocus: controllerPending)
     markVisibleConversationRead()
@@ -1549,6 +1670,7 @@ final class OverlayState {
     observedReplyIDs.formUnion(current)
     let establishingInventory = !replyInventoryBaselined
     replyInventoryBaselined = true
+    if establishingInventory { adoptFirstInventoryAsReadIfUnmarked() }
     // Inventory is already updated. A retained composer consumes the admission
     // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
@@ -1687,15 +1809,38 @@ final class OverlayState {
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
-  func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
+  deinit {
     channelObservationTask?.cancel()
-    channelObservationTask = Task { @MainActor [weak self] in
+  }
+
+  func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
+    observeChannelDelivery { selectedOwner in
+      try await reader.readSnapshot(selectedOwner: selectedOwner)
+    }
+  }
+
+  /// The reader remains the document projection owner. Injecting only its read
+  /// operation lets a suspended history read falsify roster responsiveness.
+  /// One parent task owns both loops and propagates cancellation to both.
+  @discardableResult
+  func observeChannelDelivery(
+    readSnapshot: @escaping @MainActor (OverlayConversationOwner?) async throws
+      -> OverlayChannelDeliverySnapshot
+  ) -> Task<Void, Never> {
+    stopObservingChannelDelivery()
+    let readRoster: @MainActor @Sendable () async -> Void = { [weak self] in
       while !Task.isCancelled {
         guard self != nil else { return }
         if let snapshot = await self?.engine?.channelRosterSnapshot() {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
+        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+      }
+    }
+    let readHistory: @MainActor @Sendable () async -> Void = { [weak self] in
+      while !Task.isCancelled {
+        guard self != nil else { return }
         do {
           let archiveRevision = self?.agentArchiveRevision
           let focusRevision = self?.conversationFocusRevision
@@ -1703,7 +1848,7 @@ final class OverlayState {
           let archivedOwner = selectedOwner.flatMap { owner in
             self?.archivedAgentOwners.first { $0.id == owner.id && $0.channel == owner.channel }
           }
-          let snapshot = try await reader.readSnapshot(selectedOwner: archivedOwner)
+          let snapshot = try await readSnapshot(archivedOwner)
           guard !Task.isCancelled, self != nil else { return }
           // A focus change can discard this paint, but not turn that archive's
           // first-read history into a fresh admission on the next poll.
@@ -1720,10 +1865,24 @@ final class OverlayState {
             onChannelPresentationChanged?()
           }
         }
+        guard !Task.isCancelled else { return }
         await self?.refreshPlaybackMutes()
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
       }
     }
+    let observation = Task {
+      await withTaskGroup(of: Void.self) { group in
+        group.addTask { await readRoster() }
+        group.addTask { await readHistory() }
+      }
+    }
+    channelObservationTask = observation
+    return observation
+  }
+
+  func stopObservingChannelDelivery() {
+    channelObservationTask?.cancel()
+    channelObservationTask = nil
   }
 
   func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
@@ -1745,7 +1904,10 @@ final class OverlayState {
             })
         )
       }, uniquingKeysWith: { _, latest in latest })
-    guard snapshot != channelRoster else { return }
+    // The controller always includes channel 0 once it is ready, even when
+    // no private digit is bound. History and cache readiness cannot assert this.
+    let rosterReady = hasLoadedChannelRoster || snapshot.contains { $0.channel == "0" }
+    guard snapshot != channelRoster || rosterReady != hasLoadedChannelRoster else { return }
     let newlyOpened = snapshot.filter { row in
       row.open
         && !channelRoster.contains {
@@ -1757,6 +1919,7 @@ final class OverlayState {
     let wasChannelCapturing = channelAudioCaptureActive
     let wasCapturingAudio = audioCaptureActive
     channelRoster = snapshot
+    hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
     if wasCapturingAudio != audioCaptureActive {
@@ -2671,6 +2834,7 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
+    if hovering { undoAutomaticFoldInFlight() }
     noteAutoCollapseActivity()
     guard isTerminalMode else { return }
     if hovering {
@@ -3171,6 +3335,58 @@ final class OverlayState {
       guard !Task.isCancelled else { return }
       self?.evaluateAutoHideDeadline(rescheduleIfEarly: true, generation: generation)
     }
+    startAgentSendCountdownIfArmed(generation: generation)
+  }
+
+  /// The deadline that sends an armed Agent take is visible, never silent: a
+  /// one-second ticker keeps `agentSendCountdownSeconds` honest while the
+  /// deadline stands (Maciej, 2026-10-14: "odliczanie musi być jawne").
+  private func startAgentSendCountdownIfArmed(generation: UInt64) {
+    agentCountdownTask?.cancel()
+    agentCountdownTask = nil
+    guard agentSessionArmed, agentFinalTranscriptAppeared, !agentAutoSendCancelled,
+      !agentDeliveryStarted, autoSendEnabled(), autoHideDeadline != nil
+    else {
+      agentSendCountdownSeconds = nil
+      return
+    }
+    refreshAgentSendCountdown()
+    agentCountdownTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard let self, generation == self.captureGeneration, let deadline = self.autoHideDeadline
+        else { return }
+        let remaining = deadline - self.nowProvider()
+        guard remaining > 0 else { return }
+        // Wake on the next whole second so the shown value flips on time.
+        let fraction = remaining - remaining.rounded(.down)
+        let wait = fraction > 0.02 ? fraction : 1
+        try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        guard !Task.isCancelled else { return }
+        self.refreshAgentSendCountdown()
+      }
+    }
+  }
+
+  /// Recompute the shown countdown from the clock. The ticker calls it every
+  /// second; tests call it after advancing their injected clock.
+  func refreshAgentSendCountdown() {
+    guard let deadline = autoHideDeadline, agentSessionArmed, agentFinalTranscriptAppeared,
+      !agentAutoSendCancelled, !agentDeliveryStarted, autoSendEnabled()
+    else {
+      agentSendCountdownSeconds = nil
+      return
+    }
+    agentSendCountdownSeconds = Self.countdownSeconds(until: deadline, now: nowProvider())
+  }
+
+  static func countdownSeconds(until deadline: TimeInterval, now: TimeInterval) -> Int {
+    max(0, Int((deadline - now).rounded(.up)))
+  }
+
+  private func stopAgentSendCountdown() {
+    agentCountdownTask?.cancel()
+    agentCountdownTask = nil
+    agentSendCountdownSeconds = nil
   }
 
   /// The terminal outcome of the take named by `generation` may close its own
@@ -3267,6 +3483,7 @@ final class OverlayState {
     autoHideTask = nil
     autoHideDeadline = nil
     autoHideAwaitingCollapse = nil
+    stopAgentSendCountdown()
   }
 
   /// Whether a terminal hide that came due is waiting for the automatic

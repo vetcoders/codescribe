@@ -471,11 +471,16 @@ class StructuralVerifier:
             ).payload
         return self._literal_occurrences[literal]
 
+    # A truncated body is rejected, never read partially, so the cap only has
+    # to clear the longest declaration a corridor names. `DictationOverlayView`
+    # passed 1000 lines on 2026-10-14 (1003), which the old cap truncated.
+    BODY_LINE_CAP = 2000
+
     def body(self, symbol: str, file: str) -> dict[str, Any]:
         key = (symbol, file)
         if key not in self._bodies:
             self._bodies[key] = self.run_loct(
-                "body", symbol, "--file", file, "--line-cap", "1000"
+                "body", symbol, "--file", file, "--line-cap", str(self.BODY_LINE_CAP)
             ).payload
         return self._bodies[key]
 

@@ -104,6 +104,13 @@ fn classify_input_capability(
     }
 }
 
+pub use crate::presentation::emitter::CursorVoice;
+
+/// Amber of a voice whose words are owed, in every mode.
+const LAGGING_COLOR: (f64, f64, f64, f64) = (1.0, 0.62, 0.0, 1.0);
+/// Agent mode between phrases.
+const AGENT_QUIET_COLOR: (f64, f64, f64, f64) = (0.97, 0.97, 0.97, 0.95);
+
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
@@ -144,6 +151,32 @@ impl BadgeMode {
             BadgeMode::Assistive => 1.2, // Slightly larger for AI mode
             _ => 1.0,
         }
+    }
+
+    /// The dot's fill for the voice under the cursor. Owed words are amber in
+    /// every mode; Agent mode keeps its purple while the voice speaks and turns
+    /// white between phrases (Maciej, 2026-10-14).
+    pub fn voice_color(
+        &self,
+        base: (f64, f64, f64, f64),
+        voice: CursorVoice,
+    ) -> (f64, f64, f64, f64) {
+        match (self, voice) {
+            (_, CursorVoice::Lagging) => LAGGING_COLOR,
+            (BadgeMode::Assistive, CursorVoice::Quiet) => AGENT_QUIET_COLOR,
+            _ => base,
+        }
+    }
+
+    /// Agent mode pulses while its words are owed; the others keep their own beat.
+    pub fn voice_pulses(&self, voice: CursorVoice) -> bool {
+        self.should_pulse() || (*self == BadgeMode::Assistive && voice == CursorVoice::Lagging)
+    }
+
+    /// A white dot vanishes over a white page; the quiet Agent dot keeps a
+    /// purple rim so it still reads as Agent mode.
+    pub fn voice_ring(&self, voice: CursorVoice) -> Option<(f64, f64, f64, f64)> {
+        (*self == BadgeMode::Assistive && voice == CursorVoice::Quiet).then(|| self.color())
     }
 }
 
@@ -196,7 +229,7 @@ impl HoldBadgeConfig {
 /// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
-    use super::{BadgeMode, FocusedInputField, HoldBadgeConfig, classify_input_role};
+    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, classify_input_role};
 
     #[test]
     fn live_cue_pointer_keeps_three_latest_words_and_repetitions() {
@@ -342,6 +375,42 @@ mod tests {
         assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
     }
 
+    /// Maciej, 2026-10-14: Agent mode's dot is purple while the voice speaks,
+    /// white between phrases and pulsing amber while its words are owed.
+    /// Dictation keeps its red at rest and its amber, unpulsed, for owed words.
+    #[test]
+    fn agent_dot_tells_speaking_from_quiet_and_owed_words() {
+        let purple = BadgeMode::Assistive.color();
+        let agent = |voice| BadgeMode::Assistive.voice_color(purple, voice);
+        assert_eq!(agent(CursorVoice::Speaking), purple);
+        assert_eq!(
+            agent(CursorVoice::Unobserved),
+            purple,
+            "no observer keeps the mode"
+        );
+        assert_eq!(agent(CursorVoice::Quiet), super::AGENT_QUIET_COLOR);
+        assert_eq!(agent(CursorVoice::Lagging), super::LAGGING_COLOR);
+        assert!(BadgeMode::Assistive.voice_pulses(CursorVoice::Lagging));
+        assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Quiet));
+        assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Speaking));
+        assert_eq!(
+            BadgeMode::Assistive.voice_ring(CursorVoice::Quiet),
+            Some(purple),
+            "the white dot keeps a purple rim over a white page"
+        );
+        assert_eq!(BadgeMode::Assistive.voice_ring(CursorVoice::Speaking), None);
+
+        let red = BadgeMode::Hold.color();
+        assert_eq!(BadgeMode::Hold.voice_color(red, CursorVoice::Quiet), red);
+        assert_eq!(
+            BadgeMode::Hold.voice_color(red, CursorVoice::Lagging),
+            super::LAGGING_COLOR
+        );
+        assert!(!BadgeMode::Hold.voice_pulses(CursorVoice::Lagging));
+        assert!(BadgeMode::Toggle.voice_pulses(CursorVoice::Quiet));
+        assert_eq!(BadgeMode::Hold.voice_ring(CursorVoice::Quiet), None);
+    }
+
     /// from_mode keeps layout fields while swapping color/diameter for the mode.
     #[test]
     fn hold_badge_config_from_mode_preserves_layout_and_applies_mode_visuals() {
@@ -393,7 +462,7 @@ mod tests {
 /// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{FocusedInputField, HoldBadgeConfig};
+    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig};
 
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
@@ -523,7 +592,7 @@ mod imp {
         timer_running: bool,
         config: HoldBadgeConfig,
         last_position: (f64, f64),
-        degraded: bool,
+        voice: CursorVoice,
         preview_updated_at: Option<Instant>,
     }
 
@@ -540,7 +609,7 @@ mod imp {
             timer_running: false,
             config: HoldBadgeConfig::default(),
             last_position: (f64::NAN, f64::NAN),
-            degraded: false,
+            voice: CursorVoice::Unobserved,
             preview_updated_at: None,
         }));
     }
@@ -565,7 +634,7 @@ mod imp {
             if !super::token_is_current(token, take_token()) {
                 return;
             }
-            let (panel, diameter, base_color, degraded) = {
+            let (panel, diameter, mode, base_color, voice) = {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(panel) = state.window else {
                     return;
@@ -574,8 +643,9 @@ mod imp {
                 (
                     panel as Id,
                     state.config.diameter,
+                    state.config.mode,
                     state.config.color,
-                    state.degraded,
+                    state.voice,
                 )
             };
             unsafe {
@@ -584,26 +654,29 @@ mod imp {
                 } else {
                     &text
                 };
-                paint_preview(panel, diameter, base_color, fresh, degraded);
+                paint_preview(panel, diameter, mode, base_color, fresh, voice);
             }
         });
     }
 
-    /// Integrity changes repaint only the dot, without refreshing the Apple label.
-    pub fn update_warning_state(token: u64, degraded: bool) {
+    /// Voice changes repaint only the dot, without refreshing the Apple label.
+    pub fn update_voice_state(token: u64, voice: CursorVoice) {
         Queue::main().exec_async(move || {
             if !super::token_is_current(token, take_token()) {
                 return;
             }
-            let (panel, base_color) = {
+            let (panel, mode, base_color) = {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(panel) = state.window else {
                     return;
                 };
-                state.degraded = degraded;
-                (panel as Id, state.config.color)
+                if state.voice == voice {
+                    return;
+                }
+                state.voice = voice;
+                (panel as Id, state.config.mode, state.config.color)
             };
-            unsafe { paint_warning_state(panel, base_color, degraded) };
+            unsafe { paint_voice_state(panel, mode, base_color, voice) };
         });
     }
 
@@ -619,9 +692,14 @@ mod imp {
                     return;
                 }
                 state.preview_updated_at = None;
-                (state.config.diameter, state.config.color, state.degraded)
+                (
+                    state.config.diameter,
+                    state.config.mode,
+                    state.config.color,
+                    state.voice,
+                )
             };
-            unsafe { paint_preview(window_ptr as Id, paint.0, paint.1, "", paint.2) };
+            unsafe { paint_preview(window_ptr as Id, paint.0, paint.1, paint.2, "", paint.3) };
         });
     }
 
@@ -629,9 +707,10 @@ mod imp {
     unsafe fn paint_preview(
         panel: Id,
         diameter: f64,
+        mode: BadgeMode,
         base_color: (f64, f64, f64, f64),
         text: &str,
-        degraded: bool,
+        voice: CursorVoice,
     ) {
         unsafe {
             let content: Id = msg_send![panel, contentView];
@@ -668,11 +747,17 @@ mod imp {
             let panel_frame: CGRect = msg_send![panel, frame];
             let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
             let _: () = msg_send![panel, setFrameOrigin: origin];
-            paint_warning_state(panel, base_color, degraded);
+            paint_voice_state(panel, mode, base_color, voice);
         }
     }
 
-    unsafe fn paint_warning_state(panel: Id, base_color: (f64, f64, f64, f64), degraded: bool) {
+    /// A steady state ends the pulse at full opacity; the updater resumes it.
+    unsafe fn paint_voice_state(
+        panel: Id,
+        mode: BadgeMode,
+        base_color: (f64, f64, f64, f64),
+        voice: CursorVoice,
+    ) {
         unsafe {
             let content: Id = msg_send![panel, contentView];
             let children: Id = msg_send![content, subviews];
@@ -681,15 +766,22 @@ mod imp {
                 return;
             }
             let dot: Id = msg_send![children, objectAtIndex: 0usize];
-            let color = if degraded {
-                (1.0, 0.62, 0.0, 1.0)
-            } else {
-                base_color
-            };
+            let color = mode.voice_color(base_color, voice);
             let cg = create_cg_color(color.0, color.1, color.2, color.3);
             let layer: Id = msg_send![dot, layer];
             let _: () = msg_send![layer, setBackgroundColor: cg];
             CGColorRelease(cg);
+            if let Some(ring) = mode.voice_ring(voice) {
+                let cg = create_cg_color(ring.0, ring.1, ring.2, 1.0);
+                let _: () = msg_send![layer, setBorderColor: cg];
+                CGColorRelease(cg);
+                let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            } else {
+                let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+            }
+            if !mode.voice_pulses(voice) {
+                let _: () = msg_send![layer, setOpacity: 1.0f32];
+            }
         }
     }
 
@@ -1079,10 +1171,10 @@ mod imp {
             state.window.map(|panel| {
                 state.config = config.clone();
                 state.last_position = (f64::NAN, f64::NAN);
-                (panel as Id, state.degraded)
+                (panel as Id, state.voice)
             })
         };
-        if let Some((panel, degraded)) = existing {
+        if let Some((panel, voice)) = existing {
             unsafe {
                 let content: Id = msg_send![panel, contentView];
                 let children: Id = msg_send![content, subviews];
@@ -1098,7 +1190,14 @@ mod imp {
                 let layer: Id = msg_send![dot, layer];
                 let _: () = msg_send![layer, setCornerRadius: config.diameter / 2.0];
                 let _: () = msg_send![layer, setOpacity: 1.0f32];
-                paint_preview(panel, config.diameter, config.color, &text, degraded);
+                paint_preview(
+                    panel,
+                    config.diameter,
+                    config.mode,
+                    config.color,
+                    &text,
+                    voice,
+                );
             }
             return;
         }
@@ -1133,7 +1232,7 @@ mod imp {
                 state.config = config.clone();
                 state.timer_running = true;
                 state.last_position = (f64::NAN, f64::NAN);
-                state.degraded = false;
+                state.voice = CursorVoice::Unobserved;
                 state.preview_updated_at = None;
                 start_updater = !was_running;
             }
@@ -1167,7 +1266,7 @@ mod imp {
                             (
                                 state.window,
                                 state.config.clone(),
-                                state.config.mode.should_pulse(),
+                                state.config.mode.voice_pulses(state.voice),
                                 state.last_position,
                                 super::preview_expired(state.preview_updated_at, Instant::now()),
                             )
@@ -1207,6 +1306,7 @@ mod imp {
 
                         // Position and opacity updates need main thread
                         Queue::main().exec_async(move || {
+                            let still_pulsing;
                             // Ensure state is still valid; do not block UI if busy.
                             {
                                 use std::sync::TryLockError;
@@ -1223,6 +1323,8 @@ mod imp {
                                     return;
                                 }
                                 state.last_position = (new_x, new_y);
+                                // A steady voice painted since the snapshot owns opacity.
+                                still_pulsing = state.config.mode.voice_pulses(state.voice);
                             }
 
                             let window = window_ptr as Id;
@@ -1231,7 +1333,7 @@ mod imp {
                                 let _: () = msg_send![window, setFrameOrigin: new_origin];
                             }
 
-                            if should_pulse {
+                            if should_pulse && still_pulsing {
                                 let content_view: Id = msg_send![window, contentView];
                                 if !content_view.is_null() {
                                     let subviews: Id = msg_send![content_view, subviews];
@@ -1282,7 +1384,7 @@ mod imp {
         let panel_ptr = {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.timer_running = false;
-            state.degraded = false;
+            state.voice = CursorVoice::Unobserved;
             state.window.take()
         };
 
@@ -1300,7 +1402,7 @@ mod imp {
 #[cfg(target_os = "macos")]
 pub use imp::{
     focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript, update_warning_state,
+    show_hold_badge_with_config, take_token, update_transcript, update_voice_state,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1323,8 +1425,8 @@ mod stubs {
     /// Inert cursor projection outside macOS.
     pub fn update_transcript(_token: u64, _text: &str) {}
 
-    /// Inert integrity paint outside macOS.
-    pub fn update_warning_state(_token: u64, _degraded: bool) {}
+    /// Inert voice paint outside macOS.
+    pub fn update_voice_state(_token: u64, _voice: super::CursorVoice) {}
 
     /// Focused-element text detection is macOS-only.
     pub fn focused_input_field() -> FocusedInputField {
@@ -1356,7 +1458,7 @@ mod stubs {
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript, update_warning_state,
+    show_hold_badge_with_config, take_token, update_transcript, update_voice_state,
 };
 
 #[cfg(target_os = "macos")]

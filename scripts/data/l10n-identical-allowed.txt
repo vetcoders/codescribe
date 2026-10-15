@@ -1,0 +1,54 @@
+# Keys whose translation may read exactly as the English source.
+#
+# Checked by scripts/l10n-lint.py (make verify-l10n-catalog, part of make check).
+# A `translated` or `needs_review` unit carrying the English words back is how an
+# untranslated string passes the coverage gate: the state claims somebody handled
+# it, the count says the language is complete, and the interface is English. That
+# is refused — except here, where the words really are the same.
+#
+# A line is one key, exactly as the catalog spells it; `#` starts a comment, so a
+# key containing `#` cannot be listed (none does, and a key is free to be renamed).
+# Every entry carries the reason it belongs. A key added because translating it
+# looked like work is the gate defeating itself: the lint says which keys are
+# identical, this file says which of them are identical on purpose.
+#
+# Not listed here, and deliberately: `Build %@` (About panel). It is an ordinary
+# word with an ordinary Polish equivalent and was never translated.
+
+# Unit symbols — the same in every language.
+%@ Hz
+%@ s
+%lld ms
+%@ · %@ MB
+%@ · %@ / %@ MB
+
+# Product, vendor and tool names.
+Codescribe - %@
+AICX MCP
+Loctree MCP
+
+# Wire values, endpoints and identifiers shown verbatim.
+HTTP(S): %@
+Messages (/v1/messages)
+Responses (/v1/responses)
+https://…/mcp
+status
+
+# Key names as the keyboard prints them.
+hotkeys.binding.doubleCtrl
+
+# Formatting levels: a named family (Light+ / Smart / Max), not description.
+overlay.versions.source.lightPlus
+Smart
+Max
+
+# Borrowed words Polish spells the same way.
+Agent
+hotkeys.mode.agent
+Commit
+Commit: %@
+Model
+Model: %@
+Plan
+Status
+OK

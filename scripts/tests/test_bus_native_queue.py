@@ -69,6 +69,42 @@ class NativeQueueTests(unittest.TestCase):
     def wake(self):
         return DEMUX.NativeQueueWakeup(self.root, self.session, "2")
 
+    @patch("shutil.which", return_value="/fake/codex")
+    @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
+    def test_queue_distinguishes_original_address_from_delivery_channel(self, run, _which):
+        cases = [
+            ({"channel": "0", "audience": "lena"}, "0 (all audience)"),
+            ({"origin_channel": "0", "channel": "2", "audience": "lena"}, "0 (all audience)"),
+            ({"channel": "2", "audience": "lena"}, "2 (lena)"),
+            ({"audience": "lena"}, "lena (named audience)"),
+            ({"audience": "*"}, "all audience"),
+        ]
+        for index, (coordinates, expected) in enumerate(cases):
+            self.pending[index].update(coordinates)
+            self.pending[index]["text"] = "@Leszek: to tekst, nie metadane adresowania."
+        state = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
+        state["pending"] = self.pending
+        DEMUX.atomic_json(self.root / "leases" / f"{self.lease_id}.json", state)
+        wake = self.wake()
+        for payload in self.pending:
+            wake.enqueue(payload)
+        wake.close(wait=True)
+        self.assertEqual(run.call_count, len(cases))
+        for call, (_, expected) in zip(run.call_args_list, cases):
+            self.assertIn(f"ADDRESSED TO: {expected}\n", call.args[0][5])
+            self.assertIn("/2 · delivery", call.args[0][5])
+        self.assertEqual(DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")["pending"], self.pending)
+
+    def test_read_and_watch_preserve_broadcast_address_without_changing_owner(self):
+        event = dict(self.pending[0], schema=DEMUX.EVENT_SCHEMA,
+                     channel="0", audience="lena", status="transcript_sealed")
+        for projected in [DEMUX.conversation_envelope(event), DEMUX.watch_line(event, self.lease_id)]:
+            self.assertEqual(projected["addressed_to"], "0 (all audience)")
+            self.assertEqual(projected["lease_id"], self.lease_id)
+            self.assertEqual(projected["delivery_id"], event["delivery_id"])
+            self.assertEqual(projected["text"], event["text"])
+        self.assertNotIn("addressed_to", event)
+
     def result(self, identity):
         return DEMUX.read_json(self.root / "wakeups" / self.lease_id / f"{identity}.json")
 

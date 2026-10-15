@@ -164,9 +164,10 @@ struct OverlayMicrophoneGlyph: View {
     self.plateOpacity = plateOpacity
   }
 
-  init(character: String, tint: Color) {
+  init(character: String, tint: Color, plateOpacity: Double = 0.12) {
     mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
     self.tint = tint
+    self.plateOpacity = plateOpacity
   }
 
   var body: some View {
@@ -254,6 +255,22 @@ struct OverlayAgentAudioControls: View {
   let onMicrophone: () -> Void
   let onPlayback: () -> Void
   var broadcast = false
+  /// Founder, 2026-10-14: "Chciałbym wiedzieć kto gada, żeby był jakiś
+  /// indikator na głośniku." The speaker of the agent whose reply is playing
+  /// turns violet and animates its waves.
+  var speaking = false
+
+  private var speakingNow: Bool { speaking && muted == false }
+
+  /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
+  /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
+  /// wyraziste". A lit control washes its glass with a pastel of the colour
+  /// and keeps the glyph in the whole colour.
+  static let litGlassOpacity = 0.3
+
+  static func litGlass(_ color: Color?) -> Color? {
+    color?.opacity(litGlassOpacity)
+  }
 
   private var microphoneLabel: String {
     if broadcast {
@@ -280,6 +297,7 @@ struct OverlayAgentAudioControls: View {
         ? String(localized: "All channels muted")
         : String(localized: "Global playback on")
     }
+    if speakingNow { return String(localized: "Speaking") }
     return muted == true
       ? String(localized: "Automatic playback muted")
       : String(localized: "Automatic playback on")
@@ -294,7 +312,7 @@ struct OverlayAgentAudioControls: View {
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(width: 16, height: 16)
       }
-      .tint(open ? Color.red : nil)
+      .tint(Self.litGlass(open ? Color.red : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
@@ -308,20 +326,27 @@ struct OverlayAgentAudioControls: View {
         Image(
           systemName: muted == nil
             ? "speaker.badge.exclamationmark"
-            : muted == true ? "speaker.slash.fill" : "speaker.wave.2"
+            : muted == true
+              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
         )
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(palette.primaryText.color)
+        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
+        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: 16, height: 16)
       }
+      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
-      .help(playbackLabel)
+      .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
       .accessibilityLabel(playbackLabel)
       .accessibilityValue(playbackValue)
       .accessibilityIdentifier("overlay-agent-speaker")
     }
     .modifier(OverlayAgentControlStyle())
+    // Founder, 2026-10-15: an I-beam showed between and over these buttons.
+    // They float above message and transcript text, whose tracking set the
+    // text cursor; the pair and its gap claim the arrow like the drawer does.
+    .background { OverlayMenuCursorRegion() }
   }
 }
 
@@ -331,6 +356,7 @@ struct OverlayChannelStatusView: View {
   @Environment(\.csTextScale) private var textScale
 
   let channels: [OverlayChannelDelivery]
+  let rosterReady: Bool
   let unavailable: Bool
   let palette: OverlayAppearancePalette
   /// False while the panel is hidden or occluded: the waiting spinner must not
@@ -376,9 +402,11 @@ struct OverlayChannelStatusView: View {
     conversations: [OverlayConversation] = [], selectedConversationID: String? = nil,
     unreadCounts: [String: Int] = [:], onSelectConversation: ((String?) -> Void)? = nil,
     onShowMonitor: (() -> Void)? = nil,
-    searchModel: OverlayConversationSearchModel? = nil
+    searchModel: OverlayConversationSearchModel? = nil,
+    rosterReady: Bool = true
   ) {
     self.channels = channels
+    self.rosterReady = rosterReady
     self.unavailable = unavailable
     self.palette = palette
     self.animates = animates
@@ -440,9 +468,12 @@ struct OverlayChannelStatusView: View {
 
   var body: some View {
     Button(action: showMonitor) {
+      // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.agents,
-        tint: headerSelected ? Color(nsColor: .controlAccentColor) : palette.mutedText.color
+        tint: headerSelected
+          ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
+        plateOpacity: headerSelected ? 0 : 0.12
       )
       .contentShape(Circle())
       .overlay(alignment: .topTrailing) {
@@ -529,7 +560,8 @@ struct OverlayChannelStatusView: View {
                   && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
                 playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
                 palette: palette, onMicrophone: { onToggleChannel?(0) },
-                onPlayback: { onTogglePlayback?("0") }, broadcast: true
+                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                speaking: broadcast.replySpeaking
               )
               .fixedSize()
               .accessibilityIdentifier("overlay-channel-toggle-0")
@@ -676,7 +708,8 @@ struct OverlayChannelStatusView: View {
           playbackEnabled: onTogglePlayback != nil
             && !pendingMuteChannels.contains(channel.channel),
           palette: palette, onMicrophone: { toggle(channel) },
-          onPlayback: { onTogglePlayback?(channel.channel) }
+          onPlayback: { onTogglePlayback?(channel.channel) },
+          speaking: conversation?.replySpeaking == true
         )
         .fixedSize()
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
@@ -787,12 +820,21 @@ struct OverlayChannelStatusView: View {
   }
 
   var showsConnectionHint: Bool {
-    channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+    rosterReady && channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+  }
+
+  var showsRosterLoading: Bool {
+    !rosterReady
   }
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 2) {
-      if showsConnectionHint {
+      if showsRosterLoading {
+        Text("Checking the connection…")
+          .foregroundStyle(palette.mutedText.color)
+          .padding(.vertical, 12)
+          .accessibilityIdentifier("overlay-agent-roster-loading")
+      } else if showsConnectionHint {
         Text(
           "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
         )

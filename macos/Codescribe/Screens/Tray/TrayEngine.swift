@@ -17,6 +17,9 @@ enum TrayIntent {
   /// Passive voice-delivery reveal: create/order the chat window without
   /// stealing focus. Used at TurnStarted and as end-of-turn fallback only.
   case revealChat
+  /// The tray's own action is done and its result shows elsewhere: the open
+  /// panel would cover the overlay that a start or stop just raised.
+  case closeTray
 }
 
 /// The legacy fast config toggles surfaced in the tray, mapped to the core's

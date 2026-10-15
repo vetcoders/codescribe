@@ -12,6 +12,8 @@ enum TrayStatusDotIcon {
   static let dotFraction: CGFloat = 0.42
   /// Punched-out separation ring around the dot, in points.
   static let ringWidth: CGFloat = 1.5
+  /// Colored rim drawn inside the dot's edge, in points.
+  static let rimWidth: CGFloat = 1.25
 
   /// The dot's frame: flush with the glyph's bottom-right corner.
   static func dotRect(in bounds: CGRect) -> CGRect {
@@ -27,6 +29,7 @@ enum TrayStatusDotIcon {
   static func composite(
     base: NSImage,
     dot: NSColor,
+    rim: NSColor? = nil,
     glyphTint: NSColor? = nil
   ) -> NSImage {
     let image = NSImage(size: base.size, flipped: false) { rect in
@@ -45,6 +48,12 @@ enum TrayStatusDotIcon {
       }
       dot.setFill()
       NSBezierPath(ovalIn: dotRect).fill()
+      if let rim {
+        rim.setStroke()
+        let edge = NSBezierPath(ovalIn: dotRect.insetBy(dx: rimWidth / 2, dy: rimWidth / 2))
+        edge.lineWidth = rimWidth
+        edge.stroke()
+      }
       return true
     }
     image.isTemplate = false
@@ -56,13 +65,13 @@ enum TrayStatusDotIcon {
 /// mark and its indicator as a real template image. Live activity colors the
 /// indicator while the mark continues to follow the menu bar appearance.
 enum MenuBarStatusImage {
-  static func make(base: NSImage, dot: NSColor?) -> NSImage {
+  static func make(base: NSImage, dot: NSColor?, rim: NSColor? = nil) -> NSImage {
     guard let dot else {
       let image = TrayStatusDotIcon.composite(base: base, dot: .black, glyphTint: .black)
       image.isTemplate = true
       return image
     }
-    return TrayStatusDotIcon.composite(base: base, dot: dot, glyphTint: .labelColor)
+    return TrayStatusDotIcon.composite(base: base, dot: dot, rim: rim, glyphTint: .labelColor)
   }
 }
 
@@ -234,17 +243,38 @@ final class TrayStatusStore: ObservableObject {
   }
 
   /// Nil means a monochrome template indicator, never an absent indicator.
-  /// Recording and Agent recording keep their own activity colors; processing
-  /// stays orange. Other status details live in the tooltip and menu row.
+  /// Recording keeps its red and processing stays orange. The Agent dot follows
+  /// the voice like the pointer dot: purple while speaking, white between
+  /// phrases, amber while words are owed (Maciej, 2026-10-14). Other status
+  /// details live in the tooltip and menu row.
   var menuBarDotColor: Color? {
     switch status.kind {
     case .starting, .idle, .success, .error, .thermal, .hotkeyConflict:
       return nil
     case .listening:
-      return status.indicatorMode == .assistive ? CSColor.modeAgent : CSColor.indicatorRecording
+      guard status.indicatorMode == .assistive else { return CSColor.indicatorRecording }
+      switch status.voice {
+      case .lagging: return CSColor.indicatorLagging
+      case .quiet: return CSColor.indicatorAgentQuiet
+      case .speaking, .unobserved: return CSColor.modeAgent
+      }
     case .processing:
       return CSColor.modeProcessing
     }
+  }
+
+  /// A white dot vanishes on a light menu bar; the quiet Agent dot keeps a purple rim.
+  var menuBarDotRim: Color? {
+    isAgentListening && status.voice == .quiet ? CSColor.modeAgent : nil
+  }
+
+  /// Owed Agent words pulse the glyph's dot, as they pulse the pointer dot.
+  var menuBarDotPulses: Bool {
+    isAgentListening && status.voice == .lagging
+  }
+
+  private var isAgentListening: Bool {
+    status.kind == .listening && status.indicatorMode == .assistive
   }
 
   #if DEBUG
@@ -253,6 +283,7 @@ final class TrayStatusStore: ObservableObject {
       tone: CsTrayStatusTone,
       indicatorMode: CsIndicatorMode = .hold,
       assistive: Bool = false,
+      voice: CsCursorVoice = .unobserved,
       generation: UInt64
     ) {
       apply(
@@ -261,6 +292,7 @@ final class TrayStatusStore: ObservableObject {
           tone: tone,
           indicatorMode: indicatorMode,
           assistive: assistive,
+          voice: voice,
           generation: generation
         ))
     }
@@ -269,7 +301,8 @@ final class TrayStatusStore: ObservableObject {
       kind: CsTrayStatusKind = .idle,
       tone: CsTrayStatusTone = .neutral,
       indicatorMode: CsIndicatorMode = .hold,
-      assistive: Bool = false
+      assistive: Bool = false,
+      voice: CsCursorVoice = .unobserved
     ) -> TrayStatusStore {
       TrayStatusStore(
         status: CsTrayStatusPayload(
@@ -277,6 +310,7 @@ final class TrayStatusStore: ObservableObject {
           tone: tone,
           indicatorMode: indicatorMode,
           assistive: assistive,
+          voice: voice,
           generation: 0
         ))
     }

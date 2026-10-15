@@ -5,7 +5,7 @@
     {
       "name": "codescribe",
       "source": "./codescribe",
-      "description": "Native Codescribe conversation, mailbox, wakeup and voice in Claude Code and Junie."
+      "description": "Native Codescribe conversation, mailbox, wakeup and voice in Claude Code, Junie and OMP."
     }
   ]
 }

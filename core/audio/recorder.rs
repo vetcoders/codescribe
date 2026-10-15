@@ -484,15 +484,13 @@ pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 /// until [`Recorder::stop`] writes them to a temp WAV;
 /// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
 /// capture.
-/// Resolve the input device exactly as a recording start would: an
-/// A named `AUDIO_INPUT_DEVICE` must be present. The system default is used
-/// only without an explicit selection. Shared by [`Recorder::start`] and
-/// [`probe_input_capture_path`], so disappearance before stream opening refuses.
+/// Resolve the input device exactly as a recording start would. A selected
+/// device ([`Config::audio_input_preference`], read fresh) must be present; the
+/// live system default is used only without a selection. Shared by
+/// [`Recorder::start`] and [`probe_input_capture_path`], so disappearance before
+/// stream opening refuses.
 fn select_input_device(host: &cpal::Host) -> Result<(Device, String)> {
-    let preferred = std::env::var("AUDIO_INPUT_DEVICE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let preferred = Config::audio_input_preference();
 
     let device = resolve_capture_device(
         preferred.as_deref(),

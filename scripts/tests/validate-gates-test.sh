@@ -39,6 +39,8 @@ rule = target(make_source, 'test-swift').split('\n\n', 1)[0] + '\n'
 invocation = '\t$(SHELL) scripts/test-swift.sh "$(PROFILE)" "$(ENGINE_BRIDGE)" \\\n'
 selftest = '"${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?'
 generation = '( cd macos && xcodegen generate ) || exit $?'
+bridge_directory = 'mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?'
+bridge_export = 'export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"'
 
 with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     base = Path(tmp)
@@ -163,6 +165,16 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     check('separate-shell-isolation', make=replace(make_source, rule, rule.replace(
         '\t@$(TEST_DATA_DIR_SETUP); \\\n', '\t@$(TEST_DATA_DIR_SETUP)\n')), diagnostic='[invocation]')
     check('missing-helper', helper=None, diagnostic='[helper-missing]')
+    for label, old, new in (
+        ('missing-bridge-directory', bridge_directory, ''),
+        ('bridge-directory-no-failfast', bridge_directory, bridge_directory.split(' ||')[0]),
+        ('bridge-directory-live-home', bridge_directory, bridge_directory.replace('$CODESCRIBE_DATA_DIR', '$HOME/.codescribe')),
+        ('missing-bridge-export', bridge_export, ''),
+        ('bridge-export-not-forwarded', bridge_export, bridge_export.replace('TEST_RUNNER_', '')),
+        ('bridge-export-live-home', bridge_export, bridge_export.replace('$CODESCRIBE_DATA_DIR', '$HOME/.codescribe')),
+        ('bridge-export-unreachable', bridge_export, 'if false; then\n' + bridge_export + '\nfi'),
+    ):
+        check(label, helper=replace(helper_source, old, new), diagnostic='[runner-bridge-isolation]')
     for label, new in (
         ('missing-selftest', ''), ('comment-selftest', '# ' + selftest),
         ('no-selftest-failfast', selftest.split(' ||')[0]),

@@ -578,6 +578,86 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .mini)
   }
 
+  /// Founder, 2026-10-15: the pointer entering the overlay while it folds
+  /// itself restores the expanded form and arms the idle return again.
+  func testPointerEnteringAnAutomaticFoldRestoresAndRearmsTheReturn() {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    runTake(state)
+    state.presentationMorphDuration = 1.2
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    XCTAssertEqual(state.presentationMode, .mini, "the fold has begun")
+    clock.advance(by: 0.5)
+    state.setPointerHovering(true)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    XCTAssertEqual(clock.outstanding, 0, "the hover holds the restored panel")
+    state.setPointerHovering(false)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - 0.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  /// A landed fold, a fold without motion and a fold the user chose stay folded.
+  func testPointerAfterTheFoldOrOnAManualFoldChangesNothing() {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    runTake(state)
+    state.presentationMorphDuration = 1.2
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    clock.advance(by: 1.2)
+    state.setPointerHovering(true)
+    XCTAssertEqual(state.presentationMode, .mini, "the fold already landed")
+    state.setPointerHovering(false)
+
+    runTake(state)
+    state.presentationMorphDuration = 0
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    state.setPointerHovering(true)
+    XCTAssertEqual(state.presentationMode, .mini, "no motion, nothing to catch")
+    state.setPointerHovering(false)
+
+    state.presentationMorphDuration = 1.2
+    state.setPresentationMode(.expanded)
+    state.setPresentationMode(.mini)
+    state.setPointerHovering(true)
+    XCTAssertEqual(state.presentationMode, .mini, "a manual fold is not undone")
+    XCTAssertNil(state.autoCollapseRestoreMode)
+  }
+
+  /// The hide that waited for the fold restarts with it: the restored panel
+  /// counts again after the pointer leaves, folds, and only then hides.
+  func testPointerEnteringTheFoldOfAWaitingHideRearmsBothInOrder() {
+    let (state, clock) = makeState()
+    var closes = 0
+    state.onClose = { closes += 1 }
+    state.setPresentationMode(.mini)
+    runTerminalTake(state)
+    state.presentationMorphDuration = 1.2
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - OverlayState.autoHideDelaySeconds)
+    XCTAssertEqual(state.presentationMode, .mini, "the fold has begun")
+    XCTAssertNotNil(state.autoHideDeadline, "the hide counts from the fold")
+
+    clock.advance(by: 0.4)
+    state.setPointerHovering(true)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertNil(state.autoHideDeadline)
+    state.setPointerHovering(false)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 0)
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - OverlayState.autoHideDelaySeconds)
+    XCTAssertEqual(state.presentationMode, .mini)
+    clock.advance(by: OverlayState.autoHideDelaySeconds)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
   func testComposerEditorHoldsUntilFocusLeaves() {
     let (state, clock) = makeState()
     state.setPresentationMode(.midi)

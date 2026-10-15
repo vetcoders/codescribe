@@ -150,6 +150,8 @@ shift 6'''),
 : "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
 export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
 export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1'''),
+    ('runner-bridge-isolation', r'''mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?
+export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"'''),
     ('self-test', r'''echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?'''),
     ('artifact-root', r'''# Select the Rust artifact independently from the Swift XCTest configuration.

@@ -158,6 +158,37 @@ final class AgentWindowChromeTests: XCTestCase {
       "messages must continue under the native header")
   }
 
+  /// Maciej, 2026-10-14: the title bar sits only above the messages, never over
+  /// the sidebar, as the overlay header's glass with a hard lower edge, and the
+  /// same in Settings. An AppKit-hosted window draws no SwiftUI scroll edge
+  /// effect under its toolbar (probe 2026-10-14), so the glass is the
+  /// `CSDetailHeaderGlass` plane on each detail column. Window chrome does not
+  /// render in an XCTest mount, so the structure is pinned at the source.
+  func testHeaderGlassCoversOnlyTheDetailColumns() throws {
+    let codescribe = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe")
+    func source(_ path: String) throws -> String {
+      try String(contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
+    }
+    let agent = try source("Screens/AgentChat/AgentChatView.swift")
+    let threadDetail = try XCTUnwrap(
+      agent.range(of: "private struct ThreadDetail").map { String(agent[$0.lowerBound...]) })
+    XCTAssertTrue(threadDetail.contains(".modifier(CSDetailHeaderGlass())"))
+    XCTAssertEqual(agent.components(separatedBy: "CSDetailHeaderGlass").count - 1, 1)
+
+    let settings = try source("Screens/Settings/SettingsView.swift")
+    let detail = try XCTUnwrap(settings.range(of: "} detail: {"))
+    let toolbar = try XCTUnwrap(
+      settings.range(of: ".toolbar {", range: detail.upperBound..<settings.endIndex))
+    XCTAssertTrue(settings[detail.upperBound..<toolbar.lowerBound].contains("CSDetailHeaderGlass"))
+    XCTAssertFalse(
+      settings[..<detail.lowerBound].contains("CSDetailHeaderGlass"), "never over the sidebar")
+
+    let components = try source("DesignSystem/Components.swift")
+    XCTAssertFalse(components.contains("scrollEdgeEffectStyle(.soft, for: .top)"))
+  }
+
   private func mount(contentWidth: CGFloat, store: AgentChatStore? = nil)
     -> NSWindow
   {

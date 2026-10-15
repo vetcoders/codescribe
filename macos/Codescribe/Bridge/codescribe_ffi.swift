@@ -1770,9 +1770,8 @@ open class CodescribeConfig: CodescribeConfigProtocol, @unchecked Sendable {
     }
     /**
      * Construct the bridge handle. Not a pure allocation: this is the app's
-     * first-touch entry point, so it also initializes logging, seeds the
-     * recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
-     * and resumes run monitors persisted by a previous process. Later handles
+     * first-touch entry point, so it also initializes logging and resumes run
+     * monitors persisted by a previous process. Later handles
      * are cheap — the side effects are guarded to run only once, and are
      * skipped entirely under `cfg!(test)`.
      */
@@ -2721,6 +2720,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func getModeBindings()  -> [CsModeBinding]
 
     /**
+     * Per-process restart handshakes live beside the canonical runtime lease.
+     */
+    func idleRestartDirectory()  -> String
+
+    /**
      * Inspect retained source input even when unresolved work prevents Max from
      * starting. No controller, microphone, provider or execution lease is opened.
      */
@@ -2811,6 +2815,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * are live after the call.
      */
     func rearmAfterPermissionGrant()  -> Bool
+
+    /**
+     * Atomically reject busy capture or close future admission for this process.
+     * This never constructs a new controller and never stops an active take.
+     */
+    func reserveIdleRestart() async throws  -> Bool
 
     /**
      * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
@@ -3417,6 +3427,17 @@ open func getModeBindings() -> [CsModeBinding]  {
 }
 
     /**
+     * Per-process restart handshakes live beside the canonical runtime lease.
+     */
+open func idleRestartDirectory() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_idle_restart_directory(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Inspect retained source input even when unresolved work prevents Max from
      * starting. No controller, microphone, provider or execution lease is opened.
      */
@@ -3668,6 +3689,27 @@ open func rearmAfterPermissionGrant() -> Bool  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+
+    /**
+     * Atomically reject busy capture or close future admission for this process.
+     * This never constructs a new controller and never stops an active take.
+     */
+open func reserveIdleRestart()async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_reserve_idle_restart(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -15110,15 +15152,17 @@ public struct CsTrayStatusPayload: Equatable, Hashable {
     public var tone: CsTrayStatusTone
     public var indicatorMode: CsIndicatorMode
     public var assistive: Bool
+    public var voice: CsCursorVoice
     public var generation: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, generation: UInt64) {
+    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, voice: CsCursorVoice, generation: UInt64) {
         self.kind = kind
         self.tone = tone
         self.indicatorMode = indicatorMode
         self.assistive = assistive
+        self.voice = voice
         self.generation = generation
     }
 
@@ -15140,6 +15184,7 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
                 tone: FfiConverterTypeCsTrayStatusTone.read(from: &buf),
                 indicatorMode: FfiConverterTypeCsIndicatorMode.read(from: &buf),
                 assistive: FfiConverterBool.read(from: &buf),
+                voice: FfiConverterTypeCsCursorVoice.read(from: &buf),
                 generation: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -15149,6 +15194,7 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
         FfiConverterTypeCsTrayStatusTone.write(value.tone, into: &buf)
         FfiConverterTypeCsIndicatorMode.write(value.indicatorMode, into: &buf)
         FfiConverterBool.write(value.assistive, into: &buf)
+        FfiConverterTypeCsCursorVoice.write(value.voice, into: &buf)
         FfiConverterUInt64.write(value.generation, into: &buf)
     }
 }
@@ -16273,6 +16319,113 @@ public func FfiConverterTypeCsArchivedFormatOutcome_lower(_ value: CsArchivedFor
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Why a guided calibration kept no profile: a code and its arguments. The
+ * four the person can act on are named; a measurement that is only to be
+ * repeated is `Unusable`, its English detail logged where it is mapped.
+ */
+
+public enum CsCalibrationRefusal: Equatable, Hashable {
+
+    /**
+     * Every sample was at the digital-silence floor. This identifies the
+     * measured signal, not the cause of a device-routing failure.
+     */
+    case digitalSilence(deviceName: String, samples: UInt64
+    )
+    case noActiveSpeech
+    case insufficientSpeech(measuredSeconds: Float, requiredSeconds: Float
+    )
+    case insufficientSeparation(thresholdDbfs: Float, noiseFloorDbfs: Float
+    )
+    case unusable
+
+
+
+}
+
+#if compiler(>=6)
+extension CsCalibrationRefusal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCalibrationRefusal: FfiConverterRustBuffer {
+    typealias SwiftType = CsCalibrationRefusal
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCalibrationRefusal {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .digitalSilence(deviceName: try FfiConverterString.read(from: &buf), samples: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 2: return .noActiveSpeech
+
+        case 3: return .insufficientSpeech(measuredSeconds: try FfiConverterFloat.read(from: &buf), requiredSeconds: try FfiConverterFloat.read(from: &buf)
+        )
+
+        case 4: return .insufficientSeparation(thresholdDbfs: try FfiConverterFloat.read(from: &buf), noiseFloorDbfs: try FfiConverterFloat.read(from: &buf)
+        )
+
+        case 5: return .unusable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsCalibrationRefusal, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .digitalSilence(deviceName,samples):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(deviceName, into: &buf)
+            FfiConverterUInt64.write(samples, into: &buf)
+
+
+        case .noActiveSpeech:
+            writeInt(&buf, Int32(2))
+
+
+        case let .insufficientSpeech(measuredSeconds,requiredSeconds):
+            writeInt(&buf, Int32(3))
+            FfiConverterFloat.write(measuredSeconds, into: &buf)
+            FfiConverterFloat.write(requiredSeconds, into: &buf)
+
+
+        case let .insufficientSeparation(thresholdDbfs,noiseFloorDbfs):
+            writeInt(&buf, Int32(4))
+            FfiConverterFloat.write(thresholdDbfs, into: &buf)
+            FfiConverterFloat.write(noiseFloorDbfs, into: &buf)
+
+
+        case .unusable:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCalibrationRefusal_lift(_ buf: RustBuffer) throws -> CsCalibrationRefusal {
+    return try FfiConverterTypeCsCalibrationRefusal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCalibrationRefusal_lower(_ value: CsCalibrationRefusal) -> RustBuffer {
+    return FfiConverterTypeCsCalibrationRefusal.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Typed outcome of a conditional stop. Every variant is a state the caller can
  * act on; none of them is an error string to match. A failed transport may
  * retry the same handle to join/retrieve the retained controller operation.
@@ -16470,6 +16623,88 @@ public func FfiConverterTypeCsCoverageUnavailableReason_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeCsCoverageUnavailableReason_lower(_ value: CsCoverageUnavailableReason) -> RustBuffer {
     return FfiConverterTypeCsCoverageUnavailableReason.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The voice under the cursor while listening, mirrored into the glyph.
+ */
+
+public enum CsCursorVoice: Equatable, Hashable {
+
+    case unobserved
+    case speaking
+    case quiet
+    case lagging
+
+
+
+}
+
+#if compiler(>=6)
+extension CsCursorVoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCursorVoice: FfiConverterRustBuffer {
+    typealias SwiftType = CsCursorVoice
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCursorVoice {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .unobserved
+
+        case 2: return .speaking
+
+        case 3: return .quiet
+
+        case 4: return .lagging
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsCursorVoice, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .unobserved:
+            writeInt(&buf, Int32(1))
+
+
+        case .speaking:
+            writeInt(&buf, Int32(2))
+
+
+        case .quiet:
+            writeInt(&buf, Int32(3))
+
+
+        case .lagging:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCursorVoice_lift(_ buf: RustBuffer) throws -> CsCursorVoice {
+    return try FfiConverterTypeCsCursorVoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCursorVoice_lower(_ value: CsCursorVoice) -> RustBuffer {
+    return FfiConverterTypeCsCursorVoice.lower(value)
 }
 
 
@@ -16677,6 +16912,12 @@ public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
     )
     case Runtime(msg: String
     )
+    /**
+     * Guided calibration measured but kept no profile. Swift owns the
+     * sentence for each refusal (docs/LOCALIZATION.md §5).
+     */
+    case CalibrationRefused(refusal: CsCalibrationRefusal
+    )
 
 
 
@@ -16722,6 +16963,9 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case 6: return .Runtime(
             msg: try FfiConverterString.read(from: &buf)
             )
+        case 7: return .CalibrationRefused(
+            refusal: try FfiConverterTypeCsCalibrationRefusal.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -16762,6 +17006,11 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case let .Runtime(msg):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
+
+
+        case let .CalibrationRefused(refusal):
+            writeInt(&buf, Int32(7))
+            FfiConverterTypeCsCalibrationRefusal.write(refusal, into: &buf)
 
         }
     }
@@ -20961,6 +21210,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_idle_restart_directory() != 6949) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_inspect_selected_max_consultation() != 22751) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20998,6 +21250,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_rearm_after_permission_grant() != 37275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 50874) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
@@ -21300,7 +21555,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 27409) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 56915) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 21484) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribehotkeys_new() != 29673) {

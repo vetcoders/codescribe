@@ -595,7 +595,59 @@ impl AcousticLedger {
         if anchors.is_empty() || pins.is_empty() {
             return None;
         }
-        let prior = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        let mut prior = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        // An owner fence partitions delivery, not the capture's speech. Keep
+        // the adjacent owner's witnessed boundary words in this same ordered
+        // correspondence problem when the actual decode includes them. They
+        // supply context only: this admission may not mutate their owner.
+        let boundary_tolerance = self.capture_rate_hz.map(u64::from);
+        if let Some(tolerance) = boundary_tolerance.filter(|_| pins.len() > 1) {
+            let adjacent = self
+                .committed
+                .range(..owner.clone())
+                .next_back()
+                .into_iter()
+                .chain(
+                    self.committed
+                        .range((
+                            std::ops::Bound::Excluded(owner.clone()),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .next(),
+                );
+            for (neighbor, held) in adjacent {
+                if !neighbor.same_capture(owner)
+                    || !(neighbor.sample_end <= owner.sample_start
+                        || owner.sample_end <= neighbor.sample_start)
+                {
+                    continue;
+                }
+                prior.extend(
+                    held.slots
+                        .iter()
+                        .filter(|source| {
+                            self.word_anchor_identity(source).is_some()
+                                && !normalize_word_token(&source.text).is_empty()
+                                && source.sample_end >= owner.sample_start.saturating_sub(tolerance)
+                                && source.sample_start <= owner.sample_end.saturating_add(tolerance)
+                                && self
+                                    .original_anchor_word_range(source)
+                                    .is_some_and(|range| {
+                                        pins.iter().any(|pin| {
+                                            pin.decode_sample_start
+                                                .zip(pin.decode_sample_end)
+                                                .is_some_and(|(start, end)| {
+                                                    start <= range.sample_start
+                                                        && range.sample_end <= end
+                                                })
+                                        })
+                                    })
+                        })
+                        .cloned(),
+                );
+            }
+            prior.sort_by_key(|source| (source.sample_start, source.sample_end));
+        }
         let anchored_prior = prior
             .iter()
             .filter(|word| self.word_anchor_identity(word).is_some())
@@ -614,6 +666,31 @@ impl AcousticLedger {
         // sequence alignment, not a token set: repeated positions stay distinct.
         let shares_burst = |held: &WordSlot, pin: &LexicalAnchorPin<'_>| {
             let (pin_start, pin_end) = pin.declared();
+            if &held.observation.occurrence != owner {
+                let (Some(tolerance), Some(original)) =
+                    (boundary_tolerance, self.original_anchor_word_range(held))
+                else {
+                    return false;
+                };
+                return pin
+                    .decode_sample_start
+                    .zip(pin.decode_sample_end)
+                    .is_some_and(|(start, end)| {
+                        start <= original.sample_start && original.sample_end <= end
+                    })
+                    && original.sample_start <= pin_end.saturating_add(tolerance)
+                    && pin_start <= original.sample_end.saturating_add(tolerance)
+                    && self.speech_anchors.as_ref().is_some_and(|evidence| {
+                        evidence.anchors.iter().any(|anchor| {
+                            anchor.range.session == owner.session
+                                && anchor.range.capture_epoch == owner.capture_epoch
+                                && anchor.range.sample_start < held.sample_end
+                                && held.sample_start < anchor.range.sample_end
+                                && anchor.range.sample_start < pin_end
+                                && pin_start < anchor.range.sample_end
+                        })
+                    });
+            }
             self.word_anchor_identity(held).is_some_and(|identity| {
                 identity.anchors.iter().any(|held_anchor| {
                     anchors.iter().any(|anchor| {
@@ -626,7 +703,7 @@ impl AcousticLedger {
                 })
             })
         };
-        let sequence = anchored_prior.len() == pins.len()
+        let mut sequence = anchored_prior.len() == pins.len()
             && anchored_prior.iter().zip(&pins).all(|(held, pin)| {
                 normalize_word_token(&held.text) == normalize_word_token(pin.text)
                     && same_producer_scope(held, pin)
@@ -700,6 +777,22 @@ impl AcousticLedger {
                     i += 1;
                 } else {
                     j += 1;
+                }
+            }
+        }
+        // A boundary word alone cannot distinguish replay from a genuine
+        // repetition in continuous speech. Cross-owner correspondence needs
+        // this callback to align an in-owner word as independent sequence
+        // context; spelling and proximity alone never consume a new position.
+        if !correspondence
+            .iter()
+            .flatten()
+            .any(|source| &source.observation.occurrence == owner)
+        {
+            for source in &mut correspondence {
+                if source.is_some_and(|held| &held.observation.occurrence != owner) {
+                    *source = None;
+                    sequence = false;
                 }
             }
         }
@@ -908,6 +1001,30 @@ impl AcousticLedger {
         }
         let mut output = Vec::new();
         for (index, pin) in pins.iter().enumerate() {
+            if let Some(source) =
+                correspondence[index].filter(|source| &source.observation.occurrence != owner)
+            {
+                // The capture sequence already has this position in its
+                // neighbor. Preserve that exact source and the new evidence;
+                // neither a shifted clock nor this owner's mutation receipt
+                // can establish an additional word across the fence.
+                self.refuse_word_slot(
+                    observation,
+                    &WordSlot {
+                        sample_start: pin.sample_start,
+                        sample_end: pin.sample_end,
+                        text: pin.text.into(),
+                        producer: observation.producer,
+                        observation: observation.clone(),
+                        witness: SlotWitness::Unwitnessed,
+                        confidence: pin.confidence,
+                        surface_rewritten: pin.surface_rewritten,
+                    },
+                    vec![source.clone()],
+                    "cross_owner_sequence_correspondence",
+                );
+                continue;
+            }
             let held = if correspondence[index].is_some() {
                 correspondence[index]
             } else if sequence {

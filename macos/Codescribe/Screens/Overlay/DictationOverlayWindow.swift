@@ -39,6 +39,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
+  /// Duration of the morph most recently started; the SwiftUI cross-fade
+  /// reads it so content and frame land together.
+  private(set) var lastMorphDuration: TimeInterval = DictationOverlayWindow.presentationDuration
   private var transitionTop: CGFloat?
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
@@ -70,6 +73,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   ) {
     if isUserResizing {
       pendingResizePresentation = (mode, animated)
+      OverlayPresentationTrace.shared.record(
+        .frameTransitionDeferredByResize, from: presentationMode, mode: mode, animated: animated,
+        frame: frame)
       return
     }
     guard mode != presentationMode || settleResize else { return }
@@ -122,8 +128,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
     isFrameTransitioning = animated
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
+      target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
+    lastMorphDuration =
+      animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
     NSAnimationContext.runAnimationGroup { context in
-      context.duration = animated ? DictationOverlayWindow.presentationDuration : 0
+      context.duration = lastMorphDuration
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
       animator().setFrame(restored, display: true)
     } completionHandler: { [weak self] in
@@ -144,7 +155,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   private func completeFrameTransition(generation: UInt64) {
-    guard generation == frameTransitionGeneration, frameTransitionTarget != nil else { return }
+    guard generation == frameTransitionGeneration, let target = frameTransitionTarget else {
+      return
+    }
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionCompleted, mode: presentationMode, frame: frame, target: target,
+      generation: generation, note: frame == target ? nil : "frame≠target")
     isFrameTransitioning = false
     frameTransitionTarget = nil
     transitionTop = nil
@@ -153,7 +169,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     minSize = DictationOverlayWindow.minimumSize(for: presentationMode)
     contentMinSize = minSize
     if presentationMode != .mini { styleMask.insert(.resizable) }
-    if let contentView { invalidateCursorRects(for: contentView) }
+    if let contentView {
+      invalidateCursorRects(for: contentView)
+      (contentView as? OverlayContentContainer)?.refreshGrabPad()
+      OverlayPresentationTrace.shared.record(.cursorRectsInvalidated, mode: presentationMode)
+    }
     if presentationMode == .expanded {
       expandedSize = nil
       miniFrame = nil
@@ -163,6 +183,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   func settleFrameTransition() {
     guard let target = frameTransitionTarget else { return }
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionSettled, mode: presentationMode, frame: frame, target: target,
+      generation: frameTransitionGeneration)
     NSAnimationContext.runAnimationGroup { context in
       context.duration = 0
       animator().setFrame(target, display: true)
@@ -362,6 +385,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     resizeStart = (point, frame, edge)
     requestedResizeSize = frame.size
+    OverlayPresentationTrace.shared.record(
+      .userResizeBegan, mode: presentationMode, frame: frame, note: "edge=\(edge)")
     onUserResize?()
     return true
   }
@@ -412,6 +437,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     requestedResizeSize = nil
     let pending = pendingResizePresentation
     pendingResizePresentation = nil
+    OverlayPresentationTrace.shared.record(
+      .userResizeEnded, mode: presentationMode, frame: frame,
+      note: pending.map { "pending=\($0.mode)" } ?? (changed ? "changed" : "unchanged"))
     if let pending {
       setPresentationMode(pending.mode, animated: pending.animated, settleResize: changed)
     }
@@ -515,6 +543,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func windowDidMove(_ notification: Notification) {
+    OverlayPresentationTrace.shared.record(
+      .windowMoved, mode: presentationMode, frame: frame,
+      note: isFrameTransitioning
+        ? "transitioning" : OverlayController.isApplyingFrame ? "programmatic" : "user")
     guard !isFrameTransitioning else { return }
     if !OverlayController.isApplyingFrame, presentationMode != .midi {
       resetPresentationPosition()
@@ -523,6 +555,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   func windowDidResize(_ notification: Notification) {
+    // Animator steps land here too: the ledger holds the painted trajectory.
+    OverlayPresentationTrace.shared.record(
+      .windowResized, mode: presentationMode, frame: frame,
+      generation: isFrameTransitioning ? frameTransitionGeneration : nil,
+      note: isFrameTransitioning
+        ? "transitioning"
+        : isUserResizing ? "user" : OverlayController.isApplyingFrame ? "programmatic" : "idle")
     guard !isFrameTransitioning else { return }
     onUserResize?()
   }
@@ -542,10 +581,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 /// stays structurally dead.
 final class OverlayContentContainer: NSView {
   private let hosting: NSView
+  let grabPad = OverlayResizeGrabPad()
 
   init(hosting: NSView) {
     self.hosting = hosting
     super.init(frame: .zero)
+    addSubview(grabPad)
     addSubview(hosting)
     hosting.frame = bounds
   }
@@ -557,12 +598,28 @@ final class OverlayContentContainer: NSView {
     let previousBounds = bounds
     super.setFrameSize(newSize)
     if hosting.frame != bounds { hosting.frame = bounds }
-    if previousBounds != bounds { window?.invalidateCursorRects(for: self) }
+    if previousBounds != bounds {
+      window?.invalidateCursorRects(for: self)
+      refreshGrabPad()
+    }
   }
 
   override func layout() {
     super.layout()
     if hosting.frame != bounds { hosting.frame = bounds }
+    refreshGrabPad()
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    refreshGrabPad()
+  }
+
+  /// The pad follows the frame and the mode; a mini panel has no resize zone.
+  func refreshGrabPad() {
+    let resizable = window?.styleMask.contains(.resizable) == true
+    let mode = (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded
+    grabPad.update(bounds: bounds, mode: resizable ? mode : .mini)
   }
 
   /// AppKit's borderless resize strip is ~1–2 px. Claim the 16 pt band first,
@@ -622,8 +679,56 @@ final class OverlayContentContainer: NSView {
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// The window server passes a mouse event through every fully transparent
+/// pixel of a non-opaque window, and the rounded glass leaves the corners of
+/// the resize zone transparent: a corner grab reached the app beneath before
+/// the panel saw it. A fill of 2/255 keeps those pixels inside the panel's
+/// event shape; it is invisible on white and on black. It paints only
+/// `OverlayResizeHit.grabPadRects`, all of them resize zones.
+final class OverlayResizeGrabPad: NSView {
+  static let fillAlpha: CGFloat = 2 / 255
+  private let shape = CAShapeLayer()
+  private(set) var rects: [NSRect] = []
+
+  init() {
+    super.init(frame: .zero)
+    wantsLayer = true
+    shape.fillColor = NSColor(white: 0.5, alpha: Self.fillAlpha).cgColor
+    shape.actions = ["path": NSNull(), "bounds": NSNull(), "position": NSNull()]
+    layer?.addSublayer(shape)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  func update(bounds container: NSRect, mode: OverlayPresentationMode) {
+    if frame != container { frame = container }
+    let rects = OverlayResizeHit.grabPadRects(in: container, mode: mode)
+    guard rects != self.rects || shape.frame != bounds else { return }
+    self.rects = rects
+    shape.frame = bounds
+    let path = CGMutablePath()
+    for rect in rects { path.addRect(rect) }
+    shape.path = path
+  }
+}
+
 enum DictationOverlayWindow {
+  /// Founder, 2026-10-15: the collapse animations are too fast; a big
+  /// full-screen overlay folded in the same time as MIDI to mini. The morph
+  /// keeps one speed instead of one clock: the edge that travels farthest
+  /// sets the duration, and a short step keeps the former 0.28 s.
+  static let presentationSpeed: CGFloat = 1000
   static let presentationDuration: TimeInterval = 0.28
+
+  static func presentationDuration(from start: NSRect, to end: NSRect) -> TimeInterval {
+    let travel = max(
+      abs(end.minX - start.minX), abs(end.maxX - start.maxX),
+      abs(end.minY - start.minY), abs(end.maxY - start.maxY))
+    return max(presentationDuration, TimeInterval(travel / presentationSpeed))
+  }
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
@@ -705,11 +810,12 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    state.onPresentationModeChanged = { [weak panel] mode in
+    state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      state?.presentationMorphDuration = panel.lastMorphDuration
     }
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
@@ -938,6 +1044,15 @@ final class OverlayPresence {
 enum OverlayResizeHit: Sendable {
   static let band: CGFloat = 16
   static let scrollbarInset: CGFloat = 15
+  /// The bottom corners are whole squares, 30 pt a side (Maciej, 2026-10-14:
+  /// a 16 pt corner under a 22 pt glass radius left a sliver to grab). The top
+  /// corners keep the band: the header's close dot sits 16 pt from the left.
+  static let bottomCorner: CGFloat = 30
+  /// The top edge is thinner than the sides. Founder, 2026-10-15 (build 1050):
+  /// the pointer turned into a resize cursor over Pin. The header's controls
+  /// start 10 pt below the top edge (its vertical padding), so a 16 pt band
+  /// took their upper third, cursor and click alike. The band ends above them.
+  static let topBand: CGFloat = 8
 
   enum Edge: Sendable, Hashable {
     case left, right, top, bottom
@@ -953,8 +1068,13 @@ enum OverlayResizeHit: Sendable {
     let left = point.x <= bounds.minX + band
     let right = point.x >= bounds.maxX - band
     if mode == .midi { return left ? .left : right ? .right : nil }
+    let corner = bottomCornerSide(in: bounds, band: band)
+    if point.y <= bounds.minY + corner {
+      if point.x <= bounds.minX + corner { return .bottomLeft }
+      if point.x >= bounds.maxX - corner { return .bottomRight }
+    }
     let bottom = point.y <= bounds.minY + band
-    let top = point.y >= bounds.maxY - band
+    let top = point.y >= bounds.maxY - min(band, topBand)
     switch (left, right, bottom, top) {
     case (true, false, true, false): return .bottomLeft
     case (true, false, false, true): return .topLeft
@@ -1017,17 +1137,54 @@ enum OverlayResizeHit: Sendable {
       ]
     }
     let b = band
+    let t = min(band, topBand)
+    let c = bottomCornerSide(in: bounds, band: band)
     let w = bounds.width
     let h = bounds.height
     return [
-      (NSRect(x: 0, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .left)),
-      (NSRect(x: w - b, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .right)),
-      (NSRect(x: b, y: h - b, width: max(0, w - 2 * b), height: b), cursor(for: .top)),
-      (NSRect(x: b, y: 0, width: max(0, w - 2 * b), height: b), cursor(for: .bottom)),
-      (NSRect(x: 0, y: h - b, width: b, height: b), cursor(for: .topLeft)),
-      (NSRect(x: w - b, y: h - b, width: b, height: b), cursor(for: .topRight)),
-      (NSRect(x: 0, y: 0, width: b, height: b), cursor(for: .bottomLeft)),
-      (NSRect(x: w - b, y: 0, width: b, height: b), cursor(for: .bottomRight)),
+      (NSRect(x: 0, y: c, width: b, height: max(0, h - c - t)), cursor(for: .left)),
+      (NSRect(x: w - b, y: c, width: b, height: max(0, h - c - t)), cursor(for: .right)),
+      (NSRect(x: b, y: h - t, width: max(0, w - 2 * b), height: t), cursor(for: .top)),
+      (NSRect(x: c, y: 0, width: max(0, w - 2 * c), height: b), cursor(for: .bottom)),
+      (NSRect(x: 0, y: h - t, width: b, height: t), cursor(for: .topLeft)),
+      (NSRect(x: w - b, y: h - t, width: b, height: t), cursor(for: .topRight)),
+      (NSRect(x: 0, y: 0, width: c, height: c), cursor(for: .bottomLeft)),
+      (NSRect(x: w - c, y: 0, width: c, height: c), cursor(for: .bottomRight)),
+    ]
+  }
+
+  /// The bottom corner square, never larger than half the panel.
+  static func bottomCornerSide(in bounds: NSRect, band: CGFloat = band) -> CGFloat {
+    max(band, min(bottomCorner, bounds.width / 2, bounds.height / 2))
+  }
+
+  /// Where the panel must own pointer events although the glass leaves its
+  /// pixels transparent: the rounded corners. Every rect lies inside a resize
+  /// zone, so the pad never takes a click that the content receives today.
+  static func grabPadRects(
+    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode
+  ) -> [NSRect] {
+    guard mode != .mini, bounds.width > band * 2, bounds.height > band * 2 else { return [] }
+    let b = band
+    let w = bounds.width
+    let h = bounds.height
+    if mode == .midi {
+      return [
+        NSRect(x: 0, y: 0, width: b, height: h),
+        NSRect(x: w - b, y: 0, width: b, height: h),
+      ]
+    }
+    let t = min(band, topBand)
+    let c = bottomCornerSide(in: bounds, band: band)
+    // Along each top edge the band reaches past the glass curve (~22 pt).
+    let reach = min(c, w / 2, h / 2)
+    return [
+      NSRect(x: 0, y: 0, width: c, height: c),
+      NSRect(x: w - c, y: 0, width: c, height: c),
+      NSRect(x: 0, y: h - reach, width: b, height: reach),
+      NSRect(x: 0, y: h - t, width: reach, height: t),
+      NSRect(x: w - b, y: h - reach, width: b, height: reach),
+      NSRect(x: w - reach, y: h - t, width: reach, height: t),
     ]
   }
 

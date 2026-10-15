@@ -179,7 +179,8 @@ class ReadAckTests(unittest.TestCase):
     def test_five_equal_messages_are_read_completely_without_automatic_ack(self):
         before = (self.root / "leases" / f"{self.lease}.json").read_bytes()
         result = self.read()
-        self.assertEqual(result["deliveries"], self.pending)
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         self.assertEqual(result["read_delivery_ids"], self.ids)
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(before, (self.root / "leases" / f"{self.lease}.json").read_bytes())
@@ -233,16 +234,19 @@ class ReadAckTests(unittest.TestCase):
         self.pending = [notice]
         self.save()
         read = self.read()
-        self.assertEqual(read["deliveries"], [notice])
+        self.assertEqual(read["deliveries"], [
+            {**notice, "addressed_to": "unknown (source has no address)"}])
         self.ack(read["read_delivery_ids"])
         self.assertEqual(self.read()["remaining"], 0)
 
     def test_limit_does_not_truncate_or_ack_unread_items(self):
         result = self.read(read_limit=2)
-        self.assertEqual(result["deliveries"], self.pending[:2])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:2]])
         self.assertEqual(result["remaining"], 3)
         self.ack(result["read_delivery_ids"])
-        self.assertEqual(self.read()["deliveries"], self.pending[2:])
+        self.assertEqual(self.read()["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[2:]])
 
     def test_byte_limit_refuses_oversized_first_envelope_without_partial_text(self):
         self.pending[0]["text"] = "Iwo " * 20000
@@ -250,7 +254,8 @@ class ReadAckTests(unittest.TestCase):
         with patch.object(DEMUX, "emit") as emit, self.assertRaisesRegex(ValueError, "read-bytes"):
             DEMUX.read_pending_command(self.args())
         emit.assert_not_called()
-        self.assertEqual(self.read(read_bytes=200000)["deliveries"], self.pending)
+        self.assertEqual(self.read(read_bytes=200000)["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
 
     def test_foreign_payload_refuses_whole_read(self):
         self.pending[3]["provider_session_id"] = "foreign"
@@ -396,7 +401,8 @@ class ReadAckTests(unittest.TestCase):
         result = self.cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         read = json.loads(result.stdout)
-        self.assertEqual(read["deliveries"], self.pending)
+        self.assertEqual(read["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         ack = subprocess.run([sys.executable, str(SOURCE), "--provider", "codex", "--session", self.session,
                               "--bridge-home", str(self.root), "--bus", str(self.bus),
                               "--ack", *read["read_delivery_ids"]], capture_output=True, text=True)
