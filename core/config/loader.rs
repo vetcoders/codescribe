@@ -377,6 +377,13 @@ impl Config {
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
         }
+        let (dictation_witness_armed, dictation_witness_env_override) =
+            Self::resolve_dictation_witness_armed(&input);
+        if dictation_witness_env_override {
+            input
+                .env_overlay_keys
+                .push(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER.to_string());
+        }
         if let Some(enabled) = Self::format_on_device_env_override(&input) {
             input.values.format_on_device = enabled;
             input
@@ -463,7 +470,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\ndictation_witness_armed={dictation_witness_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -482,6 +489,7 @@ impl Config {
             digest,
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override: phase_override,
             tail_provider,
@@ -499,6 +507,7 @@ impl Config {
             digest: parts.digest,
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
+            dictation_witness_armed: parts.dictation_witness_armed,
             local_tail_patch: parts.local_tail_patch,
             layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
@@ -520,6 +529,24 @@ impl Config {
             .seal_lane_armed
             .unwrap_or(DEFAULT_SEAL_LANE_ARMED);
         match input.env(SILERO_FUSION_ENV) {
+            Ok(raw) => (
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ),
+                true,
+            ),
+            Err(_) => (configured, false),
+        }
+    }
+
+    /// Resolve the Voice Lab witness arming for this immutable generation. The
+    /// durable field is `audio.dictation_witness_armed`; the
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` process value is the documented
+    /// power-user override and wins when present.
+    fn resolve_dictation_witness_armed(input: &CapturedRuntimeInputs) -> (bool, bool) {
+        let configured = input.user_settings.dictation_witness_armed.unwrap_or(false);
+        match input.env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER) {
             Ok(raw) => (
                 matches!(
                     raw.trim().to_ascii_lowercase().as_str(),
