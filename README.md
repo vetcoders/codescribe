@@ -116,22 +116,22 @@ Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI for
 Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
 
 ```env
-# ~/.codescribe/.env
-
-# Shared defaults
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain, not in committed files.
+# ~/.codescribe/.env — each lane picks a provider and a model. The endpoint is
+# the provider's own and cannot be overridden; the key lives in Settings ›
+# Providers (macOS Keychain), with LLM_OPENAI_API_KEY / LLM_XAI_API_KEY /
+# LLM_ANTHROPIC_API_KEY as an env fallback.
 
 # Formatting mode / cleanup pass
-LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
 LLM_FORMATTING_MODEL=gpt-4.1
-# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode / agent chat
-LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_PROVIDER=openai-responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
+
+# Retired and ignored (one warning at start): LLM_ENDPOINT, LLM_MODEL,
+# LLM_FORMATTING_ENDPOINT, LLM_ASSISTIVE_ENDPOINT, LLM_API_KEY,
+# LLM_FORMATTING_API_KEY, LLM_ASSISTIVE_API_KEY.
 ```
 
 For the exact resolver used by formatting, assistive, and the agent provider —
@@ -347,14 +347,15 @@ TOGGLE_SILENCE_SEC=5.0               # Apple epoch rest after this much silence 
 # AI Formatting
 AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
 
-# OpenAI Responses provider (shared defaults)
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain.
-
-# Mode-specific overrides (optional)
-# LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=
-# LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=
+# LLM lanes: a provider and a model per lane. The endpoint is the provider's
+# own; keys live in Settings › Providers (Keychain), env is only a fallback
+# (LLM_OPENAI_API_KEY, LLM_XAI_API_KEY, LLM_ANTHROPIC_API_KEY).
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
+LLM_FORMATTING_MODEL=gpt-4.1
+LLM_ASSISTIVE_PROVIDER=openai-responses
+LLM_ASSISTIVE_MODEL=gpt-5.5
+# Retired, ignored with one warning: LLM_ENDPOINT, LLM_MODEL, LLM_*_ENDPOINT,
+# LLM_API_KEY, LLM_FORMATTING_API_KEY, LLM_ASSISTIVE_API_KEY.
 
 # History
 HISTORY_ENABLED=1                    # Save transcripts
