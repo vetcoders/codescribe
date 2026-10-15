@@ -154,8 +154,12 @@ where
 }
 
 /// Consume the armed transcript and run the classic snapshot → set → Cmd+V →
-/// restore path at the moment the user presses the global command.
-pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
+/// restore path at the moment the user presses the global command. The restore
+/// step follows the same resolved clipboard settings as the controller's paste.
+pub fn deliver_deferred_insert(
+    restore_clipboard: bool,
+    restore_clipboard_delay_ms: u64,
+) -> Result<DeferredInsertDelivery> {
     let target = StopPasteTarget::capture();
     if target.field == crate::os::hold_badge::FocusedInputField::Secure || !target.readable() {
         anyhow::bail!(
@@ -163,7 +167,13 @@ pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
         );
     }
     deliver_deferred_insert_at(Instant::now(), |text| {
-        let receipt = paste_to_stop_target(text, &target, PasteMode::Comfort)?;
+        let receipt = paste_to_stop_target(
+            text,
+            &target,
+            PasteMode::Comfort,
+            restore_clipboard,
+            restore_clipboard_delay_ms,
+        )?;
         if receipt.delivery == StopPasteDelivery::DeferredTargetChanged {
             anyhow::bail!("The text field changed. The transcript remains in Deferred Paste.");
         }
