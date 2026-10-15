@@ -82,7 +82,9 @@ final class SetupAppearanceTests: XCTestCase {
             XCTAssertNil(backdrop, "Reduced transparency must use the solid shared backdrop")
           } else {
             let glass = try XCTUnwrap(backdrop, "Every setup step must use the overlay glass")
-            XCTAssertNil(glass.tintColor, "Setup readability must not recolor the shared glass")
+            XCTAssertEqual(
+              glass.tintColor, OverlayCanvasBackdrop.glassVeil(dark ? .dark : .light),
+              "Setup carries the shared veil and adds no recolor of its own")
             XCTAssertNil(glass.hitTest(NSPoint(x: glass.bounds.midX, y: glass.bounds.midY)))
           }
         } else {

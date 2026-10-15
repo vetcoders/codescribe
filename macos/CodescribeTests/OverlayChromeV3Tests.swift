@@ -147,7 +147,7 @@ final class OverlayChromeV3Tests: XCTestCase {
       if #available(macOS 26, *) {
         let glass = try XCTUnwrap(descendant(OverlayDesktopGlassView.self, in: root))
         XCTAssertEqual(glass.style, .regular)
-        XCTAssertNil(glass.tintColor)
+        XCTAssertEqual(glass.tintColor, OverlayCanvasBackdrop.glassVeil(.resolve(scheme)))
         XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
         XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
       } else {
