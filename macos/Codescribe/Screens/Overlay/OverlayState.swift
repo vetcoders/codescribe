@@ -1087,6 +1087,8 @@ final class OverlayState {
   private(set) var globalPlaybackMuted: Bool?
   private(set) var globalPlaybackPending = false
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
+  /// Read-only paint from the helper's policy receipts; never persisted here.
+  private var broadcastPolicies: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
   private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
@@ -1392,11 +1394,13 @@ final class OverlayState {
     let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
+    let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
     channelPlaybackAgents = bound
+    broadcastPolicies = broadcastSnapshot
     if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
@@ -1783,6 +1787,13 @@ final class OverlayState {
         return owner.channel == row.channel && owner.provider == hud?.provider
           && owner.providerSessionID == hud?.providerSessionID
       }
+    }.map { row in
+      var projected = row
+      if let identity = playbackIdentity(for: row.channel) {
+        projected.broadcastIdentity = identity
+        projected.broadcastPolicy = broadcastPolicies[identity] ?? .on
+      }
+      return projected
     }.sorted { $0.channel < $1.channel }
   }
   var hasOpenChannel: Bool {

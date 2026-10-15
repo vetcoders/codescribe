@@ -1860,6 +1860,17 @@
         }
       }
     },
+    "0 · All (%lld of %lld)" : {
+      "comment" : "Channel zero: agents woken by broadcasts out of all bound agents",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "0 · Wszyscy (%1$lld z %2$lld)"
+          }
+        }
+      }
+    },
     "24h" : {
       "localizations" : {
         "pl" : {
@@ -3594,6 +3605,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Na dole po prawej"
+          }
+        }
+      }
+    },
+    "Broadcasts do not wake this agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozgłoszenia nie wybudzają tego agenta"
           }
         }
       }
@@ -5867,6 +5888,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się przenieść %@ do archiwum: kanał jest otwarty. Najpierw go rozłącz; rozmowa została zachowana."
+          }
+        }
+      }
+    },
+    "Couldn't change broadcast reception." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić odbioru rozgłoszeń."
           }
         }
       }
@@ -8195,6 +8226,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zainstaluj skill"
+          }
+        }
+      }
+    },
+    "Install the agent bridge to control agent preferences." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj integrację agentów, aby zmieniać ich preferencje."
           }
         }
       }
@@ -18103,6 +18144,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Codescribe Bus czeka tyle czasu od zakończenia mowy, zanim wyśle wiadomość. Ten sam limit ciszy obowiązuje przy dyktowaniu bez trzymania klawisza. Zmiany działają od otwarcia kanału lub rozpoczęcia nagrania."
+          }
+        }
+      }
+    },
+    "Wake this agent for channel 0 broadcasts" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybudzaj tego agenta po rozgłoszeniach na kanale 0"
           }
         }
       }
