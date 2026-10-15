@@ -7314,6 +7314,11 @@ fn maybe_spawn_utterance_witness(
         return;
     };
     for target in &targets {
+        // Attempts accrue only to ranges the issued window actually covers;
+        // debt beyond the 30 s cap keeps its full budget for later seals.
+        if target.0 >= window_end || target.1 <= window_start {
+            continue;
+        }
         let entry = state
             .dictation_witness_attempts
             .iter_mut()
