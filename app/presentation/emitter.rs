@@ -50,10 +50,51 @@ pub struct CompactProjection {
     /// their own paint boundary; no consumer may use it as committed delivery.
     pub text: String,
     pub degraded: bool,
+    /// What the cursor dot says about the voice right now.
+    #[serde(default)]
+    pub voice: CursorVoice,
     /// Every unanchored text of this capture, in PCM order. It is painted
     /// beside the canvas, never inside the canvas string or the Bus. The
     /// Refused alternatives remain outside the stop canvas and delivery.
     pub evidence: Vec<UnanchoredEvidence>,
+}
+
+/// The voice under the cursor, from the session's one Silero observer.
+/// Paint only; no state grants transcript or delivery authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorVoice {
+    /// No speech observer this capture: the dot keeps its mode color.
+    #[default]
+    Unobserved,
+    /// Silero hears speech and the words keep up.
+    Speaking,
+    /// Silero hears no speech and nothing is owed.
+    Quiet,
+    /// Speech outran its words past the stall bound, or the ledger owes text.
+    Lagging,
+}
+
+impl CursorVoice {
+    /// One reading of the latest integrity evidence. Owed text outranks speech.
+    pub fn from_integrity(integrity: Option<&SpeechIntegrity>) -> Self {
+        let Some(integrity) = integrity else {
+            return Self::Unobserved;
+        };
+        match integrity.phase {
+            SpeechIntegrityPhase::Unavailable => Self::Unobserved,
+            SpeechIntegrityPhase::Stalled
+            | SpeechIntegrityPhase::Recovering
+            | SpeechIntegrityPhase::Unresolved => Self::Lagging,
+            SpeechIntegrityPhase::Listening | SpeechIntegrityPhase::Tracking => {
+                if integrity.speech_live {
+                    Self::Speaking
+                } else {
+                    Self::Quiet
+                }
+            }
+        }
+    }
 }
 
 /// Read-only text the ledger kept visible without mutation authority,
@@ -3674,6 +3715,7 @@ impl PresentationEmitter {
                     | SpeechIntegrityPhase::Unresolved
             )
         });
+        let voice = CursorVoice::from_integrity(integrity.as_ref());
         let paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
@@ -3718,6 +3760,7 @@ impl PresentationEmitter {
                     paint.clone()
                 },
                 degraded,
+                voice,
                 evidence,
             })
         });
@@ -5305,6 +5348,7 @@ mod tests {
                 acoustic_speech_ms_since_text_advance: 0,
                 pending_occurrences: 1,
                 phase: codescribe_core::pipeline::contracts::SpeechIntegrityPhase::Recovering,
+                speech_live: false,
             },
         });
         assert_eq!(paints.lock().unwrap().last().unwrap().text, "…");
@@ -5362,9 +5406,12 @@ mod tests {
 
     #[tokio::test]
     async fn capture_projects_full_preview_and_acoustic_debt_without_delivery() {
+        use super::CursorVoice;
         use codescribe_core::pipeline::contracts::{SpeechIntegrity, SpeechIntegrityPhase};
         let paints = Arc::new(StdMutex::new(Vec::new()));
         let observed = paints.clone();
+        let voices = Arc::new(StdMutex::new(Vec::new()));
+        let heard = voices.clone();
         let delivery = Arc::new(Mutex::new(String::new()));
         let temp = tempfile::tempdir().unwrap();
         let bus = Arc::new(
@@ -5386,6 +5433,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((projection.text.clone(), projection.degraded));
+            heard.lock().unwrap().push(projection.voice);
         }));
         emitter.on_event(&partial_mirror(
             1,
@@ -5401,6 +5449,7 @@ mod tests {
             acoustic_speech_ms_since_text_advance: 2400,
             pending_occurrences: 1,
             phase: SpeechIntegrityPhase::Stalled,
+            speech_live: false,
         };
         let mut foreign_first = evidence.clone();
         emitter.on_event(&EngineEvent::SpeechIntegrity {
@@ -5440,6 +5489,7 @@ mod tests {
                 paints.lock().unwrap().last().unwrap(),
                 &("zero jeden dwa trzy cztery pięć".into(), true)
             );
+            assert_eq!(voices.lock().unwrap().last(), Some(&CursorVoice::Lagging));
             emitter.on_event(&partial_mirror(
                 evidence.sequence + 1,
                 "nowe słowa na żywo",
@@ -5477,12 +5527,69 @@ mod tests {
             &("odzyskany cały fragment".into(), true)
         );
         evidence.phase = SpeechIntegrityPhase::Tracking;
-        emitter.on_event(&EngineEvent::SpeechIntegrity { evidence });
+        emitter.on_event(&EngineEvent::SpeechIntegrity {
+            evidence: evidence.clone(),
+        });
         assert_eq!(
             paints.lock().unwrap().last().unwrap(),
             &("odzyskany cały fragment".into(), false)
         );
+        // Maciej, 2026-10-14: the dot tells a speaking voice from a quiet one.
+        assert_eq!(voices.lock().unwrap().last(), Some(&CursorVoice::Quiet));
+        evidence.sequence += 1;
+        evidence.speech_live = true;
+        emitter.on_event(&EngineEvent::SpeechIntegrity { evidence });
+        assert_eq!(voices.lock().unwrap().last(), Some(&CursorVoice::Speaking));
         assert!(delivery.lock().await.is_empty());
+    }
+
+    #[test]
+    fn cursor_voice_reads_owed_text_before_speech() {
+        use super::CursorVoice;
+        use codescribe_core::pipeline::contracts::{SpeechIntegrity, SpeechIntegrityPhase};
+        let integrity = |phase, speech_live| SpeechIntegrity {
+            session_id: "take".into(),
+            capture_epoch: 1,
+            sequence: 1,
+            acoustic_speech_ms_since_text_advance: 0,
+            pending_occurrences: 0,
+            phase,
+            speech_live,
+        };
+        assert_eq!(CursorVoice::from_integrity(None), CursorVoice::Unobserved);
+        for speech_live in [false, true] {
+            assert_eq!(
+                CursorVoice::from_integrity(Some(&integrity(
+                    SpeechIntegrityPhase::Unavailable,
+                    speech_live
+                ))),
+                CursorVoice::Unobserved
+            );
+            for owed in [
+                SpeechIntegrityPhase::Stalled,
+                SpeechIntegrityPhase::Recovering,
+                SpeechIntegrityPhase::Unresolved,
+            ] {
+                assert_eq!(
+                    CursorVoice::from_integrity(Some(&integrity(owed, speech_live))),
+                    CursorVoice::Lagging,
+                    "owed words outrank a speaking voice"
+                );
+            }
+        }
+        for phase in [
+            SpeechIntegrityPhase::Listening,
+            SpeechIntegrityPhase::Tracking,
+        ] {
+            assert_eq!(
+                CursorVoice::from_integrity(Some(&integrity(phase, true))),
+                CursorVoice::Speaking
+            );
+            assert_eq!(
+                CursorVoice::from_integrity(Some(&integrity(phase, false))),
+                CursorVoice::Quiet
+            );
+        }
     }
 
     impl DeltaSink for RecordingDeltaSink {

@@ -31,7 +31,7 @@ MCP_SPEC.loader.exec_module(MCP)
 def parse_wake_notice(line):
     """The wake is one English sentence (what the model reads); recover its facts."""
     text = line.split("Codescribe: ", 1)[1]
-    head = re.search(r"for (?P<name>\S+) on channel (?P<channel>\d) \((?P<provider>\S+) session (?P<session>[^)]+)\)", text)
+    head = re.search(r"for (?P<name>[^,]+), connected on channel (?P<channel>\d) \((?P<provider>\S+) session (?P<session>[^)]+)\)", text)
     notice = {"name": head["name"], "channel": head["channel"], "provider": head["provider"],
               "provider_session_id": head["session"]}
     if text.startswith("listener problem "):
@@ -39,8 +39,10 @@ def parse_wake_notice(line):
     elif text.startswith("no message "):
         notice["kind"] = "codescribe_wait_idle"
     else:
+        listed = re.findall(r"([0-9a-f]{24})(?: \[([^\]]*)\])?", re.search(r"new delivery ids: ([^.]*)\.", text)[1])
         notice.update(kind="codescribe_mailbox_ready", pending_count=int(re.search(r"pending (\d+)", text)[1]),
-                      new_delivery_ids=re.search(r"new delivery ids: ([^.]*)\.", text)[1].split(", "))
+                      new_delivery_ids=[identity for identity, _ in listed],
+                      addressed={identity: said for identity, said in listed if said})
         problem = re.search(r"problem: (\S+?);", text)
         if problem:
             notice["problem"] = problem[1]
@@ -909,6 +911,23 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
+    def test_wake_names_each_delivery_channel_and_audience(self):
+        """Maciej, 2026-10-14: a channel 0 broadcast must not read as a message
+        on the agent's own channel."""
+        broadcast, direct, peer = "a" * 24, "b" * 24, "c" * 24
+        self.pending = [dict(self.envelope(broadcast), channel="0", audience="*"),
+                        dict(self.envelope(direct), channel="7", audience="fable"),
+                        dict(self.envelope(peer), channel="0", peer_to="fable",
+                             sender={"name": "codex", "channel": "3"})]
+        self.save()
+        code, notice = self.wake()
+        self.assertEqual(code, MCP.WAKE_EXIT)
+        self.assertEqual(notice["channel"], "7", "the head still names the agent's own channel")
+        self.assertEqual(notice["addressed"], {broadcast: "channel 0 (all audience)",
+                                               direct: "channel 7 (fable)",
+                                               peer: "channel 0 (fable)"})
+        self.assert_not_acknowledged()
+
     def test_arrival_during_silence_wakes_without_reading(self):
         self.pending = []
         self.save()
@@ -994,7 +1013,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
                     path.unlink()
                 result = self.hook(shell)
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("new message(s) for fable on channel 7", result.stderr)
+                self.assertIn("new message(s) for fable, connected on channel 7", result.stderr)
                 self.assertNotIn("{", result.stderr)
                 junie = self.hook(shell, environ={})
                 self.assertEqual((junie.returncode, junie.stderr), (0, ""))
@@ -1036,6 +1055,23 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         self.assertEqual(self.mailbox.read_ids, set())
         self.assert_not_acknowledged()
 
+    def test_probe_names_a_broadcast_as_said_to_every_agent(self):
+        self.pending = [dict(self.envelope(self.ids[0]), channel="0", audience="*")]
+        self.save()
+        code, notice = self.probe()
+        self.assertEqual((code, notice["addressed"]), (0, {self.ids[0]: "channel 0 (all audience)"}))
+
+    def test_read_prose_names_channel_audience_and_peer_sender(self):
+        def describe(row):
+            return MCP.describe_delivery({**row, "addressed_to": DEMUX.delivery_address_label(row)})
+        take = describe(dict(self.envelope(self.ids[0]), channel="0", audience="*"))
+        self.assertTrue(take.startswith("Message from Founder on channel 0 (all audience) (message, "), take)
+        mine = describe(dict(self.envelope(self.ids[1]), channel="7", audience="fable"))
+        self.assertTrue(mine.startswith("Message from Founder on channel 7 (fable) ("), mine)
+        peer = describe(dict(self.envelope(self.ids[2]), channel="7", peer_to="fable",
+                                          sender={"name": "codex", "provider": "codex", "channel": "3"}))
+        self.assertTrue(peer.startswith("Message from codex on channel 7 (fable) ("), peer)
+
     def test_probed_delivery_does_not_wake_the_turn_end_again(self):
         self.probe()
         code, notice = self.wake()
@@ -1073,7 +1109,7 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
                 result = self.hook(shell, command=entry["command"])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-                self.assertIn("new message(s) for fable on channel 7", context)
+                self.assertIn("new message(s) for fable, connected on channel 7", context)
                 again = self.hook(shell, command=entry["command"])
                 self.assertEqual((again.returncode, again.stdout), (0, ""))
                 junie = self.hook(shell, command=entry["command"], environ={})
