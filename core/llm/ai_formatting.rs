@@ -628,8 +628,6 @@ struct InputItem {
 enum InputContent {
     #[serde(rename = "input_text")]
     Text { text: String },
-    #[serde(rename = "input_image")]
-    Image { image_url: String },
 }
 
 /// Anthropic Messages request format (/v1/messages)
@@ -654,148 +652,15 @@ struct AnthropicMessage {
     content: Vec<AnthropicContentBlock>,
 }
 
-/// A single content block of an Anthropic turn — text or an inline image.
+/// A single content block of an Anthropic turn.
 ///
-/// Anthropic takes base64 images as a structured `source` object rather than the
-/// data URL the Responses API accepts, which is why the two paths diverge here.
+/// Text only: the formatter transforms a transcript, and a transcript never
+/// selects a file, so no image block is built on this path.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
-    #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
-}
-
-/// Base64 image payload in the shape Anthropic expects.
-#[derive(Debug, Serialize)]
-struct AnthropicImageSource {
-    #[serde(rename = "type")]
-    source_type: &'static str,
-    media_type: String,
-    data: String,
-}
-
-/// Load an image from disk as a `data:` URL, or `None` if it cannot be used.
-///
-/// Returns `None` on anything unreadable, unsupported, or over the size cap —
-/// an attachment problem degrades the request instead of failing it.
-fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
-    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-
-    // Marker parsing, MIME mapping and the size cap are shared with the agent
-    // send path via `crate::attachment` so both routes honor one contract.
-    let (bytes, mime) =
-        crate::attachment::load_image_for_vision(path, crate::attachment::MAX_VISION_IMAGE_BYTES)?;
-    let b64 = BASE64.encode(bytes);
-    Some(format!("data:{mime};base64,{b64}"))
-}
-
-/// Split a user message into Responses API content parts, lifting any attached
-/// images out of the marker block.
-///
-/// The image filenames are appended to the text as well, so a model that drops
-/// or cannot see an attachment still knows something was sent.
-fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
-    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
-    /// Cap on image parts per Responses request; surplus paths are dropped.
-    const MAX_IMAGES: usize = 16;
-
-    let (mut cleaned, mut image_paths) =
-        crate::attachment::parse_image_attachment_block(user_message);
-    if image_paths.len() > MAX_IMAGES {
-        warn!(
-            "Too many image attachments ({}); keeping first {}",
-            image_paths.len(),
-            MAX_IMAGES
-        );
-        image_paths.truncate(MAX_IMAGES);
-    }
-
-    if !image_paths.is_empty() {
-        let names = image_paths
-            .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        cleaned.push_str("\n\n[Attached images: ");
-        cleaned.push_str(&names);
-        cleaned.push_str("]\n");
-    }
-
-    let mut content = vec![InputContent::Text { text: cleaned }];
-    for p in image_paths {
-        let Some(url) = encode_image_as_data_url(&p) else {
-            warn!("Failed to encode image attachment: {}", p.display());
-            continue;
-        };
-        content.push(InputContent::Image { image_url: url });
-    }
-    content
-}
-
-/// The Anthropic counterpart of [`build_responses_user_content`].
-///
-/// Differs in one respect: an empty text block is omitted when images are
-/// present, because Anthropic rejects a blank text block alongside content.
-fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock> {
-    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
-    /// Cap on image parts per Anthropic request; surplus paths are dropped.
-    const MAX_IMAGES: usize = 16;
-
-    let (mut cleaned, mut image_paths) =
-        crate::attachment::parse_image_attachment_block(user_message);
-    if image_paths.len() > MAX_IMAGES {
-        warn!(
-            "Too many image attachments ({}); keeping first {}",
-            image_paths.len(),
-            MAX_IMAGES
-        );
-        image_paths.truncate(MAX_IMAGES);
-    }
-
-    if !image_paths.is_empty() {
-        let names = image_paths
-            .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        cleaned.push_str("\n\n[Attached images: ");
-        cleaned.push_str(&names);
-        cleaned.push_str("]\n");
-    }
-
-    let mut content = Vec::new();
-    if !cleaned.is_empty() || image_paths.is_empty() {
-        content.push(AnthropicContentBlock::Text { text: cleaned });
-    }
-
-    for p in image_paths {
-        let Some(url) = encode_image_as_data_url(&p) else {
-            warn!("Failed to encode image attachment: {}", p.display());
-            continue;
-        };
-        let Some(source) = anthropic_image_source_from_data_url(&url) else {
-            warn!(
-                "Failed to convert image attachment for Anthropic: {}",
-                p.display()
-            );
-            continue;
-        };
-        content.push(AnthropicContentBlock::Image { source });
-    }
-    content
-}
-
-/// Re-shape a `data:<mime>;base64,<payload>` URL into Anthropic's source object.
-fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSource> {
-    let payload = url.strip_prefix("data:")?;
-    let (media_type, data) = payload.split_once(";base64,")?;
-    Some(AnthropicImageSource {
-        source_type: "base64",
-        media_type: media_type.to_string(),
-        data: data.to_string(),
-    })
 }
 
 /// Responses API response format.
@@ -1614,7 +1479,9 @@ async fn call_anthropic_messages_resolved(
         system: Some(system_prompt.to_string()).filter(|value| !value.trim().is_empty()),
         messages: vec![AnthropicMessage {
             role: "user",
-            content: build_anthropic_user_content(user_message),
+            content: vec![AnthropicContentBlock::Text {
+                text: user_message.to_string(),
+            }],
         }],
         max_tokens,
         temperature,
@@ -1717,7 +1584,9 @@ fn responses_chain_request(
         input: build_responses_input(
             system_prompt,
             previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
+            vec![InputContent::Text {
+                text: user_message.to_string(),
+            }],
         ),
         instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
