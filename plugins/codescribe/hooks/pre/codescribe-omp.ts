@@ -23,10 +23,10 @@ const PROVIDER = "omp";
 const WAKE_EXIT = 75;
 /** Above `WAKE_SECONDS` (6 h) in scripts/bus-mcp.py, like the Claude Code hook timeout. */
 const WAKE_TIMEOUT_MS = 21_660_000;
-/** Same launcher as `.mcp.json`: the verified helper, with the managed PATH first. */
+/** Same launcher as `.mcp.json`: the verified helper, with the managed PATH first and the host's PYTHONHOME/PYTHONPATH dropped. */
 const WAKE_SCRIPT =
   'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ' +
-  'exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"';
+  'exec env -u PYTHONHOME -u PYTHONPATH "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"';
 
 function identityContext(session: string): string {
   return (

@@ -135,7 +135,7 @@ Use one background task with this command (replace SESSION with the current
 Kimi session ID, retaining any explicit bridge-home override):
 
 ```bash
-cs-bus --watch --until-event --provider kimi-code --session SESSION
+env -u PYTHONHOME -u PYTHONPATH cs-bus --watch --until-event --provider kimi-code --session SESSION
 ```
 
 Pass it to Kimi's `Bash` with `run_in_background=true`, `disable_timeout=true`

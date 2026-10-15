@@ -29,7 +29,11 @@ also installed, `/codescribe` routes to this plugin's skill
 
 Requirements: Python 3.10+ in `~/.local/bin`, `/opt/homebrew/bin`,
 `/usr/local/bin` or `PATH`. Every plugin launcher puts those directories first, so
-a pinned or refusing `python3` earlier on `PATH` does not break the plugin.
+a pinned or refusing `python3` earlier on `PATH` does not break the plugin. Every
+launcher also runs the helper with `PYTHONHOME` and `PYTHONPATH` removed: a host
+that leaks its own interpreter's variables (seen 2026-10-15 from a Vibecrafted
+launcher pointing at a 3.14 stdlib) would otherwise kill the helper before its
+first line, and the conversation would never wake.
 
 ## Identity
 
@@ -50,8 +54,14 @@ hooks:
   request is made while the mailbox is silent.
 - For a delivery not yet announced it exits 75, which the hook command maps to the
   wake code 2. Claude Code then starts a turn with a `codescribe_mailbox_ready`
-  notice. Any other exit, including a helper that cannot parse the hook command,
-  stays a silent hook result instead of waking the model every turn.
+  notice. Exit 0 (no channel, another waiter holds the lock, detached) is silent.
+  Any other exit, including a helper that crashed or cannot parse the hook
+  command, never wakes the model: the hook exits 1, so Claude Code shows the
+  helper's last stderr and `Codescribe: wake helper failed (exit N)` as a hook
+  error, and appends `TIMESTAMP FLAG exit N: LAST_STDERR_LINE` to
+  `~/.codescribe/agent-bridge/runtime/hook-failures.log`. The `PostToolUse` probe
+  stays exit 0 and writes the same receipt. An empty mailbox and a dead helper no
+  longer look alike.
 - The agent reads with `codescribe_read`, ACKs the exact `read_delivery_ids`,
   works and replies, then ends the turn. The next `Stop` re-arms the hook; one
   lock per lease keeps a single waiter.
