@@ -29,6 +29,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var retiredPlaybackTickets: [String: [String]] = [:]
     private var messageSequence: UInt64 = 0
     private(set) var revision: UInt64 = 0
+    /// Older cached projections discarded peer destinations and must be reread.
+    private(set) var destinationVersion: Int? = 1
     private var receiptCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
@@ -43,7 +45,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
-        messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt
+        messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt,
+        destinationVersion
     }
     private static let historyLimit = 256
     private static let historyByteLimit = 16 << 20
@@ -290,6 +293,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         })
       let broadcast = ordered.filter { message in
         if message.kind == .user { return broadcastIDs.contains(message.id) }
+        // Peer publication carries its own destination, independently of a
+        // question or reply association. A private route also outranks causality.
+        if let destination = message.sourceChannel { return destination == "0" }
         guard let owner = message.owner, let delivery = message.replyTo,
           broadcastDeliveries.contains(owner.id + "\0" + delivery)
         else { return false }
@@ -302,7 +308,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       ]
       for owner in historicalOwners.values.sorted(by: { $0.id < $1.id }) {
         let rows = ordered.filter { row in
-          row.owner?.id == owner.id || row.recipients.contains { $0.owner.id == owner.id }
+          if row.kind == .reply, let destination = row.sourceChannel {
+            // All is one shared conversation. Private peer messages belong to
+            // their frozen recipient, never implicitly to their author.
+            return destination != "0"
+              && row.recipients.contains {
+                $0.owner.id == owner.id && $0.owner.channel == destination
+              }
+          }
+          return row.owner?.id == owner.id || row.recipients.contains { $0.owner.id == owner.id }
         }
         result.append(
           OverlayConversation(
@@ -526,6 +540,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         // belongs to sender; a malformed sender cannot borrow route metadata.
         let author = row["sender"] == nil ? row : row["sender"] as? [String: Any] ?? [:]
         guard let owner = OverlayConversationOwner(row: author) else { return }
+        let destination = row["origin_channel"] as? String ?? row["channel"] as? String
+        if row["sender"] != nil {
+          guard let destination, destination.count == 1, "0123456789".contains(destination)
+          else { return }
+        }
         let key = "reply:" + replyID
         if let previous = messages[key], previous.owner?.id != owner.id { return }
         historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
@@ -562,6 +581,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           deliveryID: addressed ? row["delivery_id"] as? String : nil,
           replyTo: addressed ? row["delivery_id"] as? String : nil,
           unsolicited: !addressed, playback: playbackByReply[replyID], busPath: "")
+        if row["sender"] != nil {
+          message.sourceChannel = destination
+        }
         message.supportsSpeechPlayback =
           messages[key]?.supportsSpeechPlayback == true
           || (["xai", "openai"].contains(row["tts_vendor"] as? String ?? "")
