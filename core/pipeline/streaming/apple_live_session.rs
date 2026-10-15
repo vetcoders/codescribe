@@ -7256,7 +7256,10 @@ fn run_terminal_dictation_witness(
     let mut targets: Vec<(u64, u64)> = pending_owners
         .iter()
         .map(|owner| (owner.sample_start, owner.sample_end))
-        .chain(gaps.iter().map(|range| (range.sample_start, range.sample_end)))
+        .chain(
+            gaps.iter()
+                .map(|range| (range.sample_start, range.sample_end)),
+        )
         .filter(|(start, end)| *end > *start && *start < capture_samples)
         .map(|(start, end)| (start, end.min(capture_samples)))
         .collect();
@@ -7265,8 +7268,7 @@ fn run_terminal_dictation_witness(
 
     // Cluster targets into disjoint witness windows with bounded context.
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
-    let max_window =
-        u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
     let mut clusters: Vec<(u64, u64)> = Vec::new();
     for (start, end) in targets {
         let extend = match clusters.last() {
@@ -7314,9 +7316,7 @@ fn run_terminal_dictation_witness(
         // its deadline is clipped to what the budget still owns, so a late
         // request cannot overrun the terminal phase past the declared cap.
         let remaining = DICTATION_WITNESS_TOTAL_BUDGET.saturating_sub(budget_start.elapsed());
-        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS
-            || remaining < Duration::from_secs(1)
-        {
+        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS || remaining < Duration::from_secs(1) {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "dictation_witness_budget_exhausted".into(),
                 message: format!(
@@ -7403,6 +7403,31 @@ fn admit_dictation_witness_payload(
     threshold_samples: u64,
 ) {
     let decode_window = (identity.range.sample_start, identity.range.sample_end);
+    // Committed word-slot PCM for this capture. A witness pin may only speak
+    // for PCM no admitted word already owns: a pin intersecting a committed
+    // slot is re-heard context or a challenge the witness cannot adjudicate,
+    // never the birth of another occurrence over the same samples.
+    let committed_slot_ranges: Vec<(u64, u64)> = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger
+            .qualified_occurrences()
+            .filter(|occurrence| {
+                occurrence.session == identity.range.session
+                    && occurrence.capture_epoch == identity.range.capture_epoch
+            })
+            .flat_map(|occurrence| {
+                ledger
+                    .slots_of(occurrence)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|slot| (slot.sample_start, slot.sample_end))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
     for owner in pending_owners {
         if owner.sample_end <= identity.range.sample_start
             || owner.sample_start >= identity.range.sample_end
@@ -7420,25 +7445,53 @@ fn admit_dictation_witness_payload(
         // Only a measured single-word span can be a word pin. A multi-word DT
         // segment is honest phrase evidence, never divided into synthetic
         // word timing.
-        let pins: Vec<RoutedPin> = payload
-            .segments
-            .iter()
-            .enumerate()
-            .filter(|(_, segment)| segment.text.split_whitespace().count() == 1)
-            .filter(|(_, segment)| {
-                let midpoint = segment
-                    .range
-                    .sample_start
-                    .saturating_add(segment.range.sample_len().unwrap_or(0) / 2);
-                owner.sample_start <= midpoint && midpoint < owner.sample_end
-            })
-            .map(|(index, segment)| RoutedPin {
+        let mut pins: Vec<RoutedPin> = Vec::new();
+        for (index, segment) in payload.segments.iter().enumerate() {
+            if segment.text.split_whitespace().count() != 1 {
+                continue;
+            }
+            let midpoint = segment
+                .range
+                .sample_start
+                .saturating_add(segment.range.sample_len().unwrap_or(0) / 2);
+            if !(owner.sample_start <= midpoint && midpoint < owner.sample_end) {
+                continue;
+            }
+            if committed_slot_ranges.iter().any(|&(start, end)| {
+                segment.range.sample_start < end && start < segment.range.sample_end
+            }) {
+                let label = segment.text.trim();
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::AppleDictation,
+                    identity.request_id,
+                    index as u64,
+                    OccurrenceIdentity::from(&segment.range),
+                );
+                let receipt = {
+                    let mut ledger = state
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ledger.refuse_replacement(
+                        &observation,
+                        label,
+                        RefuseReason::ReplayedRangeIdentity,
+                    )
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: label.to_string(),
+                    receipt,
+                });
+                continue;
+            }
+            pins.push(RoutedPin {
                 index,
                 pin: OccurrenceIdentity::from(&segment.range),
                 text: segment.text.clone(),
                 confidence: segment.confidence,
-            })
-            .collect();
+            });
+        }
         if pins.is_empty() {
             continue;
         }
