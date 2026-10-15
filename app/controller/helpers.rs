@@ -1870,74 +1870,6 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
-    /// Text with no attachment marker must come through byte-identical — the
-    /// splitter must not rewrite ordinary messages on its way past them.
-    #[test]
-    fn test_build_image_attachments_passthrough_without_marker() {
-        let text = "plain message, no attachments";
-        let (cleaned, images, dropped) = build_image_attachments_from_text(text);
-        assert_eq!(cleaned, text);
-        assert!(images.is_empty());
-        assert!(dropped.is_empty());
-    }
-
-    /// The marker block and its raw paths must disappear from model-visible
-    /// text while the readable image becomes real vision input. An unreadable
-    /// path is reported as dropped, never silently forwarded as text — that
-    /// silent passthrough was the original attachment bug.
-    #[test]
-    fn test_build_image_attachments_loads_real_image_and_reports_dropped() {
-        let dir = std::env::temp_dir().join(format!("cs_helpers_vision_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let img = dir.join("shot.png");
-        std::fs::write(&img, b"\x89PNG\r\n\x1a\nfake").expect("test: write fake image");
-        let missing = dir.join("gone.png");
-
-        let text = format!(
-            "describe these\n\n---\nATTACHMENTS (image paths)\n- {}\n- {}\n",
-            img.display(),
-            missing.display()
-        );
-        let (cleaned, images, dropped) = build_image_attachments_from_text(&text);
-
-        // Marker block and raw paths are gone from the model-visible text.
-        assert!(!cleaned.contains("ATTACHMENTS (image paths)"));
-        assert!(!cleaned.contains(&img.display().to_string()));
-        assert!(cleaned.contains("describe these"));
-
-        // Only the readable image becomes a real vision attachment; the missing
-        // one is reported as dropped (visible error), never forwarded as text.
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].media_type, "image/png");
-        assert!(!images[0].data.is_empty());
-        assert_eq!(dropped, vec!["gone.png".to_string()]);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Past the cap, the overflow is surfaced rather than quietly discarded:
-    /// exactly `MAX_AGENT_VISION_IMAGES` are forwarded and the remainder come
-    /// back as dropped names the caller can show.
-    #[test]
-    fn test_build_image_attachments_caps_and_reports_overflow() {
-        let dir = std::env::temp_dir().join(format!("cs_helpers_cap_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let mut lines = String::from("multi\n\nATTACHMENTS (image paths)\n");
-        for i in 0..(MAX_AGENT_VISION_IMAGES + 2) {
-            let p = dir.join(format!("img{i}.png"));
-            std::fs::write(&p, b"\x89PNG\r\n\x1a\nfake")
-                .expect("test: write fake image for overflow");
-            lines.push_str(&format!("- {}\n", p.display()));
-        }
-        let (_cleaned, images, dropped) = build_image_attachments_from_text(&lines);
-
-        // Cap honored, overflow surfaced (not silently dropped).
-        assert_eq!(images.len(), MAX_AGENT_VISION_IMAGES);
-        assert_eq!(dropped.len(), 2);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     // ── Voice-assistive delivery: UI-event → delivery-event mapping + publish ──
 
     /// Every UI event variant must cross to its delivery twin unchanged. The two
@@ -2537,7 +2469,7 @@ mod tests {
             delivery.try_recv().expect("turn opener"),
             AgentDeliveryEvent::TurnStarted {
                 thread_id: thread_id.to_string(),
-                user_text: build_image_attachments_from_text(&payload).0,
+                user_text: payload.clone(),
             }
         );
         assert_eq!(
@@ -2608,10 +2540,8 @@ mod tests {
         assert_eq!(inputs.len(), 2);
         assert_eq!(
             inputs[0][0].content,
-            vec![ContentBlock::Text(
-                build_image_attachments_from_text(&payload).0
-            )],
-            "the provider still sees the existing attachment projection"
+            vec![ContentBlock::Text(payload.clone())],
+            "the provider sees the user text unchanged"
         );
         assert_eq!(inputs[1][0].content, vec![ContentBlock::Text(payload)]);
         assert!(
