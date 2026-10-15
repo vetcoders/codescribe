@@ -912,7 +912,9 @@ fn cloud_consent_arms_ws_provider_and_remote_tail_at_refine_endpoint() {
     let mut environment = Layer1TestEnv::new(root.path());
     environment.clear("STT_TAIL_PROVIDER");
     let file_lane = "https://ndjson.invalid/v1/audio/transcribe:stream";
-    let refine = "https://refine.invalid/v1/audio/transcriptions";
+    // CS160-F003: the live key is owned by the live lane's origin, so the refine
+    // host must be that same gateway for the key to reach it.
+    let refine = "https://gateway.invalid/v1/audio/transcriptions";
     UserSettings {
         asr_mode: Some("cloud".into()),
         cloud_consent: Some("granted".into()),
