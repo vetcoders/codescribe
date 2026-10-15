@@ -176,6 +176,11 @@ pub struct EnergyCalibrationArtifact {
 /// Why a calibration could not be derived, loaded, or served.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnergyCalibrationRefusal {
+    /// Every captured sample was exactly zero: the device sent no sound at
+    /// all, which is not a quiet room and not a speaker who stayed silent.
+    /// AirPods held by another Apple device do this: macOS refuses the route
+    /// for a recording-only session and the opened stream carries zeros.
+    DigitalSilence { device_name: String, samples: u64 },
     /// The measurement contained no active speech at all.
     NoActiveSpeech,
     /// Too little speech was measured to trust the median.
@@ -246,6 +251,13 @@ pub enum EnergyCalibrationRefusal {
 impl fmt::Display for EnergyCalibrationRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DigitalSilence {
+                device_name,
+                samples,
+            } => write!(
+                f,
+                "`{device_name}` sent no sound: all {samples} samples were digital zero; a Bluetooth headset routed to another device (an iPhone) delivers exactly this"
+            ),
             Self::NoActiveSpeech => write!(f, "no active speech was measured"),
             Self::InsufficientSpeech {
                 measured_seconds,
@@ -416,6 +428,12 @@ impl EnergyCalibrationProfile {
             return Err(EnergyCalibrationRefusal::InvalidSampleRate(
                 receipt.sample_rate,
             ));
+        }
+        if receipt.sample_count > 0 && receipt.digital_zero_samples == receipt.sample_count {
+            return Err(EnergyCalibrationRefusal::DigitalSilence {
+                device_name: receipt.device_name.clone(),
+                samples: receipt.sample_count,
+            });
         }
         if !receipt.active_speech_median_dbfs_is_measured() {
             return Err(EnergyCalibrationRefusal::NoActiveSpeech);
@@ -1027,6 +1045,22 @@ mod tests {
             EnergyCalibrationProfile::derive(&silent, 1, SOURCE_GUIDED_CAPTURE).unwrap_err(),
             EnergyCalibrationRefusal::NoActiveSpeech
         );
+        // 2026-10-15: three AirPods calibrations measured 240000 exact zeros
+        // and the refusal said "no active speech", blaming the speaker.
+        let mut dead = operator_receipt();
+        dead.digital_zero_samples = dead.sample_count;
+        dead.active_speech_samples = 0;
+        dead.active_speech_median_db = f32::NEG_INFINITY;
+        let refusal =
+            EnergyCalibrationProfile::derive(&dead, 1, SOURCE_GUIDED_CAPTURE).unwrap_err();
+        assert_eq!(
+            refusal,
+            EnergyCalibrationRefusal::DigitalSilence {
+                device_name: dead.device_name.clone(),
+                samples: dead.sample_count,
+            }
+        );
+        assert!(refusal.to_string().contains("sent no sound"));
         let mut thin = operator_receipt();
         thin.active_speech_samples = 8_820; // 0.1 s
         assert!(matches!(
