@@ -59,6 +59,8 @@ elif name == 'xcodebuild':
     assert data.is_dir() and data.parent == Path(s['tmp'])
     assert os.environ['TEST_RUNNER_CODESCRIBE_DATA_DIR'] == str(data)
     assert os.environ['TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN'] == '1'
+    bridge_home = Path(os.environ['TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME'])
+    assert bridge_home == data / 'agent-bridge' and bridge_home.is_dir()
     # Record the effective old project defaults too: baseline guards must execute.
     config = args[args.index('-configuration') + 1] if '-configuration' in args else 'Debug'
     settings = [a.split('=', 1)[1] for a in args if a.startswith('LIBRARY_SEARCH_PATHS=')]
