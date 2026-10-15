@@ -85,6 +85,32 @@ def wait_until(probe, deadline: float):
     raise Refusal("timeout_without_forced_termination")
 
 
+CARRIED_ENV_PREFIX = "CODESCRIBE_"
+
+
+def carried_environment() -> list[str]:
+    return sorted(key for key in os.environ if key.startswith(CARRIED_ENV_PREFIX))
+
+
+def launch_new_generation(app: Path, carried: list[str]):
+    if not carried:
+        return run(["/usr/bin/open", "-g", str(app)])
+    # LaunchServices never carries the caller's environment. An operator who
+    # exported CODESCRIBE_* gates asked for them in the new process, so the
+    # relaunch spawns the binary directly, in its own session, inheriting this
+    # process environment by default.
+    try:
+        return subprocess.Popen(
+            [str(app / "Contents/MacOS/Codescribe")],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise Refusal("new_generation_launch_failed") from error
+
+
 def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
     running = pids()
     if not running:
@@ -140,8 +166,9 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
     wait_until(lambda: old_pid not in pids(), deadline)
     if quit_only:
         return {"status": "quit_idle", "old_pid": old_pid, "native_receipt": receipt}
-    launched = run(["/usr/bin/open", "-g", str(app)])
-    if launched.returncode != 0:
+    carried = carried_environment()
+    launched = launch_new_generation(app, carried)
+    if launched.returncode not in (None, 0):
         raise Refusal("new_generation_launch_failed")
 
     def new_generation():
@@ -162,6 +189,7 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
         "commit": info.get("CSBuildCommit"),
         "loaded_matches_installed": True,
         "signature_verified": True,
+        "carried_environment": carried,
         "native_receipt": receipt,
     }
 
