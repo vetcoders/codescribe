@@ -116,8 +116,14 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     }
 
     init() throws {
-      home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        .resolvingSymlinksInPath()
+      // The helper compares the lease's bus against POSIX realpath, while
+      // Foundation's resolvingSymlinksInPath strips `/private` from a
+      // temporaryDirectory path. A scratch home under the repo's ignored
+      // build/ directory crosses no symlink, so both sides see one path.
+      let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+      home = repo.appendingPathComponent("build/test-scratch/\(UUID().uuidString)")
+      try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
       installer = RealAgentBridgeInstaller(resourceRoot: nil, homeDirectory: home, environment: [:])
       identity = AgentPlaybackIdentity(
         provider: "junie", session: "broadcast-fixture",
@@ -130,8 +136,6 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
         "provider_session_id": identity.session, "lease_id": identity.leaseID, "bus": identity.bus,
       ]).write(to: lease)
       // Execute a scratch managed copy of the real helper, never the live bus.
-      let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
       let source = try String(
         contentsOf: repo.appendingPathComponent("scripts/bus-demux.py"), encoding: .utf8)
       let firstNewline = try XCTUnwrap(source.firstIndex(of: "\n"))
