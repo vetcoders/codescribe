@@ -264,38 +264,29 @@ pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Result<Vec<f32>, 
         });
     }
 
-    // Simple linear interpolation for now. The allocation keeps the
-    // established float length, so admitted output stays bit-identical.
-    let ratio = 16000.0 / original_rate as f32;
-    let new_len = (samples.len() as f32 * ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(new_len);
-
-    let max_idx = samples.len() - 1;
-
-    for i in 0..new_len {
-        let old_idx = (i as f32 / ratio).min(max_idx as f32);
-        let idx0 = old_idx.floor() as usize;
-
-        if idx0 >= max_idx {
-            // Clamp to last sample to avoid out-of-bounds due to rounding
-            output.push(samples[max_idx]);
-            continue;
-        }
-
-        let idx1 = (idx0 + 1).min(max_idx);
-        let t = old_idx - idx0 as f32;
-
-        let s0 = samples[idx0];
-        let s1 = samples[idx1];
-        output.push(s0 * (1.0 - t) + s1 * t);
-    }
-
+    // File replay and live capture use one interpolation/phase authority.
+    let mut resampler = crate::vad::Resampler::new(original_rate);
+    let mut output = resampler.resample(samples);
+    output.extend(resampler.finish());
+    debug_assert_eq!(output.len() as u128, exact_len);
     Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_resampling_preserves_physical_samples_and_exact_duration() {
+        let input: Vec<f32> = (0..48_013).map(|i| i as f32 / 48_013.0).collect();
+        let expected: Vec<f32> = input.iter().step_by(3).copied().collect();
+        assert_eq!(resample_to_16k(&input, 48_000).unwrap(), expected);
+        for rate in [8_000, 16_000, 44_100, 48_000] {
+            let output = resample_to_16k(&input, rate).unwrap();
+            assert_eq!(output.len(), (input.len() * 16_000).div_ceil(rate as usize));
+            assert!(output.iter().all(|sample| sample.is_finite()));
+        }
+    }
 
     #[test]
     fn decodes_integer_stereo_to_mono_with_original_sample_rate() -> Result<()> {

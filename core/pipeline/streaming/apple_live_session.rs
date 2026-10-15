@@ -8585,7 +8585,7 @@ fn apple_stream_worker(
                 let silero_ingest = state
                     .fusion
                     .as_mut()
-                    .map(|fusion| fusion.ingest(raw_samples, samples_seen));
+                    .map(|fusion| fusion.ingest(raw_samples, samples, samples_seen));
                 if let Some(ingest) = silero_ingest.as_ref() {
                     if let Some(owner) = consultation.as_mut()
                         && owner.observe(ingest, samples_seen).is_err()
@@ -12008,7 +12008,11 @@ mod rc_w1_live_ledger_tests {
 
         // Silero crossings are narrower still and outrank the ladder.
         let fusion = state.fusion.as_mut().unwrap();
-        fusion.ingest(&vec![0.25f32; at(10.0) as usize], at(10.0));
+        fusion.ingest(
+            &vec![0.25f32; at(10.0) as usize],
+            &vec![0.25f32; at(10.0) as usize],
+            at(10.0),
+        );
         fusion.observe_boundaries(&[
             crossing(VadBoundaryKind::SpeechStart, at(2.0)),
             crossing(VadBoundaryKind::SpeechEnd, at(3.0)),
@@ -12027,7 +12031,11 @@ mod rc_w1_live_ledger_tests {
         let mut state = AppleSealState::new_for_session(RATE, "rc-w3-padding".into(), 0);
         push_capture(&mut state, 10.0);
         let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), 0);
-        ingress.ingest(&vec![0.25f32; at(10.0) as usize], at(10.0));
+        ingress.ingest(
+            &vec![0.25f32; at(10.0) as usize],
+            &vec![0.25f32; at(10.0) as usize],
+            at(10.0),
+        );
         ingress.observe_boundaries(&[
             crossing(VadBoundaryKind::SpeechStart, at(1.0)),
             crossing(VadBoundaryKind::SpeechEnd, at(2.0)),
@@ -14473,7 +14481,7 @@ mod rc_w2_acoustic_tests {
                 cursor += 512;
                 let fusion = state.fusion.as_mut().unwrap();
                 fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
-                let ingest = fusion.ingest(&pcm, cursor);
+                let ingest = fusion.ingest(&pcm, &pcm, cursor);
                 consultation.observe(&ingest, cursor).unwrap();
                 if frame == 19 {
                     emit_stream_events(
@@ -18978,7 +18986,7 @@ mod rc_w2_test_rehab {
             cursor += pcm.len() as u64;
             let fusion = state.fusion.as_mut().unwrap();
             fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
-            let ingest = fusion.ingest(&pcm, cursor);
+            let ingest = fusion.ingest(&pcm, &pcm, cursor);
             let receipt = ingest
                 .closed
                 .first()

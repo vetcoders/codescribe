@@ -2842,7 +2842,7 @@ mod tests {
             while idx < samples_16k.len() {
                 let end = (idx + block_len).min(samples_16k.len());
                 let slice = &samples_16k[idx..end];
-                for event in session.feed(slice, vad::VAD_SAMPLE_RATE) {
+                for event in session.feed(slice, slice) {
                     if matches!(event, SpeechEvent::Chunk(_)) {
                         chunk_events += 1;
                     }
@@ -2933,7 +2933,7 @@ mod tests {
                 buf.push(phase.sin() * 0.5);
                 phase += phase_inc;
             }
-            let _ = session.feed(&buf, input_sr);
+            let _ = session.feed(&buf, &buf);
         }
 
         let total_raw = num_callbacks * callback_size;
@@ -2995,7 +2995,7 @@ mod tests {
 
         for _ in 0..num_callbacks {
             let buf = vec![0.0f32; callback_size];
-            for event in session.feed(&buf, input_sr) {
+            for event in session.feed(&buf, &buf) {
                 let event_speech = session.take_event_speech_vad_samples();
                 accounted_speech_vad_samples =
                     accounted_speech_vad_samples.saturating_add(event_speech);
@@ -3194,7 +3194,7 @@ mod tests {
             let mut offset = 0usize;
             while offset < samples.len() {
                 let end = (offset + callback_size).min(samples.len());
-                for event in session.feed(&samples[offset..end], sample_rate) {
+                for event in session.feed(&samples[offset..end], &samples[offset..end]) {
                     events.push(event);
                 }
                 offset = end;
