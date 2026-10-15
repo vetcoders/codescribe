@@ -1215,6 +1215,17 @@ recipient refuses the send and retains the draft. Publication across journals is
 not atomic: a write failure can leave earlier recipients delivered, so errors
 must not trigger automatic retry. No audio capture or agent identity is invented.
 
+Conversational deliveries expose `addressed_to` from the original source address.
+For channel zero it reads `0 (all audience)`, even when a private copy carries
+one agent's name in `audience` and one recipient in `recipients`. Codex's native
+queue includes the same explicit `ADDRESSED TO: 0 (all audience)` line; mailbox
+reads, MCP reads and watch notifications retain the label. The queue header's
+channel identifies the receiving mailbox, not the original address. A private
+message keeps its target channel/name. A named utterance without a channel keeps
+its named audience; a missing address is reported as unknown, never inferred
+from mentions in the text. This projection changes neither routing nor delivery
+identity, recipients, ACK state or the original message text.
+
 ## Native provider queue receipt
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the

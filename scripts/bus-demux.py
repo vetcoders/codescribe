@@ -2868,6 +2868,21 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def delivery_address_label(payload: dict[str, Any]) -> str:
+    """Expose the source address, never the mailbox that received its copy."""
+    channel = payload.get("origin_channel", payload.get("channel"))
+    audience = payload.get("peer_to") or payload.get("audience")
+    if channel == "0":
+        return "0 (all audience)"
+    if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
+        return f"{channel} ({audience})" if audience else channel
+    if audience == "*":
+        return "all audience"
+    if isinstance(audience, str) and audience:
+        return f"{audience} (named audience)"
+    return "unknown (source has no address)"
+
+
 def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     """Present complete task text and provenance without acoustic diagnostics.
 
@@ -2883,7 +2898,8 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
     )
-    return {key: payload[key] for key in fields if key in payload}
+    return {**{key: payload[key] for key in fields if key in payload},
+            "addressed_to": delivery_address_label(payload)}
 
 
 def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -3056,6 +3072,7 @@ class NativeQueueWakeup:
             name = str(payload.get("audience") or "agent")
             message = (
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
+                f"ADDRESSED TO: {delivery_address_label(payload)}\n"
                 f"{text}\n\n"
                 "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
                 "Follow the codescribe skill."
@@ -5958,6 +5975,7 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
         "coverage": payload.get("coverage"),
         "sca": payload.get("state_change_allowed") is True,
         "delivery_id": payload.get("delivery_id"),
+        "addressed_to": delivery_address_label(payload),
         "text": str(payload.get("text") or ""),
     }
     # Keep the owner and conversational attribution, without repeating the
