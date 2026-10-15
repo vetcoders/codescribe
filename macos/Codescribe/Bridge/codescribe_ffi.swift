@@ -2721,6 +2721,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func getModeBindings()  -> [CsModeBinding]
 
     /**
+     * Per-process restart handshakes live beside the canonical runtime lease.
+     */
+    func idleRestartDirectory()  -> String
+
+    /**
      * Inspect retained source input even when unresolved work prevents Max from
      * starting. No controller, microphone, provider or execution lease is opened.
      */
@@ -2811,6 +2816,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * are live after the call.
      */
     func rearmAfterPermissionGrant()  -> Bool
+
+    /**
+     * Atomically reject busy capture or close future admission for this process.
+     * This never constructs a new controller and never stops an active take.
+     */
+    func reserveIdleRestart() async throws  -> Bool
 
     /**
      * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
@@ -3417,6 +3428,17 @@ open func getModeBindings() -> [CsModeBinding]  {
 }
 
     /**
+     * Per-process restart handshakes live beside the canonical runtime lease.
+     */
+open func idleRestartDirectory() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_idle_restart_directory(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Inspect retained source input even when unresolved work prevents Max from
      * starting. No controller, microphone, provider or execution lease is opened.
      */
@@ -3668,6 +3690,27 @@ open func rearmAfterPermissionGrant() -> Bool  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+
+    /**
+     * Atomically reject busy capture or close future admission for this process.
+     * This never constructs a new controller and never stops an active take.
+     */
+open func reserveIdleRestart()async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_reserve_idle_restart(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -20961,6 +21004,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_idle_restart_directory() != 6949) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_inspect_selected_max_consultation() != 22751) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20998,6 +21044,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_rearm_after_permission_grant() != 37275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 50874) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
