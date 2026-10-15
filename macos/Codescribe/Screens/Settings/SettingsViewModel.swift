@@ -1301,6 +1301,8 @@ final class SettingsViewModel: ObservableObject {
   /// Shared invalidation edges from `AppModel` (nil in tests and previews).
   private let configurationInvalidation: ConfigurationInvalidation?
   private var configurationInvalidationSink: AnyCancellable?
+  /// CoreAudio edge while Settings is visible; see `beginAudioDeviceObservation`.
+  private var audioDeviceMonitor: AudioInputDeviceMonitor?
   /// Residency wait loop; see `beginWhisperResidencyObservation`.
   private var whisperResidencyObservation: Task<Void, Never>?
   private var whisperResidencyObserved = false
@@ -2650,11 +2652,39 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Founder, 2026-10-15: AirPods became the system input while Settings
+  /// still said "Currently using: MacBook Pro Microphone" and "Ready to
+  /// record". While the window is visible, every device or default-input
+  /// change re-reads the live snapshot and the controller's verdict.
+  func beginAudioDeviceObservation() {
+    guard engine != nil else { return }
+    if audioDeviceMonitor == nil {
+      audioDeviceMonitor = AudioInputDeviceMonitor { [weak self] in
+        Task { await self?.audioHardwareChanged() }
+      }
+    }
+    audioDeviceMonitor?.start()
+  }
+
+  func endAudioDeviceObservation() {
+    audioDeviceMonitor?.stop()
+  }
+
+  func audioHardwareChanged() async {
+    refreshAudioInput()
+    await refreshAdmission()
+  }
+
   func refreshAudioInput() {
     guard let engine else { return }
     do {
+      let previousDevice = audioInput.runtimeDevice
       audioInput = try engine.loadAudioInputSnapshot()
       audioInputReadError = nil
+      // A refusal measured on the previous input says nothing about this one.
+      if audioInput.runtimeDevice != previousDevice, !calibrationPending {
+        calibrationNotice = nil
+      }
     } catch {
       audioInput = CsAudioInputSnapshot(
         devices: [],

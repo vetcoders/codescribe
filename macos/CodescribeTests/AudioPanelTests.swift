@@ -711,6 +711,67 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 12), 0)
   }
 
+  func testHardwareChangeRereadsInputAndDropsRefusalOfPreviousDevice() async {
+    // 2026-10-15: the system input moved to AirPods under an open window;
+    // Settings kept the old device, its "ready" and a refusal measured elsewhere.
+    let live = AudioSnapshotBox(Self.liveSnapshot(runtime: "AirPods Pro"))
+    var engine = MockSettingsEngine()
+    engine.audioSnapshotLoader = { live.snapshot }
+    engine.admissionReadiness = .sampleMissing
+    engine.calibrateEnergyObserver = { _ in
+      throw NSError(
+        domain: "Calibration", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "calibration_refused: `AirPods Pro` sent no sound: all 240000 samples were digital zero"
+        ])
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    model.refreshAudioInput()
+    await model.runCalibration()
+    XCTAssertTrue(model.calibrationNotice?.contains("sent no sound") == true)
+
+    await model.audioHardwareChanged()
+    XCTAssertNotNil(model.calibrationNotice, "same input: its refusal stays")
+
+    live.snapshot = Self.liveSnapshot(runtime: "MacBook Pro Microphone")
+    await model.audioHardwareChanged()
+    XCTAssertEqual(model.audioInput.runtimeDevice, "MacBook Pro Microphone")
+    XCTAssertNil(model.calibrationNotice)
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+  }
+
+  func testDeviceMonitorCoalescesBurstsAndStopsCleanly() async throws {
+    var changes = 0
+    let monitor = AudioInputDeviceMonitor { changes += 1 }
+    monitor.start()
+    XCTAssertTrue(monitor.isObserving)
+
+    // A Bluetooth headset adds devices and moves defaults in one burst.
+    monitor.hardwareChanged()
+    monitor.hardwareChanged()
+    monitor.hardwareChanged()
+    try await Task.sleep(for: .milliseconds(700))
+    XCTAssertEqual(changes, 1)
+
+    monitor.hardwareChanged()
+    monitor.stop()
+    XCTAssertFalse(monitor.isObserving)
+    try await Task.sleep(for: .milliseconds(500))
+    XCTAssertEqual(changes, 1, "stop cancels a pending edge")
+  }
+
+  private static func liveSnapshot(runtime: String) -> CsAudioInputSnapshot {
+    CsAudioInputSnapshot(
+      devices: ["AirPods Pro", "MacBook Pro Microphone"],
+      configuredDevice: nil,
+      runtimeDevice: runtime,
+      configuredDeviceAvailable: true,
+      fallbackToDefault: false,
+      runtimeConfigurationMatches: true
+    )
+  }
+
   func testRunCalibrationRefusalIsSurfacedNotHidden() async {
     var engine = MockSettingsEngine()
     engine.admissionReadiness = .sampleMissing
@@ -728,4 +789,10 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertTrue(model.calibrationNotice?.hasPrefix("Calibration refused") == true)
     XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
   }
+}
+
+/// Hardware state the mock engine reads live, as the bridge does.
+private final class AudioSnapshotBox {
+  var snapshot: CsAudioInputSnapshot
+  init(_ snapshot: CsAudioInputSnapshot) { self.snapshot = snapshot }
 }
