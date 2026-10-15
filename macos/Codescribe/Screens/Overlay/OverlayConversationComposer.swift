@@ -10,6 +10,8 @@ struct OverlayConversationComposer: View {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var onCancel: (() -> Void)? = nil
+  var focusRevision: UInt64 = 0
   var onFocusChange: ((Bool) -> Void)? = nil
   var placeholder = String(localized: "Message the Agent")
   var clipboard: NSPasteboard = .general
@@ -86,6 +88,7 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
+        onCancel: onCancel, focusRevision: focusRevision,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
@@ -186,6 +189,8 @@ private struct ConversationMessageField: NSViewRepresentable {
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
+  var onCancel: (() -> Void)? = nil
+  var focusRevision: UInt64 = 0
   var onFocusChange: (Bool) -> Void = { _ in }
   let clipboard: NSPasteboard
   let saveImage: (Data) throws -> URL
@@ -260,12 +265,21 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.onPasteError = onPasteError
     editor.hasAttachments = hasAttachments
     editor.onAttach = onAttach
+    editor.onCancel = onCancel
     if editor.string != text {
       context.coordinator.applyingExternalText = true
       editor.string = text
       editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
       editor.revealCaretAfterLayout()
       context.coordinator.applyingExternalText = false
+    }
+    if context.coordinator.focusRevision != focusRevision {
+      context.coordinator.focusRevision = focusRevision
+      DispatchQueue.main.async { [weak editor] in
+        guard let editor else { return }
+        (editor.window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+        editor.window?.makeFirstResponder(editor)
+      }
     }
     scroll.needsLayout = true
   }
@@ -274,6 +288,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ConversationMessageField
     var applyingExternalText = false
+    var focusRevision: UInt64 = 0
     private var pendingHeight: CGFloat?
     private var heightUpdateScheduled = false
     init(_ parent: ConversationMessageField) { self.parent = parent }
@@ -366,6 +381,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   private final class MessageTextView: NSTextView {
     var sending = false
     var submit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
     var onEditorActive: (Bool) -> Void = { _ in }
     var onTypingActivity: () -> Void = {}
     var pastedText: (() throws -> String?)?
@@ -534,6 +550,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     override func keyDown(with event: NSEvent) {
       if performComposerPaste(with: event) { return }
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
+      if event.keyCode == 53, alternate.isEmpty, !hasMarkedText(), let onCancel {
+        onCancel()
+        return
+      }
       if [36, 76].contains(event.keyCode), alternate.isEmpty, !hasMarkedText() {
         if !sending
           && (hasAttachments() || !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

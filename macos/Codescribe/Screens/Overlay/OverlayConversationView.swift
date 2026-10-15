@@ -58,6 +58,20 @@ struct OverlayConversationView: View {
   @State private var scrollFollow = StreamScrollFollowState()
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
+  @State private var editingMessageID: String?
+  @State private var revisionDraft = ""
+  @State private var revisionFocus: UInt64 = 0
+  @State private var pendingDeliveryControls: Set<String> = []
+  @State private var deliveryControlErrors: [String: String] = [:]
+
+  var onDeliveryControl:
+    (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
+      async throws -> Void = { control, message, owner, text in
+        guard let identity = message.controlIdentity else { throw CocoaError(.fileReadCorruptFile) }
+        try await RealAgentBridgeInstaller.controlBusMessage(
+          control, identity: message.captureSessionID ?? identity,
+          owner: owner, busPath: message.busPath, text: text)
+      }
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
   private var followsLatest: Bool { scrollFollow.followingLive }
@@ -125,7 +139,10 @@ struct OverlayConversationView: View {
             .animation(.easeOut(duration: 0.18), value: followsLatest)
           }
           .onAppear { scrollToLatest(proxy) }
-          .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
+          .onChange(of: conversation.id) { _, _ in
+            cancelRevision()
+            scrollToLatest(proxy)
+          }
           .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
           .onChange(of: isPresented) { _, presented in
             if presented, followsLatest { scrollToLatest(proxy) }
@@ -154,11 +171,29 @@ struct OverlayConversationView: View {
   private var composer: some View {
     VStack(spacing: 8) {
       if conversation.owner != nil || conversation.channel == "0" {
+        if editingMessageID != nil {
+          HStack {
+            Text("Edit")
+            Spacer()
+            Button("Cancel", action: cancelRevision)
+              .buttonStyle(.borderless)
+          }
+          .font(.system(size: 11 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .accessibilityIdentifier("overlay-message-revision-mode")
+        }
         OverlayConversationComposer(
-          palette: palette, draft: $draft, sending: sending, onSubmit: submit,
+          palette: palette, draft: editingMessageID == nil ? $draft : $revisionDraft,
+          sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
+          onCancel: editingMessageID == nil ? nil : cancelRevision,
+          focusRevision: revisionFocus,
           placeholder: conversation.channel == "0"
             ? String(localized: "Send to everyone") : String(localized: "Message the Agent"))
+        if let editingMessageID, let error = deliveryControlErrors[editingMessageID] {
+          Text(verbatim: error)
+            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
+        }
         if let sendError {
           Text(verbatim: sendError)
             .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
@@ -322,7 +357,51 @@ struct OverlayConversationView: View {
 
   private func submit() {
     _ = scrollFollow.handle(.jumpToCurrent)
-    onSend()
+    if let editingMessageID {
+      guard let message = orderedMessages.first(where: { $0.id == editingMessageID }),
+        !revisionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else { return }
+      performDeliveryControl(.revise, message: message, text: revisionDraft)
+    } else {
+      onSend()
+    }
+  }
+
+  private func cancelRevision() {
+    editingMessageID = nil
+    revisionDraft = ""
+  }
+
+  private func edit(_ message: OverlayConversationMessage) {
+    guard message.holdSecondsRemaining != nil else { return }
+    editingMessageID = message.id
+    revisionDraft = message.text
+    revisionFocus &+= 1
+    onComposerTypingActivity()
+  }
+
+  private func performDeliveryControl(
+    _ control: OverlayDeliveryControl, message: OverlayConversationMessage, text: String? = nil
+  ) {
+    guard !pendingDeliveryControls.contains(message.id) else { return }
+    // A broadcast mirror is still one broadcast, never a newly private edit.
+    let owner = message.sourceChannel == "0" ? nil : conversation.owner
+    guard owner != nil || message.sourceChannel == "0" else { return }
+    pendingDeliveryControls.insert(message.id)
+    deliveryControlErrors.removeValue(forKey: message.id)
+    Task { @MainActor in
+      defer { pendingDeliveryControls.remove(message.id) }
+      do {
+        try await onDeliveryControl(control, message, owner, text)
+        if editingMessageID == message.id,
+          control == .withdraw || (control == .revise && revisionDraft == text)
+        {
+          cancelRevision()
+        }
+      } catch {
+        deliveryControlErrors[message.id] = error.userFacingMessage
+      }
+    }
   }
 
   private func scrollToLatest(_ proxy: ScrollViewProxy) {
@@ -337,7 +416,11 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private func messageReceipts(_ message: OverlayConversationMessage) -> some View {
-    if message.showsDeliveryReceipts && !message.recipients.isEmpty {
+    if message.holdSecondsRemaining != nil {
+      Text("Held")
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+    } else if message.showsDeliveryReceipts && !message.recipients.isEmpty {
       if message.recipients.count > 1 {
         let readCount = message.recipients.filter { $0.acknowledged }.count
         Menu {
@@ -433,6 +516,9 @@ struct OverlayConversationView: View {
         }
         .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
       }
+      if let remaining = message.holdSecondsRemaining {
+        heldMessageControls(message, seconds: remaining)
+      }
       messageFooter(message)
     }
     .padding(12)
@@ -448,6 +534,29 @@ struct OverlayConversationView: View {
         )
         .allowsHitTesting(false)
     }
+  }
+
+  private func heldMessageControls(_ message: OverlayConversationMessage, seconds: Int) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(verbatim: HeldDeliveryCopy.countdown(seconds: seconds))
+        .monospacedDigit()
+        .accessibilityIdentifier("overlay-message-hold-countdown-\(message.id)")
+      HStack(spacing: 12) {
+        Button("Edit") { edit(message) }
+          .accessibilityIdentifier("overlay-message-edit-\(message.id)")
+        Button("Withdraw") { performDeliveryControl(.withdraw, message: message) }
+          .accessibilityIdentifier("overlay-message-withdraw-\(message.id)")
+        Button("Send now") { performDeliveryControl(.release, message: message) }
+          .accessibilityIdentifier("overlay-message-release-\(message.id)")
+      }
+      .buttonStyle(.borderless)
+      .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
+      if let error = deliveryControlErrors[message.id] {
+        Text(verbatim: error).foregroundStyle(palette.errorStatus.color)
+      }
+    }
+    .font(.system(size: 11 * textScale))
+    .foregroundStyle(palette.mutedText.color)
   }
 
   /// Shared production footer, also mounted by the native compactness test.
@@ -589,5 +698,12 @@ enum ReplyPlaybackCopy {
     case "stopped": String(localized: "Speech stopped")
     default: String(localized: "Reply text retained")
     }
+  }
+}
+
+enum HeldDeliveryCopy {
+  static func countdown(seconds: Int, bundle: Bundle = .main) -> String {
+    let format = bundle.localizedString(forKey: "Sending in %lld s", value: nil, table: nil)
+    return String(format: format, Int64(max(0, seconds)))
   }
 }

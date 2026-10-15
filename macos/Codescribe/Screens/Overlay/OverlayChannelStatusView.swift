@@ -1134,6 +1134,7 @@ struct OverlayChannelStatusView: View {
     if isOpen(channel) { return String(localized: "Listening") }
     switch channel.stage {
     case nil: return String(localized: "Ready")
+    case .held: return String(localized: "Held")
     case .sent, .queued: return String(localized: "Awaiting receipt")
     case .received: return String(localized: "Received")
     }
@@ -1155,6 +1156,7 @@ struct OverlayChannelStatusView: View {
     if isOpen(channel) { return "mic.fill" }
     switch channel.stage {
     case nil: return "circle"
+    case .held: return "hourglass"
     case .sent, .queued: return "clock"
     case .received: return "checkmark"
     }
@@ -1166,6 +1168,7 @@ struct OverlayChannelStatusView: View {
     if isOpen(channel) { return palette.listeningStatus }
     switch channel.stage {
     case nil: return palette.mutedText
+    case .held: return palette.processingStatus
     case .sent, .queued: return palette.processingStatus
     case .received: return palette.successStatus
     }
@@ -1180,6 +1183,7 @@ struct OverlayChannelStatusView: View {
     let delivery: String
     switch channel.stage {
     case nil: delivery = String(localized: "no sealed utterance")
+    case .held: delivery = String(localized: "Held")
     case .sent: delivery = String(localized: "sent · waiting for receipt")
     case .queued: delivery = String(localized: "queued · waiting for receipt")
     case .received: delivery = String(localized: "receipt confirmed by the agent")

@@ -48,6 +48,18 @@ struct LLMLanesSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      SettingsControlRow(
+        title: String(localized: "Hold before sending"),
+        subtitle: String(
+          localized: "Edit or withdraw a message to an agent during this window. 0 sends immediately.")
+      ) {
+        Stepper(value: model.agentSendHoldSeconds, in: 0...30) {
+          Text("\(Int(model.settings.agentSendHoldSec)) sec")
+            .monospacedDigit()
+        }
+        .accessibilityIdentifier("agent-send-hold-seconds")
+      }
+
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
       }

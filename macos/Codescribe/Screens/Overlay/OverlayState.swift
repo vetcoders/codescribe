@@ -1591,14 +1591,15 @@ final class OverlayState {
     }
   }
 
-  func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
+  func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
       onChannelPresentationChanged?()
     }
     applyChannelDelivery(snapshot.deliveries)
-    guard conversations != snapshot.conversations else {
+    let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
       // reply is an admission. A later identical snapshot is already baselined
@@ -1611,7 +1612,7 @@ final class OverlayState {
       return
     }
     let controllerPending = pendingChannelConversation != nil
-    conversations = snapshot.conversations
+    conversations = projected
     // Loading saved history is an inventory change, not a fresh reply admission.
     // Its mirrored broadcast ids must stay passive as well.
     observedReplyIDs.formUnion(snapshot.historyReplyIDs)
