@@ -19,9 +19,8 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, StreamOptions,
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
-    ThreadIndex, ThreadMessage, ThreadStore,
+    AgentSession, AgentUiEvent, Message, StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput,
+    ThreadDeliveryReceipt, ThreadDeliverySource, ThreadIndex, ThreadMessage, ThreadStore,
 };
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
@@ -824,74 +823,6 @@ fn agent_send_error_is_transient(error: &anyhow::Error) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
-/// Maximum number of image attachments forwarded to the model per message.
-/// Kept in sync with the legacy (`ai_formatting`) cap so both send paths behave
-/// alike. Sized for real multi-image use (e.g. comparing several wireframes);
-/// vision-capable backends accept far more, images are size-capped individually.
-const MAX_AGENT_VISION_IMAGES: usize = 16;
-
-/// Split an outgoing payload into its visible text and the loaded image
-/// attachments referenced by the `ATTACHMENTS (image paths)` marker.
-///
-/// This is the fix for the attachment pipeline: the voice-chat send path appends
-/// image paths to the payload as *text* (`build_attachments_block`). Without this
-/// step the agent path forwarded them as plain text and the model never received
-/// real vision input. Here we strip the marker block from the text and load each
-/// image as bytes so `AgentSession::send` can emit proper `input_image` blocks.
-///
-/// Returns `(cleaned_text, loaded_images, dropped_names)`. `dropped_names` lists
-/// images that could not be forwarded (missing/unreadable/too large) so the
-/// caller can surface a visible attachment error instead of silently continuing.
-pub(super) fn build_image_attachments_from_text(
-    text: &str,
-) -> (String, Vec<ImageAttachment>, Vec<String>) {
-    let (cleaned, mut paths) = codescribe_core::attachment::parse_image_attachment_block(text);
-
-    if paths.is_empty() {
-        return (cleaned, Vec::new(), Vec::new());
-    }
-
-    let mut dropped: Vec<String> = Vec::new();
-
-    if paths.len() > MAX_AGENT_VISION_IMAGES {
-        for extra in &paths[MAX_AGENT_VISION_IMAGES..] {
-            dropped.push(file_label(extra));
-        }
-        warn!(
-            "Too many image attachments ({}); forwarding first {} as vision input",
-            paths.len(),
-            MAX_AGENT_VISION_IMAGES
-        );
-        paths.truncate(MAX_AGENT_VISION_IMAGES);
-    }
-
-    let mut attachments = Vec::with_capacity(paths.len());
-    for path in &paths {
-        match codescribe_core::attachment::load_image_for_vision(
-            path,
-            codescribe_core::attachment::MAX_VISION_IMAGE_BYTES,
-        ) {
-            Some((data, media_type)) => attachments.push(ImageAttachment { data, media_type }),
-            None => {
-                warn!(
-                    "Dropping image attachment (unsupported, unreadable, or too large): {}",
-                    path.display()
-                );
-                dropped.push(file_label(path));
-            }
-        }
-    }
-
-    (cleaned, attachments, dropped)
-}
-
-/// Short, user-facing label for an attachment path (file name, path fallback).
-fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
-}
-
 /// Production send path: `run_agent_send_path_with_persist` wired to the real
 /// ThreadStore delivery.
 async fn run_agent_send_path(
@@ -929,6 +860,11 @@ async fn run_agent_send_path(
 /// On failure, persist the user payload before classifying and degrading the
 /// runtime. This voice boundary owns terminal errors; composer errors still
 /// travel through the bridge Result channel.
+///
+/// `text` is a transcript and stays plain text end to end: it never selects a
+/// file, so this route sends no vision input. Images reach the model only as the
+/// typed attachment list the user staged in the composer
+/// (`CodescribeAgent::stream_reply_with_attachments`).
 async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
@@ -965,7 +901,6 @@ where
 
     // A terminal belongs to this invocation, never to an error's wording.
     let mut terminal_published = false;
-    let user_message_index = runtime.session.messages().len();
     let send_result = {
         // Correlation id for the SwiftUI store (disjoint from its per-thread
         // UUID). Captured before the mutable session/ui_rx split so the borrow of
@@ -978,23 +913,20 @@ where
         let provider_chain_before = runtime.session.snapshot_response_chain().await;
         let mut cancellation = register_agent_delivery_turn(&thread_store_id);
         let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
-        let (user_text, image_attachments, dropped_images) =
-            build_image_attachments_from_text(&text);
         // Open the turn on the SwiftUI chat before streaming: the listener inserts
-        // a You-bubble (user_text) + assistant placeholder, then fills it from the
-        // deltas below. `user_text` is the attachment-marker-stripped transcript,
-        // so the bubble shows the spoken text, not the internal attachment block.
+        // a You-bubble (text) + assistant placeholder, then fills it from the
+        // deltas below.
         // W10-A runtime receipt: log before publish so installed-app probes can
         // prove reveal_ts < done_ts (Swift logs w10a_reveal_* on the same turn).
         info!(
             target: "codescribe::agent_delivery",
             "w10a_turn_started thread_id={} user_chars={}",
             thread_store_id,
-            user_text.chars().count()
+            text.chars().count()
         );
         crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
             thread_id: thread_store_id.clone(),
-            user_text: user_text.clone(),
+            user_text: text.clone(),
         });
         // Hold the agent-turn lease for the rest of this function: streaming,
         // tools, Stop, error and persistence. `make install-if-idle` probes it
@@ -1019,19 +951,6 @@ where
                 None
             }
         };
-        if !image_attachments.is_empty() {
-            info!(
-                "Agent send: forwarding {} image(s) as vision input",
-                image_attachments.len()
-            );
-        }
-        if !dropped_images.is_empty() {
-            warn!(
-                "Could not attach {} image(s) as vision input: {}",
-                dropped_images.len(),
-                dropped_images.join(", ")
-            );
-        }
         /// How the select loop below broke. Function-local because it exists
         /// only to carry the loop's verdict past the borrow scope of the pinned
         /// send future — the future must be dropped before the pre-turn
@@ -1046,7 +965,7 @@ where
         // Scope the pinned send future tightly: cancellation must drop its
         // mutable session borrow before we can restore the pre-turn snapshot.
         let completion = {
-            let send_future = session.send(user_text, image_attachments, &stream_options);
+            let send_future = session.send(text, Vec::new(), &stream_options);
             tokio::pin!(send_future);
             loop {
                 tokio::select! {
@@ -1132,15 +1051,10 @@ where
             Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
-            // Vision conversion strips the attachment marker for the provider.
-            // Retain the original failed payload for a retry, including selections
-            // and unreadable image paths. Successful history stays unchanged.
-            let mut messages = runtime.session.messages().to_vec();
-            if let Some(message) = messages.get_mut(user_message_index)
-                && let Some(ContentBlock::Text(user_text)) = message.content.first_mut()
-            {
-                *user_text = text;
-            }
+            // The failed turn's user message stays in history for a retry;
+            // restoring the same messages also drops the provider chain so the
+            // retry replays them.
+            let messages = runtime.session.messages().to_vec();
             runtime.session.restore_messages(messages);
             if let Err(persist_error) = persist_runtime(runtime) {
                 warn!("Failed to persist failed agent turn: {persist_error:#}");
