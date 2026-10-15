@@ -4345,11 +4345,43 @@ final class OverlayState {
   /// An operation the live take accepted but its archived transcript did
   /// not save. The live versions still work; reopening the take from history
   /// will not show the ones after this point, and the user is told so.
-  func noteArchiveRefusal(_ refusal: String?) {
+  func noteArchiveRefusal(_ refusal: CsArchiveRefusal?) {
     guard let refusal else { return }
-    revisionCommitError = String(
-      localized: "Versions of this take are no longer saved to history: \(refusal)",
-      comment: "The placeholder is the archive's own refusal text")
+    revisionCommitError = Self.archiveRefusalSentence(refusal)
+  }
+
+  /// Rust sends only the code; the sentence is the overlay's.
+  static func archiveRefusalSentence(_ refusal: CsArchiveRefusal) -> String {
+    switch refusal {
+    case .archiveUnreadable:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the archived transcript could not be read.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .archiveChangedOutside:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the archived transcript changed outside this take.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .archiveHasForeignHistory:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .stepNotAdmitted:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the archive refused to record a version.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .versionNotArchived:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the selected version has no archived copy.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .versionNotSelected:
+      return String(
+        localized: "Versions of this take are no longer saved to history: the archive refused to select this version.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    case .mirrorFailed:
+      return String(
+        localized: "Versions of this take are no longer saved to history.",
+        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+    }
   }
 
   func loadDocumentVersions() {

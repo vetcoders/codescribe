@@ -89,7 +89,6 @@ data  CsDocumentVersion.detail
 data  CsDocumentVersion.renderedText
 data  CsDocumentVersion.emittedAt
 data  CsDocumentVersion.receiptId
-prose CsDocumentVersions.archiveRefusal
 data  CsEnergyCalibrationReport.deviceName
 data  CsEnergyCalibrationReport.version
 data  CsEnergyCalibrationReport.path
@@ -323,7 +322,6 @@ data  CsUncertainSpan.producer
 data  CsUserRevisionResult.sessionId
 data  CsUserRevisionResult.renderedText
 data  CsUserRevisionResult.provenanceReceipt
-prose CsUserRevisionResult.archiveRefusal
 prose CsVoiceLabSaveResult.lexiconError
 data  CsWhisperModelCatalog.configured
 data  CsWhisperModelCatalog.resolvedPath
