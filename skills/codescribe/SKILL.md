@@ -111,6 +111,8 @@ or create another reader. Renew the notification window over the same watch.
 
 ## Read → ACK → act
 
+Agents never see a held row, a withdrawn message never existed for them, and a revision made during the hold is the only text they receive.
+
 **A complete watch message received in this conversation is a delivery receipt.**
 Read its entire text and attribution, check the provider/session/lease against
 this connection, and immediately ACK its exact `delivery_id` before replying,

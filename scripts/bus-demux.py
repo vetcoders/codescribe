@@ -94,6 +94,7 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
+DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
@@ -897,7 +898,7 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
-    for key in ("message_id", "occurrences"):
+    for key in ("message_id", "occurrences", "hold_until"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1058,7 +1059,7 @@ def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None
 
 
 def normalized_revision_events(
-    raw: str, normalizer: EvidenceNormalizer
+    raw: str, normalizer: EvidenceNormalizer, lease: SessionLease | None = None
 ) -> list[dict[str, Any]]:
     """One durable row may observe several original publication coordinates."""
     parsed = parse_line(raw)
@@ -1087,6 +1088,8 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if lease and lease.revise_held_voice(row):
+            continue
         event = normalizer.normalize(row)
         events.extend(normalizer.pop_flushes())
         if event is not None:
@@ -1224,6 +1227,12 @@ class EvidenceNormalizer:
             self._consume_channel_row(event)
             return None
         if event.get("schema") != EVIDENCE_SCHEMA:
+            if (event.get("schema") == CLEAN_SCHEMA and event.get("status") == SEALED
+                    and event.get("terminal") is True
+                    and channel_of_session(str(event.get("session_id") or "")) is not None):
+                # Its evidence twin owns the joined document. The closing
+                # channel receipt flushes it once, including its hold deadline.
+                return None
             if event.get("status") == SESSION_ENDED:
                 self._flush_session(
                     str(event.get("session_id") or ""), event.get("emitted_at")
@@ -1293,6 +1302,10 @@ class EvidenceNormalizer:
         ) == (incoming_revision, event.get("reducer_action"))
         if same_phase:
             previous["occurrences"] = clean["occurrences"]
+            if event.get("status") == SEALED:
+                for key in ("hold_until", "utterance_id"):
+                    if key in event:
+                        previous[key] = event[key]
         else:
             self._session_docs[session] = clean
         while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
@@ -1356,7 +1369,8 @@ class EvidenceNormalizer:
             "sequence": event.get("sequence"),
             "session_id": event.get("session_id"),
             "mode": event.get("mode"),
-            "utterance_id": source_event_identity(event),
+            "utterance_id": (event["utterance_id"] if event.get("utterance_id") is not None
+                             else source_event_identity(event)),
             "emitted_at": event.get("emitted_at"),
             "status": status,
             "text": text,
@@ -1374,7 +1388,9 @@ class EvidenceNormalizer:
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
-        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+        if channel_of_session(str(event.get("session_id") or "")) is not None and event.get("utterance_id") is None:
+            clean.pop("utterance_id", None)
+        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id", "hold_until"):
             if key in event:
                 clean[key] = event[key]
         return clean
@@ -1666,6 +1682,32 @@ def replay(path: Path) -> Iterator[str]:
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def hold_timestamp(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.timestamp() if parsed.tzinfo is not None else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def held_identity(payload: dict[str, Any]) -> str:
+    if payload.get("producer_schema", payload.get("schema")) == AGENT_USER_MESSAGE_SCHEMA:
+        return str(payload.get("message_id") or "")
+    if payload.get("utterance_id") is not None:
+        return str(payload["utterance_id"])
+    return str(payload.get("session_id") or payload.get("message_id") or "")
+
+
+def held_delivery_snapshot(held: Any) -> list[dict[str, str]]:
+    if not isinstance(held, dict):
+        return []
+    return [{"identity": held_identity(row), "hold_until": row["hold_until"]}
+            for row in held.values() if isinstance(row, dict)
+            and held_identity(row) and isinstance(row.get("hold_until"), str)]
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -2307,6 +2349,8 @@ class SessionLease:
             self.cursor = 0
             self.last_sequence: Any = None
             self.pending: dict[str, dict[str, Any]] = {}
+            self.held: dict[str, dict[str, Any]] = {}
+            self.withdrawn_held: dict[str, dict[str, Any]] = {}
             self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
@@ -2367,6 +2411,29 @@ class SessionLease:
                     raise ValueError(
                         "duplicate pending identities; recovery state preserved"
                     )
+                held = previous.get("held", {})
+                if (not isinstance(held, dict) or any(
+                        not isinstance(payload, dict) or payload.get("delivery_id") != identity
+                        or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                        or payload.get("lease_id") != self.lease_id
+                        or payload.get("provider") != self.provider
+                        or payload.get("provider_session_id") != self.provider_session_id
+                        or payload.get("bus") != self.bus
+                        or not held_identity(payload)
+                        or hold_timestamp(payload.get("hold_until")) is None
+                        or identity in self.pending for identity, payload in held.items())):
+                    raise ValueError("invalid held deliveries; recovery state preserved")
+                self.held = held
+                withdrawn = previous.get("withdrawn_held", {})
+                if (not isinstance(withdrawn, dict) or any(
+                        not isinstance(row, dict) or row.get("delivery_id") != identity
+                        or row.get("kind") != "delivery_withdrawn"
+                        or row.get("lease_id") != self.lease_id
+                        or not re.fullmatch(r"[0-9a-f]{24}", identity)
+                        or "text" in row or "revisions" in row
+                        for identity, row in withdrawn.items())):
+                    raise ValueError("invalid held withdrawal receipts; recovery state preserved")
+                self.withdrawn_held = withdrawn
                 documents = previous.get("unclosed_channel_messages", {})
                 if (not isinstance(documents, dict) or len(documents) > EvidenceNormalizer.MAX_TRACKED_SESSIONS
                         or any(not isinstance(document, dict)
@@ -2404,6 +2471,8 @@ class SessionLease:
                       if previous and isinstance(previous.get(key), str)}
             )
             self.persist(active=True)
+            for receipt in self.withdrawn_held.values():
+                self._record_hold_withdrawal(receipt)
         except BaseException:
             self._release_lock()
             raise
@@ -2461,6 +2530,8 @@ class SessionLease:
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
                 "pending": list(self.pending.values()),
+                "held": self.held,
+                "withdrawn_held": self.withdrawn_held,
                 "unclosed_channel_messages": self.unclosed_channel_messages,
                 "active": active,
                 "pid": os.getpid(),
@@ -2481,10 +2552,20 @@ class SessionLease:
         delivery_id = payload["delivery_id"]
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
-        if delivery_id in self.pending:
+        if delivery_id in self.pending or delivery_id in self.withdrawn_held:
             return False
+        retained = self.held.get(delivery_id)
+        if retained is not None:
+            payload.update(retained)
         if delivery_broadcast_policy(self.root, payload) == "off":
             record_broadcast_skipped(self.root, payload)
+            if self.held.pop(delivery_id, None) is not None:
+                self.persist(active=True)
+            return False
+        deadline = hold_timestamp(payload.get("hold_until"))
+        waiting = (payload.get("kind") in TERMINAL_KINDS and deadline is not None
+                   and deadline > time.time() and not payload.get("hold_released"))
+        if waiting and retained is not None:
             return False
         if self.coalesce and payload.get("kind") in DRAFT_KINDS:
             # A reducer storm re-states one document ~250 times per sentence.
@@ -2493,12 +2574,14 @@ class SessionLease:
             # stays a separate envelope so terminal delivery is never merged.
             for queued_id in self._drafts_of(draft_key(payload)):
                 del self.pending[queued_id]
+        retained_rows = {**self.pending, **self.held}
+        retained_rows.pop(delivery_id, None)
         pending_bytes = sum(
             len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
-            for item in self.pending.values()
+            for item in retained_rows.values()
         )
         if (
-            len(self.pending) >= 256
+            len(retained_rows) >= 256
             or pending_bytes
             + len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             > 8 * 1024 * 1024
@@ -2507,10 +2590,103 @@ class SessionLease:
                 "pending mailbox is full; acknowledge received deliveries and resume "
                 "this same lease; the unread bus cursor is preserved"
             )
+        if waiting:
+            # Publishing even a preview pollutes the append-only agent stream
+            # and incurs agent cost: held text exists only in this lease until release.
+            self.held[delivery_id] = dict(payload)
+            self.persist(active=True)
+            return False
+        self.held.pop(delivery_id, None)
+        for key in ("revisions", "hold_controls", "hold_released"):
+            payload.pop(key, None)
         self.pending[delivery_id] = payload
         self.persist(active=True)
         if payload.get("kind") in TERMINAL_KINDS:
             lifecycle_message_received(self.root, self.lease_id)
+        return True
+
+    def ready_held(self) -> list[dict[str, Any]]:
+        now = time.time()
+        return [dict(row) for row in self.held.values()
+                if row.get("hold_released") or hold_timestamp(row.get("hold_until")) <= now
+                or delivery_broadcast_policy(self.root, row) == "off"]
+
+    def _record_hold_withdrawal(self, receipt: dict[str, Any]) -> None:
+        events = follower_paths(self.root, self.lease_id)[1]
+        events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for raw in replay(events):
+            row = parse_line(raw)
+            if (row and row.get("kind") == "delivery_withdrawn"
+                    and row.get("delivery_id") == receipt["delivery_id"]):
+                return
+        emit_follower(receipt, events, None, human_output=False)
+
+    def control_delivery(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        identity = event.get("identity") or event.get("message_id") or event.get("utterance_id")
+        owner = {"provider": self.provider, "provider_session_id": self.provider_session_id,
+                 "lease_id": self.lease_id, "bus": self.bus}
+        kind = event.get("kind")
+        if (event.get("schema") != DELIVERY_CONTROL_SCHEMA
+                or kind not in ("revise", "withdraw", "release")
+                or any(event.get(key) != value for key, value in owner.items())):
+            sys.stderr.write("bus-demux: ignored invalid delivery control owner or kind\n")
+            return []
+        candidates = [row for row in self.held.values() if held_identity(row) == str(identity)
+                      and (not event.get("session_id") or row.get("session_id") == event["session_id"])]
+        if len(candidates) != 1:
+            sys.stderr.write(f"bus-demux: ignored {kind} for identity that is not held\n")
+            return []
+        payload = candidates[0]
+        control_id = event.get("control_id") or _identity((kind, identity, event.get("emitted_at")))
+        if control_id in payload.get("hold_controls", []):
+            return []
+        if kind == "revise":
+            text = event.get("text")
+            if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 65536:
+                sys.stderr.write("bus-demux: ignored invalid held revision text\n")
+                return []
+            replacement = {**payload, "text": text,
+                "revisions": [*payload.get("revisions", []), payload["text"]],
+                "hold_controls": [*payload.get("hold_controls", []), control_id]}
+            size = sum(len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
+                       for row in [*self.pending.values(), *self.held.values()])
+            if size + len(json.dumps(replacement, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+                raise BufferError("held revision history is full; release or withdraw a held message")
+            self.held[payload["delivery_id"]] = replacement
+            self.persist(active=True)
+            return []
+        if kind == "withdraw":
+            receipt = {"schema": EVENT_SCHEMA, "kind": "delivery_withdrawn", **owner,
+                       "identity": identity, "delivery_id": payload["delivery_id"],
+                       "control_id": control_id, "emitted_at": event.get("emitted_at") or utc_now()}
+            self.withdrawn_held[payload["delivery_id"]] = receipt
+            del self.held[payload["delivery_id"]]
+            self.persist(active=True)
+            self._record_hold_withdrawal(receipt)
+            return []
+        payload["hold_released"] = True
+        payload.setdefault("hold_controls", []).append(control_id)
+        self.persist(active=True)
+        return [dict(payload)]
+
+    def revise_held_voice(self, event: dict[str, Any]) -> bool:
+        if (event.get("schema") != EVIDENCE_SCHEMA
+                or event.get("reducer_action") not in ("apply_manual_edit", "apply_user_revision")):
+            return False
+        candidates = [row for row in self.held.values()
+                      if (event.get("utterance_id") is not None
+                          and row.get("utterance_id") == event["utterance_id"]
+                          or event.get("utterance_id") is None and event.get("session_id")
+                          and row.get("session_id") == event["session_id"])
+                      and (not event.get("session_id") or row.get("session_id") == event["session_id"])]
+        if len(candidates) != 1 or not self.admits_channel_event(event):
+            return False
+        self.control_delivery({"schema": DELIVERY_CONTROL_SCHEMA, "kind": "revise",
+            "identity": held_identity(candidates[0]), "session_id": event.get("session_id"),
+            "control_id": source_event_identity(event),
+            "provider": self.provider, "provider_session_id": self.provider_session_id,
+            "lease_id": self.lease_id, "bus": self.bus, "emitted_at": event.get("emitted_at"),
+            "text": event.get("rendered_text", event.get("text"))})
         return True
 
     def _drafts_of(self, key: tuple[Any, Any]) -> list[str]:
@@ -2661,6 +2837,7 @@ class SessionLease:
                 self.root, self.provider, self.provider_session_id, Path(self.bus)),
             "broadcast": broadcast_policy_snapshot(
                 self.root, self.provider, self.provider_session_id, Path(self.bus)),
+            "held": held_delivery_snapshot(self.held),
             "cursor": self.cursor,
             "resumed": self.resumed,
             "active_names": names,
@@ -3094,7 +3271,8 @@ def read_pending_command(args: argparse.Namespace) -> int:
               "playback": playback_mute_snapshot(
                   args.bridge_home, args.provider, args.session, Path(state["bus"])),
               "broadcast": broadcast_policy_snapshot(
-                  args.bridge_home, args.provider, args.session, Path(state["bus"]))}
+                  args.bridge_home, args.provider, args.session, Path(state["bus"])),
+              "held": held_delivery_snapshot(state.get("held"))}
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
         raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
     for row in rows[:args.read_limit]:
@@ -3373,7 +3551,8 @@ def run(args: argparse.Namespace) -> int:
         # Mailbox drafts are receipt history, not evidence of an open capture.
         # A final queued before cursor commit still suppresses its replay.
         normalizer.restore_channel_documents([
-            payload for payload in lease.pending.values() if payload.get("status") == SEALED
+            payload for payload in [*lease.pending.values(), *lease.held.values()]
+            if payload.get("status") == SEALED
         ])
     native = (
         NativeQueueWakeup(args.bridge_home, args.session, follower_channel)
@@ -3411,6 +3590,9 @@ def run(args: argparse.Namespace) -> int:
         try:
             while remaining:
                 payload = remaining[0]
+                if not lease and (hold_timestamp(payload.get("hold_until")) or 0) > time.time():
+                    remaining.pop(0)
+                    continue
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
                     wake = not lease or delivery_broadcast_policy(lease.root, payload) == "on"
@@ -3441,11 +3623,15 @@ def run(args: argparse.Namespace) -> int:
         nonlocal name, hear_all
         # Coverage-refused flushes precede the row that triggered them: they
         # carry utterances older than the channel receipt on this line.
-        events = normalized_revision_events(raw, normalizer)
+        events = normalized_revision_events(raw, normalizer, lease)
         if normalizer.storage.pending:
             return
         payloads: list[dict[str, Any]] = []
         for event in events:
+            if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                if lease:
+                    payloads.extend(lease.control_delivery(event))
+                continue
             if lease and not lease.admits_channel_event(event):
                 continue
             payload = consider(
@@ -3498,8 +3684,14 @@ def run(args: argparse.Namespace) -> int:
             last = None
             recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
-                events = normalized_revision_events(raw, normalizer)
+                events = normalized_revision_events(raw, normalizer, lease)
                 for event in events:
+                    if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                        if lease:
+                            released = lease.control_delivery(event)
+                            if released:
+                                deliver(released, None)
+                        continue
                     if lease and not lease.admits_channel_event(event):
                         continue
                     payload = consider(
@@ -3518,7 +3710,8 @@ def run(args: argparse.Namespace) -> int:
                 return 1
             if lease:
                 lease.enrich(last)
-            if not lease or lease.queue_delivery(last):
+            if (not lease and (hold_timestamp(last.get("hold_until")) or 0) <= time.time()
+                    or lease and lease.queue_delivery(last)):
                 publish(last)
             flush_human_drafts()
             return 0
@@ -3557,6 +3750,8 @@ def run(args: argparse.Namespace) -> int:
                     recipients = registered_recipients(args.bridge_home, path)
                 for raw, next_cursor in entries:
                     handle(raw, next_cursor)
+                if lease:
+                    deliver(lease.ready_held(), None)
                 flush_human_drafts()
                 if lease and not entries and offset != previous_offset:
                     lease.persist(active=True, cursor=offset)
@@ -4904,12 +5099,18 @@ def send_text_command(args: argparse.Namespace) -> int:
             if len(text.encode("utf-8")) > 65536:
                 raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
         identity = os.urandom(12).hex()
-        emitted_at = utc_now()
+        emitted = datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc)
+        emitted_at = emitted.isoformat(timespec="microseconds")
+        hold_seconds = getattr(args, "hold_seconds", 0) or 0
+        if type(hold_seconds) is not int or not 0 <= hold_seconds <= 4294967295:
+            raise ValueError("hold seconds must be an unsigned 32-bit integer")
+        hold = ({"hold_until": (emitted + datetime.timedelta(seconds=hold_seconds)).isoformat(timespec="microseconds")}
+                if hold_seconds else {})
         receipts = []
         recipient_receipts = []
         for owner in owners:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
-                     **owner, "message_id": identity, "source_event_id": identity,
+                     **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
                      "recipients": [owner]}
             if attachments:
@@ -4926,10 +5127,95 @@ def send_text_command(args: argparse.Namespace) -> int:
             except (OSError, ValueError, RuntimeError) as error:
                 raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
             receipts.append(receipt)
-            recipient_receipts.append({**owner, "source": receipt,
+            recipient_receipts.append({**owner, **hold, "source": receipt,
                 "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], Path(owner["bus"]))})
-    emit({"kind": "message_published", "message_id": identity, "source": receipts[0], "sources": receipts,
+    emit({"kind": "message_published", **hold, "message_id": identity, "source": receipts[0], "sources": receipts,
           "recipients": recipient_receipts})
+    return 0
+
+
+def delivery_control_command(args: argparse.Namespace) -> int:
+    kind, identity = next((kind, getattr(args, kind)) for kind in ("revise", "withdraw", "release")
+                          if getattr(args, kind, None) is not None)
+    if not isinstance(identity, str) or not identity.strip() or len(identity) > 256:
+        raise ValueError("invalid held message identity")
+    root = args.bridge_home
+    path = root / AUDIENCE_BINDING_FILENAME
+    broadcast = args.channel == "0"
+    with path.with_suffix(".lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        state = read_json(path) or {}
+        bindings = state.get("bindings")
+        if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
+            raise ValueError("channel bindings unavailable")
+        owners = []
+        for channel, binding in sorted(bindings.items()):
+            if not isinstance(binding, dict) or channel not in tuple(str(n) for n in range(1, 10)):
+                raise ValueError("invalid channel binding")
+            provider, session, audience, bus_name = (binding.get(key) for key in
+                ("provider", "provider_session_id", "audience", "bus"))
+            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
+                raise ValueError("incomplete channel binding")
+            bus = Path(bus_name).expanduser().resolve(strict=False)
+            if not broadcast and (provider != args.provider.casefold() or session != args.session
+                    or bus != args.bus.expanduser().resolve(strict=False)
+                    or args.channel is not None and args.channel != channel):
+                continue
+            lease_id = lease_identifier(provider, session)
+            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
+                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)
+                    or not broadcast and args.lease is not None and args.lease != lease_id):
+                raise ValueError("selected conversation owner no longer matches")
+            owner = {"provider": provider, "provider_session_id": session, "lease_id": lease_id,
+                     "bus": str(bus), "channel": channel, "audience": audience}
+            if owner not in owners:
+                owners.append(owner)
+        if not owners:
+            raise ValueError("no matching agent conversation")
+        text = None
+        if kind == "revise":
+            raw = sys.stdin.buffer.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("revision exceeds 64 KiB")
+            text = raw.decode("utf-8")
+            if not text.strip():
+                raise ValueError("empty revision")
+        control_id = os.urandom(12).hex()
+        receipts = []
+        for owner in owners:
+            target = {}
+            source_identity = identity
+            voice_sessions: set[str] = set()
+            storage = ChunkDecoder()
+            for raw in replay(Path(owner["bus"])):
+                source = parse_line(raw)
+                source = storage.feed(source) if source is not None else None
+                if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
+                    key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
+                    if str(source.get(key, "")) == identity or (key == "utterance_id" and source.get("session_id") == identity):
+                        if key == "message_id":
+                            target = {key: source[key]}
+                            break
+                        if source.get("session_id"):
+                            target["session_id"] = source["session_id"]
+                            voice_sessions.add(source["session_id"])
+                        if source.get(key) is not None:
+                            target[key] = source[key]
+                            source_identity = str(source[key])
+            if len(voice_sessions) > 1:
+                raise ValueError("voice identity is ambiguous; select its capture session")
+            event = {"schema": DELIVERY_CONTROL_SCHEMA, "kind": kind, **owner, **target,
+                     "identity": source_identity, "control_id": control_id, "emitted_at": utc_now()}
+            if broadcast:
+                event["origin_channel"] = "0"
+            if text is not None:
+                event["text"] = text
+            source = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
+            receipts.append({**owner, "source": source})
+    emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
+          "control_id": control_id, "recipients": receipts})
     return 0
 
 
@@ -5691,6 +5977,8 @@ def require_drained_lease(
                 state["cursor"] != end))):
         raise OSError("old source is undrained; resume its reader before retiring it")
     documents = state.get("unclosed_channel_messages", {})
+    if not lenient_catch_up and state.get("held"):
+        raise OSError("old source has held deliveries; release or withdraw before retiring it")
     if not lenient_catch_up and documents and not source_closes_retained_documents(Path(state["bus"]), documents):
         raise OSError("old source has an unfinished capture; owner retained")
 
@@ -6117,6 +6405,7 @@ def attach_command(args: argparse.Namespace) -> int:
         "voices_file": "present" if (root / VOICES_FILENAME).exists() else "missing",
         "playback": playback_mute_snapshot(root, args.provider, args.session, Path(resolved_bus)),
         "broadcast": broadcast_policy_snapshot(root, args.provider, args.session, Path(resolved_bus)),
+        "held": held_delivery_snapshot(state.get("held")),
         "binding_path": str(binding_path), "binding_changed": previous is not None,
         "previous": previous,
     })
@@ -6222,6 +6511,7 @@ def status_command(args: argparse.Namespace) -> int:
                 Path(state["bus"]) if isinstance(state, dict) and isinstance(state.get("bus"), str) else args.bus),
             "broadcast": broadcast_policy_snapshot(root, args.provider, args.session,
                 Path(state["bus"]) if isinstance(state, dict) and isinstance(state.get("bus"), str) else args.bus),
+            "held": held_delivery_snapshot((state or {}).get("held")),
             "cursor": state.get("cursor") if isinstance(state, dict) else None,
         }
     )
@@ -6655,6 +6945,12 @@ def main() -> int:
     mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
     parser.add_argument("--broadcast", choices=("on", "quiet", "off"), help="change this lease's channel-zero delivery policy at any time")
+    parser.add_argument("--hold-seconds", type=int, default=None,
+                        help="with --send-text: hold delivery for N seconds (0 sends immediately)")
+    delivery_controls = parser.add_mutually_exclusive_group()
+    delivery_controls.add_argument("--revise", metavar="ID", help="replace held text from stdin")
+    delivery_controls.add_argument("--withdraw", metavar="ID", help="withdraw a held message before agent delivery")
+    delivery_controls.add_argument("--release", metavar="ID", help="send a held message now")
     parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
@@ -6681,6 +6977,20 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if any(value is not None for value in (args.revise, args.withdraw, args.release)):
+        allowed = {"revise", "withdraw", "release", "provider", "session", "lease", "channel", "bus", "bridge_home", "entrypoint"}
+        if (any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)
+                or args.channel == "0" and any((args.provider, args.session, args.lease, args.bus is not None))
+                or args.channel != "0" and (not args.provider or not args.session or args.bus is None)):
+            parser.error("held control requires exact --provider/--session/--bus or ownerless --channel 0")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return delivery_control_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: held control refused: {error}\n")
+            return 3
+    if args.hold_seconds is not None and (not args.send_text or not 0 <= args.hold_seconds <= 4294967295):
+        parser.error("--hold-seconds requires --send-text and an unsigned 32-bit integer")
     if args.broadcast is not None:
         allowed = {"broadcast", "provider", "session", "bus", "bridge_home", "entrypoint"}
         if (not args.provider or not args.session
