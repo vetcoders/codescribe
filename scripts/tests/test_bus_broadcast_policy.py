@@ -302,13 +302,17 @@ class BroadcastPolicyTests(unittest.TestCase):
             submit.assert_not_called()
         self.assertFalse((self.root / "wakeups" / self.lease_id / f"{row['delivery_id']}.json").exists())
 
-    def test_quiet_switch_suppresses_a_buffered_draft_on_exit(self):
+    def test_policy_is_read_when_a_delivery_lands_not_at_exit(self):
+        # The follower flushes buffered human drafts after every batch, so a
+        # draft that landed under "on" is already on stdout before a later
+        # switch to quiet; the seal that lands after the switch stays quiet.
+        # Policy is decided per delivery, never replayed against old rows.
         draft = {**self.voice(1), "status": "utterance_draft"}
         self.policy("on")
         state, output, _native, _hooks = self.run_follower(
             [draft, self.voice(2)], switch=lambda index: self.policy(("on", "quiet")[index]))
         self.assertEqual(len(state["pending"]), 2)
-        self.assertNotIn("message-1", output)
+        self.assertIn("message-1", output)
         self.assertNotIn("message-2", output)
 
     def test_publisher_receipts_include_each_policy_without_suppressing_publication(self):
