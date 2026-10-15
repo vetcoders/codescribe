@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """Codescribe's persistent Junie plugin, using ACP rather than terminal wakeups."""
 from __future__ import annotations
 
@@ -415,4 +415,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Started with -E; keep the host's PYTHON* variables from the cs-bus children.
+    for name in [name for name in os.environ if name.startswith("PYTHON")]:
+        del os.environ[name]
     raise SystemExit(main())

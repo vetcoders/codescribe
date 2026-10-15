@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -E
 """Named, session-aware follower for the clean Codescribe Transcript Bus.
 
 The helper never opens audio. It reads ``codescribe.transcript.v1`` NDJSON and
@@ -6800,4 +6800,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The launcher starts this interpreter with -E; children re-run
+    # sys.executable without it, so a host's PYTHONHOME/PYTHONPATH must
+    # not reach them either (2026-10-15: a leaked 3.14 PYTHONHOME killed
+    # every helper before its first line).
+    for name in [name for name in os.environ if name.startswith("PYTHON")]:
+        del os.environ[name]
     raise SystemExit(main())
