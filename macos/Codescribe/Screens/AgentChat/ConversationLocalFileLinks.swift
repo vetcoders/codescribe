@@ -34,6 +34,25 @@ enum ConversationLocalFileLinks {
     return fileURL(for: reference) ?? url
   }
 
+  enum OpenOutcome: Equatable {
+    case opened
+    /// A path that does not exist on this Mac, e.g. one an agent wrote on
+    /// another host. Never handed to the workspace, which would fail silently.
+    case missingFile
+    /// The workspace found no application for the URL, or refused it.
+    case refused
+  }
+
+  static func open(
+    _ url: URL,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+    open: (URL) -> Bool
+  ) -> OpenOutcome {
+    let target = urlForOpening(url)
+    if target.isFileURL, !fileExists(target.path) { return .missingFile }
+    return open(target) ? .opened : .refused
+  }
+
   static func annotate(_ text: inout AttributedString) {
     // Markdown destinations and entire inline-code paths can contain spaces.
     let runs = Array(text.runs)
