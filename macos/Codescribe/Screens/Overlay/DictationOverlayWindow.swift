@@ -237,6 +237,27 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       event.charactersIgnoringModifiers?.lowercased() == "c",
       let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:)))
     {
+      if let transcript = responder as? LiveTranscriptNativeTextView {
+        transcript.copy(nil)
+        return true
+      }
+      if let textView = responder as? NSTextView {
+        let source = textView.string as NSString
+        let selection = textView.selectedRange()
+        guard textView.isSelectable, selection.location >= 0,
+          selection.location <= source.length, selection.length > 0,
+          selection.length <= source.length - selection.location
+        else { return true }
+        let text = source.substring(with: selection)
+        Task { @MainActor in
+          do {
+            try await UserTextClipboard.copy(text)
+          } catch {
+            NSSound.beep()
+          }
+        }
+        return true
+      }
       return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
     }
     return super.performKeyEquivalent(with: event)

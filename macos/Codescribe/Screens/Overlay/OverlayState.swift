@@ -2333,7 +2333,7 @@ final class OverlayState {
   /// declined dialog — funnels into the terminal error path, where
   /// `speechAuthNotice` rewrites raw `speech_auth_*` markers.
   private func handleStartFailure(_ error: Error, assistive: Bool, language: CsLanguage?) async {
-    let described = "\(error)"
+    let described = error.userFacingMessage
     if described.contains("speech_auth_not_determined"), !speechAuthRequestAttempted {
       speechAuthRequestAttempted = true
       abortRecordingSession()
@@ -2370,7 +2370,7 @@ final class OverlayState {
       guard generation == captureGeneration else { return }
       presentTerminalError(
         message: String(
-          localized: "Couldn't finalize transcript: \(String(describing: error))",
+          localized: "Couldn't finalize transcript: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text"),
         toast: String(localized: "Couldn't finalize transcript")
       )
@@ -2455,7 +2455,7 @@ final class OverlayState {
       case .failure(let error):
         self.presentActionFailure(
           String(
-            localized: "Couldn't copy transcript: \(String(describing: error))",
+            localized: "Couldn't copy transcript: \(error.userFacingMessage)",
             comment: "The placeholder is the engine's own failure text"),
           notice: String(localized: "copy failed"))
       }
@@ -2523,7 +2523,7 @@ final class OverlayState {
       case .failure(let error):
         self.presentActionFailure(
           String(
-            localized: "Couldn't paste transcript: \(String(describing: error))",
+            localized: "Couldn't paste transcript: \(error.userFacingMessage)",
             comment: "The placeholder is the engine's own failure text"),
           notice: String(localized: "no paste"))
       }
@@ -2669,7 +2669,7 @@ final class OverlayState {
           self.latestTranscriptProjection?.sessionId == projection.sessionId
         else { return }
         self.engineChip = previousChip
-        let described = String(describing: error)
+        let described = error.userFacingMessage
         self.presentActionFailure(
           String(localized: "Couldn't transcribe this take again"),
           notice: String(localized: "Retranscription failed"))
@@ -3086,7 +3086,7 @@ final class OverlayState {
         pendingRevisionSource = nil
         pendingRevisionDraft = nil
         revisionCommitError = String(
-          localized: "Couldn't commit transcript revision: \(String(describing: error))",
+          localized: "Couldn't commit transcript revision: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
       }
     }
@@ -4222,7 +4222,7 @@ final class OverlayState {
         pendingRevisionSource = nil
         pendingRevisionDraft = nil
         formatterError = String(
-          localized: "Couldn't format transcript: \(String(describing: error))",
+          localized: "Couldn't format transcript: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
         showFooterNotice(String(localized: "format failed"))
         restartAutoHideCountdown()
@@ -4332,7 +4332,7 @@ final class OverlayState {
         self.pendingNavigation = nil
         self.revisionCommitError = String(
           localized: "overlay.versions.error.navigate",
-          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          defaultValue: "Couldn't change the transcript version: \(error.userFacingMessage)",
           comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
         self.loadDocumentVersions()
       }
@@ -4371,7 +4371,7 @@ final class OverlayState {
           self.latestTranscriptProjection?.sessionId == sessionId
         else { return }
         self.revisionCommitError = String(
-          localized: "Couldn't read transcript history: \(String(describing: error))",
+          localized: "Couldn't read transcript history: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
       }
     }
@@ -4459,16 +4459,17 @@ final class OverlayState {
 
   /// The single write the recovery action performs, and its honest outcome.
   ///
-  /// This is a WRITER seam, not merely an injectable `NSPasteboard`, because no
-  /// real pasteboard can be made to fail on demand — so the failure branch of
-  /// the production action would otherwise be untestable, which is exactly how
-  /// an ignored `setString` result survives review. Tests inject both outcomes
-  /// and neither one touches the user's real clipboard.
-  @ObservationIgnored var recoveryClipboardWriter: (String) -> Bool = { text in
-    let pasteboard = NSPasteboard.general
-    pasteboard.clearContents()
-    return pasteboard.setString(text, forType: .string)
+  /// Tests can refuse the write without touching the real clipboard. Production
+  /// acknowledges success only after Rust has tagged the copy and fenced restore.
+  @ObservationIgnored var recoveryClipboardWriter: @MainActor (String) async -> Bool = { text in
+    do {
+      try await UserTextClipboard.copy(text, preservingWhitespace: true)
+      return true
+    } catch {
+      return false
+    }
   }
+  @ObservationIgnored private var recoveryCopyPending = false
 
   /// Set when a recovery write failed. The retained item is still present, so
   /// this is a "try again", never a loss report. Cleared by the next successful
@@ -4487,31 +4488,37 @@ final class OverlayState {
   /// unchecked return value would destroy the only copy of an unsaved edit at
   /// the exact moment the copy did not happen — the silent loss this owner
   /// exists to prevent, reintroduced one line lower.
-  func recoverSupersededTake() {
-    guard let take = supersededTakes.first else { return }
-    if reopenRetainedArchiveWork(take) { return }
-    guard recoveryClipboardWriter(take.recoverableText) else {
-      recoveryFailure =
+  @discardableResult
+  func recoverSupersededTake() -> Task<Void, Never>? {
+    guard !recoveryCopyPending, let take = supersededTakes.first else { return nil }
+    if reopenRetainedArchiveWork(take) { return nil }
+    recoveryCopyPending = true
+    return Task { @MainActor in
+      defer { recoveryCopyPending = false }
+      let copied = await recoveryClipboardWriter(take.recoverableText)
+      // A discard or capture boundary may change the queue while Rust writes.
+      // Consume only the exact retained work that was actually copied.
+      guard let index = supersededTakes.firstIndex(where: {
+        $0 == take && $0.recoverableText.utf8.elementsEqual(take.recoverableText.utf8)
+      }) else { return }
+      guard copied else {
+        recoveryFailure =
+          take.hasUnsavedEdits
+          ? String(localized: "Couldn't copy the unsaved edit — it is still retained, try again")
+          : String(localized: "Couldn't copy the previous take — it is still retained, try again")
+        showFooterNotice(String(localized: "recover failed — kept"), persists: true)
+        if terminal, !isEditingTranscript { restartAutoHideCountdown() }
+        return
+      }
+      recoveryFailure = nil
+      supersededTakes.remove(at: index)
+      showFooterNotice(
         take.hasUnsavedEdits
-        ? String(localized: "Couldn't copy the unsaved edit — it is still retained, try again")
-        : String(localized: "Couldn't copy the previous take — it is still retained, try again")
-      // Persisting: a failure the user must be able to read after the 2.6 s
-      // fade, and the retained work already keeps this rail revealed. The
-      // `.formatted` body shows the full sentence; the footer covers every
-      // other phase, including a live capture.
-      showFooterNotice(String(localized: "recover failed — kept"), persists: true)
+          ? String(localized: "unsaved edit copied")
+          : String(localized: "previous take copied"))
+      // Interacting with recovery must not close a terminal take under the user.
       if terminal, !isEditingTranscript { restartAutoHideCountdown() }
-      return
     }
-    recoveryFailure = nil
-    supersededTakes.removeFirst()
-    showFooterNotice(
-      take.hasUnsavedEdits
-        ? String(localized: "unsaved edit copied")
-        : String(localized: "previous take copied"))
-    // Mirrors `discardRevisionDraft`: interacting with the panel must not be
-    // the reason a terminal take closes under the user's hand.
-    if terminal, !isEditingTranscript { restartAutoHideCountdown() }
   }
 
   /// The only path that drops retained work. No capture boundary, late event or
@@ -4880,7 +4887,7 @@ final class ControllerDictationEngine: DictationEngine {
     try await hotkeys.deferText(text: text)
   }
   func copyTaggedTranscript(text: String) async throws {
-    try await hotkeys.copyTextTagged(text: text)
+    try await UserTextClipboard.copy(text)
   }
   func pasteTargetAppName() async -> String? {
     await hotkeys.pasteTargetAppName()
@@ -5264,7 +5271,7 @@ extension OverlayState {
       case .failure(let error):
         // The draft stays dirty on the canvas: commit again or discard.
         self.archiveActionError = String(
-          localized: "Couldn't save the edit to this transcript: \(String(describing: error))",
+          localized: "Couldn't save the edit to this transcript: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
       }
       if !self.isEditingTranscript { self.restartAutoHideCountdown() }
@@ -5336,7 +5343,7 @@ extension OverlayState {
         self.showFooterNotice(String(localized: "format failed"))
       case .failure(let error):
         self.archiveActionError = String(
-          localized: "Couldn't format transcript: \(String(describing: error))",
+          localized: "Couldn't format transcript: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
         self.showFooterNotice(String(localized: "format failed"))
       }
@@ -5432,7 +5439,7 @@ extension OverlayState {
       case (.failure(let error), _):
         self.archiveActionError =
           String(localized: "Couldn't transcribe this take again")
-          + "\n\(String(describing: error))"
+          + "\n\(error.userFacingMessage)"
         self.showFooterNotice(String(localized: "Retranscription failed"))
       case (.success(let text), nil) where text.isEmpty:
         self.archiveActionError = String(
@@ -5451,7 +5458,7 @@ extension OverlayState {
         self.archiveGeneratedWork = OverlayArchiveGeneratedWork(
           text: text, sourceRevision: source.revision, detail: passDetail)
         self.archiveActionError = String(
-          localized: "Couldn't save the new transcription: \(String(describing: error))",
+          localized: "Couldn't save the new transcription: \(error.userFacingMessage)",
           comment: "The placeholder is the engine's own failure text")
         self.showFooterNotice(String(localized: "Retranscription failed"))
       }
@@ -5499,7 +5506,7 @@ extension OverlayState {
       case .failure(let error):
         self.archiveActionError = String(
           localized: "overlay.versions.error.navigate",
-          defaultValue: "Couldn't change the transcript version: \(String(describing: error))",
+          defaultValue: "Couldn't change the transcript version: \(error.userFacingMessage)",
           comment: "Undo/Redo/version pick failed; the placeholder is the engine's own text")
         self.showFooterNotice(String(localized: "undo failed — kept"))
       }

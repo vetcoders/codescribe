@@ -525,6 +525,7 @@ struct UserPanel: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       if loaded {
         Button {
+          // Tool metadata, not user content: preserve the literal path.
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(path, forType: .string)
         } label: {
