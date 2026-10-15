@@ -171,36 +171,17 @@ struct OverlayConversationView: View {
   private var composer: some View {
     VStack(spacing: 8) {
       if conversation.owner != nil || conversation.channel == "0" {
-        if editingMessageID != nil {
-          HStack {
-            Text("Edit")
-            Spacer()
-            Button("Cancel", action: cancelRevision)
-              .buttonStyle(.borderless)
-          }
-          .font(.system(size: 11 * textScale))
-          .foregroundStyle(palette.mutedText.color)
-          .accessibilityIdentifier("overlay-message-revision-mode")
-        }
+        if editingMessageID != nil { revisionModeHeader }
         OverlayConversationComposer(
-          palette: palette, draft: editingMessageID == nil ? $draft : $revisionDraft,
+          palette: palette, draft: composerDraft,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          onCancel: editingMessageID == nil ? nil : cancelRevision,
-          focusRevision: revisionFocus,
-          placeholder: conversation.channel == "0"
-            ? String(localized: "Send to everyone") : String(localized: "Message the Agent"))
-        if let editingMessageID, let error = deliveryControlErrors[editingMessageID] {
-          Text(verbatim: error)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
-        }
-        if let sendError {
-          Text(verbatim: sendError)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
-        }
+          onCancel: composerCancel, focusRevision: revisionFocus,
+          placeholder: composerPlaceholder)
+        if let revisionError { composerError(revisionError) }
+        if let sendError { composerError(sendError) }
         if let playbackError {
-          Text(verbatim: playbackError)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
+          composerError(playbackError)
             .accessibilityIdentifier("overlay-conversation-playback-error")
         }
       }
@@ -209,6 +190,45 @@ struct OverlayConversationView: View {
     .padding(.top, 6)
     .padding(.bottom, bottomInset)
     .frame(maxWidth: .infinity)
+  }
+
+  // The composer's inputs are typed here so its call site stays a plain
+  // argument list: a `nil : function` ternary inside a result builder is
+  // enough for the type checker to give up on the whole VStack.
+  private var composerDraft: Binding<String> {
+    if editingMessageID == nil { return $draft }
+    return $revisionDraft
+  }
+
+  private var composerCancel: (() -> Void)? {
+    if editingMessageID == nil { return nil }
+    return { cancelRevision() }
+  }
+
+  private var composerPlaceholder: String {
+    conversation.channel == "0"
+      ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
+  }
+
+  private var revisionError: String? {
+    editingMessageID.flatMap { deliveryControlErrors[$0] }
+  }
+
+  private var revisionModeHeader: some View {
+    HStack {
+      Text("Edit")
+      Spacer()
+      Button("Cancel", action: cancelRevision)
+        .buttonStyle(.borderless)
+    }
+    .font(.system(size: 11 * textScale))
+    .foregroundStyle(palette.mutedText.color)
+    .accessibilityIdentifier("overlay-message-revision-mode")
+  }
+
+  private func composerError(_ text: String) -> some View {
+    Text(verbatim: text)
+      .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
   }
 
   private var navigation: some View {
