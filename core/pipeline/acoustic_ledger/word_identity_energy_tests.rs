@@ -12,6 +12,231 @@ use super::*;
 
 const RATE: u32 = 48_000;
 
+fn recorded_1011_boundary_fixture(
+    quiet_fence: bool,
+) -> (AcousticLedger, OccurrenceIdentity, OccurrenceIdentity) {
+    // Native 03f2e40c ordinal163: Whisper already owns "transkrypcji," just
+    // before the owner fence; DT declares the same word 120 ms beyond it,
+    // followed by the existing next-owner sequence. Synthetic continuous PCM
+    // isolates the recorded owner/pin geometry, without another ASR run.
+    let mut pcm = vec![0.0; 1_800_000];
+    pcm[381_120..1_735_168].fill(0.1);
+    if quiet_fence {
+        pcm[1_158_144..1_163_904].fill(0.0);
+    }
+    let left = OccurrenceIdentity::new("boundary-dt-1011", 1, 806_400, 1_158_144);
+    let right = OccurrenceIdentity::new("boundary-dt-1011", 1, 1_158_144, 1_735_168);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, left.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &first,
+                &decoded(
+                    &[("transkrypcji,", 1_053_120, 1_158_144)],
+                    (864_000, 1_296_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let next = ObservationIdentity::new(ObservationProducer::Whisper, 7, 0, right.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &next,
+                &decoded(
+                    &[
+                        ("na", 1_189_440, 1_227_840),
+                        ("cokolwiek", 1_227_840, 1_266_240)
+                    ],
+                    (1_008_000, 1_440_000),
+                )
+            )
+            .grants_mutation()
+    );
+    (ledger, left, right)
+}
+
+#[test]
+fn recorded_1011_shifted_dt_word_across_owner_fence_does_not_mint_a_second_word() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let before = ledger.slots_of(&left).unwrap().to_vec();
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        right.clone(),
+    );
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("Transkrypcji", 1_163_904, 1_199_904),
+                ("na", 1_199_904, 1_215_264),
+                ("cokolwiek", 1_215_264, 1_255_584),
+            ],
+            (960_000, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap(), before.as_slice());
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == dt
+            && alternative.reason == "cross_owner_sequence_correspondence"
+            && alternative.candidate == "Transkrypcji"
+            && alternative.sources == before
+    }));
+    assert_eq!(
+        ledger.slots_of(&left).unwrap().len() + ledger.slots_of(&right).unwrap().len(),
+        3,
+        "one recorded word observed over the owner fence cannot become a second slot; right={:?}",
+        ledger.slots_of(&right),
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_keeps_a_repeat_after_measured_quiet() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(true);
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 20, 0, right.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("Transkrypcji", 1_163_904, 1_199_904),
+                ("na", 1_199_904, 1_215_264),
+                ("cokolwiek", 1_215_264, 1_255_584),
+            ],
+            (960_000, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_keeps_same_producer_disjoint_native_words() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 20, 0, right.clone());
+    ledger.admit_word_slots(
+        &whisper,
+        &decoded(
+            &[
+                ("Transkrypcji", 1_163_904, 1_189_440),
+                ("na", 1_189_440, 1_227_840),
+                ("cokolwiek", 1_227_840, 1_266_240),
+            ],
+            (960_000, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_needs_actual_decode_context() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 20, 0, right.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("Transkrypcji", 1_163_904, 1_199_904),
+                ("na", 1_199_904, 1_215_264),
+                ("cokolwiek", 1_215_264, 1_255_584),
+            ],
+            (1_158_144, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_cannot_consume_an_isolated_new_word() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 20, 0, right.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[("Transkrypcji", 1_163_904, 1_189_440)],
+            (960_000, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_preserves_new_repeated_positions_in_the_full_sequence() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 20, 0, right.clone());
+    // The decode repeats the boundary word and hears five additional physical
+    // positions before the already-held "na cokolwiek" context. None of those
+    // five positions may disappear merely because all labels are identical.
+    let mut offered = (0..6)
+        .map(|index| {
+            WordPin::new(
+                1_163_904 + index * 4_000,
+                1_167_904 + index * 4_000,
+                "Transkrypcji",
+            )
+            .with_decode_window(960_000, 1_735_168)
+        })
+        .collect::<Vec<_>>();
+    offered.extend(decoded(
+        &[
+            ("na", 1_189_440, 1_227_840),
+            ("cokolwiek", 1_227_840, 1_266_240),
+        ],
+        (960_000, 1_735_168),
+    ));
+    ledger.admit_word_slots(&dt, &offered);
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 7);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn cross_owner_correspondence_needs_an_aligned_word_inside_the_target_owner() {
+    let (mut ledger, left, right) = recorded_1011_boundary_fixture(false);
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 20, 0, right.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("Transkrypcji", 1_163_904, 1_175_904),
+                ("inny", 1_175_904, 1_189_440),
+            ],
+            (960_000, 1_735_168),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 4);
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
 #[test]
 fn recorded_530be03a_first_window_keeps_interior_words_of_a_long_open_burst() {
     // Native div0 request1 decoded all eight opening words correctly, then
