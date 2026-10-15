@@ -14037,13 +14037,13 @@
         }
       }
     },
-    "Saved: %@. Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active." : {
+    "Saved: %@. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override." : {
       "comment" : "The placeholder is the saved input device name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano: %@.\n\nUruchom ponownie Codescribe, aby zastosować zmianę. Jeśli przy uruchamianiu ustawiono inne urządzenie audio przez AUDIO_INPUT_DEVICE, Codescribe może nadal korzystać z niego zamiast z zapisanego ustawienia."
+            "value" : "Zapisano: %@.\n\nŚrodowisko uruchomienia ustawia AUDIO_INPUT_DEVICE na inne urządzenie. Pozostaje ono aktywne, dopóki Codescribe nie zostanie uruchomiony bez tego nadpisania."
           }
         }
       }
