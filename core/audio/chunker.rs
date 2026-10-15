@@ -719,11 +719,16 @@ impl SpeechSession {
 
             if let Some((end_sample, decision_sample, cause)) = end_event {
                 let raw_boundary = self.vad_to_raw_index(end_sample);
-                self.record_vad_boundary(VadBoundaryEvidence {
-                    kind: VadBoundaryKind::SpeechEnd,
-                    sample: raw_boundary as u64,
-                    speech_probability: speech_prob,
-                });
+                // A duration split closes an owner, not continuous speech.
+                // The still-triggered iterator will not emit another onset;
+                // closing the acoustic set here would lose all later speech.
+                if !speech_continues {
+                    self.record_vad_boundary(VadBoundaryEvidence {
+                        kind: VadBoundaryKind::SpeechEnd,
+                        sample: raw_boundary as u64,
+                        speech_probability: speech_prob,
+                    });
+                }
                 self.pending_end = Some(raw_boundary.saturating_add(self.speech_pad_raw));
                 self.pending_close_receipt = Some(UtteranceCloseReceipt {
                     decision_sample: self.vad_to_raw_index(decision_sample) as u64,
