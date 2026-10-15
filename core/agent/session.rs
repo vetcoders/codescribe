@@ -675,14 +675,15 @@ impl AgentSession {
                 // handler would resolve now: a symlink re-pointed during the
                 // approval wait must not inherit the earlier verdict.
                 let (authorization_error, audit_decision) = match authorization_error {
-                    None => match self.tools.confirm_targets(
-                        &tool_name,
-                        &arguments,
-                        &decided_targets,
-                    ) {
-                        Ok(()) => (None, audit_decision),
-                        Err(error) => (Some(error.to_string()), "target_changed"),
-                    },
+                    None => {
+                        match self
+                            .tools
+                            .confirm_targets(&tool_name, &arguments, &decided_targets)
+                        {
+                            Ok(()) => (None, audit_decision),
+                            Err(error) => (Some(error.to_string()), "target_changed"),
+                        }
+                    }
                     denied => (denied, audit_decision),
                 };
 
