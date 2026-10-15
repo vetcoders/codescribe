@@ -39,6 +39,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
+  /// Duration of the morph most recently started; the SwiftUI cross-fade
+  /// reads it so content and frame land together.
+  private(set) var lastMorphDuration: TimeInterval = DictationOverlayWindow.presentationDuration
   private var transitionTop: CGFloat?
   private var transitionRight: CGFloat?
   private var frameTransitionTarget: NSRect?
@@ -128,8 +131,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     OverlayPresentationTrace.shared.record(
       .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
       target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
+    lastMorphDuration =
+      animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
     NSAnimationContext.runAnimationGroup { context in
-      context.duration = animated ? DictationOverlayWindow.presentationDuration : 0
+      context.duration = lastMorphDuration
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
       animator().setFrame(restored, display: true)
     } completionHandler: { [weak self] in
@@ -711,7 +716,19 @@ final class OverlayResizeGrabPad: NSView {
 }
 
 enum DictationOverlayWindow {
+  /// Founder, 2026-10-15: the collapse animations are too fast; a big
+  /// full-screen overlay folded in the same time as MIDI to mini. The morph
+  /// keeps one speed instead of one clock: the edge that travels farthest
+  /// sets the duration, and a short step keeps the former 0.28 s.
+  static let presentationSpeed: CGFloat = 1000
   static let presentationDuration: TimeInterval = 0.28
+
+  static func presentationDuration(from start: NSRect, to end: NSRect) -> TimeInterval {
+    let travel = max(
+      abs(end.minX - start.minX), abs(end.maxX - start.maxX),
+      abs(end.minY - start.minY), abs(end.maxY - start.maxY))
+    return max(presentationDuration, TimeInterval(travel / presentationSpeed))
+  }
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
@@ -793,11 +810,12 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    state.onPresentationModeChanged = { [weak panel] mode in
+    state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      state?.presentationMorphDuration = panel.lastMorphDuration
     }
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
