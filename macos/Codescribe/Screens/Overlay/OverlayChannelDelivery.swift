@@ -11,6 +11,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   let deliveryID: String?
   let stage: Stage?
   let isOpen: Bool
+  var broadcastIdentity: AgentPlaybackIdentity? = nil
+  var broadcastPolicy: AgentBroadcastPolicy = .on
   var id: String { channel }
 
   /// Metadata projection of the bus; never a document reducer or delivery writer.

@@ -350,6 +350,76 @@ struct OverlayAgentAudioControls: View {
   }
 }
 
+struct OverlayBroadcastDisclosure<Header: View>: View {
+  let channels: [OverlayChannelDelivery]
+  let palette: OverlayAppearancePalette
+  let enabled: Bool
+  let header: Header
+  @State private var pending: Set<AgentPlaybackIdentity> = []
+  @State private var commandError: String?
+
+  init(
+    channels: [OverlayChannelDelivery], palette: OverlayAppearancePalette, enabled: Bool,
+    @ViewBuilder header: () -> Header
+  ) {
+    self.channels = channels
+    self.palette = palette
+    self.enabled = enabled
+    self.header = header()
+  }
+
+  @MainActor
+  static func setMembership(
+    _ checked: Bool, for identity: AgentPlaybackIdentity,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    try await RealAgentBridgeInstaller.setBroadcastPolicy(
+      checked ? .on : .quiet, for: identity, installer: installer)
+  }
+
+  var body: some View {
+    DisclosureGroup {
+      ForEach(channels) { channel in
+        Toggle(
+          isOn: Binding(
+            get: { channel.broadcastPolicy.receivesWake },
+            set: { checked in
+              guard let identity = channel.broadcastIdentity, !pending.contains(identity) else {
+                return
+              }
+              pending.insert(identity)
+              commandError = nil
+              Task { @MainActor in
+                defer { pending.remove(identity) }
+                do {
+                  try await Self.setMembership(checked, for: identity)
+                } catch {
+                  commandError = String(localized: "Couldn't change broadcast reception.")
+                }
+              }
+            })
+        ) {
+          Text(verbatim: "\(channel.channel) · \(channel.agent)")
+        }
+        .toggleStyle(.checkbox)
+        .disabled(
+          !enabled || channel.broadcastIdentity == nil
+            || channel.broadcastIdentity.map { pending.contains($0) } == true)
+        .help(String(localized: "Wake this agent for channel 0 broadcasts"))
+        .accessibilityIdentifier("overlay-broadcast-member-\(channel.channel)")
+      }
+      if let commandError {
+        Text(verbatim: commandError)
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-broadcast-policy-error")
+      }
+    } label: {
+      header
+    }
+    .accessibilityIdentifier("overlay-broadcast-disclosure")
+  }
+}
+
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -505,6 +575,22 @@ struct OverlayChannelStatusView: View {
     monitorBody(maximumHeight: 480)
   }
 
+  var broadcastMembers: [OverlayChannelDelivery] {
+    channels.filter {
+      (1...9).contains(Int($0.channel) ?? 0)
+        && hudStates[$0.channel]?.provider != nil
+        && hudStates[$0.channel]?.providerSessionID != nil
+    }
+  }
+
+  var broadcastHeader: String {
+    let listening = broadcastMembers.filter { $0.broadcastPolicy.receivesWake }.count
+    let bound = broadcastMembers.count
+    return String(
+      localized: "0 · All (\(listening) of \(bound))",
+      comment: "Channel zero: agents woken by broadcasts out of all bound agents")
+  }
+
   func monitorBody(maximumHeight: CGFloat) -> some View {
     OverlayAgentMonitorBody(maximumHeight: maximumHeight, palette: palette) {
       HStack {
@@ -551,22 +637,26 @@ struct OverlayChannelStatusView: View {
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
           onSelectConversation != nil
         {
-          rowGlassContainer(
-            HStack(spacing: 6) {
-              conversationRow(broadcast, saved: false)
-              OverlayAgentAudioControls(
-                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
-                microphoneEnabled: !unavailable && hudStates["0"] != nil
-                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
-                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
-                palette: palette, onMicrophone: { onToggleChannel?(0) },
-                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                speaking: broadcast.replySpeaking
-              )
-              .fixedSize()
-              .accessibilityIdentifier("overlay-channel-toggle-0")
-            }
-          )
+          OverlayBroadcastDisclosure(
+            channels: broadcastMembers, palette: palette, enabled: !unavailable
+          ) {
+            rowGlassContainer(
+              HStack(spacing: 6) {
+                conversationRow(broadcast, saved: false)
+                OverlayAgentAudioControls(
+                  open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                  microphoneEnabled: !unavailable && hudStates["0"] != nil
+                    && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                  playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                  palette: palette, onMicrophone: { onToggleChannel?(0) },
+                  onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                  speaking: broadcast.replySpeaking
+                )
+                .fixedSize()
+                .accessibilityIdentifier("overlay-channel-toggle-0")
+              }
+            )
+          }
         }
         Divider()
         details
@@ -652,8 +742,18 @@ struct OverlayChannelStatusView: View {
           if channel.channel == "0" {
             Text("0 · All")
           } else {
-            Text(verbatim: conversation?.name ?? channel.agent)
-              .lineLimit(1).truncationMode(.middle)
+            HStack(spacing: 4) {
+              Text(verbatim: conversation?.name ?? channel.agent)
+                .lineLimit(1).truncationMode(.middle)
+              if let symbol = channel.broadcastPolicy.statusSymbol {
+                Image(systemName: symbol)
+                  .font(.system(size: 10 * textScale))
+                  .foregroundStyle(palette.mutedText.color)
+                  .help(String(localized: "Broadcasts do not wake this agent"))
+                  .accessibilityLabel(String(localized: "Broadcasts do not wake this agent"))
+                  .accessibilityIdentifier("overlay-broadcast-quiet-\(channel.channel)")
+              }
+            }
           }
           if let descriptor {
             Text(verbatim: descriptor)
@@ -763,7 +863,7 @@ struct OverlayChannelStatusView: View {
           .frame(width: 16)
         VStack(alignment: .leading, spacing: 2) {
           if conversation.channel == "0" {
-            Text("0 · All")
+            Text(verbatim: broadcastHeader)
           } else {
             Text(verbatim: "\(conversation.channel) · \(conversation.name)")
           }

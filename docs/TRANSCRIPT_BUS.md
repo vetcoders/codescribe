@@ -989,6 +989,58 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
 
+### Broadcast policy
+
+Each provider/session/leased bus has one runtime policy receipt under
+`runtime/broadcast-policy/<key>.json` in the agent-bridge home. The key is the
+first 24 hex characters of SHA-256 over NUL-separated lowercase provider,
+provider session ID and resolved bus path, matching the playback mute key.
+The receipt schema is `codescribe.broadcast-policy.v1`:
+
+```json
+{
+  "schema": "codescribe.broadcast-policy.v1",
+  "provider": "codex",
+  "provider_session_id": "SESSION_ID",
+  "lease_id": "<32 lowercase hex>",
+  "bus": "<resolved leased bus path>",
+  "policy": "quiet",
+  "emitted_at": "<utc>"
+}
+```
+
+- `on`: queue broadcasts and wake normally (the default).
+- `quiet`: queue them in the existing pending mailbox without follower output,
+  native queue submission, seal hook or waiter completion. On the next natural
+  turn, `--read-pending` includes them and the agent ACKs only what it read.
+- `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
+  row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
+  existing follower events stream. A skip is not an ACK marker and contains no
+  transcript text. There is nothing to acknowledge.
+
+Missing files mean `on`. Invalid, foreign or unreadable receipts log a warning
+and also mean `on`: unlike playback mute's fail-closed silence, policy fails
+open so damaged state never silently disconnects an agent. Typed Founder,
+spoken channel-zero and peer broadcasts all use the same policy gate; direct
+channel/name deliveries do not. Previously queued messages are retained when
+the policy changes; already submitted provider wakeups cannot be recalled by
+changing this preference.
+
+`cs-bus --broadcast on|quiet|off --provider P --session S [--bus B]` validates
+the lease before atomically writing the receipt. The omitted bus is resolved
+from that lease. Followers read the receipt per delivery without restart or
+reattachment. Attach, pending reads and status include `broadcast.policy` next
+to `playback`. Typed and peer publisher receipts report each recipient's
+`broadcast` policy, but still publish every admitted copy, including `off`;
+the follower is the delivery authority. Sender snapshots are informational,
+not a promise against a policy switch while the publication is in flight.
+
+The overlay's channel-zero disclosure checks agents whose policy is `on`;
+unchecking selects `quiet`. The header counts `on` over bound agents. Both
+`quiet` and CLI-only `off` show a slashed antenna in the agent's own row.
+Swift only paints snapshots of the policy receipts; it writes no preference
+store of its own.
+
 ## Native chat receiver acknowledgment
 
 For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,

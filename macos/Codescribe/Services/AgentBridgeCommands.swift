@@ -76,6 +76,36 @@ private struct GlobalPlaybackMuteReceipt: Decodable, Sendable {
   let muted: Bool
 }
 
+enum AgentBroadcastPolicy: String, Decodable, Sendable {
+  case on, quiet, off
+
+  var receivesWake: Bool { self == .on }
+  var statusSymbol: String? {
+    receivesWake ? nil : "antenna.radiowaves.left.and.right.slash"
+  }
+}
+
+private struct AgentBroadcastPolicyReceipt: Decodable, Sendable {
+  let schema: String
+  let provider: String
+  let providerSessionID: String
+  let leaseID: String
+  let bus: String
+  let policy: AgentBroadcastPolicy
+
+  private enum CodingKeys: String, CodingKey {
+    case schema, provider, bus, policy
+    case providerSessionID = "provider_session_id"
+    case leaseID = "lease_id"
+  }
+
+  func belongs(to identity: AgentPlaybackIdentity) -> Bool {
+    schema == "codescribe.broadcast-policy.v1" && provider == identity.provider
+      && providerSessionID == identity.session && leaseID == identity.leaseID
+      && bus == identity.bus
+  }
+}
+
 /// App-side invocations of the installed managed `cs-bus` command. They live
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
@@ -250,6 +280,50 @@ extension RealAgentBridgeInstaller {
   }
 
   @MainActor
+  static func broadcastPolicySnapshot(
+    for identities: Set<AgentPlaybackIdentity>,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async -> [AgentPlaybackIdentity: AgentBroadcastPolicy] {
+    let root = installer.bridgeRoot
+    return await Task.detached(priority: .utility) {
+      var result: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+      for identity in identities {
+        result[identity] = .on
+        let path = root.appendingPathComponent("runtime/broadcast-policy/\(identity.storageKey).json")
+        // Unlike playback mute's fail-closed silence, policy fails open to on:
+        // a broken receipt must never silently disconnect an agent.
+        guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 65537), data.count <= 65536,
+          let row = try? JSONDecoder().decode(AgentBroadcastPolicyReceipt.self, from: data),
+          row.belongs(to: identity)
+        else { continue }
+        result[identity] = row.policy
+      }
+      return result
+    }.value
+  }
+
+  static func broadcastPolicyArguments(
+    _ policy: AgentBroadcastPolicy, for identity: AgentPlaybackIdentity, root: URL
+  ) -> [String] {
+    [
+      "--broadcast", policy.rawValue, "--provider", identity.provider,
+      "--session", identity.session, "--bus", identity.bus, "--bridge-home", root.path,
+    ]
+  }
+
+  @MainActor
+  static func setBroadcastPolicy(
+    _ policy: AgentBroadcastPolicy, for identity: AgentPlaybackIdentity,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    try await runPlaybackMuteCommand(
+      broadcastPolicyArguments(policy, for: identity, root: installer.bridgeRoot),
+      installer: installer)
+  }
+
+  @MainActor
   private static func runPlaybackMuteCommand(
     _ arguments: [String], installer: RealAgentBridgeInstaller
   ) async throws {
@@ -261,7 +335,7 @@ extension RealAgentBridgeInstaller {
         domain: "Codescribe.BusPlayback", code: 1,
         userInfo: [
           NSLocalizedDescriptionKey: String(
-            localized: "Install the agent bridge to control playback.")
+            localized: "Install the agent bridge to control agent preferences.")
         ])
     }
     var environment = ProcessInfo.processInfo.environment

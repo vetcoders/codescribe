@@ -86,6 +86,9 @@ with output notifications reuse one monitor over
 Native queue, a bare background shell or `tail -F` alone does not prove wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
 
+Channel 0 supports `--broadcast on|quiet|off`; direct messages still wake.
+See [Monitor](references/monitor.md#channel-0-reception) for quiet-mode reads.
+
 Report `attached_unverified` until a fresh named utterance reaches this chat and
 gets a reply without a typed nudge. Then report `listening_verified` — the only
 proof of a connection. A PID, live follower, armed hook, monitor or attach receipt
@@ -102,8 +105,8 @@ notification transport armed while preserving the same listener and identity.
 Never add a timer or heartbeat that calls `--read-pending` (for example every
 2 seconds) beside an active watch, follower or native waiter. Wait for its
 notification; handle the message at the next work boundary. Read the mailbox
-only for an actual delivery, an incomplete/queued notification, or the bounded
-post-ACK drain. Silence is not a reason to cancel `--watch --bell`, restart it,
+only for a delivery, an incomplete/queued notification, a natural turn in quiet
+mode, or the bounded post-ACK drain. Silence is not a reason to cancel `--watch --bell`, restart it,
 or create another reader. Renew the notification window over the same watch.
 
 ## Read → ACK → act

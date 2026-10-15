@@ -99,6 +99,7 @@ AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
 REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
 PLAYBACK_MUTE_SCHEMA = "codescribe.agent-playback-mute.v1"
+BROADCAST_POLICY_SCHEMA = "codescribe.broadcast-policy.v1"
 REPLY_READ_LIMIT = 32 << 20
 AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
 AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
@@ -893,7 +894,7 @@ def slim(
         "state_change_allowed": status == SEALED
         and event.get("coverage") != COVERAGE_REFUSED,
     }
-    for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id"):
+    for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
     for key in ("message_id", "occurrences"):
@@ -2482,6 +2483,9 @@ class SessionLease:
             return False
         if delivery_id in self.pending:
             return False
+        if delivery_broadcast_policy(self.root, payload) == "off":
+            record_broadcast_skipped(self.root, payload)
+            return False
         if self.coalesce and payload.get("kind") in DRAFT_KINDS:
             # A reducer storm re-states one document ~250 times per sentence.
             # Under coalescing the newest revision replaces its predecessors
@@ -2654,6 +2658,8 @@ class SessionLease:
             "name": self.name,
             "bus": self.bus,
             "playback": playback_mute_snapshot(
+                self.root, self.provider, self.provider_session_id, Path(self.bus)),
+            "broadcast": broadcast_policy_snapshot(
                 self.root, self.provider, self.provider_session_id, Path(self.bus)),
             "cursor": self.cursor,
             "resumed": self.resumed,
@@ -3004,8 +3010,8 @@ class MailboxReadError(ValueError):
         super().__init__(message)
 
 
-def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Validate the owned mailbox and return unread non-draft envelopes."""
+def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Validate the mailbox; waiters see wakeable rows, explicit reads see all."""
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
     if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
@@ -3032,14 +3038,15 @@ def unread_pending(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[
         if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
                 "lease_id", "provider", "provider_session_id")):
             raise MailboxReadError("mailbox_delivery_owner_mismatch", "foreign pending delivery owner; nothing read")
-        if not delivery_acknowledged(args.bridge_home, lease_id, identity, row):
+        if (not delivery_acknowledged(args.bridge_home, lease_id, identity, row)
+                and (include_quiet or delivery_broadcast_policy(args.bridge_home, row) == "on")):
             rows.append(row)
     return state, rows
 
 
 def read_pending_command(args: argparse.Namespace) -> int:
     """Read complete conversational projections. Only the conversation may ACK."""
-    state, rows = unread_pending(args)
+    state, rows = unread_pending(args, include_quiet=True)
     lease_id = state["lease_id"]
     if not 1 <= args.read_limit <= 256 or not 1 <= args.read_bytes <= 16 * 1024 * 1024:
         raise ValueError("invalid --read-limit or --read-bytes")
@@ -3047,6 +3054,8 @@ def read_pending_command(args: argparse.Namespace) -> int:
               "provider_session_id": args.session, "snapshot_cursor": state.get("cursor"),
               "deliveries": [], "read_delivery_ids": [], "remaining": len(rows),
               "playback": playback_mute_snapshot(
+                  args.bridge_home, args.provider, args.session, Path(state["bus"])),
+              "broadcast": broadcast_policy_snapshot(
                   args.bridge_home, args.provider, args.session, Path(state["bus"]))}
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > args.read_bytes:
         raise ValueError("snapshot metadata exceeds --read-bytes; increase the limit")
@@ -3162,6 +3171,8 @@ class NativeQueueWakeup:
             if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
                 return
             if payload not in state.get("pending", []):
+                return
+            if delivery_broadcast_policy(self.root, payload) != "on":
                 return
             previous = read_json(receipt_path)
             if receipt_path.exists() and previous is None:
@@ -3314,11 +3325,13 @@ def run(args: argparse.Namespace) -> int:
         keys = [key] if key is not None else list(human_drafts)
         for current in keys:
             draft = human_drafts.pop(current, None)
-            if draft is not None:
+            if draft is not None and (not lease or delivery_broadcast_policy(lease.root, draft) == "on"):
                 sys.stdout.write(human_line(draft, follower_channel) + "\n")
         sys.stdout.flush()
 
     def publish(payload: dict[str, Any]) -> None:
+        if lease and delivery_broadcast_policy(lease.root, payload) != "on":
+            return
         if events_path is not None and lease and lease.coalesce:
             key = draft_key(payload)
             if payload.get("kind") in DRAFT_KINDS:
@@ -3336,9 +3349,10 @@ def run(args: argparse.Namespace) -> int:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
                     publish(payload)
-                    if native and effective_wakeup(args) == "codex-queue":
+                    wake = not lease or delivery_broadcast_policy(lease.root, payload) == "on"
+                    if wake and native and effective_wakeup(args) == "codex-queue":
                         native.enqueue(payload)
-                    if args.on_seal and payload.get("kind") in TERMINAL_KINDS:
+                    if wake and args.on_seal and payload.get("kind") in TERMINAL_KINDS:
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
         except BufferError:
@@ -3412,7 +3426,8 @@ def run(args: argparse.Namespace) -> int:
                 if delivery_acknowledged(lease.root, lease.lease_id, payload["delivery_id"], payload):
                     continue
                 publish(payload)
-                if native and effective_wakeup(args) == "codex-queue":
+                if (native and effective_wakeup(args) == "codex-queue"
+                        and delivery_broadcast_policy(lease.root, payload) == "on"):
                     native.enqueue(payload)
             flush_human_drafts()
         if args.once:
@@ -4353,6 +4368,93 @@ def playback_mute_path(root: Path, provider: str, session: str, bus: Path) -> Pa
     return root / "runtime" / "playback-mutes" / f"{key}.json"
 
 
+def broadcast_policy_path(root: Path, provider: str, session: str, bus: Path) -> Path:
+    identity = "\0".join((provider.casefold(), session, str(bus.resolve(strict=False))))
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return root / "runtime" / "broadcast-policy" / f"{key}.json"
+
+
+def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+    try:
+        row = read_reply_json(broadcast_policy_path(root, provider, session, bus), 65536)
+        if (row.get("schema") != BROADCAST_POLICY_SCHEMA
+                or row.get("provider") != provider.casefold()
+                or row.get("provider_session_id") != session
+                or row.get("lease_id") != lease_identifier(provider, session)
+                or row.get("bus") != str(bus.resolve(strict=False))
+                or row.get("policy") not in ("on", "quiet", "off")):
+            raise ValueError("invalid broadcast policy receipt")
+        return row["policy"]
+    except FileNotFoundError:
+        return "on"
+    except (OSError, ValueError, UnicodeError):
+        # Mute fails closed to silence; policy fails open to "on": a broken
+        # receipt must never silently cut an agent off from the Founder.
+        sys.stderr.write("cs-bus: unreadable or invalid broadcast policy; using on\n")
+        return "on"
+
+
+def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, str]:
+    return {"policy": agent_broadcast_policy(root, provider, session, bus)}
+
+
+def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
+    # Peer broadcasts have a concrete peer_to on each copy. Their channel is
+    # the source, not the recipient's digit; a named direct has a nonzero one.
+    if str(payload.get("origin_channel", payload.get("channel"))) == "0":
+        return True
+    return payload.get("audience") == "*" or payload.get("peer_to") in ("0", "*")
+
+
+def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
+    if not is_broadcast_delivery(payload):
+        return "on"
+    return agent_broadcast_policy(
+        root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
+
+
+def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
+    # This is receipt history, never an acknowledgment marker: the agent did
+    # not read these words. Keep it in the follower's existing event stream.
+    _, path = follower_paths(root, payload["lease_id"])
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as stream:
+        os.chmod(path, 0o600)
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.seek(0)
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(row, dict) and row.get("kind") == "broadcast_skipped"
+                    and row.get("delivery_id") == payload["delivery_id"]):
+                return
+        row = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
+               **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
+               "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
+        stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
+    lease_id = lease_identifier(args.provider, args.session)
+    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
+    bus = (args.bus if args.bus_overridden else Path(str(lease.get("bus") or ""))).expanduser().resolve(strict=False)
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session
+            or lease.get("bus") != str(bus) or args.broadcast not in ("on", "quiet", "off")):
+        raise ValueError("broadcast policy does not belong to this provider session and bus")
+    row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider.casefold(),
+           "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
+           "policy": args.broadcast, "emitted_at": utc_now()}
+    atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
+    emit({**row, "broadcast": broadcast_policy_snapshot(args.bridge_home, args.provider, args.session, bus)})
+    return 0
+
+
 def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> bool:
     path = playback_mute_path(root, provider, session, bus)
     try:
@@ -4740,6 +4842,7 @@ def send_text_command(args: argparse.Namespace) -> int:
         identity = os.urandom(12).hex()
         emitted_at = utc_now()
         receipts = []
+        recipient_receipts = []
         for owner in owners:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, "message_id": identity, "source_event_id": identity,
@@ -4759,7 +4862,10 @@ def send_text_command(args: argparse.Namespace) -> int:
             except (OSError, ValueError, RuntimeError) as error:
                 raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
             receipts.append(receipt)
-    emit({"kind": "message_published", "message_id": identity, "source": receipts[0], "sources": receipts})
+            recipient_receipts.append({**owner, "source": receipt,
+                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], Path(owner["bus"]))})
+    emit({"kind": "message_published", "message_id": identity, "source": receipts[0], "sources": receipts,
+          "recipients": recipient_receipts})
     return 0
 
 
@@ -4859,6 +4965,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                 raise ValueError("publication has no durable receipt; do not automatically resend")
             deliveries.append({"peer": audience, "channel": channel,
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
+                               "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
                                "source": receipt})
     emit({"kind": "peer_message_published", "message_id": identity,
           "origin_channel": origin, "sender": sender_name,
@@ -5945,6 +6052,7 @@ def attach_command(args: argparse.Namespace) -> int:
         "voice": voice_profile(root, name), "voice_source": voice_source,
         "voices_file": "present" if (root / VOICES_FILENAME).exists() else "missing",
         "playback": playback_mute_snapshot(root, args.provider, args.session, Path(resolved_bus)),
+        "broadcast": broadcast_policy_snapshot(root, args.provider, args.session, Path(resolved_bus)),
         "binding_path": str(binding_path), "binding_changed": previous is not None,
         "previous": previous,
     })
@@ -6047,6 +6155,8 @@ def status_command(args: argparse.Namespace) -> int:
             ),
             "voice": voice_profile(root, name if isinstance(name, str) else None),
             "playback": playback_mute_snapshot(root, args.provider, args.session,
+                Path(state["bus"]) if isinstance(state, dict) and isinstance(state.get("bus"), str) else args.bus),
+            "broadcast": broadcast_policy_snapshot(root, args.provider, args.session,
                 Path(state["bus"]) if isinstance(state, dict) and isinstance(state.get("bus"), str) else args.bus),
             "cursor": state.get("cursor") if isinstance(state, dict) else None,
         }
@@ -6183,6 +6293,9 @@ def watch_command(args: argparse.Namespace) -> int:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 continue  # older logs can contain diagnostics
+            if (lease_id and isinstance(payload, dict) and is_broadcast_delivery(payload)
+                    and delivery_broadcast_policy(args.bridge_home, payload) != "on"):
+                continue
             line = watch_line(payload, lease_id)
             if args.human:
                 if not isinstance(payload, dict) or payload.get("schema") not in (EVENT_SCHEMA, ATTACH_SCHEMA):
@@ -6477,6 +6590,7 @@ def main() -> int:
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
     mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
+    parser.add_argument("--broadcast", choices=("on", "quiet", "off"), help="change this lease's channel-zero delivery policy at any time")
     parser.add_argument("--playback-ticket", metavar="TICKET", help="24 lowercase hex identifying one playback request")
     parser.add_argument(
         "--tts-vendor",
@@ -6503,6 +6617,18 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.broadcast is not None:
+        allowed = {"broadcast", "provider", "session", "bus", "bridge_home", "entrypoint"}
+        if (not args.provider or not args.session
+                or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
+            parser.error("--broadcast requires only --provider/--session and optional --bus/--bridge-home")
+        args.bus_overridden = args.bus is not None
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return set_agent_broadcast_policy(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: broadcast policy refused: {error}\n")
+            return 3
     if args.mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
         allowed = {"mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
                    "provider", "session", "extensions_directory", "bridge_home", "bus", "entrypoint"}
