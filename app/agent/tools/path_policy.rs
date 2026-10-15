@@ -368,7 +368,7 @@ fn unquote_token(token: &str) -> String {
 }
 
 /// Whether `token` names the `git` executable, by basename (`/usr/bin/git`).
-fn is_git_program(token: &str) -> bool {
+pub(crate) fn is_git_program(token: &str) -> bool {
     Path::new(token)
         .file_name()
         .and_then(|name| name.to_str())
@@ -477,6 +477,12 @@ const GIT_EXEC_OPTIONS: &[&str] = &[
     "ext-diff",
     "config",
     "config-env",
+    // Signature checks run `gpg.program`; textconv and clean filters run the
+    // drivers named in configuration and attributes. `process.rs` switches
+    // them off for the spawn, and the last option on a command line wins.
+    "show-signature",
+    "textconv",
+    "filters",
 ];
 
 /// `git config` flags that only read.

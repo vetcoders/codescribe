@@ -353,8 +353,7 @@ impl ToolRegistry {
         session_id: &str,
         thread_id: &str,
     ) -> ToolDecision {
-        let (decision, _) =
-            self.decide_with_targets(name, input, call_id, session_id, thread_id);
+        let (decision, _) = self.decide_with_targets(name, input, call_id, session_id, thread_id);
         decision
     }
 
