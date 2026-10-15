@@ -7314,9 +7314,13 @@ fn maybe_spawn_utterance_witness(
         return;
     };
     for target in &targets {
-        // Attempts accrue only to ranges the issued window actually covers;
-        // debt beyond the 30 s cap keeps its full budget for later seals.
-        if target.0 >= window_end || target.1 <= window_start {
+        // An attempt binds only when the question was actually asked: the
+        // issued window covers the whole target, or the target is wider than
+        // any legal window — then its leading read counts and the range still
+        // ends honestly unresolved. A sliver of coverage costs nothing.
+        let covered_whole = target.0 >= window_start && target.1 <= window_end;
+        let oversized = target.1.saturating_sub(target.0) > max_window;
+        if !covered_whole && !oversized {
             continue;
         }
         let entry = state
