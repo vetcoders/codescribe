@@ -115,25 +115,37 @@ Independent measured word pins cannot be contracted by repeated ASR agreement.
 Their identities and source ranges survive rejected many-to-one candidates;
 legal one-to-one corrections and coarse phrase refinement remain available.
 
-### Terminal DictationTranscriber witness (2026-10-14, source cut)
+### DictationTranscriber witness (2026-10-14 source cut; per-utterance trigger 2026-10-15)
 
-When the opt-in DT lane is armed (`CODESCRIBE_APPLE_DICTATION_TRANSCRIBER`),
-Stop runs a bounded witness after the retained-replay reconcile: for each
-unsealed recovery-pending owner and each material uncovered speech gap, one
-final DT decode over the recorder-owned terminal PCM plus up to 3 s of context
-per side, at most 30 s of PCM and 30 s wall clock per request, at most 4
-requests and 90 s per take. The bridge request pins
+Arming has one owner: `audio.dictation_witness_armed` in `settings.json`
+(Voice Lab), with `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` kept as the
+documented power-user override that wins when present. Both are resolved once
+by the immutable settings snapshot; the session never re-reads either source
+mid-take. The bridge child verifies its own lane env, which the Rust side sets
+explicitly on the spawned command for a DT request.
+
+The witness runs in the background after each committed utterance seal: for
+unsealed recovery-pending owners and material uncovered speech gaps on already
+closed PCM, one DT decode over the retained capture window plus up to 3 s of
+context per side, at most 30 s of PCM and 30 s wall clock per request, at most
+one request in flight per session, and at most two asks per target range per
+session. At Stop, the same targeting runs once more over whatever debt
+remains, bounded by 4 requests and 90 s per take; live returns that already
+landed are drained first. The bridge request pins
 `backend = dictation_transcriber`; a return from any other backend is refused,
 and an unarmed lane, missing archive, error or timeout leaves the debt
-unresolved with an explicit warning. Witness PCM is sliced from the validated
-terminal archive; returned segment times are translated back onto the capture
+unresolved with an explicit warning. Witness PCM is sliced from the retained
+capture archive; returned segment times are translated back onto the capture
 clock by the exact window offset, never a fresh origin.
 
 Witness evidence is a new ledger producer, `AppleDictation`, ranked below
 Whisper and above CloudLive: it inserts words into ranges no complete source
-holds and never overrides a held Whisper word. Single-word segments enter as
-measured word pins; multi-word segments stay phrase-grain. Segments wholly
-contained in a material gap qualify their PCM through the same
+holds and never overrides a held Whisper word. A candidate pin whose PCM
+intersects any committed word slot of the same capture is retained as refused
+evidence (`replayed_range_identity`), never minted as a new occurrence — the
+witness speaks only for PCM no admitted word already owns. Single-word
+segments enter as measured word pins; multi-word segments stay phrase-grain.
+Segments wholly contained in a material gap qualify their PCM through the same
 `QualifyFinalPassGap` corridor a retained Whisper final pass uses, with the
 frontier scheduled for the producer that actually returned. DT omission of a
 word is not acoustic absence: an empty witness return accounts no scope and
@@ -143,8 +155,9 @@ clear `TextRecoveryPending`; the recomputed coverage receipt, never the
 witness text itself, decides the terminal seal. The whole-take DT text is not
 admitted as a document and settled history is not reopened.
 
-Live capture is untouched: no DT request runs while the microphone is open,
-the live lexical-trial lane keeps its existing Whisper provider, and the trial
+Live capture keeps one recorder and one PCM axis: witness decodes read only
+the retained archive of already sealed ranges, the live lexical-trial lane
+keeps its existing Whisper provider, and the trial
 budgets in this section do not fund the terminal witness.
 
 Stop's automatic Light+ pass may append terminal punctuation only. Earlier
