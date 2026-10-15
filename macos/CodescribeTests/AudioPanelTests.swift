@@ -165,7 +165,7 @@ final class AudioPanelTests: XCTestCase {
         tone: .fallback,
         title: "Currently using: MacBook Pro Microphone",
         detail:
-          "Saved: USB Studio Mic. Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active."
+          "Saved: USB Studio Mic. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override."
       )
     )
   }
@@ -308,7 +308,9 @@ final class AudioPanelTests: XCTestCase {
       ))
     XCTAssertEqual(unapplied.current, "Currently using: MacBook Pro Microphone")
     XCTAssertEqual(unapplied.noticeTone, .fallback)
-    XCTAssertTrue(unapplied.notice?.contains("Restart Codescribe") == true)
+    // A saved choice applies to the next take; only a launch override wins over it.
+    XCTAssertTrue(unapplied.notice?.contains("launch environment pins AUDIO_INPUT_DEVICE") == true)
+    XCTAssertFalse(unapplied.notice?.contains("Restart") == true)
 
     let noHardware = audioInputCardState(
       CsAudioInputSnapshot(
