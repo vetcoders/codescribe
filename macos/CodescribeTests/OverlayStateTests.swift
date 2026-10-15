@@ -5669,15 +5669,12 @@ final class OverlayStateTests: XCTestCase {
 
   /// Explicit recovery: reachable through the production intent route, hands
   /// the bytes back, and touches neither the reducer nor the current canvas.
-  func testExplicitRecoveryHandsBackTheEditWithoutTouchingTheCurrentCapture() {
+  func testExplicitRecoveryHandsBackTheEditWithoutTouchingTheCurrentCapture() async {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
     state.engine = engine
-    var written: [String] = []
-    state.recoveryClipboardWriter = { text in
-      written.append(text)
-      return true
-    }
+    let written = RecoveryWriteRecorder()
+    state.recoveryClipboardWriter = written.writer
 
     projectText("Zdanie A.", to: state, terminal: true, sessionId: "take-A")
     state.beginTranscriptEdit()
@@ -5692,6 +5689,7 @@ final class OverlayStateTests: XCTestCase {
       "the retained edit is reachable from the sole action surface, mid-capture")
 
     state.relayIntent(.recoverSuperseded)
+    await state.recoveryCopyTask?.value
 
     XCTAssertEqual(state.canvasText, "", "recovery never paints old words as current speech")
     XCTAssertFalse(state.hasRecoverableSupersededWork, "the decision was consumed")
@@ -5704,7 +5702,7 @@ final class OverlayStateTests: XCTestCase {
 
     // The bytes themselves left through the injected writer, never the reducer
     // and never the canvas.
-    XCTAssertEqual(written, ["Zdanie A z moją poprawką."])
+    XCTAssertEqual(written.texts, ["Zdanie A z moją poprawką."])
     XCTAssertNil(state.recoveryFailure)
   }
 
@@ -5714,14 +5712,10 @@ final class OverlayStateTests: XCTestCase {
   /// prevent — reintroduced one line below the guard that prevents it.
   /// Both outcomes are driven through the real production action, and neither
   /// touches the user's real clipboard.
-  func testFailedRecoveryKeepsTheExactItemAndExposesTheFailure() {
+  func testFailedRecoveryKeepsTheExactItemAndExposesTheFailure() async {
     let state = OverlayState()
-    var attempts: [String] = []
-    var writeSucceeds = false
-    state.recoveryClipboardWriter = { text in
-      attempts.append(text)
-      return writeSucceeds
-    }
+    let attempts = RecoveryWriteRecorder(succeeds: false)
+    state.recoveryClipboardWriter = attempts.writer
 
     projectText("Zdanie A.", to: state, terminal: true, sessionId: "take-A")
     state.beginTranscriptEdit()
@@ -5733,8 +5727,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(retainedBefore)
 
     state.relayIntent(.recoverSuperseded)
+    await state.recoveryCopyTask?.value
 
-    XCTAssertEqual(attempts, ["Zdanie A z moją poprawką."], "the real write was attempted")
+    XCTAssertEqual(attempts.texts, ["Zdanie A z moją poprawką."], "the real write was attempted")
     XCTAssertEqual(
       state.pendingSupersededTake, retainedBefore,
       "a failed write keeps the exact retained item, identity and draft included")
@@ -5749,10 +5744,11 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.audioReady)
 
     // The retry consumes exactly the one selected item and clears the failure.
-    writeSucceeds = true
+    attempts.succeeds = true
     state.relayIntent(.recoverSuperseded)
+    await state.recoveryCopyTask?.value
 
-    XCTAssertEqual(attempts.count, 2)
+    XCTAssertEqual(attempts.texts.count, 2)
     XCTAssertNil(state.recoveryFailure)
     XCTAssertFalse(state.hasRecoverableSupersededWork)
     XCTAssertEqual(state.canvasText, "")
@@ -5761,7 +5757,7 @@ final class OverlayStateTests: XCTestCase {
 
   /// An explicit discard also clears a standing failure: the decision the
   /// failure was asking for has been made, the other way.
-  func testDiscardClearsAStandingRecoveryFailure() {
+  func testDiscardClearsAStandingRecoveryFailure() async {
     let state = OverlayState()
     state.recoveryClipboardWriter = { _ in false }
 
@@ -5772,6 +5768,7 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingPreparing()
 
     state.relayIntent(.recoverSuperseded)
+    await state.recoveryCopyTask?.value
     XCTAssertNotNil(state.recoveryFailure)
     XCTAssertEqual(state.unacknowledgedSupersededEditCount, 1)
 

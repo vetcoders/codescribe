@@ -20,7 +20,12 @@ final class AgentVoiceTargetTests: XCTestCase {
       return "Composer reply"
     }
     func consultationReply(
-      _: String, threadId: String, turnID: String, attachmentPaths _: [String]
+      _: String, threadId: String, turnID: String, attachmentPaths _: [String],
+      onDelta _: @escaping @MainActor (String) -> Void,
+      onReasoning _: @escaping @MainActor (String) -> Void,
+      onToolExecuting _: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+      onToolResult _: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String)
+        -> Void
     ) async throws -> String {
       continuedTurns.append((threadId, turnID))
       onContinuation?()
