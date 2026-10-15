@@ -930,7 +930,7 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<RawTranscript> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             tracing::debug!("Skipping transcription: empty audio after resampling");
             return Ok(RawTranscript::default());
@@ -1050,7 +1050,7 @@ impl LocalWhisperEngine {
         control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
         control.check()?;
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             tracing::debug!("Skipping long transcription: empty audio after resampling");
             return Ok(RawTranscript::default());
@@ -1338,7 +1338,7 @@ impl LocalWhisperEngine {
     /// Detect the spoken language of in-memory audio, resampling to 16 kHz
     /// first.
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         self.detect_language_16k(&samples)
     }
 
@@ -1794,7 +1794,7 @@ impl LocalWhisperEngine {
         Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
     )> {
         control.check()?;
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             return Ok((RawTranscript::default(), None));
         }

@@ -108,6 +108,9 @@ pub fn vendor_for_endpoint(endpoint: &str) -> Option<ProviderKind> {
 pub fn vendor_signed_in(vendor: ProviderKind) -> bool {
     account_auth::account_status(vendor).signed_in
 }
+/// `fallback` outranks the stored key, so it must be a credential this
+/// vendor's origin owns (its lane row), never a key configured for another
+/// recipient; pass `None` to use the vendor's own stored key.
 fn api_key(vendor: ProviderKind, fallback: Option<&str>) -> Option<String> {
     let (_, account, _) = pins(vendor).ok()?;
     fallback
@@ -150,7 +153,8 @@ where
     })
 }
 /// OAuth first; an absent account, or a signed-in account whose login cannot
-/// speak, admits API key fallback.
+/// speak, admits API key fallback. `fallback_key` must belong to `vendor`'s own
+/// origin; a key configured for another host is not a fallback.
 pub async fn resolve_vendor_auth(
     vendor: ProviderKind,
     fallback_key: Option<&str>,

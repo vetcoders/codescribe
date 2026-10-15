@@ -198,6 +198,38 @@ pub fn write_wav_i16(path: &Path, samples: &[i16], sample_rate: u32) -> Result<(
         .map_err(|e| anyhow!("Failed to finalize WAV {}: {}", path.display(), e))
 }
 
+/// Largest 16 kHz buffer [`resample_to_16k`] will allocate: 2 GiB of `f32`,
+/// the same fence the capture spool keeps (about 9.3 hours of speech).
+pub const MAX_RESAMPLED_SAMPLES: usize = 2 * 1024 * 1024 * 1024 / 4;
+
+/// Why a buffer was not resampled to 16 kHz. Content-free: sizes and a rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResampleError {
+    /// The 16 kHz output would exceed [`MAX_RESAMPLED_SAMPLES`]. Refused before
+    /// any output exists.
+    OutputTooLarge {
+        input_samples: usize,
+        input_rate: u32,
+    },
+}
+
+impl std::fmt::Display for ResampleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutputTooLarge {
+                input_samples,
+                input_rate,
+            } => write!(
+                f,
+                "resampling {input_samples} samples from {input_rate} Hz to 16 kHz exceeds the \
+                 {MAX_RESAMPLED_SAMPLES} sample output budget"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResampleError {}
+
 /// Resample to 16 kHz by linear interpolation.
 ///
 /// Audio already at 16 kHz (and empty or rate-less input) is returned
@@ -205,16 +237,35 @@ pub fn write_wav_i16(path: &Path, samples: &[i16], sample_rate: u32) -> Result<(
 /// interpolation is deliberately cheap rather than band-limited: speech
 /// recognition tolerates the aliasing, and the alternative would cost more
 /// than the models gain.
-pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
+///
+/// # Errors
+///
+/// [`ResampleError::OutputTooLarge`] when the 16 kHz output would exceed
+/// [`MAX_RESAMPLED_SAMPLES`]. The rate is a file header field, so it is as
+/// hostile as the file: a decoder that accepts a 1 Hz header would otherwise
+/// turn a few hundred KiB of samples into gigabytes.
+pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Result<Vec<f32>, ResampleError> {
     if samples.is_empty() || original_rate == 0 {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
     if original_rate == 16000 {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
-    // Simple linear interpolation for now
+    // Admission is exact integer arithmetic (a u128 holds any `usize * 16000`,
+    // so nothing wraps or saturates) and happens before the first allocation,
+    // whatever rate the decoder was willing to report.
+    let exact_len = (samples.len() as u128 * 16_000).div_ceil(u128::from(original_rate));
+    if exact_len > MAX_RESAMPLED_SAMPLES as u128 {
+        return Err(ResampleError::OutputTooLarge {
+            input_samples: samples.len(),
+            input_rate: original_rate,
+        });
+    }
+
+    // Simple linear interpolation for now. The allocation keeps the
+    // established float length, so admitted output stays bit-identical.
     let ratio = 16000.0 / original_rate as f32;
     let new_len = (samples.len() as f32 * ratio).ceil() as usize;
     let mut output = Vec::with_capacity(new_len);
@@ -239,7 +290,7 @@ pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
         output.push(s0 * (1.0 - t) + s1 * t);
     }
 
-    output
+    Ok(output)
 }
 
 #[cfg(test)]
