@@ -1426,6 +1426,64 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.pendingReplyControls.isEmpty, "reading does not request playback")
   }
 
+  /// Founder, 2026-10-15: unread behaves like a messaging app across a
+  /// relaunch. History keeps its read marks; a reply that arrived while the
+  /// app was closed is still unread.
+  func testReadMarksSurviveRelaunchAndRepliesWhileClosedStayUnread() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("overlay-read-state-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var bus = OverlayChannelDelivery.Bus()
+    func reply(_ letter: Character) {
+      let id = String(repeating: letter, count: 24)
+      bus.consume([
+        "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+        "reply_id": id, "text": "Odpowiedź \(letter)",
+        "provider": "codex", "provider_session_id": "agent-a",
+        "lease_id": String(repeating: "a", count: 32), "channel": "2", "name": "Lena",
+        "association": "unsolicited",
+      ])
+    }
+    func snapshot() -> OverlayChannelDeliverySnapshot {
+      .init(deliveries: [], conversations: bus.conversations(busPath: "/fixture/bus"))
+    }
+    func lena() throws -> OverlayConversation {
+      try XCTUnwrap(snapshot().conversations.first { $0.channel == "2" })
+    }
+
+    // No stored marks yet: the history already on screen is adopted as read.
+    reply("b")
+    let first = OverlayState()
+    first.restoreReadState(root: root)
+    first.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
+
+    reply("c")
+    first.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 1)
+    first.selectConversation(try lena().id)
+    if first.isCollapsed { first.setPresentationMode(.expanded) }
+    first.setConversationVisible(true)
+    XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
+    XCTAssertEqual(OverlayReadStateStore.load(root: root), Set(try lena().replyIDs))
+    let attributes = try FileManager.default.attributesOfItem(
+      atPath: OverlayReadStateStore.url(root: root).path)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+    // The app is closed while one more reply lands on the bus.
+    reply("e")
+    let relaunched = OverlayState()
+    relaunched.restoreReadState(root: root)
+    relaunched.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(
+      relaunched.unreadReplies(in: try lena()), 1, "only the reply that came while closed")
+
+    // A mark outlives its reply leaving the retained snapshot.
+    relaunched.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    relaunched.applyConversationSnapshot(snapshot())
+    XCTAssertEqual(relaunched.unreadReplies(in: try lena()), 1)
+  }
+
   func testBroadcastMicrophoneUsesDigitZeroWithoutAnAgentLease() async {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()

@@ -1023,10 +1023,11 @@ final class OverlayState {
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
+      let root = OverlayChannelDeliveryReader.productionRoot()
+      restoreReadState(root: root)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
-          root: OverlayChannelDeliveryReader.productionRoot(),
-          sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
+          root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
     }
   }
 
@@ -1064,7 +1065,15 @@ final class OverlayState {
   private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
+  /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
+  /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
+  @ObservationIgnored private var readStateRoot: URL?
+  /// No marks were ever stored at `readStateRoot`. The first inventory is
+  /// adopted as read once, so an update does not resurface the whole history.
+  @ObservationIgnored private var readStateNeedsAdoption = false
+  /// Marks are pruned to what is still retained only past this size.
+  static let readStateRetentionLimit = 8192
   /// Canonical reply message ids this surface has already loaded or admitted.
   /// The first inventory is history. Later ids are admissions. Membership
   /// survives pruning of the retained snapshot: replacing the set with whatever
@@ -1467,7 +1476,49 @@ final class OverlayState {
     guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else {
       return
     }
-    viewedReplyIDs.formUnion(selectedConversation.replyIDs)
+    let unread = Set(selectedConversation.replyIDs).subtracting(viewedReplyIDs)
+    guard !unread.isEmpty else { return }
+    viewedReplyIDs.formUnion(unread)
+    persistReadState()
+  }
+
+  /// Read marks live next to the delivery cursor, whose projections restore
+  /// the history. Call before the first conversation snapshot.
+  func restoreReadState(root: URL) {
+    readStateRoot = root
+    if let stored = OverlayReadStateStore.load(root: root) {
+      viewedReplyIDs.formUnion(stored)
+      readStateNeedsAdoption = false
+    } else {
+      readStateNeedsAdoption = !replyInventoryBaselined
+    }
+  }
+
+  /// Without stored marks, everything already in the first inventory counts
+  /// as read. Replies admitted after it stay unread until they are seen.
+  private func adoptFirstInventoryAsReadIfUnmarked() {
+    guard readStateNeedsAdoption else { return }
+    readStateNeedsAdoption = false
+    viewedReplyIDs.formUnion(conversations.flatMap(\.replyIDs))
+    persistReadState()
+  }
+
+  /// A mark outlives its reply leaving the retained snapshot, so a reopened
+  /// archive or a replayed id is still read. Past the limit, only marks of
+  /// replies still retained are kept.
+  private func pruneReadState(retaining retained: Set<String>) {
+    guard viewedReplyIDs.count > Self.readStateRetentionLimit else { return }
+    viewedReplyIDs.formIntersection(retained)
+    persistReadState()
+  }
+
+  private func persistReadState() {
+    guard let readStateRoot else { return }
+    do {
+      try OverlayReadStateStore.save(root: readStateRoot, readReplyIDs: viewedReplyIDs)
+    } catch {
+      NSLog("codescribe: overlay read state not saved: \(error)")
+    }
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
@@ -1485,6 +1536,7 @@ final class OverlayState {
       if !replyInventoryBaselined {
         observedReplyIDs.formUnion(Set(conversations.flatMap(\.replyIDs)))
         replyInventoryBaselined = true
+        adoptFirstInventoryAsReadIfUnmarked()
       }
       return
     }
@@ -1505,7 +1557,7 @@ final class OverlayState {
     }
     resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
-    viewedReplyIDs.formIntersection(retained)
+    pruneReadState(retaining: retained)
     replyControlErrors = replyControlErrors.filter { retained.contains($0.key) }
     followNewlyReceivedReply(preservingControllerFocus: controllerPending)
     markVisibleConversationRead()
@@ -1558,6 +1610,7 @@ final class OverlayState {
     observedReplyIDs.formUnion(current)
     let establishingInventory = !replyInventoryBaselined
     replyInventoryBaselined = true
+    if establishingInventory { adoptFirstInventoryAsReadIfUnmarked() }
     // Inventory is already updated. A retained composer consumes the admission
     // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
