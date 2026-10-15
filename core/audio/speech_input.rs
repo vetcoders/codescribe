@@ -436,6 +436,23 @@ fn run_conditioner(
     Ok(())
 }
 
+/// Feed preserved capture through the production conditioner for local corpus acceptance.
+#[cfg(test)]
+pub(crate) fn replay_projection_for_test(input: &[f32], gain: f32) -> Vec<f32> {
+    let mut conditioner = SpeechInputConditioner::new(gain);
+    let mut result = Vec::with_capacity(input.len());
+    for raw in input.chunks(FRAME) {
+        if let Some(frame) = conditioner.frame(raw.to_vec()) {
+            result.extend(frame.samples);
+        }
+    }
+    if let Some(frame) = conditioner.frame(Vec::new()) {
+        result.extend(frame.samples);
+    }
+    assert_eq!(result.len(), input.len());
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
