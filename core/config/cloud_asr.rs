@@ -637,8 +637,9 @@ mod tests {
         }
     }
 
-    /// The refine accessor uses the live-lane key and the refine endpoint.
-    /// An unselected cloud mode returns nothing, even when a file key is set.
+    /// The refine accessor uses the live-lane key only for the live lane's own
+    /// origin and the refine endpoint. An unselected cloud mode is refused even
+    /// when a file key is set; a foreign refine host owns no credential.
     #[test]
     fn cloud_tail_refine_uses_live_key_and_refine_endpoint() {
         use super::super::Config;
@@ -650,11 +651,15 @@ mod tests {
             stt_live_api_key: Some("live-key".into()),
             ..Config::default()
         };
-        assert!(idle.cloud_tail_refine().is_none());
+        assert!(matches!(
+            idle.cloud_tail_refine(),
+            Err(CloudRefineRefusal::NotSelected)
+        ));
 
         let selected = Config {
             cloud_refine_selected: true,
             stt_cloud_refine_endpoint: String::new(),
+            stt_live_endpoint: Some(DEFAULT_CLOUD_REFINE_ENDPOINT.into()),
             stt_live_api_key: Some("live-key".into()),
             stt_file_api_key: Some("file-key".into()),
             ..Config::default()
@@ -665,5 +670,19 @@ mod tests {
         let formatted = format!("{admission:?}");
         assert!(!formatted.contains("live-key"));
         assert!(formatted.contains("api_key_present"));
+
+        // CS160-F003: the live key never travels to a refine host that is not
+        // the live lane's origin, so a foreign host is refused before a request.
+        let foreign = Config {
+            cloud_refine_selected: true,
+            stt_cloud_refine_endpoint: "https://refine.invalid/v1/audio/transcriptions".into(),
+            stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
+            stt_live_api_key: Some("live-key".into()),
+            ..Config::default()
+        };
+        assert!(matches!(
+            foreign.cloud_tail_refine(),
+            Err(CloudRefineRefusal::CredentialNotOwned)
+        ));
     }
 }
