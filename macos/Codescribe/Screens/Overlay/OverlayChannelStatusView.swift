@@ -342,6 +342,10 @@ struct OverlayAgentAudioControls: View {
       .accessibilityIdentifier("overlay-agent-speaker")
     }
     .modifier(OverlayAgentControlStyle())
+    // Founder, 2026-10-15: an I-beam showed between and over these buttons.
+    // They float above message and transcript text, whose tracking set the
+    // text cursor; the pair and its gap claim the arrow like the drawer does.
+    .background { OverlayMenuCursorRegion() }
   }
 }
 
