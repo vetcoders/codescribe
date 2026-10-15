@@ -257,9 +257,10 @@ done < <(sed -nE 's/^# gate: (.*)$/\1/p' "$MAKEFILE")
 ci_invokes() {
     local target="$1"
     [[ -d "$WORKFLOW_DIR" ]] || return 1
+    # Consume the whole stream: grep -q can SIGPIPE sed under pipefail.
     find "$WORKFLOW_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} + 2>/dev/null |
         sed -E 's/^[[:space:]]*#.*$//' |
-        grep -Eq "(^|[^A-Za-z0-9_-])make[[:space:]]+${target}([[:space:]]|\$)"
+        grep -E "(^|[^A-Za-z0-9_-])make[[:space:]]+${target}([[:space:]]|\$)" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
