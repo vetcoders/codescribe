@@ -999,11 +999,74 @@ class ClaudeCodeWakeTests(MailboxFixture):
                 junie = self.hook(shell, environ={})
                 self.assertEqual((junie.returncode, junie.stderr), (0, ""))
                 # A helper that cannot parse the hook exits 2 itself; that must
-                # never become a model wake on every turn end.
+                # never become a model wake on every turn end, and never silence.
                 entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
                 stale = self.hook(shell, command=entry["command"].replace("--claude-code-wake", "--no-such-wake"))
-                self.assertEqual(stale.returncode, 0, stale.stderr)
+                self.assertEqual(stale.returncode, 1, stale.stderr)
                 self.assertIn("unrecognized arguments", stale.stderr)
+                self.assertIn("Codescribe: wake helper failed (exit 2)", stale.stderr)
+        self.assert_not_acknowledged()
+
+    def foreign_interpreter(self):
+        """A host's interpreter variables: a PYTHONHOME whose stdlib matches no helper Python.
+
+        Live 2026-10-15: a Vibecrafted-launched Claude Code inherited the
+        launcher's 3.14 PYTHONHOME; the helper's `#!/usr/bin/env python3` died
+        before any code ran and the hook mapped the crash to a silent exit 0.
+        """
+        home = Path(self.temp.name) / "foreign-python"
+        (home / "lib/python3.14").mkdir(parents=True)
+        return {"PYTHONHOME": str(home), "PYTHONPATH": str(home / "lib/python3.14")}
+
+    def test_foreign_python_home_cannot_silence_the_wake(self):
+        poison = self.foreign_interpreter()
+        # The plugin's managed PATH, as the hook sees it; a pinned door earlier on
+        # this test's own PATH could otherwise repair the interpreter for us.
+        managed = f"{Path.home()}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        env = {**os.environ, **self.environ, **poison, "CODESCRIBE_AGENT_BRIDGE_HOME": str(self.root), "PATH": managed}
+        payload = json.dumps({"session_id": self.session, "hook_event_name": "Stop"})
+        bare = subprocess.run([str(SCRIPTS / "cs-bus"), "--claude-code-wake"], input=payload, env=env,
+                              capture_output=True, text=True, timeout=20)
+        self.assertNotIn(bare.returncode, (0, MCP.WAKE_EXIT), "the fixture must poison a bare helper")
+        entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
+        helper = re.search(r'env -u PYTHONHOME -u PYTHONPATH .*?--claude-code-wake', entry["command"])[0]
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                for path in (self.root / "runtime" / "native-wake").glob("*"):
+                    path.unlink()
+                wake = self.hook(shell, command=helper, environ={**self.environ, **poison})
+                self.assertEqual(wake.returncode, MCP.WAKE_EXIT, wake.stderr)
+                for path in (self.root / "runtime" / "native-wake").glob("*"):
+                    path.unlink()
+                result = self.hook(shell, environ={**self.environ, **poison})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("new message(s) for fable on channel 7", result.stderr)
+        self.assertFalse((self.root / "runtime/hook-failures.log").exists())
+        self.assert_not_acknowledged()
+
+    def test_crashed_wake_helper_is_visible_and_leaves_a_receipt(self):
+        crash = Path(self.temp.name) / "crashing cs-bus"
+        crash.write_text("#!/bin/sh\necho 'Traceback (most recent call last):' >&2\n"
+                         "echo \"ModuleNotFoundError: No module named '_struct'\" >&2\nexit 1\n")
+        crash.chmod(0o755)
+        hooks = json.loads(self.HOOK.read_text())["hooks"]
+        for shell in ("/bin/bash", "/bin/zsh"):
+            with self.subTest(shell=shell):
+                log = self.root / "runtime/hook-failures.log"
+                log.unlink(missing_ok=True)
+                wake = self.hook(shell, command=hooks["Stop"][0]["hooks"][0]["command"].replace(
+                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                self.assertEqual(wake.returncode, 1, wake.stderr)
+                self.assertIn("No module named '_struct'", wake.stderr)
+                self.assertIn("Codescribe: wake helper failed (exit 1)", wake.stderr)
+                probe = self.hook(shell, command=hooks["PostToolUse"][0]["hooks"][0]["command"].replace(
+                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                self.assertEqual((probe.returncode, probe.stdout), (0, ""))
+                lines = log.read_text().splitlines()
+                self.assertEqual(len(lines), 2, lines)
+                self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\S+Z --claude-code-wake exit 1: "
+                                           r"ModuleNotFoundError: No module named '_struct'$")
+                self.assertIn("--claude-code-probe exit 1: ModuleNotFoundError", lines[1])
         self.assert_not_acknowledged()
 
 
@@ -1125,7 +1188,8 @@ class PluginContractTests(unittest.TestCase):
         extension = (self.PLUGIN / "hooks/pre/codescribe-omp.ts").read_text()
         launcher = self.load(".mcp.json")["mcpServers"]["codescribe"]["args"][-1]
         self.assertIn('"$HOME/.local/bin/cs-bus"', launcher)
-        self.assertIn('exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
+        self.assertIn('exec env -u PYTHONHOME -u PYTHONPATH "$HOME/.local/bin/cs-bus" --omp-wake --provider omp '
+                      '--session "$1" --host-pid "$2"', extension)
         self.assertIn('export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"', extension)
         self.assertEqual(int(re.search(r"const WAKE_EXIT = (\d+)", extension)[1]), MCP.WAKE_EXIT)
         self.assertGreater(int(re.search(r"const WAKE_TIMEOUT_MS = ([\d_]+)", extension)[1].replace("_", "")),
@@ -1328,8 +1392,60 @@ class SessionHookTests(unittest.TestCase):
                                             input=json.dumps({"session_id": session, "hook_event_name": "SessionStart"}))
                     self.assertIn(f"provider=claude-code session_id={session}", self.context(result))
 
+    def test_hook_command_survives_a_foreign_python_home(self):
+        # Live 2026-10-15: a Vibecrafted launcher leaked its 3.14 PYTHONHOME into
+        # Claude Code; the managed python3 then died before reading the payload.
+        managed = [Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+        if not any((directory / "python3").is_file() for directory in managed):
+            self.skipTest("no python3 in the plugin's managed interpreter directories")
+        command = json.loads((self.HOOK.parent / "hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        session = "2bb934cc-f1d9-48df-a456-1f5f8190f8ae"
+        with tempfile.TemporaryDirectory() as temporary:
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE_")}
+            env.update({"PATH": "/usr/bin:/bin", "CLAUDE_CODE_SESSION_ID": session, "PYTHONHOME": str(foreign),
+                        "PYTHONPATH": str(foreign / "lib/python3.14"), "CLAUDE_PLUGIN_ROOT": str(self.HOOK.parents[1])})
+            for shell in ("/bin/bash", "/bin/zsh"):
+                with self.subTest(shell=shell):
+                    result = subprocess.run([shell, "-c", command], env=env, capture_output=True, text=True, timeout=10,
+                                            input=json.dumps({"session_id": session, "hook_event_name": "SessionStart"}))
+                    self.assertIn(f"provider=claude-code session_id={session}", self.context(result))
+
 
 class NativeLaunchTests(unittest.TestCase):
+    def test_every_plugin_command_drops_the_host_interpreter_variables(self):
+        plugin = SCRIPTS.parent / "plugins/codescribe"
+        hooks = json.loads((plugin / "hooks/claude-code.json").read_text())["hooks"]
+        commands = [entry["command"] for event in hooks.values() for group in event for entry in group["hooks"]]
+        commands += [entry["command"] for event in json.loads((plugin / "hooks/hooks.json").read_text())["hooks"].values()
+                     for group in event for entry in group["hooks"]]
+        commands.append(json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["codescribe"]["args"][-1])
+        commands.append((plugin / "hooks/pre/codescribe-omp.ts").read_text())
+        for command in commands:
+            with self.subTest(command=command[:60]):
+                self.assertRegex(command, r'env -u PYTHONHOME -u PYTHONPATH (PATH="[^"]+" )?("\$HOME/\.local/bin/cs-bus"|python3)')
+
+    def test_installed_mcp_launch_survives_a_foreign_python_home(self):
+        config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
+        with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:
+            installed = Path(temporary) / "managed bin"
+            installed.mkdir()
+            for name in ("cs-bus", "bus-demux.py", "bus-mcp.py"):
+                shutil.copy2(SCRIPTS / name, installed / name)
+            foreign = Path(temporary) / "foreign-python"
+            (foreign / "lib/python3.14").mkdir(parents=True)
+            arguments = [value.replace('"$HOME/.local/bin/cs-bus"', f'"{installed / "cs-bus"}"')
+                         for value in config["args"]]
+            env = {**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONHOME": str(foreign),
+                   "PYTHONPATH": str(foreign / "lib/python3.14")}
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+            result = subprocess.run([config["command"], *arguments], env=env, input=request,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            tools = json.loads(result.stdout)["result"]["tools"]
+            self.assertTrue(any(tool["name"] == "codescribe_wait" for tool in tools))
+
     def test_installed_mcp_launch_survives_sparse_path_without_overriding_home(self):
         config = json.loads((SCRIPTS.parent / "plugins/codescribe/.mcp.json").read_text())["mcpServers"]["codescribe"]
         with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:

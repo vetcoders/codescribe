@@ -1,12 +1,12 @@
 {
-  "description": "Claude Code only: wake this conversation when its attached Codescribe mailbox receives a message. Exit 75 from cs-bus is the only wake; every other outcome stays silent. After each tool call the probe surfaces an unannounced message inside the running turn and prints nothing otherwise.",
+  "description": "Claude Code only: wake this conversation when its attached Codescribe mailbox receives a message. Exit 75 from cs-bus is the only wake; 0 stays silent. Any other exit is a helper failure: it surfaces on stderr as a visible hook error and appends a line to runtime/hook-failures.log, never a wake. After each tool call the probe surfaces an unannounced message inside the running turn and prints nothing otherwise. Every command drops PYTHONHOME and PYTHONPATH, so a host interpreter's variables cannot break the helper.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake; rc=$?; if [ \"$rc\" -eq 75 ]; then exit 2; fi; exit 0",
+            "command": "{ err=$(env -u PYTHONHOME -u PYTHONPATH PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake 2>&1 1>&3 3>&-); rc=$?; } 3>&1; if [ -n \"$err\" ]; then printf '%s\\n' \"$err\" >&2; fi; if [ \"$rc\" -eq 75 ]; then exit 2; fi; if [ \"$rc\" -eq 0 ]; then exit 0; fi; d=\"${CODESCRIBE_AGENT_BRIDGE_HOME:-$HOME/.codescribe/agent-bridge}/runtime\"; mkdir -p \"$d\" && printf '%s %s exit %s: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"--claude-code-wake\" \"$rc\" \"$(printf '%s\\n' \"$err\" | tail -n 1)\" >> \"$d/hook-failures.log\"; echo \"Codescribe: wake helper failed (exit $rc); this conversation is not woken until it is fixed; see $d/hook-failures.log\" >&2; exit 1",
             "asyncRewake": true,
             "timeout": 21660
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake; rc=$?; if [ \"$rc\" -eq 75 ]; then exit 2; fi; exit 0",
+            "command": "{ err=$(env -u PYTHONHOME -u PYTHONPATH PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-wake 2>&1 1>&3 3>&-); rc=$?; } 3>&1; if [ -n \"$err\" ]; then printf '%s\\n' \"$err\" >&2; fi; if [ \"$rc\" -eq 75 ]; then exit 2; fi; if [ \"$rc\" -eq 0 ]; then exit 0; fi; d=\"${CODESCRIBE_AGENT_BRIDGE_HOME:-$HOME/.codescribe/agent-bridge}/runtime\"; mkdir -p \"$d\" && printf '%s %s exit %s: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"--claude-code-wake\" \"$rc\" \"$(printf '%s\\n' \"$err\" | tail -n 1)\" >> \"$d/hook-failures.log\"; echo \"Codescribe: wake helper failed (exit $rc); this conversation is not woken until it is fixed; see $d/hook-failures.log\" >&2; exit 1",
             "asyncRewake": true,
             "timeout": 21660
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-probe 2>/dev/null; exit 0",
+            "command": "{ err=$(env -u PYTHONHOME -u PYTHONPATH PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" \"$HOME/.local/bin/cs-bus\" --claude-code-probe 2>&1 1>&3 3>&-); rc=$?; } 3>&1; if [ \"$rc\" -ne 0 ]; then d=\"${CODESCRIBE_AGENT_BRIDGE_HOME:-$HOME/.codescribe/agent-bridge}/runtime\"; mkdir -p \"$d\" && printf '%s %s exit %s: %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"--claude-code-probe\" \"$rc\" \"$(printf '%s\\n' \"$err\" | tail -n 1)\" >> \"$d/hook-failures.log\"; fi; exit 0",
             "timeout": 10
           }
         ]
