@@ -253,6 +253,20 @@ fn for_each_fresh_lease(
         if metadata.len() > MAX_LEASE_BYTES {
             continue;
         }
+        // The helper rewrites the whole lease, `heartbeat_unix: time.time()`
+        // included, so a file last modified outside the window cannot hold a
+        // fresh heartbeat. Dead followers keep multi-megabyte mailboxes, and
+        // the overlay roster polls this scan twice every 500 ms: parsing them
+        // was the hottest Rust frame of the live app (sample 2026-10-15,
+        // 45 stale leases, 7.2 MB per scan).
+        if metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .is_some_and(|modified| now - modified.as_secs_f64() > ttl_seconds)
+        {
+            continue;
+        }
         let Ok(bytes) = fs::read(&path) else {
             continue;
         };
@@ -420,6 +434,45 @@ mod tests {
 
         assert!(live_follower_sessions_at(temp.path(), 1_000.0, 120.0).is_empty());
         assert!(read_active_names_at(temp.path(), 1_000.0, 120.0).is_empty());
+    }
+
+    /// The helper rewrites the lease on every heartbeat, so a file untouched
+    /// past the window is dead before it is parsed, whatever heartbeat it
+    /// still carries. A dead follower's mailbox can be megabytes.
+    #[test]
+    fn a_lease_file_untouched_past_the_window_is_not_parsed() {
+        let temp = tempfile::tempdir().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        write_session_lease(
+            temp.path(),
+            "old.json",
+            "codex",
+            "sess-old",
+            true,
+            now - 5.0,
+        );
+        write_session_lease(
+            temp.path(),
+            "new.json",
+            "codex",
+            "sess-new",
+            true,
+            now - 5.0,
+        );
+        fs::File::options()
+            .write(true)
+            .open(temp.path().join("leases/old.json"))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3_600))
+            .unwrap();
+
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), now, 120.0),
+            HashSet::from([("codex".to_string(), "sess-new".to_string())])
+        );
     }
 
     /// A live follower whose conversation stopped reading: the oldest

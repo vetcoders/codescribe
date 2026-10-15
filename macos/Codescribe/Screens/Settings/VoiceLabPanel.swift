@@ -351,6 +351,10 @@ private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
 
 struct VoiceLabPanel: View {
   @ObservedObject var model: SettingsViewModel
+  /// Word pins and PCM slots are engine apparatus. Founder, 2026-10-12: what
+  /// we need to develop the engine sits behind the Voice Lab gate; the
+  /// production app shows its results, not the apparatus.
+  @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var editor = VoiceLabEditorState()
   @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
@@ -423,8 +427,10 @@ struct VoiceLabPanel: View {
         .overlay(Color.primary.opacity(0.12))
         .padding(.top, CSSpace.lg)
 
-      DictionaryWordPins(configDir: model.configDir)
-        .padding(.top, CSSpace.section)
+      if DeveloperSurface.isPowerModeEnabled(labMode: labMode) {
+        DictionaryWordPins(configDir: model.configDir)
+          .padding(.top, CSSpace.section)
+      }
 
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
         ProvidersSectionHeader(
@@ -850,7 +856,7 @@ struct VoiceLabPanel: View {
       isOpen: showingMinorChanges,
       axLabel: "Toggle the minor changes for this correction"
     ) { showingMinorChanges.toggle() }
-      .accessibilityIdentifier("dictionary-minor-adjustments")
+    .accessibilityIdentifier("dictionary-minor-adjustments")
   }
 
   private func fullComparisonToggle(_ label: String) -> some View {
@@ -859,7 +865,7 @@ struct VoiceLabPanel: View {
       isOpen: showFullText,
       axLabel: "Toggle the full comparison for this correction"
     ) { showFullText.toggle() }
-      .accessibilityIdentifier("dictionary-full-transcript-toggle")
+    .accessibilityIdentifier("dictionary-full-transcript-toggle")
   }
 
   private func disclosureRow(
@@ -1225,8 +1231,8 @@ struct VoiceLabPanel: View {
         let safeIndex = min(lexiconIndex, model.customLexiconEntries.count - 1)
         lexiconRow(lexiconRows[safeIndex])
           .settingsGroupedInset()
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("dictionary-lexicon-card")
+          .accessibilityElement(children: .contain)
+          .accessibilityIdentifier("dictionary-lexicon-card")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)

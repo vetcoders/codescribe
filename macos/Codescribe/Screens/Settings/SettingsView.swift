@@ -37,7 +37,7 @@ struct SettingsView: View {
       detail
         .frame(minWidth: Self.detailMinWidth)
         .modifier(CSDetailHeaderGlass())
-        .background(CSColor.windowCanvas)
+        .background(CSColor.sheet)
     }
     .toolbar {
       if #available(macOS 26.0, *) {
