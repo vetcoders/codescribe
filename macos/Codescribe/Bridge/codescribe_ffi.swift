@@ -1770,9 +1770,8 @@ open class CodescribeConfig: CodescribeConfigProtocol, @unchecked Sendable {
     }
     /**
      * Construct the bridge handle. Not a pure allocation: this is the app's
-     * first-touch entry point, so it also initializes logging, seeds the
-     * recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
-     * and resumes run monitors persisted by a previous process. Later handles
+     * first-touch entry point, so it also initializes logging and resumes run
+     * monitors persisted by a previous process. Later handles
      * are cheap — the side effects are guarded to run only once, and are
      * skipped entirely under `cfg!(test)`.
      */
@@ -21300,7 +21299,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 27409) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 56915) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 21484) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribehotkeys_new() != 29673) {
