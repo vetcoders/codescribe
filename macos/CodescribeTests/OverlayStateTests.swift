@@ -415,6 +415,13 @@ final class OverlayStateTests: XCTestCase {
       owner: conversation.owner, messages: [message])
   }
 
+  func testColdDrawerDoesNotClaimDisconnectionBeforeControllerRoster() {
+    let state = OverlayState()
+    XCTAssertFalse(
+      DictationOverlayView(state: state).channelStatusView.showsConnectionHint,
+      "No controller snapshot has arrived; a cold drawer cannot assert disconnection")
+  }
+
   func testDrawerWaitsForAuthoritativeRosterBeforeOfferingConnectionHint() {
     let state = OverlayState()
     func drawer() -> OverlayChannelStatusView {
