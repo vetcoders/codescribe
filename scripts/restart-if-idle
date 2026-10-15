@@ -111,7 +111,8 @@ def launch_new_generation(app: Path, carried: list[str]):
         raise Refusal("new_generation_launch_failed") from error
 
 
-def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
+def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: Path | None = None) -> dict:
+    launch = launch_app or app
     running = pids()
     if not running:
         raise Refusal("application_not_running")
@@ -121,7 +122,7 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
     ready = candidates[0]
     old_pid = ready["pid"]
     if not quit_only:
-        signature = run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+        signature = run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launch)])
         if signature.returncode != 0:
             raise Refusal("installed_signature_invalid")
     request_id = str(uuid.uuid4())
@@ -167,18 +168,18 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
     if quit_only:
         return {"status": "quit_idle", "old_pid": old_pid, "native_receipt": receipt}
     carried = carried_environment()
-    launched = launch_new_generation(app, carried)
+    launched = launch_new_generation(launch, carried)
     if launched.returncode not in (None, 0):
         raise Refusal("new_generation_launch_failed")
 
     def new_generation():
-        for candidate in supported(root, app, pids() - {old_pid}):
-            if candidate["nonce"] != ready["nonce"] and loaded_matches(candidate["pid"], app):
+        for candidate in supported(root, launch, pids() - {old_pid}):
+            if candidate["nonce"] != ready["nonce"] and loaded_matches(candidate["pid"], launch):
                 return candidate
         return None
 
     new = wait_until(new_generation, time.monotonic() + timeout)
-    with (app / "Contents/Info.plist").open("rb") as handle:
+    with (launch / "Contents/Info.plist").open("rb") as handle:
         info = plistlib.load(handle)
     return {
         "status": "restarted",
@@ -197,6 +198,12 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, default=Path("/Applications/Codescribe.app"))
+    parser.add_argument(
+        "--launch-app",
+        type=Path,
+        default=None,
+        help="Bundle to launch after the idle quit; defaults to --app. Needed when the running process kept its renamed aside bundle after an atomic install.",
+    )
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--quit-only", action="store_true", help="Reserve idle and exit for an installer")
     arguments = parser.parse_args()
@@ -217,7 +224,13 @@ def main() -> int:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise Refusal("another_restart_request_is_active") from error
-            result = restart(arguments.app.resolve(), root, arguments.timeout, arguments.quit_only)
+            result = restart(
+                arguments.app.resolve(),
+                root,
+                arguments.timeout,
+                arguments.quit_only,
+                arguments.launch_app.resolve() if arguments.launch_app else None,
+            )
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
