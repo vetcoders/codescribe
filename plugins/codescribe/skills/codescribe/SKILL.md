@@ -73,6 +73,19 @@ it exactly like a wake: read, ACK the exact IDs, act on it, then continue the
 current work. The probe prints nothing while the mailbox is silent and never
 reads, ACKs or replies; the Stop waiter does not announce a probed delivery again.
 
+### A channel on another Mac
+
+Another Mac with Codescribe (an ssh host such as `dragon`) has its own bus.
+Attach there under this same identity:
+`cs-bus --remote HOST --attach --channel N --name NAME --provider claude-code`
+(the helper sends this session's id). The Stop hook then also waits on HOST,
+through HOST's own waiter, and wakes this conversation with the same notice
+followed by `[Mailbox on HOST, over ssh …]`. The `codescribe_*` tools read only
+this Mac: read, ACK, send and detach there with `cs-bus --remote HOST --read-pending | --ack ID | --send … | --detach --provider claude-code`. The
+in-turn probe does not reach HOST; its messages arrive with the waiter's wake,
+which can also land inside a running turn. Needs ssh key access (BatchMode)
+and the managed helper at `~/.local/bin/cs-bus` on HOST.
+
 Use `codescribe_wait` in Claude Code only when the Founder asks you to hold an
 active listening turn: it blocks typed prompts until it returns, at most 15 min,
 with a `wait_idle` receipt. Without the plugin hook, use the CLI lane of the
