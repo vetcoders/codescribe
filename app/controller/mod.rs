@@ -3592,7 +3592,13 @@ impl RecordingController {
                 &mut deferred_insert_failure,
             )?
         } else if focus_confirmed && preflight.can_post_events() {
-            match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode) {
+            match clipboard::paste_to_stop_target(
+                &paste_text,
+                &target,
+                paste_mode,
+                config.restore_clipboard,
+                config.restore_clipboard_delay_ms,
+            ) {
                 Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
                     OverlayPasteDelivery::PasteRequested
                 }
@@ -3825,7 +3831,13 @@ impl RecordingController {
                                     )
                                     .await;
                             }
-                            let outcome = clipboard::paste_to_stop_target(&payload, &stop.target, config.paste_mode);
+                            let outcome = clipboard::paste_to_stop_target(
+                                &payload,
+                                &stop.target,
+                                config.paste_mode,
+                                config.restore_clipboard,
+                                config.restore_clipboard_delay_ms,
+                            );
                             if !matches!(outcome, Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted) {
                                 if let Err(error) = outcome {
                                     warn!(%error, "Stop-path paste failed; arming deferred insert");

@@ -2733,6 +2733,21 @@ const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::DoubleRightOption,
 ];
 
+/// Pure picker projection of the detector's routing table. No settings or
+/// runtime handle is needed to enumerate gestures reachable for one mode.
+#[uniffi::export]
+pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
+    ALL_SHORTCUT_BINDINGS
+        .iter()
+        .copied()
+        .filter(|&binding| hotkeys::mode_binding_reachable(mode.into(), binding))
+        .map(|binding| CsBindingOption {
+            binding: binding.into(),
+            label: binding.label().to_string(),
+        })
+        .collect()
+}
+
 /// Pair a mode with its binding and attach the display copy sourced from the
 /// core, so the Settings UI never re-invents labels that live in
 /// `docs/HOTKEYS_CONTRACT.md`.
@@ -3121,9 +3136,8 @@ impl CodescribeHotkeys {
             .collect()
     }
 
-    /// The closed set of gestures a mode can bind to, with display labels. Drives
-    /// the Settings picker (no free-form key capture — the binding space is a
-    /// fixed enum, see `HOTKEYS_CONTRACT`).
+    /// Label catalog for draft edits and conflict presentation. Picker choices
+    /// come from `available_bindings_for_mode`, never this unfiltered catalog.
     pub fn available_bindings(&self) -> Vec<CsBindingOption> {
         ALL_SHORTCUT_BINDINGS
             .iter()

@@ -14,13 +14,30 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 const SCHEMA: &str = "codescribe.audio-retention.v1";
 const SUFFIX: &str = ".audio-retention.json";
 const PASS_ENTRIES: usize = 128;
 const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
+const RECEIPT_QUARANTINE_SECONDS: u64 = 7 * 86_400;
+const RECEIPT_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(3600);
+
+#[derive(Debug)]
+struct ReceiptAdmissionRefused {
+    reason: &'static str,
+    device: u64,
+    inode: u64,
+}
+
+impl std::fmt::Display for ReceiptAdmissionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason)
+    }
+}
+
+impl std::error::Error for ReceiptAdmissionRefused {}
 
 /// Shared lease for an owned audio read or retry. Hold until all readers and
 /// path-based retry work have settled. External input files are never admitted.
@@ -486,6 +503,39 @@ pub fn maintain(root: &Path, policy: AudioRetention, now: SystemTime) -> Result<
             .strip_prefix(".expiry-")
             .and_then(|name| name.strip_suffix(".tmp"))
             .unwrap_or(receipt_name);
+        if let Some(quarantined) = receipt_name.strip_prefix(".refused-") {
+            let mut parts = quarantined.splitn(4, '-');
+            let (Some(at), Some(device), Some(inode), Some(receipt)) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Some(id) = receipt.strip_suffix(SUFFIX).filter(|id| valid_id(id)) else {
+                continue;
+            };
+            let (Ok(at), Ok(device), Ok(inode)) =
+                (at.parse::<u64>(), device.parse::<u64>(), inode.parse::<u64>())
+            else {
+                continue;
+            };
+            report.examined += 1;
+            let result = expire_quarantined_receipt(
+                &sessions,
+                receipt_name,
+                at,
+                device,
+                inode,
+                now,
+            );
+            match result {
+                Ok(true) => info!(session_id = id, "quarantined audio receipt expired; audio preserved"),
+                Ok(false) => report.deferred += 1,
+                Err(error) => report
+                    .failures
+                    .push(format!("{}: {error:#}", name.to_string_lossy())),
+            }
+            continue;
+        }
         let Some(id) = receipt_name.strip_suffix(SUFFIX) else {
             continue;
         };
@@ -496,9 +546,23 @@ pub fn maintain(root: &Path, policy: AudioRetention, now: SystemTime) -> Result<
         match expire_receipt(&directory, &sessions, &name, id, policy, now) {
             Ok(true) => report.expired += 1,
             Ok(false) => report.deferred += 1,
-            Err(error) => report
-                .failures
-                .push(format!("{}: {error:#}", name.to_string_lossy())),
+            Err(error) => {
+                let failure = if let Some(refusal) = error.downcast_ref::<ReceiptAdmissionRefused>() {
+                    match quarantine_receipt(&sessions, &name, id, refusal, now) {
+                        Ok(()) => format!(
+                            "{}: {error:#}; receipt quarantined for seven days; audio preserved",
+                            name.to_string_lossy()
+                        ),
+                        Err(quarantine_error) => format!(
+                            "{}: {error:#}; quarantine pending: {quarantine_error:#}",
+                            name.to_string_lossy()
+                        ),
+                    }
+                } else {
+                    format!("{}: {error:#}", name.to_string_lossy())
+                };
+                report.failures.push(failure);
+            }
         }
     }
     Ok(report)
@@ -539,17 +603,23 @@ fn expire_receipt(
 ) -> Result<bool> {
     let file = open_at(sessions, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
     let metadata = file.metadata()?;
+    let refused = |reason| ReceiptAdmissionRefused {
+        reason,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
     anyhow::ensure!(
         metadata.is_file() && metadata.len() <= MAX_RECEIPT_BYTES,
-        "invalid audio receipt"
+        refused("invalid audio receipt")
     );
     let mut bytes = Vec::new();
     file.take(MAX_RECEIPT_BYTES + 1).read_to_end(&mut bytes)?;
     anyhow::ensure!(
         bytes.len() as u64 <= MAX_RECEIPT_BYTES,
-        "oversized audio receipt"
+        refused("oversized audio receipt")
     );
-    let receipt: Receipt = serde_json::from_slice(&bytes)?;
+    let receipt: Receipt = serde_json::from_slice(&bytes)
+        .map_err(|_| refused("malformed audio receipt"))?;
     let root_metadata = root.metadata()?;
     anyhow::ensure!(
         receipt.schema == SCHEMA
@@ -557,7 +627,7 @@ fn expire_receipt(
             && receipt.root_device == root_metadata.dev()
             && receipt.root_inode == root_metadata.ino()
             && receipt.files.len() <= 16,
-        "unadmitted audio receipt"
+        refused("unadmitted audio receipt")
     );
     if receipt.retry_protected || receipt.completed_at == 0 || now < receipt.completed_at {
         return Ok(false);
@@ -574,7 +644,7 @@ fn expire_receipt(
     for file in &receipt.files {
         anyhow::ensure!(
             admitted(&file.relative, id),
-            "receipt includes unowned audio"
+            refused("receipt includes unowned audio")
         );
         verify_file(root, file)?;
     }
@@ -595,6 +665,49 @@ fn expire_receipt(
         session_id = id,
         "completed take audio expired; text history retained"
     );
+    Ok(true)
+}
+
+fn quarantine_receipt(
+    sessions: &File,
+    name: &CStr,
+    id: &str,
+    refusal: &ReceiptAdmissionRefused,
+    now: u64,
+) -> Result<()> {
+    let metadata = stat_entry(sessions, name)?;
+    anyhow::ensure!(
+        matching_stat(&metadata, refusal.device, refusal.inode, libc::S_IFREG),
+        "refused audio receipt changed before quarantine"
+    );
+    let quarantine = CString::new(format!(
+        ".refused-{now}-{}-{}-{id}{SUFFIX}",
+        refusal.device, refusal.inode
+    ))?;
+    rename_exclusive(sessions, name, &quarantine)?;
+    let moved = stat_entry(sessions, &quarantine)?;
+    anyhow::ensure!(
+        matching_stat(&moved, refusal.device, refusal.inode, libc::S_IFREG),
+        "refused audio receipt changed during quarantine"
+    );
+    sessions.sync_all()?;
+    Ok(())
+}
+
+fn expire_quarantined_receipt(
+    sessions: &File,
+    name: &str,
+    quarantined_at: u64,
+    device: u64,
+    inode: u64,
+    now: u64,
+) -> Result<bool> {
+    if now.saturating_sub(quarantined_at) < RECEIPT_QUARANTINE_SECONDS {
+        return Ok(false);
+    }
+    // Invalid metadata cannot authorize deleting any referenced audio. Only
+    // the quarantined receipt's pinned identity is eligible after seven days.
+    remove_entry(sessions, &CString::new(name)?, device, inode, false)?;
     Ok(true)
 }
 
@@ -792,6 +905,24 @@ fn remove_alias(root: &File, id: &str) -> Result<()> {
     Ok(())
 }
 
+fn log_maintenance_failures(root: &Path, failures: &[String]) {
+    static LAST_REPORTED: OnceLock<Mutex<HashMap<(PathBuf, String), Instant>>> = OnceLock::new();
+    let mut reported = LAST_REPORTED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = Instant::now();
+    reported.retain(|_, last| now.duration_since(*last) < RECEIPT_ERROR_LOG_INTERVAL);
+    for failure in failures {
+        let name = failure.split_once(':').map_or(failure.as_str(), |(name, _)| name);
+        let key = (root.to_path_buf(), name.to_string());
+        if let std::collections::hash_map::Entry::Vacant(entry) = reported.entry(key) {
+            entry.insert(now);
+            error!(failure, "audio retention remains pending");
+        }
+    }
+}
+
 fn run_maintenance(root: &Path) {
     let result = (|| -> Result<MaintenanceReport> {
         let snapshot = Config::load_runtime_snapshot_without_keychain()?;
@@ -803,7 +934,7 @@ fn run_maintenance(root: &Path) {
     })();
     match result {
         Ok(report) if !report.failures.is_empty() => {
-            error!(failures = ?report.failures, "audio retention remains pending")
+            log_maintenance_failures(root, &report.failures);
         }
         Ok(report) => info!(
             examined = report.examined,

@@ -334,7 +334,7 @@ impl From<std::io::Error> for AccountAuthError {
 /// Expiry is persisted as an absolute Unix timestamp rather than the
 /// `expires_in` the provider returns: a relative lifetime is meaningless once
 /// it has been sitting in storage across an app restart.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountTokens {
     /// Provider tag, from `ProviderKind::as_str`.
     pub provider: String,
@@ -349,6 +349,19 @@ pub struct AccountTokens {
     /// Absolute expiry. `None` ⇒ the provider declared no lifetime, so the
     /// token is never proactively refreshed.
     pub expires_at_unix: Option<i64>,
+}
+
+impl fmt::Debug for AccountTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountTokens")
+            .field("provider", &self.provider)
+            .field("access_token_present", &!self.access_token.is_empty())
+            .field("refresh_token_present", &self.refresh_token.is_some())
+            .field("id_token_present", &self.id_token.is_some())
+            .field("token_type", &self.token_type)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
 }
 
 impl AccountTokens {
