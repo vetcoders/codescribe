@@ -920,6 +920,9 @@ struct TranscriptBusWriter {
     /// Last occurrence-authenticated book projection. `session_ended` may copy
     /// its complete rendered value but can never mutate it.
     last_projection: Option<TranscriptBusEvidenceEvent>,
+    /// The joined controller tail published the final channel wire snapshot.
+    /// A reducer seal alone cannot authorize a lifecycle delivery flush.
+    channel_seal_published: bool,
     /// Documents whose start row already reached a channel bus. Quiet delivery
     /// contract (Founder seal cc6c8248): between that start row and the
     /// terminal seal, channel revisions stay in-process.
@@ -962,9 +965,10 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// External agent messages use the same private journal. PCM transcript authority remains reducer-only.
+/// External agent messages and delivery controls use the same private journal.
+/// PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent reply event");
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent event");
     if !path.is_absolute() || !event.is_object() {
         return Err(invalid());
     }
@@ -977,9 +981,12 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         })
     };
-    let typed = event["schema"] == "codescribe.agent-user-message.v1"
-        && event["kind"] == "agent_user_message";
-    if !identity_field(if typed { "message_id" } else { "reply_id" })
+    let identity_key = match event["schema"].as_str() {
+        Some("codescribe.agent-user-message.v1") => "message_id",
+        Some("codescribe.delivery-control.v1") => "control_id",
+        _ => "reply_id",
+    };
+    if !identity_field(identity_key)
         || ["provider", "provider_session_id", "lease_id", "emitted_at"]
             .iter()
             .any(|key| text_field(key).is_none())
@@ -997,6 +1004,51 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
         }
     }
     match (event["schema"].as_str(), event["kind"].as_str()) {
+        (Some("codescribe.delivery-control.v1"), Some("revise" | "withdraw" | "release")) => {
+            if ["bus", "channel", "audience"]
+                .iter()
+                .any(|key| text_field(key).is_none())
+                || event["bus"].as_str() != path.to_str()
+                || !matches!(
+                    event["channel"].as_str(),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                )
+                || chrono::DateTime::parse_from_rfc3339(
+                    text_field("emitted_at").ok_or_else(invalid)?,
+                )
+                .is_err()
+                || event
+                    .get("message_id")
+                    .is_some_and(|value| !value.is_null() && !identity_field("message_id"))
+                || event
+                    .get("utterance_id")
+                    .is_some_and(|value| {
+                        !value.is_null()
+                            && (value.as_u64().is_none() || text_field("session_id").is_none())
+                    })
+                || event
+                    .get("session_id")
+                    .is_some_and(|value| !value.is_null() && text_field("session_id").is_none())
+                || (event["kind"] == "revise"
+                    && (text_field("text").is_none()
+                        || event["text"]
+                            .as_str()
+                            .is_some_and(|text| text.len() > 64 * 1024)))
+                || [
+                    "status",
+                    "wav",
+                    "capture_epoch",
+                    "sample_start",
+                    "sample_end",
+                    "occurrence_session_id",
+                    "hold_until",
+                ]
+                .iter()
+                .any(|key| event.get(*key).is_some())
+            {
+                return Err(invalid());
+            }
+        }
         (Some("codescribe.agent-user-message.v1"), Some("agent_user_message")) => {
             let recipients = event["recipients"].as_array().ok_or_else(invalid)?;
             let owner = recipients.first().ok_or_else(invalid)?;
@@ -1123,10 +1175,7 @@ impl TranscriptBus {
         if self.session.session_id != session_id || capture_epoch == 0 {
             return;
         }
-        let mut writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
         if !writer.ended && writer.capture_epoch.is_none() {
             writer.capture_epoch = Some(capture_epoch);
         }
@@ -1638,6 +1687,51 @@ impl TranscriptBus {
         bus
     }
 
+    /// Publish the joined channel's final snapshot before its non-open receipt.
+    /// The ledger already sealed it; this copies document authority unchanged.
+    /// Hold metadata belongs only to these closing wire rows, never drafts.
+    pub(crate) fn publish_channel_sealed(&self, hold_sec: u32) -> io::Result<()> {
+        if self.session.mode != TranscriptMode::Agent || self.session.audience.is_none() {
+            return Ok(());
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !writer.started || !writer.sealed || writer.channel_seal_published {
+            return Ok(());
+        }
+        let Some(mut projection) = writer.last_projection.clone() else {
+            return Ok(());
+        };
+        if projection.rendered_text.trim().is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now();
+        projection.sequence = writer.sequence.saturating_add(1);
+        projection.emitted_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
+        projection.terminal = true;
+        let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
+        evidence["status"] = serde_json::json!("transcript_sealed");
+        if hold_sec > 0 {
+            evidence["hold_until"] = serde_json::json!(
+                (now + chrono::TimeDelta::seconds(i64::from(hold_sec)))
+                    .to_rfc3339_opts(SecondsFormat::Micros, true)
+            );
+        }
+        let mut clean = evidence.clone();
+        clean["schema"] = serde_json::json!("codescribe.transcript.v1");
+        clean["sequence"] = serde_json::json!(projection.sequence.saturating_add(1));
+        clean["text"] = serde_json::json!(&projection.rendered_text);
+        // Mark before append: uncertain persistence never authorizes a retry.
+        writer.channel_seal_published = true;
+        writer.sequence = projection.sequence;
+        writer.last_projection = Some(projection);
+        Self::append_projection_locked(&mut writer, &evidence)?;
+        writer.sequence = writer.sequence.saturating_add(1);
+        Self::append_projection_locked(&mut writer, &clean)
+    }
+
     /// Channel boundaries share the session's destinations and failure state.
     pub(crate) fn record_channel_receipt(&self, receipt: &serde_json::Value) {
         let mut writer = self
@@ -1677,6 +1771,7 @@ impl TranscriptBus {
                 capture_coverage: None,
                 capture_comparison: None,
                 last_projection: None,
+                channel_seal_published: false,
                 announced_documents: HashSet::new(),
             }),
             persistence_diagnostic_sink: Arc::new(|_| {}),
@@ -1866,6 +1961,8 @@ impl TranscriptBus {
     ///
     /// `delivery` is the controller's own disposition for the take. The Bus
     /// copies it; it never infers a destination from phase, label or text.
+    /// An agent channel cannot end before its joined tail publishes the final
+    /// snapshot: this lifecycle row would flush the follower's remembered text.
     pub fn publish_ended(
         &self,
         reason: TranscriptSessionEndReason,
@@ -1889,6 +1986,12 @@ impl TranscriptBus {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if !writer.started || writer.ended {
+            return None;
+        }
+        if self.session.mode == TranscriptMode::Agent
+            && self.session.audience.is_some()
+            && !writer.channel_seal_published
+        {
             return None;
         }
         let has_text = writer
@@ -2213,6 +2316,118 @@ mod tests {
         event["recipients"][0]["provider_session_id"] = serde_json::json!("foreign");
         assert!(super::append_agent_event(&path, &event).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn delivery_controls_publish_typed_voice_and_owner_scoped_requests() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("controls.jsonl");
+        let lease = hex::encode(Sha256::digest(b"codex\0agent-a"));
+        let base = serde_json::json!({
+            "schema": "codescribe.delivery-control.v1",
+            "control_id": "111111111111111111111111",
+            "emitted_at": "2026-10-15T10:00:00.123456Z",
+            "provider": "codex", "provider_session_id": "agent-a",
+            "lease_id": &lease[..32], "bus": path, "channel": "2", "audience": "lena",
+        });
+        let mut expected = Vec::new();
+        for kind in ["revise", "withdraw", "release"] {
+            for target in [
+                serde_json::json!({}),
+                serde_json::json!({"message_id": "222222222222222222222222"}),
+                serde_json::json!({"session_id": "agent-channel-2-take-a", "utterance_id": 42}),
+                serde_json::json!({"session_id": "agent-channel-2-take-b", "utterance_id": 42}),
+            ] {
+                let mut event = base.clone();
+                event["kind"] = serde_json::json!(kind);
+                if kind == "revise" {
+                    event["text"] = serde_json::json!("Revised Iwo");
+                }
+                event
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(target.as_object().unwrap().clone());
+                assert!(
+                    super::append_agent_event(&path, &event).unwrap()["length"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+                expected.push(event);
+            }
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(crate::durable_bus_oracle::rows(&raw).unwrap(), expected);
+    }
+
+    #[test]
+    fn delivery_controls_reject_invalid_identity_owner_target_and_audio_claims() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("controls.jsonl");
+        let lease = hex::encode(Sha256::digest(b"codex\0agent-a"));
+        let valid = serde_json::json!({
+            "schema": "codescribe.delivery-control.v1", "kind": "revise",
+            "control_id": "111111111111111111111111", "text": "Revised Iwo",
+            "emitted_at": "2026-10-15T10:00:00.123456Z",
+            "provider": "codex", "provider_session_id": "agent-a",
+            "lease_id": &lease[..32], "bus": path, "channel": "2", "audience": "lena",
+        });
+        super::append_agent_event(&path, &valid).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        for key in [
+            "control_id",
+            "emitted_at",
+            "provider",
+            "provider_session_id",
+            "lease_id",
+            "bus",
+            "channel",
+            "audience",
+            "text",
+        ] {
+            let mut event = valid.clone();
+            event.as_object_mut().unwrap().remove(key);
+            assert!(super::append_agent_event(&path, &event).is_err(), "{key}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        for (key, value) in [
+            ("schema", serde_json::json!("codescribe.unknown.v1")),
+            ("kind", serde_json::json!("send")),
+            ("control_id", serde_json::json!("bad-id")),
+            ("control_id", serde_json::json!("AAAAAAAAAAAAAAAAAAAAAAAA")),
+            ("emitted_at", serde_json::json!("not-a-timestamp")),
+            ("provider", serde_json::json!("Codex")),
+            ("provider_session_id", serde_json::json!("foreign")),
+            ("lease_id", serde_json::json!("wrong-owner")),
+            ("bus", serde_json::json!("/another/bus.jsonl")),
+            ("channel", serde_json::json!("0")),
+            ("channel", serde_json::json!(2)),
+            ("audience", serde_json::json!(" ")),
+            ("message_id", serde_json::json!("bad-id")),
+            ("utterance_id", serde_json::json!("42")),
+            ("utterance_id", serde_json::json!(-1)),
+            ("utterance_id", serde_json::json!(1.5)),
+            ("utterance_id", serde_json::json!(42)),
+            ("session_id", serde_json::json!(" ")),
+            ("session_id", serde_json::json!(42)),
+            ("text", serde_json::json!(" ")),
+            ("text", serde_json::json!("x".repeat(64 * 1024 + 1))),
+            ("status", serde_json::json!("transcript_sealed")),
+            ("wav", serde_json::json!("/capture.wav")),
+            ("capture_epoch", serde_json::json!(1)),
+            ("sample_start", serde_json::json!(0)),
+            ("sample_end", serde_json::json!(16_000)),
+            ("occurrence_session_id", serde_json::json!("take")),
+            ("hold_until", serde_json::json!("2026-10-15T10:00:10Z")),
+        ] {
+            let mut event = valid.clone();
+            event[key] = value;
+            let error = super::append_agent_event(&path, &event).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{key}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 
     fn fixture_refusal(receipt: &super::SealCoverageReceipt) -> super::TerminalFinalityRefusal {
@@ -2617,6 +2832,199 @@ mod tests {
                 .iter()
                 .all(|event| event.audience.as_deref() == Some("*"))
         );
+    }
+
+    #[test]
+    fn channel_send_hold_only_stamps_the_closing_clean_and_evidence_twins() {
+        for seconds in [0, 10] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("held-channel.jsonl");
+            let id = "channel-send-hold";
+            let mut channel = session(id);
+            channel.audience = Some("Leon".into());
+            channel.badge_only = true;
+            let bus = TranscriptBus::open_at(channel, path.clone(), None).unwrap();
+            bus.publish_started();
+            let (mut ledger, mut reducer, revision) = committed_fixture(id);
+            bus.publish_revision(&revision, &ledger);
+            bus.publish_channel_sealed(seconds).unwrap();
+            let draft = std::fs::read_to_string(&path).unwrap();
+            assert!(!draft.contains("hold_until"));
+            assert!(!draft.contains("transcript_sealed"));
+            for entry in &revision.entries {
+                ledger.schedule_frontier(entry.occurrence.clone(), [ObservationProducer::Apple]);
+                assert!(ledger.note_frontier_return(&entry.occurrence, ObservationProducer::Apple));
+            }
+            let seal = ledger.seal_terminal(id, 7).unwrap();
+            let sealed = reducer.apply_ledger_seal(&seal).unwrap();
+            bus.publish_revision(&sealed, &ledger);
+            let before_close = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !before_close.contains("hold_until"),
+                "the reducer seal is still pre-close"
+            );
+            bus.publish_channel_sealed(seconds).unwrap();
+            bus.record_channel_receipt(&serde_json::json!({
+                "schema": "codescribe.channel-session.v1",
+                "state": "sealed",
+                "session_id": id,
+            }));
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
+            let closing = rows
+                .iter()
+                .filter(|row| row["status"] == "transcript_sealed")
+                .collect::<Vec<_>>();
+            assert_eq!(closing.len(), 2);
+            assert_eq!(closing[0]["schema"], "codescribe.transcript-evidence.v1");
+            assert_eq!(closing[1]["schema"], "codescribe.transcript.v1");
+            assert_eq!(closing[0]["rendered_text"], closing[1]["text"]);
+            assert_eq!(closing[0]["reducer_revision"], sealed.revision);
+            assert!(
+                closing.iter().all(|row| row.get("utterance_id").is_none()),
+                "a producer request is not the engine's canonical utterance ID"
+            );
+            assert!(closing.iter().all(|row| row["session_id"] == id));
+            assert_eq!(closing[0]["hold_until"], closing[1]["hold_until"]);
+            assert_eq!(rows.last().unwrap()["schema"], "codescribe.channel-session.v1");
+            if seconds == 0 {
+                assert!(closing.iter().all(|row| row.get("hold_until").is_none()));
+            } else {
+                let emitted = chrono::DateTime::parse_from_rfc3339(
+                    closing[0]["emitted_at"].as_str().unwrap(),
+                )
+                .unwrap();
+                let deadline = closing[0]["hold_until"].as_str().unwrap();
+                assert!(deadline.ends_with('Z'));
+                assert_eq!(
+                    deadline.split('.').nth(1).unwrap().len(),
+                    7,
+                    "six digits plus Z"
+                );
+                let deadline = chrono::DateTime::parse_from_rfc3339(deadline).unwrap();
+                assert_eq!(
+                    (deadline - emitted).num_microseconds(),
+                    Some(i64::from(seconds) * 1_000_000)
+                );
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row.get("hold_until").is_some())
+                        .count(),
+                    2
+                );
+            }
+            bus.publish_channel_sealed(seconds).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                raw,
+                "closing is idempotent"
+            );
+            assert!(
+                !serde_json::to_string(bus.writer.lock().unwrap().last_projection.as_ref().unwrap())
+                    .unwrap()
+                    .contains("hold_until")
+            );
+        }
+    }
+
+    #[test]
+    fn channel_lifecycle_cannot_flush_before_the_joined_hold_snapshot() {
+        for seconds in [0, 10] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ordered-channel.jsonl");
+            let id = "channel-close-order";
+            let mut channel = session(id);
+            channel.audience = Some("Leon".into());
+            channel.badge_only = true;
+            let bus = TranscriptBus::open_at(channel, path.clone(), None).unwrap();
+            bus.publish_started();
+            let (mut ledger, mut reducer, revision) = committed_fixture(id);
+            bus.publish_revision(&revision, &ledger);
+            let before_end = std::fs::read(&path).unwrap();
+            assert!(
+                bus.publish_ended(
+                    TranscriptSessionEndReason::Completed,
+                    true,
+                    TranscriptDelivery::Unattempted,
+                )
+                .is_none()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before_end);
+            assert!(!bus.writer.lock().unwrap().ended);
+
+            for entry in &revision.entries {
+                ledger.schedule_frontier(entry.occurrence.clone(), [ObservationProducer::Apple]);
+                assert!(ledger.note_frontier_return(&entry.occurrence, ObservationProducer::Apple));
+            }
+            let seal = ledger.seal_terminal(id, 7).unwrap();
+            let sealed = reducer.apply_ledger_seal(&seal).unwrap();
+            assert!(!bus.publish_revision(&sealed, &ledger).is_empty());
+            let before_end = std::fs::read(&path).unwrap();
+            assert!(
+                bus.publish_ended_with_delivery_text(
+                    TranscriptSessionEndReason::Completed,
+                    true,
+                    TranscriptDelivery::Unattempted,
+                    None,
+                )
+                .is_none(),
+                "a reducer seal is not the joined channel close"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before_end);
+            assert!(!bus.writer.lock().unwrap().ended);
+
+            bus.publish_channel_sealed(seconds).unwrap();
+            assert!(
+                bus.publish_ended(
+                    TranscriptSessionEndReason::Completed,
+                    true,
+                    TranscriptDelivery::Unattempted,
+                )
+                .is_some()
+            );
+            bus.record_channel_receipt(&serde_json::json!({
+                "schema": "codescribe.channel-session.v1", "state": "sealed", "session_id": id,
+            }));
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
+            let flush = rows
+                .iter()
+                .position(|row| row["status"] == "session_ended")
+                .unwrap();
+            let evidence = &rows[flush - 2];
+            let clean = &rows[flush - 1];
+            assert_eq!(evidence["schema"], "codescribe.transcript-evidence.v1");
+            assert_eq!(clean["schema"], "codescribe.transcript.v1");
+            assert_eq!(evidence["status"], "transcript_sealed");
+            assert_eq!(clean["status"], "transcript_sealed");
+            assert_eq!(evidence["rendered_text"], sealed.rendered_text);
+            assert_eq!(evidence["hold_until"], clean["hold_until"]);
+            assert_eq!(evidence.get("hold_until").is_some(), seconds > 0);
+            assert_eq!(rows.last().unwrap()["schema"], "codescribe.channel-session.v1");
+            assert!(
+                rows[..flush - 2]
+                    .iter()
+                    .all(|row| row.get("hold_until").is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn send_hold_cannot_stamp_dictation_or_non_channel_agent_rows() {
+        for session in [
+            unlatched_dictation("plain-send-hold"),
+            session("plain-send-hold"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("plain.jsonl");
+            let bus = TranscriptBus::open_at(session, path.clone(), None).unwrap();
+            bus.publish_started();
+            let (ledger, _, revision) = committed_fixture("plain-send-hold");
+            bus.publish_revision(&revision, &ledger);
+            let before = std::fs::read(&path).unwrap();
+            bus.publish_channel_sealed(10).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 
     /// Integrator (2026-10-01, take agent-channel-0-b351ea82): Fn+0 rows
