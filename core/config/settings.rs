@@ -3496,7 +3496,8 @@ mod tests {
         assert!(!UserSettings::settings_path().exists());
     }
     use super::{
-        DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
+        AGENT_SEND_HOLD_ENV, DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV,
+        UserSettings, is_promoted_key,
     };
     use crate::config::{PasteMode, ShortcutBinding, WorkMode};
     use serial_test::serial;
@@ -3632,16 +3633,28 @@ mod tests {
             saved.pointer("/interaction/agent_send_hold_sec"),
             Some(&serde_json::json!(10))
         );
+        // Settings writes arrive through `Config::save_to_env` → `assign_wire`,
+        // the typed wire route; `set_string` only knows string-valued keys.
         for seconds in [0, 7, 30, 60] {
             let mut settings = UserSettings::load();
-            settings.set_string(AGENT_SEND_HOLD_ENV, &seconds.to_string());
+            assert!(
+                settings
+                    .assign_wire(AGENT_SEND_HOLD_ENV, &seconds.to_string(), false)
+                    .unwrap()
+            );
+            settings.save().unwrap();
             assert_eq!(UserSettings::load().agent_send_hold_sec, Some(seconds));
             UserSettings::load().save().unwrap();
             assert_eq!(UserSettings::load().agent_send_hold_sec, Some(seconds));
         }
         let mut settings = UserSettings::load();
         for invalid in ["-1", "1.5", "4294967296"] {
-            settings.set_string(AGENT_SEND_HOLD_ENV, invalid);
+            assert!(
+                !settings
+                    .assign_wire(AGENT_SEND_HOLD_ENV, invalid, false)
+                    .unwrap()
+            );
+            settings.save().unwrap();
             assert_eq!(UserSettings::load().agent_send_hold_sec, Some(60));
         }
     }

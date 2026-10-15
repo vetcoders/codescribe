@@ -326,15 +326,16 @@ impl Config {
         ] {
             overrides.insert(key.to_string(), std::env::var(key));
         }
-        let send_hold_override = Self::config_runtime_env_var(AGENT_SEND_HOLD_ENV).or_else(|error| {
-            if !matches!(error, VarError::NotPresent) {
-                return Err(error);
-            }
-            Self::parse_env_file(&Self::env_path())
-                .ok()
-                .and_then(|vars| vars.get(AGENT_SEND_HOLD_ENV).cloned())
-                .ok_or(VarError::NotPresent)
-        });
+        let send_hold_override =
+            Self::config_runtime_env_var(AGENT_SEND_HOLD_ENV).or_else(|error| {
+                if !matches!(error, VarError::NotPresent) {
+                    return Err(error);
+                }
+                Self::parse_env_file(&Self::env_path())
+                    .ok()
+                    .and_then(|vars| vars.get(AGENT_SEND_HOLD_ENV).cloned())
+                    .ok_or(VarError::NotPresent)
+            });
         overrides.insert(AGENT_SEND_HOLD_ENV.to_string(), send_hold_override);
         let mut input = CapturedRuntimeInputs {
             values,
@@ -3872,7 +3873,11 @@ mod tests {
         let saved = seal_lanes();
         assert_eq!(saved.agent_send_hold_sec(), 7);
         assert!(!Config::env_path().exists());
-        fs::write(dir.path().join(".env"), "CODESCRIBE_AGENT_SEND_HOLD_SEC=12\n").unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "CODESCRIBE_AGENT_SEND_HOLD_SEC=12\n",
+        )
+        .unwrap();
         assert_eq!(seal_lanes().agent_send_hold_sec(), 12);
         set_env_for_test(AGENT_SEND_HOLD_ENV, "0");
         assert_eq!(seal_lanes().agent_send_hold_sec(), 0);
