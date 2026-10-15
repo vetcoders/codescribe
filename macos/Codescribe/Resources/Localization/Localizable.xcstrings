@@ -10117,6 +10117,17 @@
         }
       }
     },
+    "No audio signal arrives from “%@”. Check that this device sends audio to this Mac and select the microphone in Control Center." : {
+      "comment" : "Calibration refusal. The placeholder is an input device name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z „%@” nie dociera sygnał dźwiękowy. Sprawdź, czy urządzenie przekazuje dźwięk do tego Maca, i wybierz mikrofon w Centrum sterowania."
+          }
+        }
+      }
+    },
     "No authentication" : {
       "localizations" : {
         "pl" : {
@@ -10422,17 +10433,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dla tego nagrania nie zapisano zatwierdzenia, więc nie można uznać go za kompletne."
-          }
-        }
-      }
-    },
-    "No audio signal arrives from “%@”. Check that this device sends audio to this Mac and select the microphone in Control Center." : {
-      "comment" : "Calibration refusal. The placeholder is an input device name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Z „%@” nie dociera sygnał dźwiękowy. Sprawdź, czy urządzenie przekazuje dźwięk do tego Maca, i wybierz mikrofon w Centrum sterowania."
           }
         }
       }
@@ -16800,6 +16800,16 @@
         }
       }
     },
+    "There is no text to copy." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma tekstu do skopiowania."
+          }
+        }
+      }
+    },
     "Thermal throttling" : {
       "comment" : "Tray status: the host is too hot to run speech-to-text at full speed",
       "localizations" : {
@@ -16943,6 +16953,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta zapisana transkrypcja jest pusta."
+          }
+        }
+      }
+    },
+    "This text cannot be copied without changing its spacing." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tego tekstu nie da się skopiować bez zmiany odstępów."
           }
         }
       }
