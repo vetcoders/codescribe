@@ -196,20 +196,22 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if observations.contains(where: \.queued) { stage = .queued }
         if observations.contains(where: \.acknowledged) { stage = .received }
       }
+      // A hold or a withdrawal is the only news this projection adds on top
+      // of the seal-derived stage; an ordinary delivery keeps its receipts.
       if let message = messageOrder.reversed().compactMap({ messages[$0] }).first(where: {
-        $0.kind == .user && $0.showsDeliveryReceipts && $0.withdrawn != true
+        $0.kind == .user && $0.showsDeliveryReceipts
           && $0.recipients.contains { $0.owner.id == ownerID }
       }) {
         var addressed = message
         addressed.recipients = message.recipients.filter { $0.owner.id == ownerID }
-        deliveryID = addressed.recipients.first?.deliveryID
-        stage = addressed.deliveryStage(at: Date())
-      } else if messages.values.contains(where: {
-        $0.kind == .user && $0.withdrawn == true
-          && $0.recipients.contains { $0.owner.id == ownerID }
-      }) {
-        deliveryID = nil
-        stage = nil
+        if addressed.withdrawn == true {
+          // A withdrawn take never reached the agent: no receipt to paint.
+          deliveryID = nil
+          stage = nil
+        } else if addressed.holdingSeconds(at: Date()) != nil {
+          deliveryID = addressed.recipients.first?.deliveryID
+          stage = .held
+        }
       }
       return OverlayChannelDelivery(
         channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
@@ -713,10 +715,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       messageRevisions[key] = revision
       let phase: String
       let sealedRow = row["status"] as? String == "transcript_sealed"
-      let channelClosed = endedSessions.contains(session) || sealedRow
+      // Only the closing snapshot (`terminal: true`, stamped at channel close
+      // with its hold deadline) finishes a channel take; a phrase terminal
+      // inside the take is still a revision of the same document.
+      let closingRow = sealedRow && row["terminal"] as? Bool == true
+      let channelClosed = endedSessions.contains(session) || closingRow
       let terminal =
         evidence
-        ? row["reducer_action"] as? String == "record_ledger_terminal_seal" || sealedRow
+        ? row["reducer_action"] as? String == "record_ledger_terminal_seal" || closingRow
         : sealedRow
       if evidence || channelMessage != nil {
         let components = session.split(separator: "-")

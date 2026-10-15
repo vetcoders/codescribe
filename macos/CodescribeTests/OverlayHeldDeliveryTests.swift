@@ -152,7 +152,9 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(evidence)
     XCTAssertNil(try firstMessage(bus).holdSecondsRemaining)
+    // The closing snapshot is the one row the Rust writer marks terminal.
     evidence["status"] = "transcript_sealed"
+    evidence["terminal"] = true
     evidence["hold_until"] = deadline
     evidence["sequence"] = 5
     bus.consume(evidence)
