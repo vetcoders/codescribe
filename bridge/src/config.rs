@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{self, KEYCHAIN_ACCOUNTS, delete_key, save_key};
@@ -736,43 +736,16 @@ pub struct CsTrayToggles {
 #[derive(uniffi::Object)]
 pub struct CodescribeConfig {}
 
-/// Seed the recorder's legacy process-env input selector exactly once, while
-/// the macOS app is still constructing its bridge handles and before hotkey or
-/// recording worker threads start. Persisted settings remain the source of
-/// truth; an explicit launch-time process override keeps precedence.
-fn bootstrap_audio_input_runtime() {
-    /// Once-only seed of `AUDIO_INPUT_DEVICE` from persisted config at boot.
-    static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
-    AUDIO_INPUT_BOOTSTRAP.call_once(|| {
-        if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
-            return;
-        }
-        let Some(device) = Config::load_without_keychain()
-            .audio_input_device
-            .filter(|device| !device.trim().is_empty())
-        else {
-            return;
-        };
-
-        // SAFETY: `CodescribeConfig` is an AppDelegate-owned bridge property,
-        // constructed before `CodescribeHotkeys.start()` spawns runtime workers.
-        // The Once guard prevents later Settings-scene handles from mutating it.
-        unsafe { std::env::set_var("AUDIO_INPUT_DEVICE", device) };
-    });
-}
-
 #[uniffi::export]
 impl CodescribeConfig {
     /// Construct the bridge handle. Not a pure allocation: this is the app's
-    /// first-touch entry point, so it also initializes logging, seeds the
-    /// recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
-    /// and resumes run monitors persisted by a previous process. Later handles
+    /// first-touch entry point, so it also initializes logging and resumes run
+    /// monitors persisted by a previous process. Later handles
     /// are cheap — the side effects are guarded to run only once, and are
     /// skipped entirely under `cfg!(test)`.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
-        bootstrap_audio_input_runtime();
         // Resume any run monitors persisted by a previous app process so a
         // watched Vibecrafted run keeps heartbeating after restart.
         if !cfg!(test) {
@@ -3934,8 +3907,8 @@ mod settings_snapshot_tests {
 
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
         let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
-        // Mirror the already-running recorder: its process selector remains
-        // pinned until restart even after the saved preference is unset.
+        // An explicit launch override stays in the process; resetting the
+        // saved preference must not depend on it.
         let _device = EnvGuard::set("AUDIO_INPUT_DEVICE", "USB Studio Mic");
 
         let mut settings = UserSettings {

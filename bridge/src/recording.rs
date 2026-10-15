@@ -1032,11 +1032,9 @@ fn resolve_audio_input_state(
 #[uniffi::export]
 pub fn audio_input_snapshot() -> Result<CsAudioInputSnapshot, CsError> {
     let configured_device = codescribe_core::config::UserSettings::load().audio_input_device;
-    // Recorder::start reads this process value directly. It is the actual
-    // selector for the current app lifetime, while `configured_device` is the
-    // freshly-persisted choice for the next launch.
-    let runtime_preference =
-        normalized_device_name(std::env::var("AUDIO_INPUT_DEVICE").ok().as_deref());
+    // The selector the next take opens. It equals `configured_device` unless
+    // the launching environment pinned AUDIO_INPUT_DEVICE explicitly.
+    let runtime_preference = codescribe_core::config::Config::audio_input_preference();
     let host = cpal::default_host();
     let default_device = host
         .default_input_device()

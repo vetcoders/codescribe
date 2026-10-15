@@ -700,19 +700,14 @@ pub struct CapturePathMeta {
 }
 
 impl CapturePathMeta {
-    /// Device from the already-open capture path / `AUDIO_INPUT_DEVICE`.
+    /// Device from the already-open capture path, else the current selection.
     /// Never opens a new Core Audio query — no new permission prompt.
     pub fn from_open_path(sample_rate: u32, channels: u16, device_name: Option<&str>) -> Self {
         let device_name = device_name
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
-            .or_else(|| {
-                std::env::var("AUDIO_INPUT_DEVICE")
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
+            .or_else(crate::config::Config::audio_input_preference)
             .unwrap_or_else(|| "system_default".to_string());
         Self {
             device_name,

@@ -1004,6 +1004,21 @@ impl Config {
         Ok(Self::load_runtime_snapshot()?.formatting_policy())
     }
 
+    /// The input device a recording opens now, read fresh at every call so a
+    /// Settings choice applies to the next take without a restart. An explicit
+    /// `AUDIO_INPUT_DEVICE` from the launching environment outranks Settings
+    /// (a blank one selects the system default); a value config seeded itself
+    /// does not. `None` follows the live system default.
+    pub fn audio_input_preference() -> Option<String> {
+        let selected = match Self::config_runtime_env_var("AUDIO_INPUT_DEVICE") {
+            Ok(value) => Some(value),
+            Err(_) => super::settings::UserSettings::load().audio_input_device,
+        };
+        selected
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    }
+
     /// Resolve the roots selected in Settings from fresh persisted truth.
     ///
     /// `settings.json` is authoritative. A legacy `.env`/process value is used
@@ -2936,6 +2951,45 @@ mod tests {
         assert!(forced_on.values().format_on_device);
         assert!(format_on_device_overlay(&forced_on));
         assert_ne!(forced_off.digest(), forced_on.digest());
+    }
+
+    /// Founder, 2026-10-15: a microphone chosen in Settings applied only after a
+    /// restart, because the recorder read a process copy seeded once at launch.
+    /// The selection is read fresh; only an explicit launch override outranks it.
+    #[test]
+    #[serial]
+    fn audio_input_preference_follows_settings_without_restart() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("AUDIO_INPUT_DEVICE");
+        assert_eq!(Config::audio_input_preference(), None, "system default");
+
+        let mut settings = UserSettings {
+            audio_input_device: Some("AirPods Pro - Find My".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("pin AirPods");
+        assert_eq!(
+            Config::audio_input_preference().as_deref(),
+            Some("AirPods Pro - Find My")
+        );
+        settings.audio_input_device = None;
+        settings.save().expect("back to the system default");
+        assert_eq!(Config::audio_input_preference(), None);
+
+        set_env_for_test("AUDIO_INPUT_DEVICE", " BlackHole 2ch ");
+        assert_eq!(
+            Config::audio_input_preference().as_deref(),
+            Some("BlackHole 2ch"),
+            "an explicit launch override outranks Settings"
+        );
+        set_env_for_test("AUDIO_INPUT_DEVICE", " ");
+        settings.audio_input_device = Some("AirPods Pro - Find My".to_string());
+        settings.save().expect("pin AirPods under a blank override");
+        assert_eq!(
+            Config::audio_input_preference(),
+            None,
+            "a blank override is the default"
+        );
     }
 
     /// Production hides `.env`-seeded keys from the loader's own env layer once
