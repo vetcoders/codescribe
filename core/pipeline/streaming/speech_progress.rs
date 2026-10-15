@@ -161,6 +161,11 @@ impl SpeechProgress {
             normalize_progress_ranges(std::mem::take(&mut self.recovered_speech));
     }
 
+    /// Silero's latest observation holds speech on this capture's clock.
+    pub fn speech_live(&self) -> bool {
+        self.available && self.speech_live
+    }
+
     pub fn phase(&self, sample_rate: u32) -> SpeechIntegrityPhase {
         if !self.available || sample_rate == 0 || sample_rate != self.sample_rate {
             SpeechIntegrityPhase::Unavailable
@@ -263,12 +268,15 @@ mod tests {
     #[test]
     fn speech_stalls_but_silence_never_accumulates_debt() {
         let mut progress = SpeechProgress::new("take", 0, 1_000);
+        assert!(!progress.speech_live(), "no observation is no speech");
         progress.observe_speech(&speech(200, 200), true, 1_000);
+        assert!(progress.speech_live());
         progress.observe_apple("Pierwsze słowo", 200);
         progress.observe_speech(&speech(2_600, 2_600), true, 1_000);
         assert_eq!(progress.debt_ms(1_000), 2_400);
         assert_eq!(progress.phase(1_000), SpeechIntegrityPhase::Stalled);
         progress.observe_speech(&speech(2_600, 12_600), false, 1_000);
+        assert!(!progress.speech_live());
         assert_eq!(progress.debt_ms(1_000), 2_400);
         assert!(progress.occurrence_has_debt(
             &OccurrenceIdentity::new("take", 0, 0, 2_600),

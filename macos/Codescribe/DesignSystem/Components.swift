@@ -37,21 +37,45 @@ struct CSWindowHeaderChrome: ViewModifier {
   }
 }
 
-/// The detail column's content scrolls beneath the window header the way the
-/// Agent conversation scrolls beneath its floating composer and the overlay's
-/// transcript beneath its header: the system's soft edge effect fades the
-/// rows out under the toolbar instead of letting them sit on the title row.
-/// Scoped to the detail column so the sidebar material still runs up through
-/// the titlebar untouched (Maciej, 2026-10-14: one header rhythm for Settings,
-/// Agent and the overlay). Earlier systems have no edge effect; the header
-/// stays as it was.
-struct CSScrollHeaderEdge: ViewModifier {
-  @ViewBuilder
+/// The window header is one glass plane over the detail column only, the glass
+/// of the overlay header: rows that scroll up stop at its hard lower edge, the
+/// way Finder's list stops under its toolbar, instead of running through the
+/// title, and the sidebar material runs up through the titlebar beside it
+/// (Maciej, 2026-10-14: the title bar only above the messages, never over the
+/// sidebar; the same in Settings).
+///
+/// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
+/// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
+/// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
+/// tall as the column's top safe-area inset, which is the toolbar, and lifted
+/// into it. Toolbar items stay in the titlebar above it and keep their clicks.
+struct CSDetailHeaderGlass: ViewModifier {
+  @State private var height: CGFloat = 0
+
   func body(content: Content) -> some View {
+    content
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.safeAreaInsets.top
+      } action: { top in
+        height = top
+      }
+      .overlay(alignment: .top) {
+        CSHeaderGlassPlane()
+          .frame(height: height)
+          .frame(maxWidth: .infinity)
+          .offset(y: -height)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+  }
+}
+
+private struct CSHeaderGlassPlane: View {
+  var body: some View {
     if #available(macOS 26.0, *) {
-      content.scrollEdgeEffectStyle(.soft, for: .top)
+      Color.clear.glassEffect(.regular, in: Rectangle())
     } else {
-      content
+      Rectangle().fill(.regularMaterial)
     }
   }
 }
