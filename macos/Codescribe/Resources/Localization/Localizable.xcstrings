@@ -10639,6 +10639,38 @@
         }
       }
     },
+    "Not played while a take was live" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not played while a take was live"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odtworzono w trakcie nagrania"
+          }
+        }
+      }
+    },
+    "Not played while another reply was speaking" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not played while another reply was speaking"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odtworzono, bo mówiła inna odpowiedź"
+          }
+        }
+      }
+    },
     "Not reading" : {
       "comment" : "Agent alive, backlog unread for long",
       "localizations" : {
@@ -15270,6 +15302,70 @@
         }
       }
     },
+    "Speech failed: no connection to the voice service" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: no connection to the voice service"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: brak połączenia z usługą głosu"
+          }
+        }
+      }
+    },
+    "Speech failed: no voice credential" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: no voice credential"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: brak klucza głosu"
+          }
+        }
+      }
+    },
+    "Speech failed: the voice credential was rejected" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: the voice credential was rejected"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: klucz głosu odrzucony"
+          }
+        }
+      }
+    },
+    "Speech failed: the voice quota is used up" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech failed: the voice quota is used up"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie nie powiodło się: limit głosu wyczerpany"
+          }
+        }
+      }
+    },
     "Speech recognition" : {
       "comment" : "Settings tab headline: Dictation › Engine",
       "localizations" : {
@@ -15331,6 +15427,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtwarzanie zatrzymane"
+          }
+        }
+      }
+    },
+    "Speech stopped when a take began" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech stopped when a take began"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odtwarzanie przerwane, bo zaczęło się nagranie"
           }
         }
       }

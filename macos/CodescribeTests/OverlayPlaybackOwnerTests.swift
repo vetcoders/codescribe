@@ -6,6 +6,46 @@ import XCTest
 
 @MainActor
 final class OverlayPlaybackOwnerTests: XCTestCase {
+  /// Founder, 2026-10-15: a reply he stopped showed "take_started" and a red
+  /// warning. A stop he caused reads as a stop, in words, never as a code.
+  func testPlaybackOutcomesReadAsSentencesAndAStopIsNotAFailure() {
+    let codes = [
+      "muted", "stopped", "take_started", "take_live", "playback_busy",
+      "credential_missing", "credential_rejected", "quota_exhausted", "network",
+    ]
+    var labels: Set<String> = []
+    for code in codes {
+      let label = ReplyPlaybackCopy.label(state: "refused", reason: code)
+      XCTAssertFalse(label.contains("_"), "\(code) leaked as \(label)")
+      XCTAssertNotEqual(label, String(localized: "Speech refused"), code)
+      labels.insert(label)
+    }
+    XCTAssertEqual(labels.count, codes.count, "each outcome has its own sentence")
+    XCTAssertEqual(
+      ReplyPlaybackCopy.label(state: "refused", reason: "take_started"),
+      String(localized: "Speech stopped when a take began"))
+    XCTAssertEqual(
+      ReplyPlaybackCopy.label(state: "stopped", reason: "stopped"),
+      String(localized: "Speech stopped"))
+    for code in ["http_503", "playback_failed", "speech_exception", nil] {
+      XCTAssertEqual(
+        ReplyPlaybackCopy.label(state: "failed", reason: code), String(localized: "Speech failed"))
+    }
+  }
+
+  /// The play command's "not spoken, outcome published" exit is the bus's
+  /// own code; the app must keep reading it as an outcome, not an error.
+  func testPlaybackOutcomeExitMatchesTheBusPlayer() throws {
+    let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+    let player = try String(
+      contentsOf: repo.appendingPathComponent("scripts/bus-demux.py"), encoding: .utf8)
+    XCTAssertTrue(
+      player.contains(
+        "return 0 if spoken or reason == \"muted\" else "
+          + String(RealAgentBridgeInstaller.playbackOutcomePublishedStatus)))
+  }
+
   func testBroadcastMirrorCannotOwnMuteAndReusedChannelCannotBorrowThePriorSession() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
