@@ -633,6 +633,14 @@ final class OverlayState {
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
+  /// The window's morph duration for the current change, written by the panel
+  /// inside `onPresentationModeChanged` so the header cross-fade matches it.
+  @ObservationIgnored var presentationMorphDuration: TimeInterval =
+    DictationOverlayWindow.presentationDuration
+  /// The automatic return while its morph is still on screen: the compact
+  /// form it folds to, the drawer it closed and when the window lands.
+  @ObservationIgnored private var automaticFoldInFlight:
+    (mode: OverlayPresentationMode, agentMonitor: Bool, landsAt: TimeInterval)?
   /// Presentation changes come from explicit controls; pointer motion never morphs the window.
   func toggleCollapsed() {
     switch presentationMode {
@@ -664,6 +672,8 @@ final class OverlayState {
     OverlayPresentationTrace.shared.record(
       .modeRequested, from: presentationMode, mode: mode,
       note: (cause == .user ? "user" : "automatic") + (presentationMode == mode ? " same" : ""))
+    // Any later presentation write supersedes a fold that could be undone.
+    automaticFoldInFlight = nil
     if automaticExpansion {
       autoCollapse.noteAutomaticExpansion(from: presentationMode)
     } else {
@@ -766,7 +776,22 @@ final class OverlayState {
       autoCollapse.suspend()
       return
     }
+    let agentMonitor = showsAgentMonitor
     applyPresentationMode(restore, cause: .automatic)
+    // The panel wrote this fold's duration while the mode changed.
+    automaticFoldInFlight = (restore, agentMonitor, nowProvider() + presentationMorphDuration)
+  }
+
+  /// Founder, 2026-10-15: entering the overlay while it folds itself brings
+  /// back the form it had before the fold and arms its idle return again. The
+  /// expansion is automatic once more, so the hover holds it and leaving
+  /// starts a full interval. A fold the user chose is never undone.
+  private func undoAutomaticFoldInFlight() {
+    guard let fold = automaticFoldInFlight else { return }
+    automaticFoldInFlight = nil
+    guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
+    applyPresentationMode(.expanded, cause: .automatic)
+    showsAgentMonitor = fold.agentMonitor
   }
 
   func clearPointerHover() {
@@ -2733,6 +2758,7 @@ final class OverlayState {
   func setPointerHovering(_ hovering: Bool) {
     guard hovering != isPointerHovering else { return }
     isPointerHovering = hovering
+    if hovering { undoAutomaticFoldInFlight() }
     noteAutoCollapseActivity()
     guard isTerminalMode else { return }
     if hovering {

@@ -699,7 +699,7 @@ struct DictationOverlayView: View {
     // The mini and the full header cross-fade over the window's morph instead
     // of swapping on its first frame (presentation ledger, 2026-10-14).
     .animation(
-      reduceMotion ? nil : .easeInOut(duration: DictationOverlayWindow.presentationDuration),
+      reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
       value: state.presentationMode
     )
     .frame(maxWidth: .infinity, alignment: .leading)
