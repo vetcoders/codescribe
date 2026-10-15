@@ -6568,6 +6568,16 @@
         }
       }
     },
+    "DictationTranscriber witness (experimental)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Świadek DictationTranscriber (eksperyment)"
+          }
+        }
+      }
+    },
     "Dictionary" : {
       "comment" : "Settings section: custom vocabulary",
       "localizations" : {
@@ -12258,6 +12268,16 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "Re-checks words a take left unresolved, in the background after each sealed utterance. A process env value overrides this toggle." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdza ponownie słowa pozostawione nierozstrzygnięte, w tle po każdym zasealowanym fragmencie. Wartość env procesu nadpisuje ten przełącznik."
           }
         }
       }
