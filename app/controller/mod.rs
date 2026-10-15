@@ -2285,37 +2285,6 @@ impl RecordingController {
         Ok(None)
     }
 
-    /// Typed chat turns share the selected consultation owner and its durable
-    /// accepted-turn identity. Reopening chat never resends an old transcript.
-    pub async fn continue_max_consultation(
-        &self,
-        expected_id: &str,
-        turn_id: String,
-        text: String,
-        attachments: Vec<codescribe_core::agent::ImageAttachment>,
-    ) -> Result<String> {
-        let settings = self.runtime_settings_arc().await;
-        // Max answers on the Agent lane, so the Agent model decides images.
-        let lane = settings.llm_lanes().assistive();
-        anyhow::ensure!(
-            attachments.is_empty() || lane.supports_vision(lane.model()),
-            "The selected Max model does not support images"
-        );
-        let consultation = self
-            .selected_max_consultation(&settings)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Max consultation is not selected"))?;
-        anyhow::ensure!(
-            consultation.id() == expected_id,
-            "The selected Max consultation changed"
-        );
-        let answer = consultation
-            .enqueue(turn_id, text, attachments, &settings)?
-            .await
-            .context("Max consultation owner stopped before replying")??;
-        Ok(answer.text)
-    }
-
     /// Observe Max owner events as they happen. Subscribe before enqueueing a
     /// turn you intend to render; the owner never replays earlier deltas.
     pub fn subscribe_max_consultation_events(&self) -> broadcast::Receiver<MaxConsultationEvent> {
@@ -2334,6 +2303,10 @@ impl RecordingController {
     /// turn. The consultation is Max by identity, so the turn runs under Max
     /// regardless of the dictation formatting level currently selected. Only
     /// the selected consultation accepts new turns; an older one is history.
+    ///
+    /// `turn_id` is the caller's durable acceptance identity. The owner's
+    /// journal refuses a repeat of it and every event of the turn carries it,
+    /// so a renderer binds to exactly this turn and a replay never runs twice.
     pub async fn enqueue_max_consultation_text_turn(
         &self,
         thread_id: &str,
@@ -2349,6 +2322,12 @@ impl RecordingController {
             .runtime_settings_arc()
             .await
             .with_formatting_level(codescribe_core::config::FormattingPolicy::Max);
+        // Max answers on the Agent lane, so the Agent model decides images.
+        let lane = settings.llm_lanes().assistive();
+        anyhow::ensure!(
+            attachments.is_empty() || lane.supports_vision(lane.model()),
+            "The selected Max model does not support images"
+        );
         let consultation = self
             .selected_max_consultation(&settings)
             .await?
