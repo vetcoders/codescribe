@@ -714,10 +714,20 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertEqual(state.captureGeneration, generation)
     }
 
-    // Wide window: the docked column owns the right 300 points without any
-    // open flag; the conversation keeps the remaining width.
+    // Wide window beside a conversation: the docked column owns the right
+    // 300 points without any open flag; the conversation keeps the remaining
+    // width. (The transcription alone keeps its full width: OverlayChromeV3Tests.)
     let size = CGSize(width: 1200, height: 500)
     let state = OverlayState.previewFormatted()
+    let wideOwner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "resize-docked",
+        "lease_id": String(repeating: "e", count: 32), "channel": "2", "name": "lena",
+      ]))
+    let wideConversation = OverlayConversation(
+      id: wideOwner.id, channel: "2", name: "lena", owner: wideOwner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [wideConversation]))
+    state.selectConversation(wideConversation.id)
     let recorder = MicrophoneFrameRecorder()
     let host = NSHostingView(
       rootView:

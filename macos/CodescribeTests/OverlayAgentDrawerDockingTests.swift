@@ -287,6 +287,77 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     panel.orderOut(nil)
   }
 
+  func testWideTranscriptionKeepsItsWidthUntilTheRosterIsAskedFor() throws {
+    let (broadcast, lena, _) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    XCTAssertNil(state.selectedConversationID, "the transcription surface has no conversation")
+    let recorder = OverlayDrawerFrameRecorder()
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+        .frame(width: 1200, height: 500))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 1200, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
+    XCTAssertTrue(state.agentDrawerDocked, "1200 wide at 1.0 is docked")
+    XCTAssertEqual(recorder.frame, .zero, "no column eats the transcription's width unasked")
+
+    state.showAgentMonitor()
+    settle()
+    XCTAssertTrue(state.showsAgentMonitor, "docked transcription: the button opens the column")
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the asked-for roster docks")
+
+    state.hideAgentSidebar()
+    settle()
+    XCTAssertEqual(recorder.frame, .zero, "Esc gives the transcription its width back")
+
+    state.selectConversation(lena.id)
+    settle()
+    XCTAssertFalse(state.showsAgentMonitor)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation it is permanent")
+  }
+
+  func testDockedTranscriptionOpensAndClosesTheColumnThroughTheFlag() throws {
+    let (broadcast, lena, _) = try rosterFixture()
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.setAgentDrawerDocked(true)
+    XCTAssertFalse(state.dockedRosterColumnShown)
+
+    state.showAgentMonitor()
+    XCTAssertTrue(
+      state.showsAgentMonitor, "no conversation: the click opens, it has nothing to focus")
+    XCTAssertTrue(state.dockedRosterColumnShown)
+
+    state.selectConversation(lena.id)
+    XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
+    XCTAssertTrue(state.dockedRosterColumnShown, "beside a conversation the column stays")
+
+    state.showTranscription()
+    XCTAssertNil(state.selectedConversationID)
+    XCTAssertFalse(state.dockedRosterColumnShown, "back on the transcription the column is gone")
+
+    // Docking engages while the stack is open on the transcription: the stack
+    // becomes the column instead of vanishing.
+    state.setAgentDrawerDocked(false)
+    state.showAgentMonitor()
+    state.setAgentDrawerDocked(true)
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertTrue(state.dockedRosterColumnShown)
+  }
+
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)
 
   func testDockedRowsCarryTimePreviewAndBadgeAndMoveDescriptorToTooltip() throws {
