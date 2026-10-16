@@ -8240,16 +8240,6 @@
         }
       }
     },
-    "Install the agent bridge to control playback." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Zainstaluj połączenie z agentami, aby sterować odsłuchem."
-          }
-        }
-      }
-    },
     "Install the agent bridge to play replies." : {
       "localizations" : {
         "en" : {
