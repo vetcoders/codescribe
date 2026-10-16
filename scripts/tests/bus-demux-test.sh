@@ -1762,7 +1762,8 @@ out = subprocess.run(base + ["--provider", "codex", "--session", "watch-session"
                      capture_output=True, text=True, check=True)
 rows = [json.loads(line) for line in out.stdout.splitlines()]
 assert [row["delivery_id"] for row in rows] == ["b" * 24, "c" * 24, "d" * 24], rows
-assert set(rows[0]) == {"kind", "status", "coverage", "sca", "delivery_id", "text", "lease_id"}, rows[0]
+assert set(rows[0]) == {"kind", "status", "coverage", "sca", "delivery_id", "text", "lease_id", "addressed_to"}, rows[0]
+assert rows[0]["addressed_to"] == "unknown (source has no address)", rows[0]
 assert rows[0]["sca"] is True and rows[0]["text"] == long_text, rows[0]
 assert rows[1]["coverage"] == "refused" and rows[1]["sca"] is False, rows[1]
 assert rows[2]["kind"] == "routing_ambiguity" and rows[2]["sca"] is False, rows[2]

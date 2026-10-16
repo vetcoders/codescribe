@@ -514,9 +514,6 @@ private struct ConversationMessageField: NSViewRepresentable {
     override func becomeFirstResponder() -> Bool {
       let accepted = super.becomeFirstResponder()
       if accepted {
-        // AppKit resigns the transcript while accepting this editor. Reclaim
-        // the panel gate after that resignation has finished.
-        (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
         isFirstResponderActive = true
         onEditorActive(true)
         notifyFocusChange()
@@ -555,6 +552,11 @@ private struct ConversationMessageField: NSViewRepresentable {
       (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
       onEditorActive(true)
       super.mouseDown(with: event)
+      // Resigning the old transcript closes its gate during mouseDown. Only
+      // an accepted user click reclaims it; programmatic preselection stays passive.
+      if window?.firstResponder === self {
+        (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+      }
       notifyFocusChange()
     }
 
