@@ -69,7 +69,11 @@ final class AgentSendHoldTests: XCTestCase {
     for seconds in [UInt32(0), 7, 30] {
       let arguments = try RealAgentBridgeInstaller.busTextArguments(
         holdSeconds: seconds, owner: fixture.owner, root: fixture.installer.bridgeRoot)
-      XCTAssertEqual(Array(arguments.prefix(3)), ["--send-text", "--hold-seconds", String(seconds)])
+      // The owner block stays right behind --send-text and the hold trails as
+      // the last option, so publisher receipts keep their argument prefix.
+      XCTAssertEqual(arguments.first, "--send-text")
+      XCTAssertEqual(Array(arguments.suffix(2)), ["--hold-seconds", String(seconds)])
+      XCTAssertEqual(Array(arguments.dropFirst().prefix(2)), ["--channel", "1"])
     }
     XCTAssertThrowsError(try RealAgentBridgeInstaller.deliveryControlArguments(
       .release, identity: fixture.messageID, owner: fixture.owner,
