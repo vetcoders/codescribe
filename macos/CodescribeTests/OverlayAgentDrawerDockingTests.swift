@@ -155,8 +155,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertFalse(state.showsAgentMonitor, "selecting a pill closes the stack")
   }
 
-  func testPillStackClosesOnEscapeAndDimsTheConversation() throws {
-    // Esc and the click-away both route to hideAgentSidebar.
+  func testPillStackClosesOnEscapeAndStealsNeitherColorNorScroll() throws {
+    // Maciej, 2026-10-17: the open stack steals neither color nor scrolling.
+    // Esc and the name pill's toggle route to hideAgentSidebar.
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
@@ -174,10 +175,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       topOverlay.contains("if let pillStack = agentPillStack"),
       "the stack mounts under the name pill")
-    XCTAssertTrue(
+    XCTAssertFalse(
       conversation.contains("overlay-agent-pill-dismiss"),
-      "a click on the conversation closes the stack")
-    XCTAssertTrue(conversation.contains("0.42"), "the conversation dims to 42% while open")
+      "no full-area catcher: the conversation keeps its clicks and its scroll")
+    XCTAssertFalse(
+      conversation.contains("agentPillStack == nil ? 1 : "),
+      "the open stack never dims the conversation or the composer")
     XCTAssertTrue(topOverlay.contains(".onExitCommand"), "Esc closes the stack")
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     XCTAssertTrue(
