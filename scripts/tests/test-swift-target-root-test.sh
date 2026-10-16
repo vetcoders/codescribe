@@ -46,6 +46,13 @@ if name == 'cargo':
 elif name == 'xcodegen':
     assert args == ['generate'] and Path.cwd() == repo / 'macos'
     sys.exit(42 if s['mode'] == 'generation-error' else 0)
+elif name == 'xcrun':
+    assert args[:5] == ['swift', '-swift-version', '6', '-warnings-as-errors', 'scripts/tests/native-ax-probe.swift'], args
+    data = Path(os.environ['CODESCRIBE_DATA_DIR'])
+    assert Path(args[5]) == data / 'ax-probe' and data.is_dir()
+    if s['mode'] == 'ax-error':
+        sys.exit(45)
+    (data / 'ax-probe/ready').write_text('untrusted' if s['mode'] == 'ax-untrusted' else 'trusted')
 elif name == 'xcodebuild':
     assert Path.cwd() == repo / 'macos'
     assert args[:3] == ['test', '-scheme', 'Codescribe'], args
@@ -61,6 +68,8 @@ elif name == 'xcodebuild':
     assert os.environ['TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN'] == '1'
     bridge_home = Path(os.environ['TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME'])
     assert bridge_home == data / 'agent-bridge' and bridge_home.is_dir()
+    assert os.environ['TEST_RUNNER_CODESCRIBE_AX_PROBE'] == str(data / 'ax-probe')
+    assert (data / 'ax-probe/ready').read_text() == 'trusted'
     # Record the effective old project defaults too: baseline guards must execute.
     config = args[args.index('-configuration') + 1] if '-configuration' in args else 'Debug'
     settings = [a.split('=', 1)[1] for a in args if a.startswith('LIBRARY_SEARCH_PATHS=')]
@@ -154,7 +163,7 @@ def run_case(base, profile, layout, mode='success'):
         (bin_dir / 'xcodegen').write_text('#!' + sys.executable + '\n' + stub)
         (bin_dir / 'xcodegen').chmod(0o755)
     # Restrict PATH to stubs and a whitelist; even missing tools cannot hit host Xcode.
-    for name in ('python3', 'sed', 'head', 'tail', 'grep', 'tee', 'awk', 'sort', 'mktemp', 'rm', 'wc', 'tr', 'dirname', 'bash', 'mkdir'):
+    for name in ('python3', 'sed', 'head', 'tail', 'grep', 'tee', 'awk', 'sort', 'mktemp', 'rm', 'wc', 'tr', 'dirname', 'bash', 'mkdir', 'sleep', 'cp', 'cat'):
         os.symlink(sys.executable if name == 'python3' else shutil.which(name), bin_dir / name)
     for name in ('codescribe-stt-bridge.swift', 'bridge-Info.plist'):
         p = repo / 'core/stt/apple_stt' / name
@@ -188,7 +197,7 @@ def run_case(base, profile, layout, mode='success'):
     try:
         names = [c['tool'] for c in calls]
         assert not set(names) & ({'swiftc'} if mode != 'prerequisite-error' else set()), names
-        assert not set(names) & {'codesign', 'xcrun', 'clang', 'cc', 'rustc'}, names
+        assert not set(names) & {'codesign', 'clang', 'cc', 'rustc'}, names
         helpers = [c for c in calls if c['tool'] in ('codescribe-stt-bridge', 'custom-helper')]
         assert len(helpers) == (0 if mode == 'prerequisite-error' else 1), helpers
         if mode == 'prerequisite-error':
@@ -212,6 +221,8 @@ def run_case(base, profile, layout, mode='success'):
                 assert 'xcodebuild' not in names, names
                 if mode == 'helper-error':
                     assert 'Error 43' in result.stdout
+                if mode in ('ax-error', 'ax-untrusted'):
+                    assert 'Error 2' in result.stdout and 'independent AX client' in result.stdout, result.stdout
         else:
             assert result.returncode == 0, result.stdout
             assert names.count('cargo') == 1 and names.count('xcodegen') == 1, names
@@ -243,7 +254,7 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
     for mode in ('missing', 'malformed', 'relative-metadata', 'empty-metadata', 'null-metadata',
                  'control-metadata', 'metadata-error', 'missing-xcodegen', 'generation-error',
                  'xcode-error', 'zero', 'slow', 'budget', 'one-over', 'two-over',
-                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error'):
+                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error', 'ax-error', 'ax-untrusted'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')

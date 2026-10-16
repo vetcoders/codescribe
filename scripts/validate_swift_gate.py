@@ -186,6 +186,25 @@ fi'''),
 fi
 echo "=== Regenerating Xcode project from project.yml ==="
 ( cd macos && xcodegen generate ) || exit $?'''),
+    ('runner-ax-isolation', r'''mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?
+xcrun swift -swift-version 6 -warnings-as-errors scripts/tests/native-ax-probe.swift \
+  "$CODESCRIBE_DATA_DIR/ax-probe" > "$CODESCRIBE_DATA_DIR/ax-probe.log" 2>&1 &
+AX_PROBE_PID=$!
+trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true; cp "$CODESCRIBE_DATA_DIR/ax-probe.log" "$SWIFT_TEST_LOG.ax-probe.log"' EXIT
+export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"
+AX_PROBE_DEADLINE=$((SECONDS + 15))
+while [[ ! -f "$CODESCRIBE_DATA_DIR/ax-probe/ready" ]]; do
+  if ! kill -0 "$AX_PROBE_PID" 2>/dev/null || (( SECONDS >= AX_PROBE_DEADLINE )); then
+    cat "$CODESCRIBE_DATA_DIR/ax-probe.log" >&2
+    echo "test-swift: independent AX client did not start" >&2
+    exit 2
+  fi
+  sleep 0.05
+done
+if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then
+  echo "test-swift: independent AX client has no accessibility permission" >&2
+  exit 2
+fi'''),
     ('XCTest', r'''echo "=== Swift front-end tests (CodescribeTests) ==="
 cd macos || exit $?
 # Prefer the selected dylib at runtime while retaining bundled framework lookup.

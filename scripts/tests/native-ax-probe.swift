@@ -82,6 +82,8 @@ func query(_ request: Request) throws -> Reception {
 }
 guard CommandLine.arguments.count == 2 else { exit(2) }
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+try Data((AXIsProcessTrusted() ? "trusted" : "untrusted").utf8)
+  .write(to: directory.appendingPathComponent("ready"), options: .atomic)
 let deadline = Date().addingTimeInterval(900)
 while Date() < deadline {
   for input in try FileManager.default.contentsOfDirectory(
