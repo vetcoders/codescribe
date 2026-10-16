@@ -66,12 +66,7 @@ struct DictationEngineControls: View {
       ) {
         model.confirmCloudConsent()
       }
-      Button(
-        String(
-          localized: "Cancel",
-          comment: "Cloud consent confirmation: button that leaves the previous mode"),
-        role: .cancel
-      ) {}
+      Button("Cancel", role: .cancel) {}
     } message: {
       Text(
         String(
