@@ -708,8 +708,38 @@ struct OAuthClientIdButton: View {
   }
 }
 
+/// Absorbs a slider gesture so the persisted binding is written once, at the
+/// end of the drag, instead of on every tick. Writes that arrive outside an
+/// editing envelope (keyboard, accessibility) pass through unchanged.
+struct SliderCommitGate {
+  private(set) var draft: Double?
+  private(set) var isEditing = false
+
+  /// The value the control and its label should show right now.
+  func displayed(persisted: Double) -> Double { draft ?? persisted }
+
+  /// A new control value: held as draft while a gesture is in flight,
+  /// returned for immediate persistence otherwise.
+  mutating func valueChanged(_ newValue: Double) -> Double? {
+    guard isEditing else { return newValue }
+    draft = newValue
+    return nil
+  }
+
+  /// The gesture envelope: returns the one value to persist when it closes.
+  mutating func editingChanged(_ editing: Bool) -> Double? {
+    isEditing = editing
+    guard !editing, let committed = draft else { return nil }
+    draft = nil
+    return committed
+  }
+}
+
 /// One labelled seconds slider: title, the one line that says what it changes,
 /// and the live value. Shared by Agent voice timing and Lab recognition parameters.
+/// A drag holds its ticks in `SliderCommitGate` and persists once on release —
+/// every tick used to write settings.json and rebuild the Whisper catalog on
+/// the main thread through each live SettingsViewModel.
 struct SettingsSecondsSlider: View {
   let title: String
   let detail: String
@@ -718,6 +748,7 @@ struct SettingsSecondsSlider: View {
   @Binding var value: Double
   let range: ClosedRange<Double>
   let step: Double
+  @State private var gate = SliderCommitGate()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -736,17 +767,29 @@ struct SettingsSecondsSlider: View {
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(Color.primary)
       }
-      Slider(value: $value, in: range, step: step)
-        .tint(CSColor.chromeAccent)
-        .accessibilityLabel(title)
-        .accessibilityValue(valueLabel)
+      Slider(
+        value: Binding(
+          get: { gate.displayed(persisted: value) },
+          set: { newValue in
+            if let direct = gate.valueChanged(newValue) { value = direct }
+          }
+        ),
+        in: range, step: step,
+        onEditingChanged: { editing in
+          if let committed = gate.editingChanged(editing) { value = committed }
+        }
+      )
+      .tint(CSColor.chromeAccent)
+      .accessibilityLabel(title)
+      .accessibilityValue(valueLabel)
     }
   }
 
   /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
+  /// Mid-drag the label follows the draft, not the persisted value.
   private var valueLabel: String {
     String(
-      localized: "\(seconds, format: Self.seconds) s",
+      localized: "\(Float(gate.displayed(persisted: Double(seconds))), format: Self.seconds) s",
       comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
   }
 
