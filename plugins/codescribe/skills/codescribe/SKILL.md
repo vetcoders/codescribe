@@ -41,6 +41,18 @@ The full procedure is in the foundation skill's `references/history.md` under
 `<bridge-home>/runtime/skills/codescribe/` (normally
 `~/.codescribe/agent-bridge/runtime/skills/codescribe/references/history.md`).
 
+Maintain this connection until the user cancels it, or an authorized successor
+takes over/detaches it after your handoff. A reply ending or a quiet mailbox
+does not end bus tenure; keep the existing native wake mechanism armed.
+
+## Anti-patterns
+
+Do not poll `codescribe_read` or `cs-bus --read-pending` on a timer beside the
+native waiter or watch (for example every 2 seconds). Handle its actual
+notification at the next work boundary, then perform the bounded read/ACK/drain.
+Keep a quiet waiter or `--watch --bell` waiting; silence does not authorize
+cancelling it, restarting its follower or adding a second reader.
+
 ## Every received message
 
 1. Call `codescribe_read` until the mailbox is empty, then make one extra read.

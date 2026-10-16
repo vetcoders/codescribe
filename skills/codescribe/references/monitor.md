@@ -1,5 +1,20 @@
 # Monitor and agent wakeup
 
+## Anti-pattern: polling beside the listener
+
+An agent loop that runs `cs-bus --read-pending` every 2 seconds while a watch
+or native waiter is already armed duplicates the listener, floods tool output
+and spends context on an empty mailbox. Do not add such a loop, including as a
+"safety" probe after each stdout wait. The monitor forwards actual watch output;
+it does not manufacture mailbox ticks. A bounded transport wait for watch
+stdout is not a mailbox read.
+
+Keep `--watch --bell` blocked while the bus is quiet. A notification-window
+expiry renews the wrapper over the existing watch; it does not cancel the bell,
+restart the follower or require an empty mailbox read. At the next work boundary
+after a real notification, read if needed, ACK received IDs, and drain only
+until zero plus one extra read. Then return to the event-driven listener.
+
 ## Codex native queue
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
