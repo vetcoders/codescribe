@@ -76,12 +76,19 @@ private struct GlobalPlaybackMuteReceipt: Decodable, Sendable {
   let muted: Bool
 }
 
-enum AgentBroadcastPolicy: String, Decodable, Sendable {
+enum AgentBroadcastPolicy: String, Decodable, Sendable, CaseIterable {
   case on, quiet, off
 
   var receivesWake: Bool { self == .on }
   var statusSymbol: String? {
     receivesWake ? nil : "antenna.radiowaves.left.and.right.slash"
+  }
+  var menuTitle: String {
+    switch self {
+    case .on: String(localized: "Wake on channel 0 broadcasts")
+    case .quiet: String(localized: "Receive silently")
+    case .off: String(localized: "Leave channel 0")
+    }
   }
 }
 
