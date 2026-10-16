@@ -469,7 +469,16 @@ button.
 ## 2. One engine control
 
 Settings writes `CODESCRIBE_ASR_MODE` to `settings.json`; Cloud additionally
-requires explicit `CODESCRIBE_CLOUD_CONSENT`. Apple only has no Layer 1 refiner.
+requires explicit `CODESCRIBE_CLOUD_CONSENT`. Consent is granted only by an
+explicit confirmation that names the effect (CS160-F013): the Engine tab's
+Cloud selection opens a `confirmationDialog` stating that dictation audio
+will leave the Mac and be sent to the configured cloud speech provider, and
+only its Confirm handler (`SettingsViewModel.confirmCloudConsent`) writes
+`granted`. Cancel leaves the previous mode and consent untouched. Leaving
+Cloud for Local power or Apple only writes `denied` when a grant was
+standing, so selecting Cloud again always asks again. The Rust core stays
+fail-closed on consent independently of this Swift UI path (`core/config/cloud_asr.rs`).
+Apple only has no Layer 1 refiner.
 Local Power arms local refinement by default. Cloud uses the live provider
 factory and reports `live_endpoint_missing` or `live_key_missing` when unconfigured.
 Launch seals the controller before Swift restores provider access, so every

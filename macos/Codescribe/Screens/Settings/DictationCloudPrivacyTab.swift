@@ -4,9 +4,11 @@ import SwiftUI
 /// rest on demand: the cloud status (the selected mode and the stored consent
 /// record as two separate rows), two scannable egress rows (Audio, Text), and
 /// the full privacy details behind a collapsed disclosure — kept, not cut.
-/// Copy is pinned by `CloudPrivacyCopyTests`; the ASR picker on the Engine tab
-/// is the clickable grant, and Cloud never displays without a granted consent
-/// record.
+/// Copy is pinned by `CloudPrivacyCopyTests`; selecting Cloud on the Engine
+/// tab opens a `confirmationDialog` naming the effect, and only confirming it
+/// grants consent (`SettingsViewModel.confirmCloudConsent`). Cloud never
+/// displays without a granted consent record, and leaving Cloud for either
+/// on-device lane revokes the grant.
 struct DictationCloudPrivacyTab: View {
   @ObservedObject var model: SettingsViewModel
   @State private var showingPrivacyDetails = false

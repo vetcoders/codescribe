@@ -207,7 +207,8 @@ final class RealSettingsEngine: SettingsEngine {
       PendingToolApproval(
         callID: request.callId, sessionID: request.sessionId, threadID: request.threadId,
         tool: request.tool, server: request.server, risk: request.risk,
-        summary: request.summary, command: request.command, cwd: request.cwd, paths: request.paths
+        summary: request.summary, command: request.command, cwd: request.cwd,
+        paths: request.paths, arguments: request.arguments
       )
     }
   }

@@ -140,9 +140,10 @@ final class CloudPrivacyCopyTests: XCTestCase {
     }
   }
 
-  /// Selecting Cloud on the Engine picker is the explicit grant: it writes the
-  /// consent record and the mode together. The copy above describes this write.
-  func testPickerPersistsCloudOnlyAfterExplicitGrant() {
+  /// A bare Cloud selection on the Engine picker writes nothing (CS160-F013):
+  /// the consent record and the mode are written together only by the
+  /// confirmation that names the effect, and leaving Cloud revokes the grant.
+  func testCloudIsGrantedOnlyByTheConfirmationAndRevokedOnLeave() {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
     persisted.asrMode = nil
@@ -166,10 +167,79 @@ final class CloudPrivacyCopyTests: XCTestCase {
       permissionProbe: MockPermissionProbe()
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
+
     model.setAsrMode("cloud")
+    XCTAssertTrue(writes.isEmpty, "selecting Cloud without confirming must not write")
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.confirmCloudConsent()
     XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
     XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
+    XCTAssertTrue(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.setAsrMode("local_power")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "local_power"])
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.confirmCloudConsent()
+    writes.removeAll()
+    model.setAsrMode("apple_only")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "apple_only"])
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
+  }
+
+  /// PR #173 review: a revocation whose write fails leaves the grant visible,
+  /// and the next selection of the same lane retries the revocation instead of
+  /// writing only the mode — for both on-device lanes.
+  func testFailedRevocationStaysGrantedAndTheRetryRevokes() {
+    for lane in ["local_power", "apple_only"] {
+      var batches: [[String]] = []
+      var failNextBatch = false
+      var persisted = CsSettings.sample
+      persisted.asrMode = "cloud"
+      persisted.resolvedAsrMode = "cloud"
+      persisted.cloudConsent = "granted"
+      let model = SettingsViewModel(
+        engine: MockSettingsEngine(
+          settingsLoader: { persisted },
+          updateConfigManyObserver: { entries in
+            batches.append(entries.map(\.key))
+            if failNextBatch {
+              failNextBatch = false
+              throw NSError(domain: "CloudPrivacyCopyTests", code: 1)
+            }
+            for entry in entries {
+              if entry.key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = entry.value }
+              if entry.key == "CODESCRIBE_ASR_MODE" {
+                persisted.asrMode = entry.value
+                persisted.resolvedAsrMode = entry.value
+              }
+            }
+          }
+        ),
+        permissionProbe: MockPermissionProbe()
+      )
+      XCTAssertTrue(model.cloudConsentGranted, lane)
+
+      failNextBatch = true
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertTrue(model.cloudConsentGranted, "\(lane): a failed revocation must not look revoked")
+      XCTAssertEqual(persisted.cloudConsent, "granted", lane)
+
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.count, 2, "\(lane): the retry writes the revocation again")
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertEqual(persisted.cloudConsent, "denied", lane)
+      XCTAssertFalse(model.cloudConsentGranted, lane)
+    }
   }
 
   /// The status rows render the live mode label and a consent state that

@@ -193,7 +193,8 @@ final class AgentActivityPresentationTests: XCTestCase {
       summary: callID,
       command: nil,
       cwd: nil,
-      paths: []
+      paths: [],
+      arguments: nil
     )
   }
 

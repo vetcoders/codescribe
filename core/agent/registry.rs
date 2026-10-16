@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use super::permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
+use super::redaction::{redact_command_line, redacted_arguments};
 use super::types::ImageAsset;
 
 /// Wire-level declaration of a tool as the model sees it: the name it calls,
@@ -181,6 +182,10 @@ pub struct ToolApprovalRequest {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub paths: Vec<String>,
+    /// Redacted, bounded snapshot of the call's own arguments. Present for any
+    /// call that carries arguments, whatever its tool's validator produced, so
+    /// a card is never only a tool name and a risk tier.
+    pub arguments: Option<String>,
 }
 
 /// Verdict of the permission gate. The three variants are exhaustive by
@@ -447,10 +452,14 @@ impl ToolRegistry {
                 tool: name.to_string(),
                 origin: tool.policy.origin.clone(),
                 risk: tool.policy.risk,
-                summary: preview.summary,
-                command: preview.command,
+                // Validators compose summaries and command lines from the
+                // call's own strings; the card shows them only through the
+                // one redaction authority, whatever the tool.
+                summary: redact_command_line(&preview.summary),
+                command: preview.command.as_deref().map(redact_command_line),
                 cwd: preview.cwd,
                 paths: preview.paths,
+                arguments: redacted_arguments(input),
             })),
         };
         (decision, targets)
@@ -1160,6 +1169,153 @@ mod tests {
         assert_eq!(
             registry.decide("future_tool", &json!({}), "c", "s", "t"),
             ToolDecision::Allow
+        );
+    }
+
+    /// CS160-R010: a secret under any key spelling, at any depth, never reaches
+    /// the approval card, while the call's ordinary arguments stay readable.
+    #[test]
+    fn redacted_arguments_hide_secrets_at_any_depth() {
+        let snapshot = super::redacted_arguments(&json!({
+            "path": "/work/notes.md",
+            "headers": {"Authorization": "Bearer live-bearer", "X-Api-Key": "live-key"},
+            "token": {"value": "live-token"},
+            "items": [{"password": "live-password"}],
+        }))
+        .expect("a call with arguments has a snapshot");
+        for secret in ["live-bearer", "live-key", "live-token", "live-password"] {
+            assert!(
+                !snapshot.contains(secret),
+                "{secret} leaked into {snapshot}"
+            );
+        }
+        assert_eq!(snapshot.matches("[REDACTED]").count(), 4);
+        assert!(snapshot.contains("/work/notes.md"));
+    }
+
+    /// A call without arguments gets no empty block on its card.
+    #[test]
+    fn redacted_arguments_are_absent_for_a_call_without_arguments() {
+        assert_eq!(super::redacted_arguments(&json!({})), None);
+        assert_eq!(super::redacted_arguments(&serde_json::Value::Null), None);
+    }
+
+    /// Long values are cut with a count of what was left out, and the whole
+    /// snapshot is bounded on a character boundary even when multibyte text
+    /// straddles the cut.
+    #[test]
+    fn redacted_arguments_are_bounded_and_say_what_was_cut() {
+        let long = "ż".repeat(1000);
+        let one = super::redacted_arguments(&json!({"content": long})).expect("snapshot");
+        assert!(one.contains("… [800 more characters]"), "{one}");
+
+        let mut fields = serde_json::Map::new();
+        for index in 0..100 {
+            fields.insert(format!("field_{index:03}"), json!("ż🙂".repeat(150)));
+        }
+        let many = super::redacted_arguments(&serde_json::Value::Object(fields)).expect("snapshot");
+        let (body, marker) = many
+            .rsplit_once("\n… [truncated, ")
+            .expect("an oversized snapshot ends with a truncation marker");
+        assert!(body.len() <= crate::agent::redaction::MAX_PREVIEW_ARGUMENTS_BYTES);
+        assert!(marker.ends_with(" more bytes]"));
+    }
+
+    /// The DoD case: two calls with different targets and contents produce
+    /// different cards even for a tool whose validator adds nothing, because
+    /// the card carries the call's own redacted arguments.
+    #[test]
+    fn approval_card_carries_the_suspended_call_arguments() {
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "type_text", ToolRisk::Mutating);
+        let card = |input: serde_json::Value| {
+            let ToolDecision::RequireApproval(request) =
+                registry.decide("type_text", &input, "c", "s", "t")
+            else {
+                panic!("a mutating native tool must ask");
+            };
+            request.arguments.expect("the card names the arguments")
+        };
+        let first = card(json!({"text": "git push origin main", "target": "Terminal"}));
+        let second = card(json!({"text": "echo hello", "target": "Notes", "api_key": "k-1"}));
+        assert_ne!(first, second);
+        assert!(first.contains("git push origin main") && first.contains("Terminal"));
+        assert!(second.contains("Notes") && !second.contains("k-1"));
+    }
+
+    /// PR #173 review (Copilot): the complete approval request — not only one
+    /// field — carries no credential, whether it sits in a command string or
+    /// in an argv pair.
+    #[test]
+    fn approval_request_leaks_no_credential() {
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "start_process", ToolRisk::ProcessControl);
+        let ToolDecision::RequireApproval(request) = registry.decide(
+            "start_process",
+            &json!({
+                "command": "curl --password swordfish -H 'X-Api-Key: live-key' example.test",
+                "args": ["--token", "abc", "--force"],
+            }),
+            "c",
+            "s",
+            "t",
+        ) else {
+            panic!("process control must ask");
+        };
+        let rendered = format!("{request:?}");
+        for secret in ["swordfish", "live-key"] {
+            assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
+        }
+        let arguments = request.arguments.expect("arguments");
+        assert!(!arguments.contains("\"abc\""), "{arguments}");
+        assert!(arguments.contains("example.test") && arguments.contains("--force"));
+    }
+
+    /// PR #173 review round 4: a validator's summary and command line reach
+    /// the card only through the shared redaction, so a query or command a
+    /// tool copies from the call cannot expose a credential.
+    #[test]
+    fn validator_text_reaches_the_card_redacted() {
+        let mut registry = ToolRegistry::new();
+        let validator: super::ToolInputValidator = Arc::new(|input: &serde_json::Value| {
+            let query = input["query"].as_str().unwrap_or_default();
+            Ok(super::ToolCallPreview {
+                summary: format!("Search for '{query}' under /Users/op/.aws"),
+                command: Some(format!("grep -r {query} --password hunter2 .")),
+                cwd: None,
+                paths: Vec::new(),
+            })
+        });
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "search_files".to_string(),
+                    description: "search".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolExecutionPolicy::native(ToolRisk::Mutating),
+                Some(validator),
+            )
+            .expect("register");
+        let ToolDecision::RequireApproval(request) = registry.decide(
+            "search_files",
+            &json!({"query": "TOKEN=live-token"}),
+            "c",
+            "s",
+            "t",
+        ) else {
+            panic!("a mutating tool must ask");
+        };
+        assert!(
+            !format!("{request:?}").contains("live-token"),
+            "{request:?}"
+        );
+        assert!(!format!("{request:?}").contains("hunter2"), "{request:?}");
+        assert!(
+            request.summary.contains("/Users/op/.aws"),
+            "{}",
+            request.summary
         );
     }
 }
