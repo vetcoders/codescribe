@@ -17,6 +17,12 @@
   revisions do not manufacture finals. Timed Apple phrase ends may qualify an
   existing owner at a measured, calibrated Silero valley. Neither string
   changes nor an empty partial prove a new physical phrase.
+- Cloud's live transport follows the capture owner's silence commits from the
+  first PCM frame; elapsed wall time and event polling never flush an open
+  utterance. Stop commits the remaining audio with `end`. This preserves the
+  first utterance's acoustic context instead of cutting it every 2.5 seconds
+  before the first silence decision. Provider completion and ledger admission
+  remain separate requirements; removing those cuts is not a quality verdict.
 - `CaptureWindowPlan` schedules **9-second windows every 3 seconds** on the
   original capture clock, with a clipped last window at EOF. That is 6 seconds
   of overlap between full windows, not the earlier 4-second/1-second design.
