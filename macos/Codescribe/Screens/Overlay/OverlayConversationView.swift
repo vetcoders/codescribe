@@ -1,5 +1,28 @@
 import SwiftUI
 
+/// Maciej (2026-10-16): no outline on the bubble's agent name — hovering
+/// brightens the color slightly, and nothing more; the click opens the chat.
+private struct BubbleOwnerNameButton: View {
+  let name: String
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let messageID: String
+  let action: () -> Void
+  @State private var hovered = false
+
+  var body: some View {
+    Button(action: action) {
+      Text(verbatim: name)
+        .font(.system(size: 10 * textScale, weight: .bold))
+        .foregroundStyle(hovered ? palette.primaryText.color : palette.mutedText.color)
+    }
+    .buttonStyle(.plain)
+    .onHover { hovered = $0 }
+    .accessibilityIdentifier("overlay-message-owner-\(messageID)")
+    .accessibilityHint(Text("Opens this agent's conversation"))
+  }
+}
+
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
@@ -362,14 +385,9 @@ struct OverlayConversationView: View {
         } else if let owner = message.owner, let onOpenOwnerConversation,
           owner.id != conversation.owner?.id
         {
-          Button { onOpenOwnerConversation(owner) } label: {
-            Text(verbatim: owner.name)
-              .font(.system(size: 10 * textScale, weight: .bold))
-          }
-          .buttonStyle(.plain)
-          .csFocusOutline()
-          .accessibilityIdentifier("overlay-message-owner-\(message.id)")
-          .accessibilityHint(Text("Opens this agent's conversation"))
+          BubbleOwnerNameButton(
+            name: owner.name, palette: palette, textScale: textScale, messageID: message.id
+          ) { onOpenOwnerConversation(owner) }
         } else {
           Text(verbatim: message.owner?.name ?? conversation.name)
             .font(.system(size: 10 * textScale, weight: .bold))

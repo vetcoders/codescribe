@@ -236,8 +236,16 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// agent's own chat, and an owner without a conversation changes nothing.
   func testBubbleAgentNameOpensThatAgentsConversation() throws {
     let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains("Button { onOpenOwnerConversation(owner) } label: {"))
+    XCTAssertTrue(conversation.contains("BubbleOwnerNameButton("))
     XCTAssertTrue(conversation.contains("owner.id != conversation.owner?.id"))
+    // Maciej (2026-10-16): hover brightens the name; no outline, nothing more.
+    XCTAssertTrue(
+      conversation.contains("hovered ? palette.primaryText.color : palette.mutedText.color"))
+    let nameButton = try XCTUnwrap(
+      conversation.range(of: "struct BubbleOwnerNameButton").map { range in
+        String(conversation[range.lowerBound...].prefix(900))
+      })
+    XCTAssertFalse(nameButton.contains("csFocusOutline"))
     let overlay = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(overlay.contains("onOpenOwnerConversation: { state.openConversation(for: $0) },"))
 
