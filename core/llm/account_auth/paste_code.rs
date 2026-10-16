@@ -124,7 +124,7 @@ pub async fn exchange_pasted_code(
 
     let code = split_pasted_code(pasted, expected_state)?;
     let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let request = reqwest::Client::new().post(endpoint);
+    let request = super::oauth_http_client(issuer)?.post(endpoint);
     let request = match config.encoding {
         TokenRequestEncoding::Json => request.json(&serde_json::json!({
             "grant_type": "authorization_code",
