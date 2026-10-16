@@ -32,6 +32,9 @@ on:
   merge_group:
     types: [checks_requested]
 
+permissions:
+  contents: read
+
 # Event and ref isolate the group; queue (merge_group) runs are never cancelled
 # by a newer run, because a cancelled queue check removes the entry.
 concurrency:

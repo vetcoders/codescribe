@@ -377,7 +377,7 @@ class RuntimeLifecycleTests(BASE.Fixture):
         output=io.StringIO();ownership=[]
         def factory(server):
             real_server,self.server=self.server,server
-            pump=self.configure();self.server=real_server
+            self.configure();self.server=real_server
             ownership.append(server)
             return SimpleNamespace(start=lambda:ownership.append('started'),
                 stop=lambda:(server.events.close(),ownership.append('closed')))
