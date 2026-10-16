@@ -45,9 +45,14 @@ the real required checks.
 
 ## Staged activation (integrator only)
 
-1. Land the workflow change on `main` through the normal protected path. Do not
-   deploy the candidate wholesale.
-2. Confirm on `main` that all three workflows contain `merge_group` and that a
+1. Land the minimal bootstrap on `main` through the normal protected path:
+   the hosted `rust.yml` (it produces the required `Clippy + Tests` status)
+   and `semgrep.yml`, both with `merge_group`. Do not deploy the candidate
+   wholesale. `main` has no localization consumer or prose ratchet, so
+   `l10n.yml` is not a prerequisite there; admit it as a standalone workflow
+   only together with the consumers it checks, taken from the candidate. The
+   candidate keeps all three workflows as one contract.
+2. Confirm on `main` that those workflows contain `merge_group` and that a
    `Clippy + Tests` run exists for that tip.
 3. Only then add the `merge_queue` rule to the `main` ruleset (repo ruleset
    `24525207`), keeping the existing `Clippy + Tests` requirement. Reference
@@ -65,8 +70,8 @@ the real required checks.
 ## Inspecting the queue
 
 - Entries and head: GraphQL
-  `repository.mergeQueue(branch: "main") { entries { position state pullRequest { number headRefOid } } }`,
-  or the repository Merge queue page.
+  `repository(owner: "vetcoders", name: "codescribe") { mergeQueue(branch: "main") { entries(first: 20) { nodes { position state pullRequest { number headRefOid } } pageInfo { hasNextPage endCursor } } } }`
+  (read-only), or the repository Merge queue page.
 - Checks for the head entry: runs for event `merge_group` on branch
   `gh-readonly-queue/main/pr-<N>-<sha>`
   (`gh run list --event merge_group --branch ...`).

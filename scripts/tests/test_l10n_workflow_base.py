@@ -24,9 +24,11 @@ def base_selection_script():
         script.append(line[indent:])
     return "\n".join(script)
 
+HOSTILE = 'x"; touch pwned; $(touch pwned) `touch pwned`'
+
 
 class LocalizationWorkflowBaseTests(unittest.TestCase):
-    def run_selection(self, event, ref, before, base="main", queue_base=""):
+    def run_selection(self, event, ref, before, base="main", queue_base="", script=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = root / "git"
@@ -44,8 +46,8 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
                    "GITHUB_ENV": str(output), "GIT_TEST_LOG": str(log),
                    "EVENT_NAME": event, "REF_NAME": ref, "BEFORE_SHA": before, "BASE_REF": base,
                    "MERGE_GROUP_BASE_SHA": queue_base}
-            done = subprocess.run(["/bin/bash", "-e", "-c", base_selection_script()],
-                                  env=env, text=True, capture_output=True, check=False, timeout=10)
+            done = subprocess.run(["/bin/bash", "-e", "-c", script or base_selection_script()],
+                                  env=env, cwd=root, text=True, capture_output=True, check=False, timeout=10)
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             self.assertFalse((root / "pwned").exists(), "ref data reached the shell as code")
             return done.returncode, output.read_text(), calls
@@ -88,8 +90,19 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
             self.assertEqual(output, "", queue_base)
             self.assertEqual(calls, [], queue_base)
 
+    def test_side_effect_detector_sees_an_interpolated_ref(self):
+        # Negative control: if the ref were pasted into `run:` the way
+        # `${{ github.base_ref }}` would be, the same payload executes in the
+        # private temp cwd and the detector in run_selection fires.
+        payload = 'x"; touch pwned; echo "'  # balanced, so the pasted script still parses
+        unsafe = base_selection_script().replace("$BASE_REF", payload)
+        with self.assertRaises(AssertionError) as caught:
+            self.run_selection("pull_request", "1/merge", "", "main", script=unsafe)
+        self.assertIn("ref data reached the shell as code", str(caught.exception))
+        self.assertFalse((ROOT / "pwned").exists())
+
     def test_hostile_branch_names_stay_data(self):
-        hostile = 'x"; touch pwned; $(touch pwned) `touch pwned`'
+        hostile = HOSTILE
         code, output, calls = self.run_selection("pull_request", "1/merge", "", hostile)
         self.assertEqual(code, 0)
         self.assertEqual(output, f"L10N_BASE=origin/{hostile}\n")
