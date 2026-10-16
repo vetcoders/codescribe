@@ -791,7 +791,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor && !agentDrawerDocked
+    showsAgentMonitor = fold.agentMonitor && !dockedColumnAlreadyOnScreen
   }
 
   func clearPointerHover() {
@@ -1080,12 +1080,26 @@ final class OverlayState {
   /// Bumped when the name pill asks the docked column to focus its selected row.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
 
-  /// The layout owns the call. Engaging the docked column closes the pill
-  /// stack; the selection, drafts and scroll follow survive the switch.
+  /// The docked column is permanent beside a conversation. The transcription
+  /// surface keeps its full width (OverlayChromeV3Tests) and shows the column
+  /// only while the roster was asked for, so `showsAgentMonitor` still drives
+  /// it there.
+  private var dockedColumnAlreadyOnScreen: Bool {
+    agentDrawerDocked && selectedConversationID != nil
+  }
+  /// What the wide canvas hosts as the roster column this pass.
+  var dockedRosterColumnShown: Bool {
+    agentDrawerDocked && (selectedConversationID != nil || showsAgentMonitor)
+  }
+
+  /// The layout owns the call. Engaging the docked column beside a
+  /// conversation closes the pill stack; the selection, drafts and scroll
+  /// follow survive the switch. On the transcription surface the open stack
+  /// becomes the column instead of vanishing.
   func setAgentDrawerDocked(_ docked: Bool) {
     guard docked != agentDrawerDocked else { return }
     agentDrawerDocked = docked
-    if docked { showsAgentMonitor = false }
+    if docked, selectedConversationID != nil { showsAgentMonitor = false }
   }
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
@@ -1467,9 +1481,10 @@ final class OverlayState {
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    if agentDrawerDocked {
-      // Docked: the column is already on screen, so the click focuses the
-      // selected row instead of opening anything (mockup, Founder 2026-10-16).
+    if dockedColumnAlreadyOnScreen {
+      // Docked beside a conversation: the column is already on screen, so the
+      // click focuses the selected row instead of opening anything (mockup,
+      // Founder 2026-10-16).
       agentDrawerFocusRevision &+= 1
     } else {
       showsAgentMonitor = true
@@ -1546,8 +1561,9 @@ final class OverlayState {
     }
     guard matches.count == 1 else {
       selectedConversationID = nil
-      // Docked the roster is always visible; the flag drives only the pills.
-      if !agentDrawerDocked { showsAgentMonitor = true }
+      // No conversation to dock beside: the flag shows the roster, as the
+      // column on a wide window or as the pill stack on a narrow one.
+      showsAgentMonitor = true
       return
     }
     selectedConversationID = matches[0].id

@@ -404,7 +404,16 @@ struct DictationOverlayView: View {
       GeometryReader { geometry in
         let docked = OverlayAgentDrawerLayout.isDocked(
           windowWidth: geometry.size.width, textScale: textScale)
-        HStack(spacing: 0) {
+        // The column is permanent beside a conversation; the transcription
+        // keeps its full width until the Agents button asks for the roster.
+        let columnShown =
+          docked && !state.isCollapsed
+          && (state.selectedConversation != nil || state.showsAgentMonitor)
+        let canvasWidth = max(
+          0,
+          geometry.size.width
+            - (columnShown ? OverlayAgentDrawerLayout.drawerWidth(textScale: textScale) : 0))
+        HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
             // morph, over the same duration (it follows the distance since
@@ -459,6 +468,10 @@ struct DictationOverlayView: View {
               .accessibilityHidden(state.isCollapsed)
             }
           }
+          // The cell takes the geometry's own numbers: inside an HStack the
+          // AppKit transcript would otherwise be sized to its text's intrinsic
+          // width and centred (OverlayChromeV3Tests, 900 wide).
+          .frame(width: canvasWidth, height: geometry.size.height)
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -482,13 +495,17 @@ struct DictationOverlayView: View {
           // The wide window docks the roster as a column beside the
           // conversation; nothing overlays the bubbles (mockup, Founder
           // 2026-10-16). Below the threshold the name pill opens the pill
-          // stack instead.
-          if docked && !state.isCollapsed {
+          // stack instead. Esc on the transcription gives the width back.
+          if columnShown {
             agentDrawerColumn(maximumHeight: geometry.size.height)
               .transition(.move(edge: .trailing).combined(with: .opacity))
+              .onExitCommand { state.hideAgentSidebar() }
           }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: docked)
+        // Animate the column's arrival, never the bare docked flag: that flag
+        // flips on the first geometry pass and would animate the transcript
+        // from its intrinsic width for 240 ms (OverlayChromeV3Tests, 900 wide).
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: columnShown)
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
@@ -952,7 +969,7 @@ struct DictationOverlayView: View {
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =
       !state.isCollapsed
-      && (state.showsAgentMonitor || state.agentDrawerDocked || state.selectedConversationID != nil)
+      && (state.showsAgentMonitor || state.selectedConversationID != nil)
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
     view.onShowTranscription = state.showTranscription
