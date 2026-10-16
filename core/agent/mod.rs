@@ -27,6 +27,8 @@ pub mod event;
 pub mod permissions;
 /// The [`AgentProvider`] trait and its per-request [`StreamOptions`].
 pub mod provider;
+/// The one redaction authority for cards, argument snapshots and tool summaries.
+pub mod redaction;
 /// Tool registry: definitions, execution policy, risk tiers, approval requests.
 pub mod registry;
 /// Durable run-monitor harness for external Vibecrafted runs.
@@ -65,10 +67,13 @@ pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
 pub use provider::{AgentProvider, StreamOptions};
+pub use redaction::{
+    CommandRedactor, contains_sensitive_key, redact_command_line, redacted_arguments,
+};
 pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
     ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
-    ToolRisk, redacted_arguments,
+    ToolRisk,
 };
 pub use run_monitor::{
     HeartbeatKind, RunMonitorRecord, RunMonitorRegistration, RunMonitorState, RunMonitorStore,

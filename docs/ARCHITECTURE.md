@@ -451,18 +451,37 @@ Two sources feed it, and there is no third:
   `confirm_targets` re-runs the validator right before dispatch and refuses a
   call whose targets moved while the operator was deciding.
 - The registry adds `arguments`: the call's own JSON, rendered by
-  `redacted_arguments`. Any value under a key containing `token`, `key`,
-  `secret`, `password`, `passwd`, `authorization`, `auth`, `cookie`,
-  `credential` or `bearer` (case-insensitive, at any depth, whole subtree)
-  becomes `[redacted]`; a string over 200 characters and a snapshot over 4 KiB
-  are cut with an explicit marker. A call with no arguments carries none, so a
+  `redacted_arguments`. A call with no arguments carries none, so a
   no-argument tool grows no empty block.
+
+One redaction module serves all of it: `core/agent/redaction.rs` is the single
+authority for the card's command line, the card's argument snapshot and the
+Tool Activity summary of a finished call, with one placeholder (`[REDACTED]`)
+and one key list. There is no second redactor — a secret hidden on one surface
+can no longer reappear on the next.
+
+- By key: any value under a key normalized (ASCII alphanumerics, lowercased)
+  to contain `token`, `password`, `passwd`, `secret`, `apikey`, `accesskey`,
+  `privatekey`, `authorization`, `cookie`, `credential`, `bearer` or
+  `environment` is replaced whole, at any depth, subtree included. Bare `key`
+  and `auth` are deliberately absent: they would blank a summary that merely
+  mentions an "author" or a "keyboard".
+- By command token: every surviving string value also passes through
+  `redact_command_line`, because a secret inside an ordinary string sits under
+  no key at all — `command: "curl -H 'Authorization: Bearer …'"` is redacted
+  in the snapshot exactly as it is in `preview.command`. A `KEY=value` token
+  becomes `KEY=[REDACTED]`; a marker token hides the next argument, or the
+  next two after `authorization` / `cookie`. Whitespace is preserved. In a
+  string array the redactor state carries across elements, so the argv pair
+  `["--token", "abc"]` hides `abc`; a non-string element ends that run.
+- Bounds are unchanged: a string over 200 characters and a snapshot over
+  4 KiB are cut with an explicit marker.
 
 Coverage: every filesystem tool names its resolved target and the size of what
 it writes or replaces; every process tool (`run_process`, `stop_process`,
 `observe_process`, `project_build`, `project_test`) names the program, the
-synthetic argv line and the resolved cwd, which also travels as that call's
-authorization target; every MCP tool names its server and upstream tool, with
+redacted synthetic argv line and the resolved cwd, which also travels as that
+call's authorization target; every MCP tool names its server and upstream tool, with
 Desktop Commander additionally contributing its hardened per-tool checks.
 Anything else is still fully described by the argument snapshot.
 

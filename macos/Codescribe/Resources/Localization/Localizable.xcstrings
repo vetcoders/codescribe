@@ -14286,13 +14286,13 @@
         }
       }
     },
-    "Secret-looking values read [redacted] and long values are shortened." : {
+    "Secret-looking values read [REDACTED] and long values are shortened." : {
       "comment" : "Tooltip for the argument snapshot on an agent permission card",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wartości wyglądające na sekrety mają postać [redacted], a długie wartości są skracane."
+            "value" : "Wartości wyglądające na sekrety mają postać [REDACTED], a długie wartości są skracane."
           }
         }
       }
