@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
+
 ## [0.17.0] - 2026-10-16
 
 - **Upgrade from earlier builds:** install 0.17.0 once from the DMG. Subsequent signed updates compare release versions; the old branch-derived build counters remain diagnostic only.
