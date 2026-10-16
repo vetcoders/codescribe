@@ -950,7 +950,7 @@ default = "https://auth.openai.com"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (proxies and staging only)"
+description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (HTTPS proxies and staging only; credential requests never follow redirects)"
 
 [vars.CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""
@@ -964,7 +964,7 @@ default = "https://console.anthropic.com"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
+description = "Override the Anthropic OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects)"
 
 [vars.LLM_XAI_ENDPOINT]
 default = "https://api.x.ai/v1/responses"
@@ -985,7 +985,7 @@ default = "https://auth.x.ai"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the xAI OAuth issuer base URL used for account login (proxies and staging only). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
+description = "Override the xAI OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
 
 [vars.LLM_USE_STREAMING]
 default = "1"
@@ -1802,3 +1802,10 @@ type = "bool"
 reload = "restart"
 category = "build"
 description = "Build-time developer surface bit shared by Rust and Swift. The supported app build verifies private Voice Lab access and its public-key pack before accepting 1. Distribution release forces 0. Runtime environment cannot enable a production binary."
+
+[vars.CODESCRIBE_AX_PROBE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Private request mailbox for the parent-owned external accessibility client in make test-swift. Passed through TEST_RUNNER_ to the isolated XCTest host; never read by app runtime."

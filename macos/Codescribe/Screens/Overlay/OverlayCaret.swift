@@ -38,6 +38,7 @@ struct TranscriptActivityText: NSViewRepresentable {
     {
       let selection = view.selectedRange()
       view.textStorage?.setAttributedString(incoming)
+      view.invalidateIntrinsicContentSize()
       view.setSelectedRange(
         LiveTranscriptSelectionPolicy.preservedRange(selection, updatedLength: incoming.length))
     }
@@ -54,17 +55,22 @@ struct TranscriptActivityText: NSViewRepresentable {
     let markerSpace: CGFloat = 12
     let idealWidth = min(660, (view.textStorage?.size().width ?? 0) + markerSpace)
     let width = max(markerSpace + 1, proposal.width ?? idealWidth)
-    view.setFrameSize(NSSize(width: width, height: max(1, view.frame.height)))
     view.textContainer?.containerSize = NSSize(
       width: width - markerSpace, height: .greatestFiniteMagnitude)
+    var height = ceil(fontSize * 1.3)
     if let manager = view.textLayoutManager, let range = manager.textContentManager?.documentRange {
       manager.ensureLayout(for: range)
+      manager.enumerateTextLayoutFragments(
+        from: range.location, options: [.ensuresLayout, .ensuresExtraLineFragment]
+      ) { fragment in
+        height = max(height, ceil(fragment.layoutFragmentFrame.maxY + view.textContainerOrigin.y))
+        return true
+      }
     }
-    view.sizeToFit()
     view.needsLayout = true
-    // The marker hosts SwiftUI. Let AppKit lay it out after this SwiftUI size
-    // query finishes; re-entering the hosting graph here is not permitted.
-    return NSSize(width: width, height: max(ceil(fontSize * 1.3), view.frame.height))
+    // SwiftUI owns the view frame. Measure the complete TextKit document rather
+    // than calling sizeToFit, whose viewport estimate can retain an old height.
+    return NSSize(width: width, height: height)
   }
 }
 

@@ -663,6 +663,9 @@ final class LiveTranscriptNativeTextView: NSTextView {
     // NSTextInputClient supplies TextKit's actual insertion rectangle, including
     // wrapped lines and the empty line after a trailing newline. No selection
     // or scroll commands are issued by the marker.
+    if let manager = textLayoutManager, let range = manager.textContentManager?.documentRange {
+      manager.ensureLayout(for: range)
+    }
     let end = NSRange(location: (string as NSString).length, length: 0)
     let screenRect = firstRect(forCharacterRange: end, actualRange: nil)
     let caret = convert(window.convertFromScreen(screenRect), from: nil)
