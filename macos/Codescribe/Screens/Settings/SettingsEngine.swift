@@ -1029,6 +1029,7 @@ extension CsSettings {
     startAtLogin: false,
     agentEnterSends: true,
     agentAutoSend: false,
+    agentSendHoldSec: 10,
     dumpAudioLogs: false,
     // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
     llmFormattingProvider: "openai-responses",

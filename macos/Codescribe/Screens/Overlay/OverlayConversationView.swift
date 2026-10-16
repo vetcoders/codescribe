@@ -48,19 +48,42 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
-  /// Opens the Agents drawer from the name pill, for All as for one agent.
+  /// Opens the Agents roster from the name pill: the docked column focuses its
+  /// selected row, the narrow window toggles the pill stack (state decides).
   var onShowAgents: (() -> Void)? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
+  /// The narrow-mode roster mounted under the name pill while it is open.
+  /// Nil whenever the stack is closed or the wide window docks the roster.
+  var agentPillStack: OverlayAgentPillStack? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
   @State private var scrollFollow = StreamScrollFollowState()
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
+  @State private var editingMessageID: String?
+  @State private var revisionDraft = ""
+  @State private var revisionFocus: UInt64 = 0
+  @State private var pendingDeliveryControls: Set<String> = []
+  @State private var deliveryControlErrors: [String: String] = [:]
+
+  var onDeliveryControl:
+    (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
+      async throws -> Void = { control, message, owner, text in
+        guard let identity = message.controlIdentity else { throw CocoaError(.fileReadCorruptFile) }
+        try await RealAgentBridgeInstaller.controlBusMessage(
+          control, identity: message.captureSessionID ?? identity,
+          owner: owner, busPath: message.busPath, text: text)
+      }
 
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
   private var followsLatest: Bool { scrollFollow.followingLive }
+
+  /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
+  static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
+    max(0, min(660 * textScale, (contentWidth - 40) * 0.82))
+  }
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
   var activeCaptureMessageID: String? {
@@ -71,79 +94,115 @@ struct OverlayConversationView: View {
   var body: some View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
-        trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
-          .padding(.trailing, OverlayResizeHit.scrollbarInset)
-          .transaction { transaction in
-            // Keep retained message geometry stable during the panel's transition.
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-          }
-          .overlay(alignment: .top) {
-            VStack(spacing: 0) {
-              Color.clear.frame(height: topInset)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-              navigation
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
-                .onGeometryChange(for: CGFloat.self) {
-                  $0.size.height
-                } action: {
-                  navigationHeight = $0
-                }
+        trackedMessages(
+          maxBubbleWidth: Self.bubbleCap(
+            contentWidth: geometry.size.width, textScale: textScale)
+        )
+        .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        // The open pill stack dims the conversation to 42 % (mockup).
+        .opacity(agentPillStack == nil ? 1 : 0.42)
+        .transaction { transaction in
+          // Keep retained message geometry stable during the panel's transition.
+          transaction.animation = nil
+          transaction.disablesAnimations = true
+        }
+        .overlay(alignment: .bottom) {
+          composer
+            .opacity(agentPillStack == nil ? 1 : 0.42)
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              composerHeight = $0
+            }
+        }
+        .overlay(alignment: .bottom) {
+          ZStack {
+            if !followsLatest {
+              Button {
+                scrollToLatest(proxy)
+              } label: {
+                Image(systemName: "chevron.down")
+                  .font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(palette.primaryText.color)
+                  .frame(width: 16, height: 16)
+              }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .accessibilityLabel("Jump to current")
+              .help("Jump to the current reply")
+              .accessibilityIdentifier("overlay-conversation-jump-to-current")
+              .padding(.bottom, composerHeight + 10)
+              .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .overlay(alignment: .bottom) {
-            composer
+          .animation(.easeOut(duration: 0.18), value: followsLatest)
+        }
+        .overlay {
+          // Clicking anywhere on the dimmed conversation closes the stack.
+          if let pillStack = agentPillStack {
+            Button {
+              pillStack.onDismiss()
+            } label: {
+              Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Close the agents list"))
+            .accessibilityIdentifier("overlay-agent-pill-dismiss")
+          }
+        }
+        .overlay(alignment: .top) {
+          VStack(spacing: 0) {
+            Color.clear.frame(height: topInset)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
+            navigation
+              .padding(.horizontal, 20)
+              .padding(.top, 4)
+              .padding(.bottom, 8)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
-                composerHeight = $0
+                navigationHeight = $0
               }
-          }
-          .overlay(alignment: .bottom) {
-            ZStack {
-              if !followsLatest {
-                Button {
-                  scrollToLatest(proxy)
-                } label: {
-                  Image(systemName: "chevron.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.primaryText.color)
-                    .frame(width: 16, height: 16)
-                }
-                .modifier(OverlayAgentControlStyle())
-                .csFocusOutline()
-                .accessibilityLabel("Jump to current")
-                .help("Jump to the current reply")
-                .accessibilityIdentifier("overlay-conversation-jump-to-current")
-                .padding(.bottom, composerHeight + 10)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            if let pillStack = agentPillStack {
+              HStack {
+                Spacer(minLength: 0)
+                pillStack
+                  .frame(
+                    maxHeight: max(
+                      160, geometry.size.height - topInset - navigationHeight - 120))
               }
-            }
-            .animation(.easeOut(duration: 0.18), value: followsLatest)
-          }
-          .onAppear { scrollToLatest(proxy) }
-          .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
-          .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
-          .onChange(of: isPresented) { _, presented in
-            if presented, followsLatest { scrollToLatest(proxy) }
-          }
-          .onChange(of: geometry.size) { _, _ in
-            // Modern ScrollView owns size-change anchoring. A second scrollTo
-            // on every resize frame races its lazy row remeasurement.
-            if #available(macOS 15.0, *) {
-              return
-            } else if isPresented, followsLatest {
-              scrollToLatest(proxy)
+              .padding(.horizontal, 20)
+              .padding(.top, 2)
+              .onExitCommand { pillStack.onDismiss() }
             }
           }
-          .onChange(of: orderedMessages.last) { _, _ in
-            if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
-              scrollToLatest(proxy)
-            }
+        }
+        .onAppear { scrollToLatest(proxy) }
+        .onChange(of: conversation.id) { _, _ in
+          cancelRevision()
+          scrollToLatest(proxy)
+        }
+        .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+        .onChange(of: isPresented) { _, presented in
+          if presented, followsLatest { scrollToLatest(proxy) }
+        }
+        .onChange(of: geometry.size) { _, _ in
+          // Modern ScrollView owns size-change anchoring. A second scrollTo
+          // on every resize frame races its lazy row remeasurement.
+          if #available(macOS 15.0, *) {
+            return
+          } else if isPresented, followsLatest {
+            scrollToLatest(proxy)
           }
+        }
+        .onChange(of: orderedMessages.last) { _, _ in
+          if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
+            scrollToLatest(proxy)
+          }
+        }
       }
       .foregroundStyle(palette.primaryText.color)
     }
@@ -154,18 +213,17 @@ struct OverlayConversationView: View {
   private var composer: some View {
     VStack(spacing: 8) {
       if conversation.owner != nil || conversation.channel == "0" {
+        if editingMessageID != nil { revisionModeHeader }
         OverlayConversationComposer(
-          palette: palette, draft: $draft, sending: sending, onSubmit: submit,
+          palette: palette, draft: composerDraft,
+          sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          placeholder: conversation.channel == "0"
-            ? String(localized: "Send to everyone") : String(localized: "Message the Agent"))
-        if let sendError {
-          Text(verbatim: sendError)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
-        }
+          onCancel: composerCancel, focusRevision: revisionFocus,
+          placeholder: composerPlaceholder)
+        if let revisionError { composerError(revisionError) }
+        if let sendError { composerError(sendError) }
         if let playbackError {
-          Text(verbatim: playbackError)
-            .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
+          composerError(playbackError)
             .accessibilityIdentifier("overlay-conversation-playback-error")
         }
       }
@@ -174,6 +232,45 @@ struct OverlayConversationView: View {
     .padding(.top, 6)
     .padding(.bottom, bottomInset)
     .frame(maxWidth: .infinity)
+  }
+
+  // The composer's inputs are typed here so its call site stays a plain
+  // argument list: a `nil : function` ternary inside a result builder is
+  // enough for the type checker to give up on the whole VStack.
+  private var composerDraft: Binding<String> {
+    if editingMessageID == nil { return $draft }
+    return $revisionDraft
+  }
+
+  private var composerCancel: (() -> Void)? {
+    if editingMessageID == nil { return nil }
+    return { cancelRevision() }
+  }
+
+  private var composerPlaceholder: String {
+    conversation.channel == "0"
+      ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
+  }
+
+  private var revisionError: String? {
+    editingMessageID.flatMap { deliveryControlErrors[$0] }
+  }
+
+  private var revisionModeHeader: some View {
+    HStack {
+      Text("Edit")
+      Spacer()
+      Button("Cancel", action: cancelRevision)
+        .buttonStyle(.borderless)
+    }
+    .font(.system(size: 11 * textScale))
+    .foregroundStyle(palette.mutedText.color)
+    .accessibilityIdentifier("overlay-message-revision-mode")
+  }
+
+  private func composerError(_ text: String) -> some View {
+    Text(verbatim: text)
+      .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
   }
 
   private var navigation: some View {
@@ -207,7 +304,7 @@ struct OverlayConversationView: View {
       Button(action: onShowAgents) { namePillLabel }
         .buttonStyle(.plain)
         .csFocusOutline()
-        .accessibilityHint("Opens the Agents sidebar")
+        .accessibilityHint("Shows the agents list")
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: true))
         .background { OverlayMenuCursorRegion() }
@@ -248,6 +345,8 @@ struct OverlayConversationView: View {
     .truncationMode(.middle)
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
+    // The pill stack measures itself against this width (mockup: 224 × scale).
+    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
     .frame(minHeight: 28)
     .contentShape(Capsule())
     .accessibilityElement(children: .combine)
@@ -322,7 +421,51 @@ struct OverlayConversationView: View {
 
   private func submit() {
     _ = scrollFollow.handle(.jumpToCurrent)
-    onSend()
+    if let editingMessageID {
+      guard let message = orderedMessages.first(where: { $0.id == editingMessageID }),
+        !revisionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else { return }
+      performDeliveryControl(.revise, message: message, text: revisionDraft)
+    } else {
+      onSend()
+    }
+  }
+
+  private func cancelRevision() {
+    editingMessageID = nil
+    revisionDraft = ""
+  }
+
+  private func edit(_ message: OverlayConversationMessage) {
+    guard message.holdSecondsRemaining != nil else { return }
+    editingMessageID = message.id
+    revisionDraft = message.text
+    revisionFocus &+= 1
+    onComposerTypingActivity()
+  }
+
+  private func performDeliveryControl(
+    _ control: OverlayDeliveryControl, message: OverlayConversationMessage, text: String? = nil
+  ) {
+    guard !pendingDeliveryControls.contains(message.id) else { return }
+    // A broadcast mirror is still one broadcast, never a newly private edit.
+    let owner = message.sourceChannel == "0" ? nil : conversation.owner
+    guard owner != nil || message.sourceChannel == "0" else { return }
+    pendingDeliveryControls.insert(message.id)
+    deliveryControlErrors.removeValue(forKey: message.id)
+    Task { @MainActor in
+      defer { pendingDeliveryControls.remove(message.id) }
+      do {
+        try await onDeliveryControl(control, message, owner, text)
+        if editingMessageID == message.id,
+          control == .withdraw || (control == .revise && revisionDraft == text)
+        {
+          cancelRevision()
+        }
+      } catch {
+        deliveryControlErrors[message.id] = error.userFacingMessage
+      }
+    }
   }
 
   private func scrollToLatest(_ proxy: ScrollViewProxy) {
@@ -337,7 +480,11 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private func messageReceipts(_ message: OverlayConversationMessage) -> some View {
-    if message.showsDeliveryReceipts && !message.recipients.isEmpty {
+    if message.holdSecondsRemaining != nil {
+      Text("Held")
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+    } else if message.showsDeliveryReceipts && !message.recipients.isEmpty {
       if message.recipients.count > 1 {
         let readCount = message.recipients.filter { $0.acknowledged }.count
         Menu {
@@ -433,6 +580,9 @@ struct OverlayConversationView: View {
         }
         .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
       }
+      if let remaining = message.holdSecondsRemaining {
+        heldMessageControls(message, seconds: remaining)
+      }
       messageFooter(message)
     }
     .padding(12)
@@ -448,6 +598,31 @@ struct OverlayConversationView: View {
         )
         .allowsHitTesting(false)
     }
+  }
+
+  private func heldMessageControls(_ message: OverlayConversationMessage, seconds: Int)
+    -> some View
+  {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(verbatim: HeldDeliveryCopy.countdown(seconds: seconds))
+        .monospacedDigit()
+        .accessibilityIdentifier("overlay-message-hold-countdown-\(message.id)")
+      HStack(spacing: 12) {
+        Button("Edit") { edit(message) }
+          .accessibilityIdentifier("overlay-message-edit-\(message.id)")
+        Button("Withdraw") { performDeliveryControl(.withdraw, message: message) }
+          .accessibilityIdentifier("overlay-message-withdraw-\(message.id)")
+        Button("Send now") { performDeliveryControl(.release, message: message) }
+          .accessibilityIdentifier("overlay-message-release-\(message.id)")
+      }
+      .buttonStyle(.borderless)
+      .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
+      if let error = deliveryControlErrors[message.id] {
+        Text(verbatim: error).foregroundStyle(palette.errorStatus.color)
+      }
+    }
+    .font(.system(size: 11 * textScale))
+    .foregroundStyle(palette.mutedText.color)
   }
 
   /// Shared production footer, also mounted by the native compactness test.
@@ -478,7 +653,8 @@ struct OverlayConversationView: View {
 }
 
 /// The name pill's capsule of glass; interactive when the pill is a button.
-private struct OverlayNamePillGlass: ViewModifier {
+/// The narrow-mode pill stack reuses the same capsule for its rows.
+struct OverlayNamePillGlass: ViewModifier {
   let interactive: Bool
 
   @ViewBuilder
@@ -589,5 +765,12 @@ enum ReplyPlaybackCopy {
     case "stopped": String(localized: "Speech stopped")
     default: String(localized: "Reply text retained")
     }
+  }
+}
+
+enum HeldDeliveryCopy {
+  static func countdown(seconds: Int, bundle: Bundle = .main) -> String {
+    let format = bundle.localizedString(forKey: "Sending in %lld s", value: nil, table: nil)
+    return String(format: format, Int64(max(0, seconds)))
   }
 }

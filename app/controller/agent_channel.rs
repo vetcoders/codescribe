@@ -1176,6 +1176,14 @@ impl RecordingController {
                 )
             }
         };
+        // The producer joined above. Publish its final held snapshot before
+        // retention can yield and before any non-open channel receipt flushes it.
+        if let Some(bus) = open.transcript_bus.as_ref() {
+            let settings = Config::load_startup_runtime_snapshot(false);
+            if let Err(error) = bus.publish_channel_sealed(settings.agent_send_hold_sec()) {
+                tracing::warn!(%error, digit, "channel seal snapshot persistence failed");
+            }
+        }
         // The channel task has joined. Freeze its ledger before `open` drops
         // that handle. This is not the dictation recorder's ledger.
         let observer = Self::channel_take_observer(&open);

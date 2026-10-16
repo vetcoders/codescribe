@@ -1,5 +1,75 @@
 # Clean Transcript Bus
 
+## Held delivery
+
+Agent-channel messages (1–9 and broadcast channel 0) use
+`interaction.agent_send_hold_sec` in `settings.json`: integer seconds, default
+10, 0 disables the hold, adjustable from 0–30 in Settings → Agent.
+`CODESCRIBE_AGENT_SEND_HOLD_SEC` takes precedence through the config loader.
+Dictation and paste delivery are unchanged.
+
+A held `codescribe.agent-user-message.v1` or channel `transcript_sealed` row
+carries `hold_until`, an RFC 3339 UTC timestamp with microsecond precision, as
+does the sealed voice row's `codescribe.transcript-evidence.v1` twin. The hold
+starts at publication/seal time, not when a follower happens to read the bus.
+Producers omit the field at 0. `cs-bus --send-text --hold-seconds N` applies
+one deadline to every recipient's row; its `message_published` receipt and each
+recipient entry include the same `hold_until`. Existing broadcast policy
+receipts remain present.
+
+Controls are append-only rows on the **same bus** as the message, schema
+`codescribe.delivery-control.v1`, with `kind` equal to `revise`, `withdraw` or
+`release`. `identity` names the original typed `message_id` or voice
+`utterance_id`; that named field is also included when the original source row
+is available. Controls carry `control_id`, `emitted_at` and the exact
+`provider`, `provider_session_id`, `lease_id`, `bus`, `channel` and `audience`
+owner. `revise` additionally carries replacement `text`.
+Voice controls also preserve the capture `session_id` so repeated numeric
+utterance labels cannot select a different take. The overlay submits that
+capture session to the helper, which resolves its source `utterance_id` on the
+same bus; ambiguous bare utterance labels are refused rather than guessed.
+The current whole-channel snapshot lacks a producer-authenticated numeric
+utterance ID; such controls remain capture-session-scoped. Propagating canonical
+engine utterance IDs into that snapshot remains an integration/design decision,
+not permission to relabel an observation request as an utterance.
+
+```bash
+cs-bus --revise ID --provider PROVIDER --session SESSION --bus BUS < corrected.txt
+cs-bus --withdraw ID --provider PROVIDER --session SESSION --bus BUS
+cs-bus --release ID --provider PROVIDER --session SESSION --bus BUS
+```
+
+Ownerless `--channel 0` variants fan out to the currently bound recipient
+buses, using the same binding/lease validation as typed sending. A control
+cannot edit a different provider/session/bus owner. Nothing is removed from
+the source bus, and no control recalls text already delivered to a model.
+
+The follower is the only delivery gate. A future deadline parks the terminal
+envelope in the lease's persisted `held` map, outside `pending`. It emits no
+follower message, output line, native wake or seal hook for that envelope.
+On the next polling tick after expiry, or on `release`, it follows the ordinary
+queue/publication/wake path exactly once as a fresh delivery, with the latest
+text. Unacknowledged delivered messages retain the normal restart replay
+contract. `revise` replaces held text and keeps its predecessors in `revisions`
+on the held record; that history is never copied into the delivered envelope.
+Voice evidence `apply_manual_edit` / `apply_user_revision` for the held
+`utterance_id` follows the same revision rule.
+
+`withdraw` removes the held envelope and records one text-free
+`delivery_withdrawn` follower event, **not** an ACK marker. Durable withdrawal
+receipts prevent resurrection during cursor replay; original messages and
+controls remain source history. Controls for unknown, already delivered or
+hold-disabled identities are ignored with one stderr line. Broadcast policy
+`off` is evaluated before parking (one skip receipt, no held row); `quiet`
+holds normally and later lands without a wake.
+
+Attach, status and `--read-pending` receipts expose only
+`"held": [{"identity": "…", "hold_until": "…"}]` beside `broadcast`, never held
+text. The overlay projects these source rows and controls into held bubbles;
+the existing 500 ms poll derives the countdown, with Edit, Withdraw and Send now
+actions. Draft evidence is not a held message, and countdown display is not
+delivery authority.
+
 ## Agent attachment and conversation history
 
 Connecting an agent restores its live mailbox; it does not import chat history

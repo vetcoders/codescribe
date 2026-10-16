@@ -791,7 +791,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor
+    showsAgentMonitor = fold.agentMonitor && !dockedColumnAlreadyOnScreen
   }
 
   func clearPointerHover() {
@@ -1074,6 +1074,33 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// Wide windows pin the roster as a docked column; the pill stack only
+  /// exists below the threshold. Reported by the overlay's layout pass.
+  private(set) var agentDrawerDocked = false
+  /// Bumped when the name pill asks the docked column to focus its selected row.
+  private(set) var agentDrawerFocusRevision: UInt64 = 0
+
+  /// The docked column is permanent beside a conversation. The transcription
+  /// surface keeps its full width (OverlayChromeV3Tests) and shows the column
+  /// only while the roster was asked for, so `showsAgentMonitor` still drives
+  /// it there.
+  private var dockedColumnAlreadyOnScreen: Bool {
+    agentDrawerDocked && selectedConversationID != nil
+  }
+  /// What the wide canvas hosts as the roster column this pass.
+  var dockedRosterColumnShown: Bool {
+    agentDrawerDocked && (selectedConversationID != nil || showsAgentMonitor)
+  }
+
+  /// The layout owns the call. Engaging the docked column beside a
+  /// conversation closes the pill stack; the selection, drafts and scroll
+  /// follow survive the switch. On the transcription surface the open stack
+  /// becomes the column instead of vanishing.
+  func setAgentDrawerDocked(_ docked: Bool) {
+    guard docked != agentDrawerDocked else { return }
+    agentDrawerDocked = docked
+    if docked, selectedConversationID != nil { showsAgentMonitor = false }
+  }
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
@@ -1454,7 +1481,14 @@ final class OverlayState {
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    showsAgentMonitor = true
+    if dockedColumnAlreadyOnScreen {
+      // Docked beside a conversation: the column is already on screen, so the
+      // click focuses the selected row instead of opening anything (mockup,
+      // Founder 2026-10-16).
+      agentDrawerFocusRevision &+= 1
+    } else {
+      showsAgentMonitor = true
+    }
     if let expansion { expandAgentSurface(cause: expansion) }
   }
 
@@ -1527,6 +1561,8 @@ final class OverlayState {
     }
     guard matches.count == 1 else {
       selectedConversationID = nil
+      // No conversation to dock beside: the flag shows the roster, as the
+      // column on a wide window or as the pill stack on a narrow one.
       showsAgentMonitor = true
       return
     }
@@ -1591,14 +1627,15 @@ final class OverlayState {
     }
   }
 
-  func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot) {
+  func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
       onChannelPresentationChanged?()
     }
     applyChannelDelivery(snapshot.deliveries)
-    guard conversations != snapshot.conversations else {
+    let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
       // reply is an admission. A later identical snapshot is already baselined
@@ -1611,7 +1648,7 @@ final class OverlayState {
       return
     }
     let controllerPending = pendingChannelConversation != nil
-    conversations = snapshot.conversations
+    conversations = projected
     // Loading saved history is an inventory change, not a fresh reply admission.
     // Its mirrored broadcast ids must stay passive as well.
     observedReplyIDs.formUnion(snapshot.historyReplyIDs)
@@ -4373,32 +4410,45 @@ final class OverlayState {
     switch refusal {
     case .archiveUnreadable:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript could not be read.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript could not be read.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .archiveChangedOutside:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript changed outside this take.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript changed outside this take.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .archiveHasForeignHistory:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .stepNotAdmitted:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archive refused to record a version.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archive refused to record a version.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .versionNotArchived:
       return String(
-        localized: "Versions of this take are no longer saved to history: the selected version has no archived copy.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the selected version has no archived copy.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .versionNotSelected:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archive refused to select this version.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archive refused to select this version.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .mirrorFailed:
       return String(
         localized: "Versions of this take are no longer saved to history.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     }
   }
 
