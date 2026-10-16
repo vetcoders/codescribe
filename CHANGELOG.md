@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.17.0] - 2026-10-16
+
+- Silero preserves speech detection across microphone callback sizes and maximum-duration splits; long speech keeps one capture timeline.
+- The experimental DictationTranscriber witness runs on closed utterance ranges, with a durable Lab switch, bounded retry accounting and overlap protection. It remains off by default.
+- Automatic words without measured speech stay outside the committed document; human edits retain their authority.
+- Voice Lab take charts include the recorded Silero signal for inspection alongside PCM energy.
+- The native main merge queue runs hosted quality/security/localization checks and both workflow contract suites.
+
 - Release-candidate admission preserves tagged-paste envelope syntax by converting only the outward transcript body before tagging; Agent payloads stay literal. Main-push localization checks compare with the immutable previous commit. Remote bus admission keeps final session identity and every completed wake notice, and releases late canceled waiters.
 
 - Bus deliveries now expose the original address separately from the receiving mailbox: channel-zero messages include `ADDRESSED TO: 0 (all audience)` in Codex queue copies and `addressed_to` in read/MCP/watch projections, so a broadcast copy addressed to an agent's private lease is not mistaken for a private question.
@@ -61,10 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Commit and push hooks inherit the selected stack base instead of forcing main.
 - The overlay header speaks in marks: **✦** opens the **Agents** sidebar (it was a generic sidebar icon) and **✍︎** shows the transcription (it was a waveform with a magnifying glass). Both are text characters from the Dingbats family of the roster's ❖ that every macOS font cascade paints; the proposed Legacy Computing robots render only with a separately installed font and would show as empty boxes elsewhere. The position button is gone from the header: the six anchors, **Free motion** and **Show transcript by default** moved to a menu that a secondary click anywhere on the header opens, in mini, compact and expanded forms alike. In its place sits an explicit **Pin**, filled while it keeps the overlay between takes. Unpinning a resting overlay no longer leaves it to the five-second countdown that the pointer resting on the button held off: it stays three seconds, during which a second click pins it again, then fades out over 0.6 s. A pointer that comes back pauses the release, an uncommitted draft holds it, and a new take ends it. Every header control now answers the pointer: the action pill's hint appears just below it — in a click-through child window, because the mini and compact header is the whole 46-point panel and the native tooltip does not reliably appear on a non-activating panel — and a hairline ring takes the hue of what the control opens: olive for the transcription, the assistive violet for agents, terracotta for the pin and the recording controls. The floating conversation name pill, **0 · All** included, is now a button with the system's interactive glass that opens the **Agents** sidebar while the conversation stays selected, and the sidebar's clickable rows show the tray's faint hover wash (`docs/guide/chat-overlay.md`).
 - Cloud transcription works on the first dictation after launch. The recording controller was sealed before the app had read the Keychain, so a live key kept only there was missing from that first configuration and every take ran on Apple alone (`layer1_decision … reason="live_key_missing"`) until some Settings save happened to reseal it. Restoring saved provider access now reseals the controller too; a recording in progress keeps its own settings and picks the key up on the next take.
-
-## [0.17.0] - 2026-10-11
-
-Source changes in preparation; validation and distribution have separate receipts.
 
 - Whisper word timing normalizes the complete attention matrix before selecting alignment rows and measures the last word's closing boundary instead of extending it to the decode window's end.
 - Timed Apple partial revisions update the current phrase without prematurely finalizing its superseded wording; genuinely disjoint restarts retain their separate occurrences.
