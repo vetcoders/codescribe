@@ -9,10 +9,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = Path(os.environ.get("WORKFLOWS_DIR", ROOT / ".github/workflows"))
 
 
 def base_selection_script():
-    lines = (ROOT / ".github/workflows/l10n.yml").read_text().splitlines()
+    lines = (WORKFLOWS / "l10n.yml").read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if "Fetch the base the prose ratchet measures against" in line)
     run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     indent = len(lines[run]) - len(lines[run].lstrip()) + 2
@@ -25,7 +26,7 @@ def base_selection_script():
 
 
 class LocalizationWorkflowBaseTests(unittest.TestCase):
-    def run_selection(self, event, ref, before, base="main"):
+    def run_selection(self, event, ref, before, base="main", queue_base=""):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = root / "git"
@@ -41,10 +42,12 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
             log = root / "git-args"
             env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                    "GITHUB_ENV": str(output), "GIT_TEST_LOG": str(log),
-                   "EVENT_NAME": event, "REF_NAME": ref, "BEFORE_SHA": before, "BASE_REF": base}
+                   "EVENT_NAME": event, "REF_NAME": ref, "BEFORE_SHA": before, "BASE_REF": base,
+                   "MERGE_GROUP_BASE_SHA": queue_base}
             done = subprocess.run(["/bin/bash", "-e", "-c", base_selection_script()],
                                   env=env, text=True, capture_output=True, check=False, timeout=10)
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            self.assertFalse((root / "pwned").exists(), "ref data reached the shell as code")
             return done.returncode, output.read_text(), calls
 
     def test_main_push_compares_with_the_immutable_before_commit(self):
@@ -68,6 +71,32 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(f"L10N_BASE=origin/{base}\n", output)
         self.assertTrue(any(f"+refs/heads/{base}:refs/remotes/origin/{base}" in call for call in calls))
+
+    def test_merge_group_compares_with_the_immutable_queue_base(self):
+        queue_base = "a" * 40
+        code, output, calls = self.run_selection(
+            "merge_group", "gh-readonly-queue/main/pr-170-" + "b" * 40, "", "main", queue_base)
+        self.assertEqual(code, 0)
+        self.assertEqual(output, f"L10N_BASE={queue_base}\n")
+        self.assertEqual(calls, [["fetch", "--no-tags", "--depth=1", "origin", queue_base]])
+
+    def test_merge_group_without_a_valid_queue_base_refuses_before_any_fetch(self):
+        for queue_base in ["", "0" * 40, "A" * 40, "abc123", "a" * 39, "a" * 41, "main", "a" * 40 + "\n; true"]:
+            code, output, calls = self.run_selection(
+                "merge_group", "gh-readonly-queue/main/pr-1-x", "", "main", queue_base)
+            self.assertNotEqual(code, 0, queue_base)
+            self.assertEqual(output, "", queue_base)
+            self.assertEqual(calls, [], queue_base)
+
+    def test_hostile_branch_names_stay_data(self):
+        hostile = 'x"; touch pwned; $(touch pwned) `touch pwned`'
+        code, output, calls = self.run_selection("pull_request", "1/merge", "", hostile)
+        self.assertEqual(code, 0)
+        self.assertEqual(output, f"L10N_BASE=origin/{hostile}\n")
+        self.assertEqual(calls, [["fetch", "--no-tags", "--depth=1", "origin",
+                                  f"+refs/heads/{hostile}:refs/remotes/origin/{hostile}"]])
+        code, output, calls = self.run_selection("push", hostile, "", hostile)
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

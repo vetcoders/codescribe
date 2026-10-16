@@ -32,10 +32,14 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  merge_group:
+    types: [checks_requested]
 
+# Event and ref isolate the group; queue (merge_group) runs are never cancelled
+# by a newer run, because a cancelled queue check removes the entry.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 env:
   CARGO_TERM_COLOR: always
