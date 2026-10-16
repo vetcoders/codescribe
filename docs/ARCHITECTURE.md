@@ -460,6 +460,17 @@ Tool Activity summary of a finished call, with one placeholder (`[REDACTED]`)
 and one key list. There is no second redactor — a secret hidden on one surface
 can no longer reappear on the next.
 
+Boundary: this is best-effort display redaction on the operator's own screen,
+not a security boundary. The agent already holds every value it passes, and the
+dispatched input is never changed. Structured signals are covered (keys,
+key/value siblings, headers, option names, assignments, quoted and per-element
+argv values); free-form shapes are not guaranteed (`curl -u user:pass`,
+`mysql -pSECRET`, a credential inside a URL path, JSON nested inside a string,
+tuple-shaped pairs such as `[["Authorization", "Bearer …"]]`).
+New shapes are backlog items, not approval-gate defects. The rules that do
+belong to the gate stay strict: the card never hides the action it approves,
+and a peer can never present itself as the Founder.
+
 - By key: any value under a key normalized (ASCII alphanumerics, lowercased)
   to contain `token`, `password`, `passwd`, `secret`, `apikey`, `accesskey`,
   `privatekey`, `authorization`, `cookie`, `credential`, `bearer` or
