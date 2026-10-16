@@ -699,7 +699,11 @@ fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<S
     let (program, args, marker): (&'static str, Vec<&'static str>, PathBuf) = if cargo.exists() {
         match kind {
             "build" => ("cargo", vec!["build", "--all-targets"], cargo),
-            "test" => ("cargo", vec!["test", "--all-targets", "--", "--quiet"], cargo),
+            "test" => (
+                "cargo",
+                vec!["test", "--all-targets", "--", "--quiet"],
+                cargo,
+            ),
             _ => bail!("unknown project action {kind}"),
         }
     } else if makefile.exists() || lowercase_makefile.exists() {
@@ -970,5 +974,22 @@ mod tests {
         assert!(validator(&json!({"pid": 1})).is_err());
         assert!(validator(&json!({"pid": u64::from(u32::MAX) + 1})).is_err());
         assert!(validator(&json!({})).is_err());
+    }
+
+    /// PR #173 review (P1): the process card's command line goes through the
+    /// one redaction authority, so an argv secret never reaches the card.
+    #[test]
+    fn process_card_redacts_a_secret_in_the_argv() {
+        let tmp = TempDir::new().unwrap();
+        let args = vec!["--token".to_string(), "abc".to_string(), "-v".to_string()];
+        let preview = process_preview(
+            String::new(),
+            synthetic_command_line("curl", &args),
+            tmp.path().to_path_buf(),
+        );
+        assert_eq!(
+            preview.command.as_deref(),
+            Some("curl --token [REDACTED] -v")
+        );
     }
 }
