@@ -5,11 +5,15 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
+# Queue entries are never cancelled: a merge_group run has a unique ref, and
+# only superseded pull_request runs are cancelled.
 concurrency:
-  group: semgrep-${{ github.ref }}
-  cancel-in-progress: true
+  group: semgrep-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   semgrep:
