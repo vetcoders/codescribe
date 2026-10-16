@@ -643,6 +643,38 @@ pub fn issuer_for(provider: ProviderKind) -> String {
         .unwrap_or_else(|| config.default_issuer.to_string())
 }
 
+/// All credential-bearing OAuth requests require TLS and never follow redirects.
+/// Loopback callback listeners are a separate, inbound HTTP surface.
+fn oauth_http_client(issuer: &str) -> Result<reqwest::Client, AccountAuthError> {
+    let builder = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30));
+    // Unit fixtures use numeric loopback HTTP servers. This exception is absent
+    // from shipped builds, including builds with the test-isolation feature.
+    #[cfg(test)]
+    let builder = {
+        let local_fixture = reqwest::Url::parse(issuer).ok().is_some_and(|url| {
+            url.scheme() == "http"
+                && url.host_str().is_some_and(|host| {
+                    host.trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+                })
+        });
+        if local_fixture {
+            builder.https_only(false)
+        } else {
+            builder
+        }
+    };
+    #[cfg(not(test))]
+    let _ = issuer;
+    builder
+        .build()
+        .map_err(|error| AccountAuthError::Http(error.to_string()))
+}
+
 /// Persist a provider's tokens into its own Keychain slot.
 pub fn store_account_tokens(
     provider: ProviderKind,
@@ -876,7 +908,7 @@ async fn refresh_provider_tokens(
     }
 
     let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let client = reqwest::Client::new();
+    let client = oauth_http_client(issuer)?;
     let request = client.post(endpoint);
     let request = match config.encoding {
         TokenRequestEncoding::Form => request.form(&[
@@ -1291,11 +1323,7 @@ mod tests {
             sorted.sort_unstable();
             let before = sorted.len();
             sorted.dedup();
-            assert_eq!(
-                before,
-                sorted.len(),
-                "duplicate OAuth row value in {list:?}"
-            );
+            assert_eq!(before, sorted.len(), "duplicate OAuth registry identifier");
         }
     }
 
