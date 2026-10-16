@@ -1239,4 +1239,32 @@ mod tests {
         assert!(first.contains("git push origin main") && first.contains("Terminal"));
         assert!(second.contains("Notes") && !second.contains("k-1"));
     }
+
+    /// PR #173 review (Copilot): the complete approval request — not only one
+    /// field — carries no credential, whether it sits in a command string or
+    /// in an argv pair.
+    #[test]
+    fn approval_request_leaks_no_credential() {
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "start_process", ToolRisk::ProcessControl);
+        let ToolDecision::RequireApproval(request) = registry.decide(
+            "start_process",
+            &json!({
+                "command": "curl --password swordfish -H 'X-Api-Key: live-key' example.test",
+                "args": ["--token", "abc", "--force"],
+            }),
+            "c",
+            "s",
+            "t",
+        ) else {
+            panic!("process control must ask");
+        };
+        let rendered = format!("{request:?}");
+        for secret in ["swordfish", "live-key"] {
+            assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
+        }
+        let arguments = request.arguments.expect("arguments");
+        assert!(!arguments.contains("\"abc\""), "{arguments}");
+        assert!(arguments.contains("example.test") && arguments.contains("--force"));
+    }
 }
