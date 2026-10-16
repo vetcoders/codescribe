@@ -3079,7 +3079,8 @@ final class SettingsViewModel: ObservableObject {
     case "local_power":
       settings.asrMode = "local_power"
       if wasCloudConsentGranted {
-        settings.cloudConsent = "denied"
+        // Consent changes only through the reload after a successful write: a
+        // failed revocation must leave the grant visible and retryable.
         persistMany([
           CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "denied"),
           CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "local_power"),
@@ -3095,7 +3096,7 @@ final class SettingsViewModel: ObservableObject {
     default:
       settings.asrMode = "apple_only"
       if wasCloudConsentGranted {
-        settings.cloudConsent = "denied"
+        // As above: no in-memory revocation ahead of a confirmed write.
         persistMany([
           CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "denied"),
           CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "apple_only"),
@@ -3111,10 +3112,10 @@ final class SettingsViewModel: ObservableObject {
   /// after the operator has read that dictation audio will leave this Mac.
   /// Writes consent before mode, matching the previous combined-write order
   /// so the bridge never observes `asrMode = cloud` with a stale or missing
-  /// consent record.
+  /// consent record. Mode and consent change in memory only through the
+  /// reload after a successful write, so a failed grant leaves the previous
+  /// lane showing.
   func confirmCloudConsent() {
-    settings.asrMode = "cloud"
-    settings.cloudConsent = "granted"
     persistMany([
       CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
       CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
