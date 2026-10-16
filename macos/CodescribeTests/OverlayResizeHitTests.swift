@@ -667,16 +667,25 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
-  func testDrawerFitsMinimumCanvasAndGrowsWithResizedCanvas() throws {
-    var measuredWidths: [CGFloat] = []
+  func testRosterSurfaceFitsNarrowCanvasAsPillsAndDocksOnWideCanvas() throws {
+    // Narrow windows: the roster is the pill stack under the name pill, fixed
+    // to the pill width at scale 1 (mockup, Founder 2026-10-16).
     for size in [
       CGSize(width: 320, height: 260), CGSize(width: 470, height: 280),
       CGSize(width: 700, height: 400),
-      CGSize(width: 686, height: 277), CGSize(width: 706, height: 696),
     ] {
       let state = OverlayState.previewFormatted()
       let text = state.activeText
       let generation = state.captureGeneration
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "resize-pills",
+          "lease_id": String(repeating: "d", count: 32), "channel": "2", "name": "lena",
+        ]))
+      let conversation = OverlayConversation(
+        id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+      state.selectConversation(conversation.id)
       let recorder = MicrophoneFrameRecorder()
       state.showAgentMonitor()
       let host = NSHostingView(
@@ -694,24 +703,43 @@ final class OverlayResizeHitTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       let drawer = recorder.drawer
-      XCTAssertGreaterThan(drawer.width, 200)
-      XCTAssertLessThan(drawer.width, size.width * 0.9, "retained canvas remains visible")
-      XCTAssertGreaterThan(drawer.height, 100)
+      XCTAssertEqual(
+        drawer.width, 224, accuracy: 1, "the pills share the name pill's width at scale 1")
       XCTAssertGreaterThanOrEqual(drawer.minX, 0)
-      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "drawer stays below header")
+      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "the stack hangs below the header pill")
       XCTAssertLessThanOrEqual(drawer.maxX, size.width + 0.5)
       XCTAssertLessThanOrEqual(drawer.maxY, size.height + 0.5)
-      if size.height > 600 {
-        XCTAssertLessThan(
-          drawer.height, size.height / 2, "short roster must not stretch across a tall canvas")
-      }
-      measuredWidths.append(drawer.width)
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)
       XCTAssertEqual(state.captureGeneration, generation)
     }
-    XCTAssertGreaterThan(measuredWidths[1], measuredWidths[0] + 40)
-    XCTAssertGreaterThan(measuredWidths[2], measuredWidths[0] + 80)
+
+    // Wide window: the docked column owns the right 300 points without any
+    // open flag; the conversation keeps the remaining width.
+    let size = CGSize(width: 1200, height: 500)
+    let state = OverlayState.previewFormatted()
+    let recorder = MicrophoneFrameRecorder()
+    let host = NSHostingView(
+      rootView:
+        MicrophoneFrameCapture(state: state, recorder: recorder)
+        .frame(width: size.width, height: size.height))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(origin: .zero, size: size),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    let drawer = recorder.drawer
+    XCTAssertEqual(drawer.width, 300, accuracy: 1, "the docked column is 300 × scale")
+    XCTAssertEqual(
+      drawer.minX, size.width - 300, accuracy: 1, "the column sits beside the conversation")
+    XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "full height under the header")
+    XCTAssertFalse(state.showsAgentMonitor, "docked: nothing opens")
+    XCTAssertTrue(state.agentDrawerDocked)
   }
 
   @MainActor
