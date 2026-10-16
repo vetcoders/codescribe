@@ -984,13 +984,21 @@ impl AcousticLedger {
                 identities.push(WordAnchorIdentity::from_anchors(set, pin.declared()));
             }
         }
+        let repartitions_source = |index: usize, source: &WordSlot| {
+            pins.iter().enumerate().any(|(other_index, other)| {
+                other_index != index
+                    && other.sample_start < source.sample_end
+                    && source.sample_start < other.sample_end
+            })
+        };
         for (index, held) in correspondence.iter().enumerate() {
             if let Some(held) = held {
                 // Apple's phrase assignment is provisional. A measured
                 // Whisper sequence refines its physical membership while the
                 // explicit correspondence still retires the exact old target.
-                if observation.producer != ObservationProducer::Whisper
-                    || held.producer != ObservationProducer::Apple
+                if (observation.producer != ObservationProducer::Whisper
+                    || held.producer != ObservationProducer::Apple)
+                    && !repartitions_source(index, held)
                 {
                     identities[index] = self
                         .word_anchor_identity(held)
@@ -1036,8 +1044,14 @@ impl AcousticLedger {
             // aligned source of the same acoustic word lends its geometry,
             // and a measured Whisper word never inherits Apple's clock.
             let inherited_geometry = held.filter(|source| {
-                observation.producer != ObservationProducer::Whisper
-                    || source.producer != ObservationProducer::Apple
+                (observation.producer != ObservationProducer::Whisper
+                    || source.producer != ObservationProducer::Apple)
+                    // A proposed split must keep its own disjoint geometry.
+                    // Lending the whole parent's span to one matching child
+                    // overlaps its sibling and prevents the existing group
+                    // adjudicator from ever considering a complete partition.
+                    // The parent remains held until that adjudicator accepts.
+                    && !repartitions_source(index, source)
             });
             let (sample_start, sample_end) = inherited_geometry.map_or_else(
                 || {
