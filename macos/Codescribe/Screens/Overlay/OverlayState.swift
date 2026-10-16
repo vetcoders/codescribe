@@ -650,6 +650,17 @@ final class OverlayState {
     }
   }
 
+  /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
+  /// midi, and from there every click alternates midi <-> expanded. The header
+  /// never folds back to mini; the rotating preview control keeps that exit.
+  func advancePresentationFromHeader() {
+    switch presentationMode {
+    case .mini: setPresentationMode(.midi)
+    case .midi: setPresentationMode(.expanded)
+    case .expanded: setPresentationMode(.midi)
+    }
+  }
+
   func requestHeaderRecording(_ intent: OverlayIntent) {
     if intent == .startRecording { selectConversation(nil) }
     relayIntent(intent)

@@ -16,7 +16,7 @@ import SwiftUI
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
-  var onMiniBodyClick: (() -> Void)?
+  var onPresentationClick: (() -> Void)?
   var onUserResize: (() -> Void)?
   var onUserResizeEnded: (() -> Void)?
   var onResizePresentationSelected: ((OverlayPresentationMode) -> Void)?
@@ -329,10 +329,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
           ?? proposed)
     case .leftMouseUp where dragStart != nil:
       let current = screenPoint(for: event)
-      let clickedMini =
-        !dragMoved && presentationMode == .mini
+      let clickedPresentation =
+        !dragMoved
         && dragStart.map { hypot(current.x - $0.mouse.x, current.y - $0.mouse.y) < 3 } == true
-        && isWindowDragHit(at: event.locationInWindow)
+        && isPresentationClickHit(at: event.locationInWindow)
       let origin = originForPersistence
       let moved = dragMoved
       if moved, presentationMode == .midi {
@@ -341,7 +341,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dragStart = nil
       dragMoved = false
       if moved { onUserDragEnded?(origin) }
-      if clickedMini { onMiniBodyClick?() }
+      if clickedPresentation { onPresentationClick?() }
     default:
       if event.type == .leftMouseDown, let contentView {
         var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
@@ -539,6 +539,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // the panel's edge gesture; a container hit is never a drag handle.
     if hit === contentView { return false }
     return hit is OverlayWindowDragRegionView
+  }
+
+  /// A still click on draggable chrome advances the presentation. In mini the
+  /// whole widget is that chrome; in midi and expanded only the header band
+  /// is, so a body drag that never moved stays an ordinary click.
+  func isPresentationClickHit(at point: NSPoint) -> Bool {
+    guard let contentView, let hit = contentView.hitTest(point), hit !== contentView,
+      let region = hit as? OverlayWindowDragRegionView
+    else { return false }
+    if presentationMode == .mini { return true }
+    return region.accessibilityIdentifier().hasPrefix("overlay-header")
   }
 
   private func screenPoint(for event: NSEvent) -> NSPoint {
@@ -838,8 +849,8 @@ enum DictationOverlayWindow {
     panel.onUserDragEnded = { [weak state] origin in
       state?.recordUserDrag(at: origin)
     }
-    panel.onMiniBodyClick = { [weak state] in
-      state?.setPresentationMode(.midi)
+    panel.onPresentationClick = { [weak state] in
+      state?.advancePresentationFromHeader()
     }
     panel.onUserResize = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
