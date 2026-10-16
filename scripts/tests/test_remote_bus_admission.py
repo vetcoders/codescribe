@@ -9,7 +9,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 
 def load(name, filename):

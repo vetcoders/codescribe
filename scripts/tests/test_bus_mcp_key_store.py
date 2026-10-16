@@ -154,7 +154,7 @@ class NativeKeyTests(NativeFixture):
             captured.append(server)
             kwargs.update(transport=Callback(),clock=lambda:self.now[0],
                 timer_factory=lambda delay,callback:BASE.FakeTimer(self.alarms,delay,callback))
-            pump=original(server,events,store,**kwargs)
+            original(server,events,store,**kwargs)
             return type('Lifecycle',(),{'start':lambda inner:None,'stop':lambda inner:server.events.close()})()
         with patch.object(sys,'stdin',stdin),patch.object(sys,'stdout',output),patch.object(RUNTIME,'configure',side_effect=configure):
             RUNTIME.main(['--scope',str(scope),'--codescribe',str(self.helper),'--native-sha256',self.digest,
