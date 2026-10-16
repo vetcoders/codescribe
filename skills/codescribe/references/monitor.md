@@ -72,8 +72,9 @@ Every attachment must start the provider's output-notifying monitor on
 the whole message; `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
 The watch carries complete text and the owner/sender/reply coordinates required
-for immediate acknowledgment. Native queue also carries the complete text with
-a small wrapper for later-turn wakeup. `--read-delivery <id>` is the explicit diagnostic read of the complete
+for immediate acknowledgment. Native queue is only a later-turn wakeup: a
+Founder copy carries the complete text with a small wrapper, while a peer
+notice carries no text, so read the owned mailbox before acting on it. `--read-delivery <id>` is the explicit diagnostic read of the complete
 original envelope, including acoustic evidence. It refuses an already acknowledged
 delivery even before the follower sweeps its mailbox. A later bell must not
 repeat the completed task or speak a second answer for an acknowledged delivery.
