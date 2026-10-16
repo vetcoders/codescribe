@@ -436,6 +436,94 @@ Guards:
   is a journal that cannot be written, because then the owner cannot prove
   what it retired.
 
+### Tool consent card contents
+
+A card never shows only a tool name and a risk tier. Everything on it is built
+in `ToolRegistry::decide_with_targets` (`core/agent/registry.rs`) from the one
+immutable `input` the gate decided on and the session later dispatches, so the
+card cannot describe a different call than the one suspended.
+
+Two sources feed it, and there is no third:
+
+- The tool's `ToolInputValidator` returns a `ToolCallPreview` — summary,
+  command, cwd and the canonical `paths` the handler will open. Validators
+  resolve exactly as their handler does, so an alias is judged as its target.
+  `confirm_targets` re-runs the validator right before dispatch and refuses a
+  call whose targets moved while the operator was deciding.
+- The registry adds `arguments`: the call's own JSON, rendered by
+  `redacted_arguments`. A call with no arguments carries none, so a
+  no-argument tool grows no empty block.
+
+One redaction module serves all of it: `core/agent/redaction.rs` is the single
+authority for the card's command line, the card's argument snapshot and the
+Tool Activity summary of a finished call, with one placeholder (`[REDACTED]`)
+and one key list. There is no second redactor — a secret hidden on one surface
+can no longer reappear on the next.
+
+Boundary: this is best-effort display redaction on the operator's own screen,
+not a security boundary. The agent already holds every value it passes, and the
+dispatched input is never changed. Structured signals are covered (keys,
+key/value siblings, headers, option names, assignments, quoted and per-element
+argv values); free-form shapes are not guaranteed (`curl -u user:pass`,
+`mysql -pSECRET`, a credential inside a URL path, JSON nested inside a string,
+tuple-shaped pairs such as `[["Authorization", "Bearer …"]]`).
+New shapes are backlog items, not approval-gate defects. The rules that do
+belong to the gate stay strict: the card never hides the action it approves,
+and a peer can never present itself as the Founder.
+
+- By key: any value under a key normalized (ASCII alphanumerics, lowercased)
+  to contain `token`, `password`, `passwd`, `secret`, `apikey`, `accesskey`,
+  `privatekey`, `authorization`, `cookie`, `credential`, `bearer` or
+  `environment` is replaced whole, at any depth, subtree included. Bare `key`
+  and `auth` are deliberately absent: they would blank a summary that merely
+  mentions an "author" or a "keyboard".
+- By command token: every surviving string value also passes through
+  `redact_command_line`, because a secret inside an ordinary string sits under
+  no key at all — `command: "curl -H 'Authorization: Bearer …'"` is redacted
+  in the snapshot exactly as it is in `preview.command`. A token names a
+  secret only in four shapes, judged by the same key predicate: an assignment
+  (`TOKEN=…`, `--password=…` → `name=[REDACTED]`), a header with an attached
+  value (`X-Api-Key:…` → `X-Api-Key:[REDACTED]`), a header name whose value
+  follows (one value; `Authorization` takes a scheme and a credential), and
+  an option name (`--token …`, `--api-key …`), plus the bare `Bearer` /
+  `Basic` scheme. A secret value is hidden whole: a quoted value runs to its
+  closing quote (`--password 'two words'`, `-H 'Cookie: a=1; b=2'`), and in a
+  string array one element is one value, so `["--password", "two words"]`
+  hides both words and the next element (a URL, `-h db`) stays visible. An
+  ordinary word that only contains a marker (`tokenizer.py`) names nothing,
+  and an option is never taken for a secret value, so the card always shows
+  the action (`--delete-all`). Whitespace is preserved. The redactor state
+  carries across array elements, so the argv pair `["--token", "abc"]` hides
+  `abc`; a non-string element ends that run.
+- By sibling key: a key/value-shaped object (`{"key": "api_key", "value": …}`,
+  `{"name": "Authorization", "value": …}`) hides its value field when a name
+  field names a secret, although the property itself is only called `value`.
+- The validator's own `summary` and `command` reach the card through
+  `redact_command_line` in the registry as well, so a query or command line a
+  tool copies from the call cannot bypass the module.
+- Bounds are unchanged: a string over 200 characters and a snapshot over
+  4 KiB are cut with an explicit marker.
+
+Coverage: every filesystem tool names its resolved target and the size of what
+it writes or replaces; every process tool (`run_process`, `stop_process`,
+`observe_process`, `project_build`, `project_test`) names the program, the
+redacted synthetic argv line and the resolved cwd, which also travels as that
+call's authorization target. `project_build` / `project_test` bind a second
+target: the build file their detection rested on (`Cargo.toml`, or the
+`Makefile` actually found). Detection reads the directory's contents, not its
+path, so a `Cargo.toml` dropped in while the card was open would otherwise
+turn an approved `make test` into `cargo test` under an unchanged cwd; with
+the marker in `paths` the re-detection no longer matches and `confirm_targets`
+refuses. Every MCP tool names its server and upstream tool, with
+Desktop Commander additionally contributing its hardened per-tool checks.
+Anything else is still fully described by the argument snapshot.
+
+`CsToolApprovalRequest` carries the same fields to Swift, where the single
+`ToolApprovalCard` paints them: command and cwd monospaced, the remaining
+targets below, and the argument snapshot in a bounded scroll so a long call
+cannot push Deny off the card. The card changes nothing about the verdict —
+Deny, timeout and cancel still never reach a handler.
+
 ### Restored tool inspector metadata
 
 `RealThreadsEngine` projects persisted messages from `CodescribeThreads` into

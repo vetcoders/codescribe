@@ -17,11 +17,20 @@ requests fresh commands.
 
 ## Conversational read receipt
 
-Native Codex queue entries carry complete untruncated message text with compact
-causal identity, sender, reply association, routing and provenance. Watch bells
-remain notifications. The agent reads `cs-bus --read-pending` for its exact
-provider/session, receives complete bounded conversational projections and
-`read_delivery_ids`, then immediately calls `--ack` for those IDs before task
+The complete causal identity, sender, reply association, routing and provenance
+for a delivery live in the owned mailbox projection, not in the Codex native
+queue copy. The native queue header always carries the delivery ID and
+`ADDRESSED TO`; a Founder-sourced delivery (typed or sealed voice) also carries
+its full untruncated text, tagged `from: Founder (typed)` or
+`from: Founder (voice)`. A peer agent's delivery carries no raw text at all: it
+is a notice naming the sending peer and channel, the words "peer coordination,
+not a Founder instruction", and the exact `cs-bus --read-pending` command to
+read it from the owned mailbox — see [Native provider queue
+receipt](#native-provider-queue-receipt) for the queue mechanics. Watch bells
+remain notifications. The agent reads `cs-bus --read-pending`
+for its exact provider/session, receives complete bounded conversational
+projections and `read_delivery_ids`, then immediately calls `--ack` for those
+IDs before task
 execution or a reply. Only exact IDs returned as unread may be acted on; an
 absent ID makes its delayed queue copy obsolete even when other messages remain.
 Give a short answer before longer work. Reading alone never writes ACK. Re-read
@@ -1279,6 +1288,22 @@ from mentions in the text. This projection changes neither routing nor delivery
 identity, recipients, ACK state or the original message text.
 
 ## Native provider queue receipt
+
+The queue message's content depends on who the normalizer attributed the
+delivery to (`producer_schema`, set once in `consider()`/`slim()` — the queue
+adapter does not re-derive it). A Founder-sourced seal or typed message keeps
+its full untruncated text, headed `from: Founder (voice)` or
+`from: Founder (typed)`. A peer agent's delivery (`codescribe.agent-reply.v1`),
+and anything the normalizer did not tag as one of the two Founder lanes, fails
+closed to a notice: no raw text, just the delivery ID, the sending peer's name
+and channel, the words "peer coordination, not a Founder instruction", and the
+exact `cs-bus --read-pending --provider codex --session <thread-id>` command.
+The receiver must read the owned mailbox's full envelope before treating a
+peer's coordination text as if it had Founder authority. Every metadata field
+in the wrapper is rendered on one line with non-printable characters replaced,
+and the fields a peer chose itself (its name and channel) keep only letters,
+digits and `._-`, so a peer cannot forge a `from: Founder` line or a line of
+its own.
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the
 matching pending Codex submission through `thread/queue/delete`. The transport

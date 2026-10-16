@@ -166,7 +166,8 @@ final class RealChatEngine: AgentChatEngine {
               summary: ffiRequest.summary,
               command: ffiRequest.command,
               cwd: ffiRequest.cwd,
-              paths: ffiRequest.paths
+              paths: ffiRequest.paths,
+              arguments: ffiRequest.arguments
             ))
         }
       }

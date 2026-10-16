@@ -32,7 +32,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{
     ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolOrigin,
-    ToolRegistry, ToolResultContent, ToolRisk,
+    ToolRegistry, ToolResultContent, ToolRisk, redact_command_line,
 };
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use codescribe_core::config::settings::{
@@ -1501,7 +1501,7 @@ fn register_mcp_tools_from_config(
                 })
             }),
             policy,
-            validator,
+            Some(validator),
         );
 
         if let Err(error) = register_result {
@@ -1603,17 +1603,20 @@ fn is_desktop_commander_server(server_name: &str) -> bool {
     server_name.eq_ignore_ascii_case("desktop-commander")
 }
 
-/// Risk classification and optional input validator for one discovered tool.
+/// Risk classification and input validator for one discovered tool.
 ///
-/// Unknown servers get `ToolRisk::Unknown` with no validator — the registry's
-/// own decision step turns Unknown into "require approval", so an unclassified
-/// tool is never a silent allow. Desktop Commander is classified per tool:
-/// reads run freely, mutations and process control require approval, and
-/// anything unrecognised stays Unknown.
+/// Unknown servers get `ToolRisk::Unknown` — the registry's own decision step
+/// turns Unknown into "require approval", so an unclassified tool is never a
+/// silent allow. Desktop Commander is classified per tool: reads run freely,
+/// mutations and process control require approval, and anything unrecognised
+/// stays Unknown.
+///
+/// Every MCP tool gets a validator regardless of server, so the approval card
+/// always names the server and the upstream tool it would reach.
 fn execution_policy(
     server_name: &str,
     upstream_tool: &str,
-) -> (ToolExecutionPolicy, Option<ToolInputValidator>) {
+) -> (ToolExecutionPolicy, ToolInputValidator) {
     let origin = ToolOrigin::Mcp {
         server: server_name.to_string(),
         upstream_tool: upstream_tool.to_string(),
@@ -1625,7 +1628,7 @@ fn execution_policy(
                 risk: ToolRisk::Unknown,
                 requires_approval: false,
             },
-            None,
+            mcp_validator(server_name, upstream_tool),
         );
     }
 
@@ -1655,193 +1658,162 @@ fn execution_policy(
         | "set_config_value" => (ToolRisk::ProcessControl, true),
         _ => (ToolRisk::Unknown, false),
     };
-    let validator = desktop_commander_validator(upstream_tool);
     (
         ToolExecutionPolicy {
             origin,
             risk,
             requires_approval,
         },
-        validator,
+        mcp_validator(server_name, upstream_tool),
     )
 }
 
-/// Build the per-call validator for a Desktop Commander tool.
+/// The single preview throne for every MCP tool, whichever server it came from.
 ///
-/// The validator runs before every call and produces the approval preview. It
-/// is the enforcement point for three rules: every path argument must resolve
-/// inside a configured workspace root, URL reads are denied outright, and
-/// Desktop Commander may not rewrite its own security-policy keys (matched on
-/// a normalized key, so `security.allowedDirectories[0]` cannot slip through).
-/// Returning `Err` aborts the call.
-fn desktop_commander_validator(upstream_tool: &str) -> Option<ToolInputValidator> {
+/// Desktop Commander contributes its hardened per-tool checks and resolved
+/// targets; any other server contributes nothing it could get wrong, so the
+/// preview falls back to naming the exact destination — server and upstream
+/// tool, not the mangled public name the model called. The card's argument
+/// block is added by the registry from this same call input, so an unclassified
+/// MCP tool still shows what it would send.
+fn mcp_validator(server_name: &str, upstream_tool: &str) -> ToolInputValidator {
+    let server = server_name.to_string();
     let tool = upstream_tool.to_string();
-    Some(Arc::new(move |input| {
-        let roots = path_policy::workspace_roots();
-        match tool.as_str() {
-            "get_file_info" | "list_directory" | "read_file" | "start_search" => {
-                if input
-                    .get("isUrl")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    bail!("Desktop Commander URL reads are denied by Codescribe policy");
-                }
-                let path = required_string(input, &["path"])?;
-                let canonical = path_policy::validate_existing(path, &roots)?;
-                Ok(ToolCallPreview {
-                    summary: format!("{tool} inside the configured workspace"),
-                    paths: vec![canonical.display().to_string()],
-                    ..Default::default()
-                })
-            }
-            "read_multiple_files" => {
-                let paths = input
-                    .get("paths")
-                    .and_then(serde_json::Value::as_array)
-                    .context("Missing required array field 'paths'")?;
-                if paths.is_empty() {
-                    bail!("Desktop Commander read_multiple_files requires at least one path");
-                }
-                let paths = paths
-                    .iter()
-                    .map(|path| {
-                        let path = path
-                            .as_str()
-                            .context("read_multiple_files paths must be strings")?;
-                        path_policy::validate_existing(path, &roots)
-                            .map(|path| path.display().to_string())
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(ToolCallPreview {
-                    summary: "Read multiple files inside the configured workspace".to_string(),
-                    paths,
-                    ..Default::default()
-                })
-            }
-            "write_file" | "write_pdf" | "create_directory" => {
-                let path = required_string(input, &["path"])?;
-                let target = path_policy::validate_new_target(path, &roots)?;
-                Ok(ToolCallPreview {
-                    summary: format!("{tool} inside the configured workspace"),
-                    paths: vec![target.display().to_string()],
-                    ..Default::default()
-                })
-            }
-            "edit_block" => {
-                let path = required_string(input, &["file_path", "path"])?;
-                let canonical = path_policy::validate_existing(path, &roots)?;
-                Ok(ToolCallPreview {
-                    summary: "Edit an existing workspace file".to_string(),
-                    paths: vec![canonical.display().to_string()],
-                    ..Default::default()
-                })
-            }
-            "move_file" => {
-                let source = required_string(input, &["source", "source_path"])?;
-                let destination = required_string(input, &["destination", "destination_path"])?;
-                let source = path_policy::validate_existing(source, &roots)?;
-                let destination = path_policy::validate_new_target(destination, &roots)?;
-                Ok(ToolCallPreview {
-                    summary: "Move a file inside the configured workspace".to_string(),
-                    paths: vec![
-                        source.display().to_string(),
-                        destination.display().to_string(),
-                    ],
-                    ..Default::default()
-                })
-            }
-            "start_process" => {
-                let command = required_string(input, &["command"])?;
-                let cwd = required_string(input, &["cwd", "path"])?;
-                let cwd = path_policy::validate_terminal(command, cwd, &roots)?;
-                Ok(ToolCallPreview {
-                    summary: "Start a process inside the configured workspace".to_string(),
-                    command: Some(redact_command_for_approval(command)),
-                    cwd: Some(cwd.display().to_string()),
-                    ..Default::default()
-                })
-            }
-            "set_config_value" => {
-                let key = required_string(input, &["key"])?;
-                let normalized = key
-                    .chars()
-                    .filter(|character| character.is_ascii_alphanumeric())
-                    .collect::<String>()
-                    .to_ascii_lowercase();
-                if ["alloweddirectories", "blockedcommands", "codescribepolicy"]
-                    .iter()
-                    .any(|protected| normalized.contains(protected))
-                {
-                    bail!("Desktop Commander may not change security-policy key '{key}'");
-                }
-                Ok(ToolCallPreview {
-                    summary: format!("Change Desktop Commander setting '{key}'"),
-                    ..Default::default()
-                })
-            }
-            "interact_with_process" | "force_terminate" | "kill_process" => Ok(ToolCallPreview {
-                summary: format!("Desktop Commander process control: {tool}"),
-                ..Default::default()
-            }),
-            _ => Ok(ToolCallPreview {
-                summary: format!("Desktop Commander tool: {tool}"),
-                ..Default::default()
-            }),
+    let hardened = is_desktop_commander_server(server_name);
+    Arc::new(move |input| {
+        let mut preview = if hardened {
+            desktop_commander_preview(&tool, input)?
+        } else {
+            ToolCallPreview::default()
+        };
+        if preview.summary.is_empty() {
+            preview.summary = format!("Call '{tool}' on MCP server '{server}'");
         }
-    }))
+        Ok(preview)
+    })
 }
 
-/// Redact secrets from a command line before it is shown in an approval
-/// prompt. Handles both shapes: `KEY=value` inline assignments, and a flag
-/// whose secret sits in the following token(s) — `Authorization`/`Cookie` take
-/// two, everything else one. Display only; the command sent upstream is
-/// unchanged.
-fn redact_command_for_approval(command: &str) -> String {
-    /// Substring markers that trigger redaction of `KEY=value` tokens or the
-    /// following flag argument(s) in approval previews.
-    const SENSITIVE_KEYS: &[&str] = &[
-        "token",
-        "password",
-        "passwd",
-        "secret",
-        "api_key",
-        "apikey",
-        "authorization",
-        "cookie",
-    ];
-    let mut redact_remaining = 0usize;
-    command
-        .split_whitespace()
-        .map(|token| {
-            if redact_remaining > 0 {
-                redact_remaining -= 1;
-                return "[REDACTED]".to_string();
-            }
-            let trimmed = token.trim_matches(|character| matches!(character, '\'' | '"'));
-            let normalized = trimmed.to_ascii_lowercase();
-            if let Some((key, _)) = trimmed.split_once('=')
-                && SENSITIVE_KEYS
-                    .iter()
-                    .any(|sensitive| key.to_ascii_lowercase().contains(sensitive))
+/// Build the approval preview for one Desktop Commander call.
+///
+/// Reached from [`mcp_validator`] before every such call. It is the enforcement
+/// point for three rules: every path argument must resolve inside a configured
+/// workspace root, URL reads are denied outright, and Desktop Commander may not
+/// rewrite its own security-policy keys (matched on a normalized key, so
+/// `security.allowedDirectories[0]` cannot slip through). Returning `Err`
+/// aborts the call.
+fn desktop_commander_preview(tool: &str, input: &serde_json::Value) -> Result<ToolCallPreview> {
+    let roots = path_policy::workspace_roots();
+    match tool {
+        "get_file_info" | "list_directory" | "read_file" | "start_search" => {
+            if input
+                .get("isUrl")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
             {
-                return format!("{key}=[REDACTED]");
+                bail!("Desktop Commander URL reads are denied by Codescribe policy");
             }
-            if SENSITIVE_KEYS
+            let path = required_string(input, &["path"])?;
+            let canonical = path_policy::validate_existing(path, &roots)?;
+            Ok(ToolCallPreview {
+                summary: format!("{tool} inside the configured workspace"),
+                paths: vec![canonical.display().to_string()],
+                ..Default::default()
+            })
+        }
+        "read_multiple_files" => {
+            let paths = input
+                .get("paths")
+                .and_then(serde_json::Value::as_array)
+                .context("Missing required array field 'paths'")?;
+            if paths.is_empty() {
+                bail!("Desktop Commander read_multiple_files requires at least one path");
+            }
+            let paths = paths
                 .iter()
-                .any(|sensitive| normalized.contains(sensitive))
+                .map(|path| {
+                    let path = path
+                        .as_str()
+                        .context("read_multiple_files paths must be strings")?;
+                    path_policy::validate_existing(path, &roots)
+                        .map(|path| path.display().to_string())
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ToolCallPreview {
+                summary: "Read multiple files inside the configured workspace".to_string(),
+                paths,
+                ..Default::default()
+            })
+        }
+        "write_file" | "write_pdf" | "create_directory" => {
+            let path = required_string(input, &["path"])?;
+            let target = path_policy::validate_new_target(path, &roots)?;
+            Ok(ToolCallPreview {
+                summary: format!("{tool} inside the configured workspace"),
+                paths: vec![target.display().to_string()],
+                ..Default::default()
+            })
+        }
+        "edit_block" => {
+            let path = required_string(input, &["file_path", "path"])?;
+            let canonical = path_policy::validate_existing(path, &roots)?;
+            Ok(ToolCallPreview {
+                summary: "Edit an existing workspace file".to_string(),
+                paths: vec![canonical.display().to_string()],
+                ..Default::default()
+            })
+        }
+        "move_file" => {
+            let source = required_string(input, &["source", "source_path"])?;
+            let destination = required_string(input, &["destination", "destination_path"])?;
+            let source = path_policy::validate_existing(source, &roots)?;
+            let destination = path_policy::validate_new_target(destination, &roots)?;
+            Ok(ToolCallPreview {
+                summary: "Move a file inside the configured workspace".to_string(),
+                paths: vec![
+                    source.display().to_string(),
+                    destination.display().to_string(),
+                ],
+                ..Default::default()
+            })
+        }
+        "start_process" => {
+            let command = required_string(input, &["command"])?;
+            let cwd = required_string(input, &["cwd", "path"])?;
+            let cwd = path_policy::validate_terminal(command, cwd, &roots)?;
+            Ok(ToolCallPreview {
+                summary: "Start a process inside the configured workspace".to_string(),
+                command: Some(redact_command_line(command)),
+                cwd: Some(cwd.display().to_string()),
+                ..Default::default()
+            })
+        }
+        "set_config_value" => {
+            let key = required_string(input, &["key"])?;
+            let normalized = key
+                .chars()
+                .filter(|character| character.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if ["alloweddirectories", "blockedcommands", "codescribepolicy"]
+                .iter()
+                .any(|protected| normalized.contains(protected))
             {
-                redact_remaining =
-                    if normalized.contains("authorization") || normalized.contains("cookie") {
-                        2
-                    } else {
-                        1
-                    };
+                bail!("Desktop Commander may not change security-policy key '{key}'");
             }
-            token.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            Ok(ToolCallPreview {
+                summary: format!("Change Desktop Commander setting '{key}'"),
+                ..Default::default()
+            })
+        }
+        "interact_with_process" | "force_terminate" | "kill_process" => Ok(ToolCallPreview {
+            summary: format!("Desktop Commander process control: {tool}"),
+            ..Default::default()
+        }),
+        _ => Ok(ToolCallPreview {
+            summary: format!("Desktop Commander tool: {tool}"),
+            ..Default::default()
+        }),
+    }
 }
 
 /// First non-blank string among the given keys, or an error naming all of
@@ -2021,12 +1993,24 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        McpRowTone, desktop_commander_validator, execution_policy, prepare_upstream_input,
+        McpRowTone, desktop_commander_preview, execution_policy, prepare_upstream_input,
         probe_agentic_readiness_at, probe_mcp_status_at, public_input_schema, public_tool_name,
-        redact_command_for_approval, register_mcp_tools_from_config_path,
+        register_mcp_tools_from_config_path,
     };
-    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
+    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk, redact_command_line};
     use serde_json::json;
+
+    /// CS160-R010: a tool from any MCP server, classified or not, names the
+    /// server and the upstream tool on its card and resolves no targets of its
+    /// own, so `confirm_targets` stays a no-op for it.
+    #[test]
+    fn generic_mcp_card_names_server_and_upstream_tool() {
+        let (_, validator) = execution_policy("notion", "search");
+        let preview = validator(&json!({"query": "budżet"})).expect("generic MCP preview");
+        assert!(preview.summary.contains("notion"), "{}", preview.summary);
+        assert!(preview.summary.contains("search"), "{}", preview.summary);
+        assert!(preview.paths.is_empty());
+    }
 
     /// Pin the Desktop Commander 0.26 tool surface: 26 tools, 15 read-only, 10
     /// approval-gated, and one Unknown (`give_feedback_to_desktop_commander`).
@@ -2108,18 +2092,19 @@ mod tests {
     #[test]
     fn desktop_commander_terminal_preview_redacts_secrets_and_blocks_policy_key_aliases() {
         assert_eq!(
-            redact_command_for_approval("TOKEN=hunter2 curl --password swordfish example.test"),
+            redact_command_line("TOKEN=hunter2 curl --password swordfish example.test"),
             "TOKEN=[REDACTED] curl --password [REDACTED] example.test"
         );
         assert_eq!(
-            redact_command_for_approval(
-                "curl -H 'Authorization: Bearer hunter2' https://example.test"
-            ),
-            "curl -H 'Authorization: [REDACTED] [REDACTED] https://example.test"
+            redact_command_line("curl -H 'Authorization: Bearer hunter2' https://example.test"),
+            "curl -H 'Authorization: [REDACTED] [REDACTED]' https://example.test"
         );
-        let validator = desktop_commander_validator("set_config_value").expect("desktop validator");
         assert!(
-            validator(&json!({"key": "security.allowedDirectories[0]", "value": "/tmp"})).is_err()
+            desktop_commander_preview(
+                "set_config_value",
+                &json!({"key": "security.allowedDirectories[0]", "value": "/tmp"})
+            )
+            .is_err()
         );
     }
 

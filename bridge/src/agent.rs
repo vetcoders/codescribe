@@ -116,6 +116,10 @@ pub struct CsToolApprovalRequest {
     pub cwd: Option<String>,
     /// Filesystem paths the call declares it will touch.
     pub paths: Vec<String>,
+    /// Redacted, bounded JSON snapshot of the call's own arguments, so the card
+    /// shows what will run even for a tool whose validator names no path or
+    /// command. Absent only when the call carries no arguments.
+    pub arguments: Option<String>,
 }
 
 impl From<ToolApprovalRequest> for CsToolApprovalRequest {
@@ -135,6 +139,7 @@ impl From<ToolApprovalRequest> for CsToolApprovalRequest {
             command: request.command,
             cwd: request.cwd,
             paths: request.paths,
+            arguments: request.arguments,
         }
     }
 }
@@ -2029,6 +2034,7 @@ mod tests {
             command: None,
             cwd: None,
             paths: vec!["/workspace/file".to_string()],
+            arguments: None,
         };
         let pending = broker.begin(request);
         assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true, false));
@@ -2055,6 +2061,7 @@ mod tests {
             command: None,
             cwd: None,
             paths: vec!["/workspace/file".to_string()],
+            arguments: None,
         });
         broker.cancel_thread("thread-cancel");
         assert!(!pending.await);

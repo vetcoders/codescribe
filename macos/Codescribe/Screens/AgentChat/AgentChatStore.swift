@@ -236,6 +236,16 @@ struct PendingToolApproval: Identifiable, Equatable {
   let command: String?
   let cwd: String?
   let paths: [String]
+  /// Redacted, bounded JSON snapshot of the suspended call's own arguments.
+  /// `nil` only when the call carries none. Built in Rust from the same input
+  /// the handler would receive, so the card cannot describe a different call.
+  let arguments: String?
+
+  /// Targets worth listing on their own: the working directory already has its
+  /// own row, so a process call does not print it twice.
+  var distinctPaths: [String] {
+    paths.filter { $0 != cwd }
+  }
 }
 
 enum ChatRole {

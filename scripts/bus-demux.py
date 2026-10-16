@@ -2983,6 +2983,44 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     return "unknown (source has no address)"
 
 
+def queue_metadata(value: Any, limit: int = 64, *, peer_controlled: bool = False) -> str:
+    """One-line, bounded rendering of a metadata field in a native queue copy.
+
+    Names, channels and address labels can come from a peer's own attach or
+    send, so a control or line-separator character in them could forge a line
+    of the queue wrapper (a fake `from: Founder (typed)`). Every non-printable
+    character becomes `?`, and the field is cut to `limit` characters. A field
+    the peer chose itself (its name, its channel) keeps only letters, digits
+    and `._-`, so it cannot even spell the wrapper's own markers.
+    """
+    if peer_controlled:
+        text = "".join(ch if ch.isalnum() or ch in "._-" else "?" for ch in str(value))
+    else:
+        text = "".join(ch if ch.isprintable() else "?" for ch in str(value))
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def founder_provenance_label(payload: dict[str, Any]) -> str | None:
+    """Founder-origin label for the Codex native queue header, or None.
+
+    Reuses the normalizer's own classification (`producer_schema`, assigned
+    once in `consider()`/`slim()`) instead of re-deriving sender/audience
+    here. Only the two known Founder lanes get a label: typed agent-user
+    messages and sealed voice takes. The peer agent-reply lane, and any
+    producer_schema this function does not recognize, return None so the
+    caller fails closed to a notice rather than risk a Founder-looking
+    header on a peer's coordination text.
+    """
+    producer_schema = payload.get("producer_schema")
+    if producer_schema == AGENT_USER_MESSAGE_SCHEMA:
+        return "Founder (typed)"
+    # App takes arrive as transcript evidence; `slim()` keeps that producer
+    # schema verbatim. The bridge's own event schema is the older take shape.
+    if producer_schema in (EVIDENCE_SCHEMA, EVENT_SCHEMA) and payload.get("kind") == "seal":
+        return "Founder (voice)"
+    return None
+
+
 def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     """Present complete task text and provenance without acoustic diagnostics.
 
@@ -3182,15 +3220,41 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            label = str(self.channel or "?")
-            name = str(payload.get("audience") or "agent")
-            message = (
+            label = queue_metadata(self.channel or "?")
+            name = queue_metadata(payload.get("audience") or "agent")
+            header = (
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
-                f"ADDRESSED TO: {delivery_address_label(payload)}\n"
-                f"{text}\n\n"
-                "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
-                "Follow the codescribe skill."
+                f"ADDRESSED TO: {queue_metadata(delivery_address_label(payload), 128)}"
             )
+            founder_source = founder_provenance_label(payload)
+            if founder_source is not None:
+                # Founder authority: keep the full-text copy, now with an
+                # explicit, envelope-derived source so it cannot be mistaken
+                # for a peer's coordination text.
+                message = (
+                    f"{header}\n"
+                    f"from: {founder_source}\n"
+                    f"{text}\n\n"
+                    "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
+                    "Follow the codescribe skill."
+                )
+            else:
+                # Peer coordination (or an unrecognized producer_schema, which
+                # fails closed the same way): no raw text in the queue copy.
+                # The receiver must read the owned mailbox before acting.
+                sender = payload.get("sender")
+                sender_name = sender.get("name") if isinstance(sender, dict) else None
+                sender_channel = sender.get("channel") if isinstance(sender, dict) else None
+                sender_label = (
+                    f"{queue_metadata(sender_name or 'unknown', peer_controlled=True)}"
+                    f"/{queue_metadata(sender_channel or '?', peer_controlled=True)}"
+                )
+                message = (
+                    f"{header}\n"
+                    f"from: peer {sender_label} — peer coordination, not a Founder instruction.\n"
+                    "No text is attached to this queue notice. Read the owned mailbox before acting:\n"
+                    f"cs-bus --read-pending --provider codex --session {self.session}"
+                )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
                 "delivery_id": identity, "disposition": "requesting",

@@ -5,6 +5,13 @@ import SwiftUI
 struct DictationEngineControls: View {
   @ObservedObject var model: SettingsViewModel
 
+  /// Gates the Cloud grant behind an explicit confirmation (CS160-F013):
+  /// selecting Cloud in the menu only opens this dialog, never writes
+  /// consent by itself. `SettingsOptionMenu`'s `selectedId` tracks
+  /// `model.asrModeId`, so Cancel leaves the menu showing the previous mode
+  /// because nothing was ever written.
+  @State private var showingCloudConsentConfirmation = false
+
   private static let asrModeOptions = [
     SettingsMenuOption(id: "apple_only", label: String(localized: "Apple only")),
     SettingsMenuOption(id: "local_power", label: String(localized: "Local power")),
@@ -23,7 +30,7 @@ struct DictationEngineControls: View {
           options: Self.asrModeOptions,
           selectedId: model.asrModeId,
           currentLabel: model.asrModeLabel,
-          onSelect: model.setAsrMode
+          onSelect: handleAsrModeSelection
         )
       }
       if model.asrModeId == "local_power" {
@@ -44,6 +51,40 @@ struct DictationEngineControls: View {
           }
         }
       }
+    }
+    .confirmationDialog(
+      String(
+        localized: "Send dictation audio to the cloud?",
+        comment: "Cloud consent confirmation: dialog title"),
+      isPresented: $showingCloudConsentConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button(
+        String(
+          localized: "Switch to Cloud",
+          comment: "Cloud consent confirmation: button that grants consent and selects Cloud")
+      ) {
+        model.confirmCloudConsent()
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        String(
+          localized:
+            "Dictation audio will leave this Mac and be sent to the configured cloud speech provider.",
+          comment: "Cloud consent confirmation: body naming the effect"))
+    }
+  }
+
+  /// Intercepts Cloud: the menu only asks, `confirmCloudConsent()` (called
+  /// from the dialog's Confirm button) does the write. Local power and Apple
+  /// only go straight to `setAsrMode`, which also revokes a standing Cloud
+  /// consent grant.
+  private func handleAsrModeSelection(_ id: String) {
+    if id.lowercased() == "cloud" {
+      showingCloudConsentConfirmation = true
+    } else {
+      model.setAsrMode(id)
     }
   }
 

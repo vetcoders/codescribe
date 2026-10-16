@@ -292,6 +292,7 @@ prose CsToolApprovalRequest.summary
 data  CsToolApprovalRequest.command
 data  CsToolApprovalRequest.cwd
 data  CsToolApprovalRequest.paths
+data  CsToolApprovalRequest.arguments
 data  CsToolCapability.name
 data  CsToolCapability.identity
 data  CsToolCapability.origin
