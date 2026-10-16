@@ -2086,11 +2086,14 @@ impl RecordingController {
         runtime_settings: RuntimeSettingsSnapshot,
         recorder_context: &str,
     ) -> Self {
-        let resources = Self::acquire_startup_resources(recorder_context);
+        let resources = Self::acquire_startup_resources(recorder_context, &runtime_settings);
         Self::from_startup_inputs(runtime_settings, resources, Config::config_dir())
     }
 
-    fn acquire_startup_resources(recorder_context: &str) -> ControllerStartupResources {
+    fn acquire_startup_resources(
+        recorder_context: &str,
+        runtime_settings: &RuntimeSettingsSnapshot,
+    ) -> ControllerStartupResources {
         crate::config::note_startup_acquisition("controller startup resources");
         let recorder = Self::init_streaming_recorder(recorder_context);
 
@@ -2107,36 +2110,33 @@ impl RecordingController {
                 Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
-            if !crate::whisper::is_initialized() {
-                // Best-effort BACKGROUND prewarm — never block recording readiness.
-                //
-                // Product invariant: recording readiness is NOT engine readiness.
-                // Audio capture must start the moment the user presses record; the
-                // live local refinement and explicit Retranscribe lazy-load the
-                // engine on first use.
-                // A failed prewarm is a warning, not an app or recording failure.
-                // The idle-unload reaper (commit 2b8bb1f) may legitimately drop the
-                // engine later and the next call reloads it — pinning it here would
-                // undo that GPU/host-memory reclaim.
-                //
-                // Warm the ACTIVE router engine (Apple SpeechAnalyzer on macOS 26+,
-                // Candle on fallback/older macOS) AND run a synthetic warmup
-                // inference, so the first dictation pays neither model-load nor
-                // Metal kernel-compilation latency — matching the old always-instant
-                // behaviour where the long-lived daemon was warm before first use.
-                crate::config::note_startup_acquisition("STT prewarm thread");
-                std::thread::Builder::new()
-                    .name("stt-prewarm".into())
-                    .spawn(|| {
-                        if let Err(e) = crate::stt::prewarm_active_engine() {
-                            warn!(
-                                "STT background prewarm failed (will lazy-load on first use): {}",
-                                e
-                            );
-                        }
-                    })
-                    .ok();
-            }
+            // Best-effort BACKGROUND prewarm — never block recording readiness.
+            //
+            // Product invariant: recording readiness is NOT engine readiness.
+            // Audio capture must start the moment the user presses record; the
+            // selected live refiner warms from this same snapshot without
+            // blocking the capture owner.
+            // A failed prewarm is a warning, not an app or recording failure.
+            // The idle-unload reaper (commit 2b8bb1f) may legitimately drop the
+            // engine later and the next call reloads it — pinning it here would
+            // undo that GPU/host-memory reclaim.
+            //
+            // A resident Whisper model says nothing about Apple readiness.
+            // Prepare the primary and the selected in-process refiner, not
+            // merely the router's primary engine.
+            crate::config::note_startup_acquisition("STT prewarm thread");
+            let runtime_settings = runtime_settings.clone();
+            std::thread::Builder::new()
+                .name("stt-prewarm".into())
+                .spawn(move || {
+                    if let Err(e) = crate::stt::prewarm_active_engine(&runtime_settings) {
+                        warn!(
+                            "STT background prewarm failed (will lazy-load on first use): {}",
+                            e
+                        );
+                    }
+                })
+                .ok();
         }
 
         ControllerStartupResources { recorder }
