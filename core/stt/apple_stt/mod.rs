@@ -521,6 +521,9 @@ fn transcribe_file_with_backend(
 ///   explicit unavailable outcome at Stop, never a hidden asset install.
 /// - The caller bounds the wall clock; on timeout the bridge child is killed
 ///   and reaped by `run_bridge_with_timeout`.
+/// - Arming is decided by the caller from the immutable settings snapshot
+///   (Voice Lab key, env override). The bridge child still verifies its own
+///   lane env, which `run_bridge_exchange` sets explicitly for DT requests.
 ///
 /// Segment ranges are measured by the SpeechAnalyzer family but stay
 /// phrase-grain: a multi-word segment is one measured span, never synthetic
@@ -549,9 +552,6 @@ pub(crate) fn transcribe_dictation_witness(
         bail!("dictation witness request range must contain samples");
     }
     ensure_supported_platform()?;
-    if !dictation_transcriber_enabled() {
-        bail!("dictation witness lane is not armed ({ENV_DICTATION_TRANSCRIBER})");
-    }
 
     let started = std::time::Instant::now();
     let wav = TempWavFile::write(pcm, sample_rate)?;
@@ -1246,17 +1246,23 @@ fn run_bridge_exchange(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let bridge_bin = bridge_binary();
-    let mut child = Command::new(&bridge_bin)
+    let mut command = Command::new(&bridge_bin);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "failed to spawn Apple STT bridge '{}'",
-                bridge_bin.display()
-            )
-        })?;
+        .stderr(Stdio::piped());
+    if request.backend == Some(AppleSttBackend::DictationTranscriber.as_str()) {
+        // The Rust caller resolved arming from the settings snapshot; the
+        // child lane verifies its own env, so the decision crosses the process
+        // boundary explicitly instead of depending on the parent's env.
+        command.env(ENV_DICTATION_TRANSCRIBER, "1");
+    }
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "failed to spawn Apple STT bridge '{}'",
+            bridge_bin.display()
+        )
+    })?;
 
     // Write request to stdin; on error, reap the child to avoid zombie.
     let write_result = (|| -> Result<()> {

@@ -228,3 +228,34 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
             .all(|pair| pair[0].range.sample_end <= pair[1].range.sample_start)
     );
 }
+
+#[test]
+fn witness_attempts_preserve_the_budget_of_a_distant_target() {
+    let mut attempts = Vec::new();
+    let targets = [(0, 1), (60, 61)];
+    for _ in 0..2 {
+        super::record_dictation_witness_attempts(&mut attempts, &targets, 0, 30, 30);
+    }
+    assert_eq!(attempts, vec![((0, 1), 2)]);
+    super::record_dictation_witness_attempts(&mut attempts, &targets[1..], 58, 61, 30);
+    assert_eq!(attempts, vec![((0, 1), 2), ((60, 61), 1)]);
+}
+
+#[test]
+fn witness_attempts_do_not_charge_a_sliver_of_a_later_oversized_target() {
+    let mut attempts = Vec::new();
+    let targets = [(0, 1), (29, 61)];
+    super::record_dictation_witness_attempts(&mut attempts, &targets, 0, 30, 30);
+    assert_eq!(attempts, vec![((0, 1), 1)]);
+    super::record_dictation_witness_attempts(&mut attempts, &targets[1..], 27, 57, 30);
+    assert_eq!(attempts, vec![((0, 1), 1), ((29, 61), 1)]);
+}
+
+#[test]
+fn witness_attempts_charge_full_targets_and_only_the_leading_oversized_one() {
+    let mut attempts = Vec::new();
+    super::record_dictation_witness_attempts(&mut attempts, &[(0, 90), (10, 100)], 0, 30, 30);
+    assert_eq!(attempts, vec![((0, 90), 1)]);
+    super::record_dictation_witness_attempts(&mut attempts, &[(100, 110)], 98, 110, 30);
+    assert_eq!(attempts, vec![((0, 90), 1), ((100, 110), 1)]);
+}

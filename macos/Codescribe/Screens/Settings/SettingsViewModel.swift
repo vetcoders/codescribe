@@ -3264,6 +3264,11 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_FORMAT_ON_DEVICE", enabled ? "1" : "0")
   }
 
+  func setDictationWitnessArmed(_ armed: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("CODESCRIBE_APPLE_DICTATION_TRANSCRIBER", armed ? "1" : "0")
+  }
+
   private func persist(_ key: String, _ value: String) {
     do {
       try persistOrThrow(key, value)
