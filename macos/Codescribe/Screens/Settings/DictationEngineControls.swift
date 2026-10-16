@@ -61,8 +61,8 @@ struct DictationEngineControls: View {
     ) {
       Button(
         String(
-          localized: "Confirm",
-          comment: "Cloud consent confirmation: button that grants consent")
+          localized: "Switch to Cloud",
+          comment: "Cloud consent confirmation: button that grants consent and selects Cloud")
       ) {
         model.confirmCloudConsent()
       }
