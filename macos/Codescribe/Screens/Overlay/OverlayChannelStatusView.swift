@@ -733,13 +733,8 @@ struct OverlayChannelStatusView: View {
     onSelectConversation?(conversation.id)
   }
 
-  @ViewBuilder
   private func rowGlassContainer<Content: View>(_ content: Content) -> some View {
-    if #available(macOS 26.0, *) {
-      GlassEffectContainer(spacing: 6) { content }
-    } else {
-      content
-    }
+    overlayGlassGroup(content)
   }
 
   private func channelRow(
@@ -1309,7 +1304,31 @@ struct OverlayChannelStatusView: View {
       unread: unreadCounts[conversation.id] ?? 0,
       dot: channel.map { statusDotKind(for: $0) } ?? .received,
       quietSymbol: channel?.broadcastPolicy.statusSymbol,
-      isBroadcast: conversation.channel == "0")
+      isBroadcast: conversation.channel == "0",
+      controls: pillControls(for: conversation, channel: channel))
+  }
+
+  /// The pill row's microphone and speaker, wired exactly like the docked
+  /// column's row (`channelRow`) and its 0 · All row (Founder, 2026-10-16:
+  /// "identyczne piguły mikrofon + głośnik + nazwa + agent/model/repo jakie te
+  /// agenty mają na swoich kartach").
+  private func pillControls(
+    for conversation: OverlayConversation, channel: OverlayChannelDelivery?
+  ) -> OverlayAgentPillEntry.Controls {
+    let id = conversation.channel
+    let digit = Self.toggleDigit(for: id)
+    let broadcast = id == "0"
+    return OverlayAgentPillEntry.Controls(
+      channel: id,
+      open: channel.map { isOpen($0) } ?? (hudStates[id]?.open == true),
+      muted: mutedChannels[id],
+      microphoneEnabled: !unavailable && onToggleChannel != nil && digit != nil
+        && !pendingToggleChannels.contains(id) && (!broadcast || hudStates[id] != nil),
+      playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(id),
+      broadcast: broadcast,
+      speaking: conversation.replySpeaking,
+      onMicrophone: { if let digit { onToggleChannel?(digit) } },
+      onPlayback: { onTogglePlayback?(id) })
   }
 
   /// The drawer's one-glance preview of the last message: own messages take
@@ -1361,6 +1380,35 @@ struct OverlayAgentPillEntry: Identifiable {
   /// Slashed-antenna symbol when broadcasts do not wake this agent.
   let quietSymbol: String?
   let isBroadcast: Bool
+  /// The row's microphone and speaker; nil only for the transcription entry.
+  var controls: Controls? = nil
+
+  /// What `OverlayAgentAudioControls` needs for one row, resolved by the
+  /// roster view from the same projection as the docked column's rows.
+  struct Controls {
+    let channel: String
+    let open: Bool
+    let muted: Bool?
+    let microphoneEnabled: Bool
+    let playbackEnabled: Bool
+    let broadcast: Bool
+    let speaking: Bool
+    let onMicrophone: () -> Void
+    let onPlayback: () -> Void
+  }
+}
+
+/// Glass pills and their controls morph as one group on macOS 26; older
+/// systems render the content as it is. Main-actor like the views that call
+/// it: a nonisolated generic cannot hand a `View` conformance to
+/// `GlassEffectContainer` (Swift 6.2 isolated conformances).
+@MainActor @ViewBuilder
+private func overlayGlassGroup<Content: View>(_ content: Content) -> some View {
+  if #available(macOS 26.0, *) {
+    GlassEffectContainer(spacing: 6) { content }
+  } else {
+    content
+  }
 }
 
 /// The roster's status dot: filled while listening or with delivery progress,
@@ -1399,11 +1447,12 @@ struct OverlayAgentStatusDot: View {
   }
 }
 
-/// The narrow-window roster: one glass pill per conversation directly under
-/// the name pill, same width. Clicking a pill selects and closes; Esc or a
-/// click on the dimmed conversation closes; the 0 · All entry keeps the
-/// broadcast policy menu (878667f9f) underneath. Pills stagger in unless the
-/// user asked for reduced motion.
+/// The narrow-window roster: one glass row per conversation directly under
+/// the name pill, same width: the pill (dot, name, agent/model/repo, unread)
+/// with the row's microphone and speaker trailing it, as on the agent's card
+/// in the docked column. Clicking a pill selects; Esc closes; the 0 · All
+/// entry keeps the broadcast policy menu (878667f9f) underneath. Rows stagger
+/// in unless the user asked for reduced motion.
 struct OverlayAgentPillStack: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.csTextScale) private var textScale
@@ -1419,16 +1468,18 @@ struct OverlayAgentPillStack: View {
 
   var body: some View {
     ScrollView(.vertical) {
-      VStack(spacing: 6) {
-        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-          pillEntryView(entry)
-            .opacity(revealed ? 1 : 0)
-            .offset(y: revealed ? 0 : -10)
-            .animation(
-              reduceMotion ? nil : .easeOut(duration: 0.2).delay(Double(index) * 0.026),
-              value: revealed)
+      overlayGlassGroup(
+        VStack(spacing: 6) {
+          ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+            pillEntryView(entry)
+              .opacity(revealed ? 1 : 0)
+              .offset(y: revealed ? 0 : -10)
+              .animation(
+                reduceMotion ? nil : .easeOut(duration: 0.2).delay(Double(index) * 0.026),
+                value: revealed)
+          }
         }
-      }
+      )
       .padding(.vertical, 2)
     }
     .scrollIndicators(.hidden)
@@ -1496,9 +1547,26 @@ struct OverlayAgentPillStack: View {
     .csFocusOutline()
     .modifier(OverlayNamePillGlass(interactive: true))
     .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
+    let row = HStack(spacing: 6) {
+      pill
+      if let controls = entry.controls {
+        OverlayAgentAudioControls(
+          open: controls.open, muted: controls.muted,
+          microphoneEnabled: controls.microphoneEnabled,
+          playbackEnabled: controls.playbackEnabled,
+          palette: palette, onMicrophone: controls.onMicrophone,
+          onPlayback: controls.onPlayback, broadcast: controls.broadcast,
+          speaking: controls.speaking
+        )
+        .fixedSize()
+        .accessibilityIdentifier("overlay-agent-pill-controls-\(controls.channel)")
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
     if entry.isBroadcast && !broadcastMembers.isEmpty {
       VStack(spacing: 4) {
-        pill
+        row
         OverlayBroadcastDisclosure(
           channels: broadcastMembers, palette: palette, enabled: broadcastEnabled
         ) {
@@ -1514,7 +1582,7 @@ struct OverlayAgentPillStack: View {
         }
       }
     } else {
-      pill
+      row
     }
   }
 }
