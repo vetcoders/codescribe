@@ -44,6 +44,8 @@ const MAX_SEARCH_ENTRIES: usize = 100_000;
 const SEARCH_TIME_BUDGET: Duration = Duration::from_secs(15);
 /// Upper bound on a single `fs.write` / `fs.patch` payload.
 const MAX_WRITE_BYTES: usize = 512 * 1024;
+/// Longest slice of a model-supplied search query echoed on an approval card.
+const MAX_SUMMARY_QUERY_CHARS: usize = 80;
 
 /// Register the filesystem tool family, read-only tools first and mutating
 /// tools declared as [`ToolRisk::Mutating`] so approval defaults to Ask.
@@ -53,7 +55,7 @@ pub fn register(registry: &mut ToolRegistry) {
             list_directory_definition(),
             Box::new(|input| Box::pin(async move { handle_list_directory(input) })),
             ToolExecutionPolicy::native(ToolRisk::ReadOnly),
-            Some(path_validator(&["path"], &[])),
+            Some(path_validator(&["path"], &[], summarize_list)),
         )
         .expect("register list_directory");
     registry
@@ -61,7 +63,7 @@ pub fn register(registry: &mut ToolRegistry) {
             search_files_definition(),
             Box::new(|input| Box::pin(handle_search_files(input))),
             ToolExecutionPolicy::native(ToolRisk::ReadOnly),
-            Some(path_validator(&["path"], &[])),
+            Some(path_validator(&["path"], &[], summarize_search)),
         )
         .expect("register search_files");
     registry
@@ -69,7 +71,7 @@ pub fn register(registry: &mut ToolRegistry) {
             write_file_definition(),
             Box::new(|input| Box::pin(async move { handle_write_file(input) })),
             ToolExecutionPolicy::native(ToolRisk::Mutating),
-            Some(path_validator(&[], &["path"])),
+            Some(path_validator(&[], &["path"], summarize_write)),
         )
         .expect("register write_file");
     registry
@@ -77,7 +79,7 @@ pub fn register(registry: &mut ToolRegistry) {
             apply_patch_definition(),
             Box::new(|input| Box::pin(async move { handle_apply_patch(input) })),
             ToolExecutionPolicy::native(ToolRisk::Mutating),
-            Some(path_validator(&["path"], &[])),
+            Some(path_validator(&["path"], &[], summarize_patch)),
         )
         .expect("register apply_patch");
     registry
@@ -85,9 +87,76 @@ pub fn register(registry: &mut ToolRegistry) {
             move_path_definition(),
             Box::new(|input| Box::pin(async move { handle_move_path(input) })),
             ToolExecutionPolicy::native(ToolRisk::Mutating),
-            Some(path_validator(&["from"], &["to"])),
+            Some(path_validator(&["from"], &["to"], summarize_move)),
         )
         .expect("register move_path");
+}
+
+/// One-line summary of a pending `list_directory`.
+fn summarize_list(input: &Value, paths: &[String]) -> String {
+    let recursive = input
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let scope = if recursive {
+        "recursively"
+    } else {
+        "non-recursively"
+    };
+    format!("List {} {scope}", joined_targets(paths))
+}
+
+/// One-line summary of a pending `search_files`, naming the literal queried.
+///
+/// The query is the model's own text, so it is cut here: a card line is a
+/// glance, and the full (bounded) query is on the card's argument snapshot.
+fn summarize_search(input: &Value, paths: &[String]) -> String {
+    let query: String = input
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_SUMMARY_QUERY_CHARS)
+        .collect();
+    format!("Search {} for “{query}”", joined_targets(paths))
+}
+
+/// One-line summary of a pending `write_file`. The payload size is what tells
+/// two otherwise identical writes apart at a glance; the exact content is on
+/// the card's argument snapshot.
+fn summarize_write(input: &Value, paths: &[String]) -> String {
+    let bytes = input
+        .get("content")
+        .and_then(Value::as_str)
+        .map_or(0, str::len);
+    format!("Write {bytes} byte(s) to {}", joined_targets(paths))
+}
+
+/// One-line summary of a pending `apply_patch`, sized by what it replaces.
+fn summarize_patch(input: &Value, paths: &[String]) -> String {
+    let removed = input
+        .get("old_string")
+        .and_then(Value::as_str)
+        .map_or(0, str::len);
+    let added = input
+        .get("new_string")
+        .and_then(Value::as_str)
+        .map_or(0, str::len);
+    format!(
+        "Replace {removed} byte(s) with {added} byte(s) in {}",
+        joined_targets(paths)
+    )
+}
+
+/// One-line summary of a pending `move_path`: source first, destination second,
+/// in the order [`path_validator`] resolved them.
+fn summarize_move(_input: &Value, paths: &[String]) -> String {
+    format!("Move {}", paths.join(" → "))
+}
+
+/// Canonical targets as one display string.
+fn joined_targets(paths: &[String]) -> String {
+    paths.join(", ")
 }
 
 /// Pre-flight validator resolving the named input fields exactly as the
@@ -97,9 +166,14 @@ pub fn register(registry: &mut ToolRegistry) {
 /// The preview carries the canonical targets, so the permission gateway judges
 /// what a handler will touch, not the alias the model typed. A path that does
 /// not resolve inside the workspace roots is a hard deny before any approval.
+///
+/// `summarize` turns those resolved targets plus the call's own input into the
+/// card's one-line description, so two writes to different files — or to the
+/// same file with different payloads — never read as the same request.
 fn path_validator(
     existing: &'static [&'static str],
     new_targets: &'static [&'static str],
+    summarize: fn(&Value, &[String]) -> String,
 ) -> ToolInputValidator {
     Arc::new(move |input: &Value| {
         let roots = workspace_roots();
@@ -113,6 +187,7 @@ fn path_validator(
             paths.push(path.display().to_string());
         }
         Ok(ToolCallPreview {
+            summary: summarize(input, &paths),
             paths,
             ..Default::default()
         })

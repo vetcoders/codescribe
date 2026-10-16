@@ -68,7 +68,7 @@ pub use provider::{AgentProvider, StreamOptions};
 pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
     ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
-    ToolRisk,
+    ToolRisk, redacted_arguments,
 };
 pub use run_monitor::{
     HeartbeatKind, RunMonitorRecord, RunMonitorRegistration, RunMonitorState, RunMonitorStore,

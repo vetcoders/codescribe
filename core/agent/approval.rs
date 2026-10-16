@@ -283,6 +283,7 @@ mod tests {
             command: None,
             cwd: None,
             paths: vec![],
+            arguments: None,
         }
     }
 

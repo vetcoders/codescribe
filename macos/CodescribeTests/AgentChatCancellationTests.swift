@@ -216,7 +216,8 @@ final class AgentChatCancellationTests: XCTestCase {
       summary: "write file",
       command: nil,
       cwd: nil,
-      paths: ["/workspace/file"]
+      paths: ["/workspace/file"],
+      arguments: nil
     )
     let other = PendingToolApproval(
       callID: "call-other",
@@ -228,7 +229,8 @@ final class AgentChatCancellationTests: XCTestCase {
       summary: "write other file",
       command: nil,
       cwd: nil,
-      paths: ["/workspace/other"]
+      paths: ["/workspace/other"],
+      arguments: nil
     )
 
     engine.emitApproval(other)

@@ -73,7 +73,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: []
+      command: nil, cwd: nil, paths: [], arguments: nil
     )
     var reads = 0
     var model: SettingsViewModel!
@@ -96,7 +96,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: ["/workspace/a"]
+      command: nil, cwd: nil, paths: ["/workspace/a"], arguments: nil
     )
     var pending = [request]
     var resolutions = 0
@@ -127,7 +127,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: []
+      command: nil, cwd: nil, paths: [], arguments: nil
     )
     var failRead = false
     var resolutions = 0

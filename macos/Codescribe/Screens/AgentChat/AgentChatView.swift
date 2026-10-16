@@ -659,11 +659,21 @@ private struct QueuedTurnRow: View {
   }
 }
 
+/// The operator's consent surface for one suspended tool call.
+///
+/// Every field it paints comes from the Rust permission gate's own preview of
+/// the exact call that is waiting, so two calls that differ in path, payload,
+/// argv or working directory never read as the same request. The argument
+/// block is already redacted and bounded in Rust; this view only gives it a
+/// height so a long call cannot push the Deny button off the card.
 struct ToolApprovalCard: View {
   let request: PendingToolApproval
   let reject: () -> Void
   let allowOnce: () -> Void
   let allowAlways: () -> Void
+
+  /// Tallest the argument snapshot grows before it scrolls inside the card.
+  private static let argumentsMaxHeight: CGFloat = 140
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
@@ -697,11 +707,35 @@ struct ToolApprovalCard: View {
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
-      ForEach(request.paths, id: \.self) { path in
+      ForEach(request.distinctPaths, id: \.self) { path in
         Text(path)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
+      }
+      if let arguments = request.arguments {
+        VStack(alignment: .leading, spacing: 3) {
+          Text(
+            "Arguments",
+            comment: "Heading above the argument snapshot on an agent permission card"
+          )
+          .font(CSFont.ui(10.5, .medium))
+          .foregroundStyle(CSColor.textTertiary)
+          ScrollView {
+            Text(verbatim: arguments)
+              .font(CSFont.mono(10.5, .regular))
+              .foregroundStyle(Color.primary)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .frame(maxHeight: Self.argumentsMaxHeight)
+        }
+        .help(
+          Text(
+            "Secret-looking values read [redacted] and long values are shortened.",
+            comment: "Tooltip for the argument snapshot on an agent permission card"
+          )
+        )
       }
       HStack {
         Spacer()
