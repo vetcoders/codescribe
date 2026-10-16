@@ -369,43 +369,64 @@ struct OverlayBroadcastDisclosure<Header: View>: View {
   }
 
   @MainActor
-  static func setMembership(
-    _ checked: Bool, for identity: AgentPlaybackIdentity,
+  static func setPolicy(
+    _ policy: AgentBroadcastPolicy, for identity: AgentPlaybackIdentity,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws {
-    try await RealAgentBridgeInstaller.setBroadcastPolicy(
-      checked ? .on : .quiet, for: identity, installer: installer)
+    try await RealAgentBridgeInstaller.setBroadcastPolicy(policy, for: identity, installer: installer)
+  }
+
+  // Maciej (2026-10-16): the checkbox grid goes; the agent row carries its
+  // reception actions on click and right-click, like the overlay header menu.
+  @ViewBuilder
+  private func policyActions(for channel: OverlayChannelDelivery) -> some View {
+    ForEach(AgentBroadcastPolicy.allCases, id: \.self) { policy in
+      Button {
+        apply(policy, to: channel)
+      } label: {
+        if policy == channel.broadcastPolicy {
+          Label(policy.menuTitle, systemImage: "checkmark")
+        } else {
+          Text(policy.menuTitle)
+        }
+      }
+    }
+  }
+
+  private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
+    guard policy != channel.broadcastPolicy, let identity = channel.broadcastIdentity,
+      !pending.contains(identity)
+    else { return }
+    pending.insert(identity)
+    commandError = nil
+    Task { @MainActor in
+      defer { pending.remove(identity) }
+      do {
+        try await Self.setPolicy(policy, for: identity)
+      } catch {
+        commandError = String(localized: "Couldn't change broadcast reception.")
+      }
+    }
   }
 
   var body: some View {
     DisclosureGroup {
       ForEach(channels) { channel in
-        Toggle(
-          isOn: Binding(
-            get: { channel.broadcastPolicy.receivesWake },
-            set: { checked in
-              guard let identity = channel.broadcastIdentity, !pending.contains(identity) else {
-                return
-              }
-              pending.insert(identity)
-              commandError = nil
-              Task { @MainActor in
-                defer { pending.remove(identity) }
-                do {
-                  try await Self.setMembership(checked, for: identity)
-                } catch {
-                  commandError = String(localized: "Couldn't change broadcast reception.")
-                }
-              }
-            })
-        ) {
-          Text(verbatim: "\(channel.channel) · \(channel.agent)")
+        Menu {
+          policyActions(for: channel)
+        } label: {
+          HStack(spacing: 6) {
+            Text(verbatim: "\(channel.channel) · \(channel.agent)")
+            if let symbol = channel.broadcastPolicy.statusSymbol {
+              Image(systemName: symbol)
+            }
+          }
         }
-        .toggleStyle(.checkbox)
         .disabled(
           !enabled || channel.broadcastIdentity == nil
             || channel.broadcastIdentity.map { pending.contains($0) } == true)
         .help(String(localized: "Wake this agent for channel 0 broadcasts"))
+        .contextMenu { policyActions(for: channel) }
         .accessibilityIdentifier("overlay-broadcast-member-\(channel.channel)")
       }
       if let commandError {

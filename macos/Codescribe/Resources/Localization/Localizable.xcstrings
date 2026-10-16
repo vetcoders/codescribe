@@ -8645,6 +8645,16 @@
         }
       }
     },
+    "Leave channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opuść kanał 0"
+          }
+        }
+      }
+    },
     "Leave empty to keep the stored key" : {
       "localizations" : {
         "pl" : {
@@ -12602,6 +12612,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kalibruj ponownie"
+          }
+        }
+      }
+    },
+    "Receive silently" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odbieraj po cichu"
           }
         }
       }
@@ -18189,6 +18209,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Codescribe Bus czeka tyle czasu od zakończenia mowy, zanim wyśle wiadomość. Ten sam limit ciszy obowiązuje przy dyktowaniu bez trzymania klawisza. Zmiany działają od otwarcia kanału lub rozpoczęcia nagrania."
+          }
+        }
+      }
+    },
+    "Wake on channel 0 broadcasts" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybudzaj po rozgłoszeniach na kanale 0"
           }
         }
       }

@@ -36,9 +36,14 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     XCTAssertNil(channel("1", policy: .on).broadcastPolicy.statusSymbol)
     XCTAssertFalse(quiet.broadcastPolicy.receivesWake)
     XCTAssertFalse(off.broadcastPolicy.receivesWake)
+    // The menu names each of the three receptions distinctly.
+    XCTAssertEqual(Set(AgentBroadcastPolicy.allCases.map(\.menuTitle)).count, 3)
   }
 
-  func testCheckboxActionIssuesBroadcastQuietThenOnThroughTheRealHelper() async throws {
+  /// The member row's menu (click and right-click alike) issues the selected
+  /// policy through the managed helper — quiet, on and the full off that the
+  /// checkboxes never exposed (Maciej, 2026-10-16).
+  func testMenuActionIssuesEachBroadcastPolicyThroughTheRealHelper() async throws {
     let fixture = try Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.home) }
     let identity = fixture.identity
@@ -50,14 +55,17 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
         "--session", identity.session, "--bus", identity.bus,
         "--bridge-home", fixture.installer.bridgeRoot.path,
       ])
-    try await OverlayBroadcastDisclosure<EmptyView>.setMembership(
-      false, for: identity, installer: fixture.installer)
+    try await OverlayBroadcastDisclosure<EmptyView>.setPolicy(
+      .quiet, for: identity, installer: fixture.installer)
     let quiet = try fixture.receipt()
     XCTAssertEqual(quiet["policy"] as? String, "quiet")
     XCTAssertEqual(quiet["lease_id"] as? String, identity.leaseID)
     XCTAssertEqual(quiet["bus"] as? String, identity.bus)
-    try await OverlayBroadcastDisclosure<EmptyView>.setMembership(
-      true, for: identity, installer: fixture.installer)
+    try await OverlayBroadcastDisclosure<EmptyView>.setPolicy(
+      .off, for: identity, installer: fixture.installer)
+    XCTAssertEqual(try fixture.receipt()["policy"] as? String, "off")
+    try await OverlayBroadcastDisclosure<EmptyView>.setPolicy(
+      .on, for: identity, installer: fixture.installer)
     XCTAssertEqual(try fixture.receipt()["policy"] as? String, "on")
   }
 
