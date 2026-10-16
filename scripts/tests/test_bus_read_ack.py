@@ -320,6 +320,9 @@ class ReadAckTests(unittest.TestCase):
 
     def test_native_message_contains_full_task_and_read_then_ack_for_current_ownership(self):
         self.pending[0]["text"] = "Do not install old build 2094; this text stays in the bus."
+        # The normalizer stamps typed Founder text with this producer schema;
+        # only Founder copies carry text into the queue (CS160-R013).
+        self.pending[0]["producer_schema"] = DEMUX.AGENT_USER_MESSAGE_SCHEMA
         self.save()
         with patch("shutil.which", return_value="/fake/codex"), patch("subprocess.run",
                 return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
@@ -331,7 +334,8 @@ class ReadAckTests(unittest.TestCase):
         self.assertIn("--read-pending", notice)
         self.assertIn("--ack", notice)
         self.assertIn(self.ids[0], notice)
-        self.assertLess(len(notice) - len(self.pending[0]["text"]), 220)
+        self.assertIn("from: Founder (typed)\n", notice)
+        self.assertLess(len(notice) - len(self.pending[0]["text"]), 250)
         self.assertNotIn("Delivery provenance", notice)
         # Full owner/timestamp coordinates remain in the authoritative read,
         # rather than repeating the envelope around every queue copy.

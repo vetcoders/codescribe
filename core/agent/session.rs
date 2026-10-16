@@ -21,6 +21,7 @@ use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
 
+use super::redaction;
 use super::tool_output::ToolOutputStore;
 use super::{
     AgentAssetStore, AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role,
@@ -982,8 +983,8 @@ fn redact_tool_summary(text: &str) -> String {
         })
         .any(|token| {
             token.split_once('=').map_or_else(
-                || contains_sensitive_key(token),
-                |(key, _)| contains_sensitive_key(key),
+                || redaction::contains_sensitive_key(token),
+                |(key, _)| redaction::contains_sensitive_key(key),
             )
         })
     {
@@ -993,14 +994,17 @@ fn redact_tool_summary(text: &str) -> String {
     text.to_string()
 }
 
-/// Recursively replace values under sensitive keys with `[REDACTED]`, walking
-/// objects and arrays in place and leaving the shape intact.
+/// Recursively replace values under sensitive keys with the placeholder,
+/// walking objects and arrays in place and leaving the shape intact.
+///
+/// The key predicate is [`redaction::contains_sensitive_key`] — the same one
+/// the approval card uses, so a key hidden on a card is hidden here too.
 fn redact_json_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             for (key, value) in object {
-                if contains_sensitive_key(key) {
-                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                if redaction::contains_sensitive_key(key) {
+                    *value = serde_json::Value::String(redaction::REDACTED.to_string());
                 } else {
                     redact_json_value(value);
                 }
@@ -1013,31 +1017,6 @@ fn redact_json_value(value: &mut serde_json::Value) {
         }
         _ => {}
     }
-}
-
-/// Whether a key names something secret.
-///
-/// Non-alphanumerics are dropped and the rest lowercased before matching, so
-/// `API_KEY`, `api-key` and `apiKey` all collapse to the same needle and
-/// separator tricks cannot slip a secret past the filter.
-fn contains_sensitive_key(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    [
-        "token",
-        "password",
-        "passwd",
-        "secret",
-        "apikey",
-        "authorization",
-        "cookie",
-        "environment",
-    ]
-    .iter()
-    .any(|sensitive| normalized.contains(sensitive))
 }
 
 /// Truncate to `max_chars` with an ellipsis, counting characters rather than

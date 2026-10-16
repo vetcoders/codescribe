@@ -3067,24 +3067,59 @@ final class SettingsViewModel: ObservableObject {
     settings.cloudConsent?.lowercased() == "granted"
   }
 
-  /// Persist the product lane. Selecting Cloud is the explicit grant.
+  /// Persist the product lane. Cloud is confirmation-gated: this function
+  /// never grants consent by itself. `DictationEngineControls` intercepts a
+  /// Cloud selection and shows a `confirmationDialog`; only its Confirm
+  /// handler calls `confirmCloudConsent()`. Leaving Cloud for either
+  /// on-device lane revokes a standing grant, so choosing Cloud again always
+  /// asks again (CS160-F013).
   func setAsrMode(_ id: String) {
+    let wasCloudConsentGranted = cloudConsentGranted
     switch id.lowercased() {
     case "local_power":
       settings.asrMode = "local_power"
-      persist("CODESCRIBE_ASR_MODE", "local_power")
+      if wasCloudConsentGranted {
+        // Consent changes only through the reload after a successful write: a
+        // failed revocation must leave the grant visible and retryable.
+        persistMany([
+          CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "denied"),
+          CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "local_power"),
+        ])
+      } else {
+        persist("CODESCRIBE_ASR_MODE", "local_power")
+      }
       refreshWhisperModelStatus()
     case "cloud":
-      settings.asrMode = "cloud"
-      settings.cloudConsent = "granted"
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
-        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
-      ])
+      // No-op by design: Cloud only grants through the explicit confirmation
+      // in `confirmCloudConsent()`, never from a bare picker selection.
+      break
     default:
       settings.asrMode = "apple_only"
-      persist("CODESCRIBE_ASR_MODE", "apple_only")
+      if wasCloudConsentGranted {
+        // As above: no in-memory revocation ahead of a confirmed write.
+        persistMany([
+          CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "denied"),
+          CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "apple_only"),
+        ])
+      } else {
+        persist("CODESCRIBE_ASR_MODE", "apple_only")
+      }
     }
+  }
+
+  /// The explicit grant (CS160-F013): called only from the
+  /// `confirmationDialog`'s Confirm handler in `DictationEngineControls`,
+  /// after the operator has read that dictation audio will leave this Mac.
+  /// Writes consent before mode, matching the previous combined-write order
+  /// so the bridge never observes `asrMode = cloud` with a stale or missing
+  /// consent record. Mode and consent change in memory only through the
+  /// reload after a successful write, so a failed grant leaves the previous
+  /// lane showing.
+  func confirmCloudConsent() {
+    persistMany([
+      CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
+      CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
+    ])
   }
 
   var asrGatewayUrl: String { settings.asrGatewayUrl ?? "" }

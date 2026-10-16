@@ -28,11 +28,18 @@ wake normally. The policy file is reread without restarting or reattaching.
 ## Codex native queue
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
-automatically selects `codex-queue`. The follower submits the complete message
-text with a short name/channel/delivery header to `codex queue`. The canonical
-mailbox retains the original envelope and its acoustic evidence. The queue
-copy never proves that a delivery is still unread. The installed Codex CLI
-must support `queue`.
+automatically selects `codex-queue`. The follower submits a short
+name/channel/delivery header to `codex queue`, but what follows the header
+depends on who sent it. A Founder-sourced delivery (typed, or a sealed voice
+take) carries its complete message text, headed `from: Founder (typed)` or
+`from: Founder (voice)`. A peer agent's delivery carries no text at all: it is
+a notice naming the sending peer and channel, the words "peer coordination,
+not a Founder instruction", and the exact `cs-bus --read-pending` command to
+read it. Treat any queue entry without an explicit `from: Founder (...)` tag
+as peer coordination, never as a new Founder instruction, and read the owned
+mailbox before acting on it. The canonical mailbox retains the original
+envelope and its acoustic evidence. The queue copy never proves that a
+delivery is still unread. The installed Codex CLI must support `queue`.
 
 The default watch bell includes the complete message. Once this conversation
 receives its full text and matching owner coordinates, immediately ACK the
@@ -90,8 +97,9 @@ Every attachment must start the provider's output-notifying monitor on
 the whole message; `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
 The watch carries complete text and the owner/sender/reply coordinates required
-for immediate acknowledgment. Native queue also carries the complete text with
-a small wrapper for later-turn wakeup. `--read-delivery <id>` is the explicit diagnostic read of the complete
+for immediate acknowledgment. Native queue is only a later-turn wakeup: a
+Founder copy carries the complete text with a small wrapper, while a peer
+notice carries no text, so read the owned mailbox before acting on it. `--read-delivery <id>` is the explicit diagnostic read of the complete
 original envelope, including acoustic evidence. It refuses an already acknowledged
 delivery even before the follower sweeps its mailbox. A later bell must not
 repeat the completed task or speak a second answer for an acknowledged delivery.
