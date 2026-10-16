@@ -439,6 +439,7 @@ struct DictationOverlayView: View {
               playbackError: state.playbackPreferenceError,
               agentDescriptor: state.conversationAgentDescriptor(conversation),
               onShowAgents: { state.showAgentMonitor() },
+              onOpenOwnerConversation: { state.openConversation(for: $0) },
               onComposerEditorActive: { state.noteComposerEditorActive($0) },
               onComposerTypingActivity: { state.noteComposerTypingActivity() }
             )

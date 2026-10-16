@@ -231,6 +231,42 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, broadcast.id, "the drawer keeps the conversation")
   }
 
+  /// Clicking an agent's name in its reply bubble jumps to that agent's own
+  /// conversation (Maciej, 2026-10-16). The name stays plain text in the
+  /// agent's own chat, and an owner without a conversation changes nothing.
+  func testBubbleAgentNameOpensThatAgentsConversation() throws {
+    let conversation = try source("Overlay/OverlayConversationView.swift")
+    XCTAssertTrue(conversation.contains("Button { onOpenOwnerConversation(owner) } label: {"))
+    XCTAssertTrue(conversation.contains("owner.id != conversation.owner?.id"))
+    let overlay = try source("Overlay/DictationOverlayView.swift")
+    XCTAssertTrue(overlay.contains("onOpenOwnerConversation: { state.openConversation(for: $0) },"))
+
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "lena-session",
+        "lease_id": String(repeating: "ab", count: 16), "name": "lena", "channel": "2",
+      ]))
+    let state = OverlayState()
+    let broadcast = OverlayConversation(
+      id: "bubble-all", channel: "0", name: "All", owner: nil, messages: [])
+    let agent = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, agent]))
+    state.selectConversation(broadcast.id)
+    state.openConversation(for: owner)
+    XCTAssertEqual(state.selectedConversationID, agent.id, "the click lands in the agent's chat")
+    XCTAssertFalse(state.showsAgentMonitor, "the jump opens the chat, not the drawer")
+
+    let stranger = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "other-session",
+        "lease_id": String(repeating: "cd", count: 16), "name": "ghost", "channel": "3",
+      ]))
+    state.openConversation(for: stranger)
+    XCTAssertEqual(
+      state.selectedConversationID, agent.id, "an unknown owner keeps the current selection")
+  }
+
   /// The production agent monitor washes the empty span of a roster row on a
   /// native pointer enter and clears it on leave. Light and dark both use the
   /// live panel appearance. A disabled monitor stays calm.

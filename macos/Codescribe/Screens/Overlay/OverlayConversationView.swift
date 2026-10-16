@@ -27,6 +27,8 @@ struct OverlayConversationView: View {
   var agentDescriptor: String? = nil
   /// Opens the Agents drawer from the name pill, for All as for one agent.
   var onShowAgents: (() -> Void)? = nil
+  /// Jumps to the sender's own conversation from the agent name in a reply bubble.
+  var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -357,6 +359,17 @@ struct OverlayConversationView: View {
       HStack {
         if message.kind == .user {
           Text("You").font(.system(size: 10 * textScale, weight: .bold))
+        } else if let owner = message.owner, let onOpenOwnerConversation,
+          owner.id != conversation.owner?.id
+        {
+          Button { onOpenOwnerConversation(owner) } label: {
+            Text(verbatim: owner.name)
+              .font(.system(size: 10 * textScale, weight: .bold))
+          }
+          .buttonStyle(.plain)
+          .csFocusOutline()
+          .accessibilityIdentifier("overlay-message-owner-\(message.id)")
+          .accessibilityHint(Text("Opens this agent's conversation"))
         } else {
           Text(verbatim: message.owner?.name ?? conversation.name)
             .font(.system(size: 10 * textScale, weight: .bold))
