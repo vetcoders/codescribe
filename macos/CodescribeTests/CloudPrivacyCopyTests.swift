@@ -195,6 +195,53 @@ final class CloudPrivacyCopyTests: XCTestCase {
     XCTAssertFalse(model.cloudConsentGranted)
   }
 
+  /// PR #173 review: a revocation whose write fails leaves the grant visible,
+  /// and the next selection of the same lane retries the revocation instead of
+  /// writing only the mode — for both on-device lanes.
+  func testFailedRevocationStaysGrantedAndTheRetryRevokes() {
+    for lane in ["local_power", "apple_only"] {
+      var batches: [[String]] = []
+      var failNextBatch = false
+      var persisted = CsSettings.sample
+      persisted.asrMode = "cloud"
+      persisted.resolvedAsrMode = "cloud"
+      persisted.cloudConsent = "granted"
+      let model = SettingsViewModel(
+        engine: MockSettingsEngine(
+          settingsLoader: { persisted },
+          updateConfigManyObserver: { entries in
+            batches.append(entries.map(\.key))
+            if failNextBatch {
+              failNextBatch = false
+              throw NSError(domain: "CloudPrivacyCopyTests", code: 1)
+            }
+            for entry in entries {
+              if entry.key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = entry.value }
+              if entry.key == "CODESCRIBE_ASR_MODE" {
+                persisted.asrMode = entry.value
+                persisted.resolvedAsrMode = entry.value
+              }
+            }
+          }
+        ),
+        permissionProbe: MockPermissionProbe()
+      )
+      XCTAssertTrue(model.cloudConsentGranted, lane)
+
+      failNextBatch = true
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertTrue(model.cloudConsentGranted, "\(lane): a failed revocation must not look revoked")
+      XCTAssertEqual(persisted.cloudConsent, "granted", lane)
+
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.count, 2, "\(lane): the retry writes the revocation again")
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertEqual(persisted.cloudConsent, "denied", lane)
+      XCTAssertFalse(model.cloudConsentGranted, lane)
+    }
+  }
+
   /// The status rows render the live mode label and a consent state that
   /// tracks the stored record, so neither row can go stale against the other.
   func testStatusRowValuesTrackTheStoredRecord() {
