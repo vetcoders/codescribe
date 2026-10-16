@@ -1740,6 +1740,8 @@
               "file": "app/os/clipboard.rs",
               "required_code": [
                 "let snapshot = if restore_clipboard",
+                "match ClipboardSnapshot::capture()",
+                "Ok(snapshot) => Some(snapshot)",
                 "let mut written_epoch = None",
                 "let result = write_stop_paste(",
                 "let epoch = set_clipboard_with_epoch(text)?",
@@ -1754,9 +1756,7 @@
                 "Duration::from_millis(restore_clipboard_delay_ms)",
                 "Duration::ZERO",
                 "schedule_clipboard_restore(snapshot, epoch, delay)",
-                "Ok(receipt)",
-                "match ClipboardSnapshot::capture()",
-                "Ok(snapshot) => Some(snapshot)"
+                "Ok(receipt)"
               ]
             },
             {
@@ -2162,14 +2162,13 @@
                 "state.replay_completed_windows(ev_tx);",
                 "let speech = coverage_speech_evidence(state);",
                 "state.retained_word_decodes",
-                ".assess_seal_coverage(",
+                "uncovered_gap_ranges(",
                 "admit_full_pass_gap_segments(",
                 "state.close_admission_horizon(ev_tx, state.window_plan.admission_horizon());",
                 "state.publish_resolved_word_seals(ev_tx);",
                 "state.seal_remaining_at_session_end(ev_tx);",
                 "let receipt = ledger.assess_seal_coverage(",
-                "ledger.record_seal_coverage(receipt.clone());",
-                "uncovered_gap_ranges("
+                "ledger.record_seal_coverage(receipt.clone());"
               ],
               "forbidden_code": [
                 "TailPatchRequest {",
