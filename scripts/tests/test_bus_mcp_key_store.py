@@ -5,9 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
-import socket
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch
 

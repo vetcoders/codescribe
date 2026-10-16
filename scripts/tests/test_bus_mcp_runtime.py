@@ -5,9 +5,7 @@ import concurrent.futures
 import io
 import json
 import socket
-import ssl
 import sqlite3
-import threading
 import time
 from types import SimpleNamespace
 import unittest
