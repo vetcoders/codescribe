@@ -7854,7 +7854,9 @@ mod terminal_delivery_target_falsifiers {
 
     /// A start that never became a take has no terminal canvas and therefore
     /// must not leave a target behind for an unrelated later Insert click.
+    /// Its cleanup also writes the process-wide tray/badge projection.
     #[tokio::test]
+    #[serial_test::serial]
     async fn failed_start_clears_target_latch() {
         let controller = RecordingController::new_without_keychain();
         *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());

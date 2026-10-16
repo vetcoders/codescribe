@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.17.0] - 2026-10-16
 
+- Signed updates follow the published release version rather than a branch commit count; older or contradictory appcast versions cannot be offered as upgrades.
+- Recognition accounts for complete overlapping decodes without duplicating words, and a confirmed word split preserves every child word.
 - Silero preserves speech detection across microphone callback sizes and maximum-duration splits; long speech keeps one capture timeline.
 - The experimental DictationTranscriber witness runs on closed utterance ranges, with a durable Lab switch, bounded retry accounting and overlap protection. It remains off by default.
 - Automatic words without measured speech stay outside the committed document; human edits retain their authority.
