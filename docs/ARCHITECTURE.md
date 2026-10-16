@@ -484,6 +484,12 @@ can no longer reappear on the next.
   the action (`--delete-all`). Whitespace is preserved. The redactor state
   carries across array elements, so the argv pair `["--token", "abc"]` hides
   `abc`; a non-string element ends that run.
+- By sibling key: a key/value-shaped object (`{"key": "api_key", "value": …}`,
+  `{"name": "Authorization", "value": …}`) hides its value field when a name
+  field names a secret, although the property itself is only called `value`.
+- The validator's own `summary` and `command` reach the card through
+  `redact_command_line` in the registry as well, so a query or command line a
+  tool copies from the call cannot bypass the module.
 - Bounds are unchanged: a string over 200 characters and a snapshot over
   4 KiB are cut with an explicit marker.
 

@@ -265,9 +265,10 @@ fn redact_argument_value(value: &Value, under_sensitive_key: bool) -> Value {
     }
     match value {
         Value::Object(fields) => {
+            let governed = names_a_sensitive_sibling(fields);
             let mut redacted = serde_json::Map::with_capacity(fields.len());
             for (key, value) in fields {
-                let sensitive = contains_sensitive_key(key);
+                let sensitive = contains_sensitive_key(key) || (governed && is_value_field(key));
                 redacted.insert(key.clone(), redact_argument_value(value, sensitive));
             }
             Value::Object(redacted)
@@ -276,6 +277,30 @@ fn redact_argument_value(value: &Value, under_sensitive_key: bool) -> Value {
         Value::String(text) => Value::String(bound_string(&redact_command_line(text))),
         other => other.clone(),
     }
+}
+
+/// Fields that name the setting an object carries (`{"key": "api_key", …}`,
+/// `{"name": "Authorization", …}`), as opposed to the setting's own value.
+const NAME_FIELDS: &[&str] = &[
+    "key", "name", "header", "field", "variable", "env", "setting",
+];
+
+/// Fields that carry the value of the setting a sibling name field names.
+const VALUE_FIELDS: &[&str] = &["value", "val", "values", "data", "content", "secret"];
+
+/// Whether a key/value-shaped object names a secret in one of its name
+/// fields, so that its value field must be hidden although the literal
+/// property is only called `value`.
+fn names_a_sensitive_sibling(fields: &serde_json::Map<String, Value>) -> bool {
+    fields.iter().any(|(key, value)| {
+        NAME_FIELDS.contains(&key.to_ascii_lowercase().as_str())
+            && value.as_str().is_some_and(contains_sensitive_key)
+    })
+}
+
+/// Whether a property is the value half of a key/value-shaped object.
+fn is_value_field(key: &str) -> bool {
+    VALUE_FIELDS.contains(&key.to_ascii_lowercase().as_str())
 }
 
 /// Redact an argument array, sharing one [`CommandRedactor`] across its string
@@ -462,6 +487,32 @@ mod tests {
         .expect("snapshot");
         assert!(!snapshot.contains("session=abc"), "{snapshot}");
         assert!(snapshot.contains("https://example.test"), "{snapshot}");
+    }
+
+    /// PR #173 review round 4: a key/value-shaped object hides the value when
+    /// a sibling name field names a secret, and keeps an ordinary setting.
+    #[test]
+    fn a_value_named_by_a_sibling_key_is_redacted() {
+        let config =
+            redacted_arguments(&json!({"key": "api_key", "value": "live-key"})).expect("snapshot");
+        assert!(
+            !config.contains("live-key") && config.contains("api_key"),
+            "{config}"
+        );
+        let env = redacted_arguments(&json!({"env": [
+            {"name": "GITHUB_TOKEN", "value": "ghp-live"},
+            {"name": "Authorization", "value": "Bearer live"},
+            {"name": "LANG", "value": "pl_PL.UTF-8"},
+        ]}))
+        .expect("snapshot");
+        assert!(
+            !env.contains("ghp-live") && !env.contains("Bearer live"),
+            "{env}"
+        );
+        assert!(env.contains("pl_PL.UTF-8"), "{env}");
+        let theme =
+            redacted_arguments(&json!({"key": "theme", "value": "dark"})).expect("snapshot");
+        assert!(theme.contains("dark"), "{theme}");
     }
 
     /// One key predicate for every surface: separator spellings collapse, and

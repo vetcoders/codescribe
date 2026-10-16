@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use super::permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
-use super::redaction::redacted_arguments;
+use super::redaction::{redact_command_line, redacted_arguments};
 use super::types::ImageAsset;
 
 /// Wire-level declaration of a tool as the model sees it: the name it calls,
@@ -452,8 +452,11 @@ impl ToolRegistry {
                 tool: name.to_string(),
                 origin: tool.policy.origin.clone(),
                 risk: tool.policy.risk,
-                summary: preview.summary,
-                command: preview.command,
+                // Validators compose summaries and command lines from the
+                // call's own strings; the card shows them only through the
+                // one redaction authority, whatever the tool.
+                summary: redact_command_line(&preview.summary),
+                command: preview.command.as_deref().map(redact_command_line),
                 cwd: preview.cwd,
                 paths: preview.paths,
                 arguments: redacted_arguments(input),
@@ -1266,5 +1269,53 @@ mod tests {
         let arguments = request.arguments.expect("arguments");
         assert!(!arguments.contains("\"abc\""), "{arguments}");
         assert!(arguments.contains("example.test") && arguments.contains("--force"));
+    }
+
+    /// PR #173 review round 4: a validator's summary and command line reach
+    /// the card only through the shared redaction, so a query or command a
+    /// tool copies from the call cannot expose a credential.
+    #[test]
+    fn validator_text_reaches_the_card_redacted() {
+        let mut registry = ToolRegistry::new();
+        let validator: super::ToolInputValidator = Arc::new(|input: &serde_json::Value| {
+            let query = input["query"].as_str().unwrap_or_default();
+            Ok(super::ToolCallPreview {
+                summary: format!("Search for '{query}' under /Users/op/.aws"),
+                command: Some(format!("grep -r {query} --password hunter2 .")),
+                cwd: None,
+                paths: Vec::new(),
+            })
+        });
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "search_files".to_string(),
+                    description: "search".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolExecutionPolicy::native(ToolRisk::Mutating),
+                Some(validator),
+            )
+            .expect("register");
+        let ToolDecision::RequireApproval(request) = registry.decide(
+            "search_files",
+            &json!({"query": "TOKEN=live-token"}),
+            "c",
+            "s",
+            "t",
+        ) else {
+            panic!("a mutating tool must ask");
+        };
+        assert!(
+            !format!("{request:?}").contains("live-token"),
+            "{request:?}"
+        );
+        assert!(!format!("{request:?}").contains("hunter2"), "{request:?}");
+        assert!(
+            request.summary.contains("/Users/op/.aws"),
+            "{}",
+            request.summary
+        );
     }
 }
