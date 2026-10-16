@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.17.0] - 2026-10-16
 
+- **Upgrade from earlier builds:** install 0.17.0 once from the DMG. Subsequent signed updates compare release versions; the old branch-derived build counters remain diagnostic only.
+- Channel 0 reception is configurable per agent: `on` wakes, `quiet` retains broadcasts without a wake, and `off` skips them. Direct messages still wake normally; the Agents drawer shows membership controls and quiet status.
+- OAuth credential requests require HTTPS and never follow redirects, including when a provider issuer is overridden.
+- Growing transcript bubbles measure the complete TextKit layout, and conversation accessibility groups preserve each control's native identifier. Composer clicks receive keyboard focus without programmatic responder selection opening the keyboard gate.
+
 - Signed updates follow the published release version rather than a branch commit count; older or contradictory appcast versions cannot be offered as upgrades.
 - Recognition accounts for complete overlapping decodes without duplicating words, and a confirmed word split preserves every child word.
 - Silero preserves speech detection across microphone callback sizes and maximum-duration splits; long speech keeps one capture timeline.
