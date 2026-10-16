@@ -155,6 +155,32 @@ impl ToolExecutionPolicy {
     }
 }
 
+/// Argument keys whose values never reach an approval card verbatim. Matched
+/// as a lowercase substring of the key at any depth, so `apiKey`, `X-Auth-Token`
+/// and a nested `headers.Authorization` are all covered. Over-matching (an
+/// innocent `monkey`) costs the operator nothing; under-matching leaks.
+const SECRET_ARGUMENT_KEYS: &[&str] = &[
+    "token",
+    "key",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "auth",
+    "cookie",
+    "credential",
+    "bearer",
+];
+
+/// Placeholder written in place of a secret-like value.
+const REDACTED_VALUE: &str = "[redacted]";
+
+/// Longest single string value rendered in full on an approval card.
+const MAX_PREVIEW_STRING_CHARS: usize = 200;
+
+/// Upper bound on the whole JSON snapshot shown on an approval card.
+const MAX_PREVIEW_ARGUMENTS_BYTES: usize = 4096;
+
 /// Human-readable rendering of a pending call, produced by the tool's
 /// [`ToolInputValidator`]. This is what the operator actually judges, so it
 /// must describe the concrete effect — not restate the tool's description.
@@ -164,6 +190,82 @@ pub struct ToolCallPreview {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub paths: Vec<String>,
+}
+
+/// Bounded, secret-redacted rendering of the exact input a pending call would
+/// be dispatched with.
+///
+/// The one place a tool call's raw arguments become operator-visible text. It
+/// reads the same immutable `input` the gate decided on and the session later
+/// hands to the handler, so the card cannot describe a different call than the
+/// one suspended. `None` when there are no arguments at all, so a no-argument
+/// tool does not grow an empty block on its card.
+pub fn redacted_arguments(input: &serde_json::Value) -> Option<String> {
+    match input {
+        serde_json::Value::Null => return None,
+        serde_json::Value::Object(fields) if fields.is_empty() => return None,
+        _ => {}
+    }
+    let snapshot = serde_json::to_string_pretty(&redact_value(input, false))
+        .unwrap_or_else(|_| REDACTED_VALUE.to_string());
+    Some(bound_snapshot(snapshot))
+}
+
+/// Recursive redaction: a value under a secret-like key collapses to the
+/// placeholder whole (including an object or array, which would otherwise hide
+/// the secret one level down), everything else is copied with long strings cut.
+fn redact_value(value: &serde_json::Value, under_secret_key: bool) -> serde_json::Value {
+    if under_secret_key {
+        return serde_json::Value::String(REDACTED_VALUE.to_string());
+    }
+    match value {
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), redact_value(value, is_secret_key(key))))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items.iter().map(|item| redact_value(item, false)).collect(),
+        ),
+        serde_json::Value::String(text) => serde_json::Value::String(bound_string(text)),
+        other => other.clone(),
+    }
+}
+
+/// Whether a JSON key names something whose value must not be shown.
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    SECRET_ARGUMENT_KEYS
+        .iter()
+        .any(|secret| key.contains(secret))
+}
+
+/// Cut one string value to [`MAX_PREVIEW_STRING_CHARS`], saying how much was
+/// left out rather than ending silently.
+fn bound_string(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= MAX_PREVIEW_STRING_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MAX_PREVIEW_STRING_CHARS).collect();
+    let dropped = total - MAX_PREVIEW_STRING_CHARS;
+    format!("{kept}… [{dropped} more characters]")
+}
+
+/// Cut the rendered snapshot to [`MAX_PREVIEW_ARGUMENTS_BYTES`] on a character
+/// boundary, with an explicit marker so a truncated card is never mistaken for
+/// the whole call.
+fn bound_snapshot(snapshot: String) -> String {
+    if snapshot.len() <= MAX_PREVIEW_ARGUMENTS_BYTES {
+        return snapshot;
+    }
+    let mut cut = MAX_PREVIEW_ARGUMENTS_BYTES;
+    while cut > 0 && !snapshot.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let dropped = snapshot.len() - cut;
+    format!("{}\n… [truncated, {dropped} more bytes]", &snapshot[..cut])
 }
 
 /// A preview bound to the exact call that needs approval. Carrying call,
@@ -181,6 +283,10 @@ pub struct ToolApprovalRequest {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub paths: Vec<String>,
+    /// Redacted, bounded snapshot of the call's own arguments. Present for any
+    /// call that carries arguments, whatever its tool's validator produced, so
+    /// a card is never only a tool name and a risk tier.
+    pub arguments: Option<String>,
 }
 
 /// Verdict of the permission gate. The three variants are exhaustive by
@@ -451,6 +557,7 @@ impl ToolRegistry {
                 command: preview.command,
                 cwd: preview.cwd,
                 paths: preview.paths,
+                arguments: redacted_arguments(input),
             })),
         };
         (decision, targets)

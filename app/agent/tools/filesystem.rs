@@ -47,8 +47,10 @@ fn read_file_validator() -> ToolInputValidator {
     Arc::new(|input: &Value| {
         let (canonical, _root) =
             validate_path_for_read_with_roots(requested_path(input)?, &allowed_read_roots())?;
+        let canonical = canonical.display().to_string();
         Ok(ToolCallPreview {
-            paths: vec![canonical.display().to_string()],
+            summary: format!("Read {canonical}"),
+            paths: vec![canonical],
             ..Default::default()
         })
     })

@@ -436,6 +436,42 @@ Guards:
   is a journal that cannot be written, because then the owner cannot prove
   what it retired.
 
+### Tool consent card contents
+
+A card never shows only a tool name and a risk tier. Everything on it is built
+in `ToolRegistry::decide_with_targets` (`core/agent/registry.rs`) from the one
+immutable `input` the gate decided on and the session later dispatches, so the
+card cannot describe a different call than the one suspended.
+
+Two sources feed it, and there is no third:
+
+- The tool's `ToolInputValidator` returns a `ToolCallPreview` — summary,
+  command, cwd and the canonical `paths` the handler will open. Validators
+  resolve exactly as their handler does, so an alias is judged as its target.
+  `confirm_targets` re-runs the validator right before dispatch and refuses a
+  call whose targets moved while the operator was deciding.
+- The registry adds `arguments`: the call's own JSON, rendered by
+  `redacted_arguments`. Any value under a key containing `token`, `key`,
+  `secret`, `password`, `passwd`, `authorization`, `auth`, `cookie`,
+  `credential` or `bearer` (case-insensitive, at any depth, whole subtree)
+  becomes `[redacted]`; a string over 200 characters and a snapshot over 4 KiB
+  are cut with an explicit marker. A call with no arguments carries none, so a
+  no-argument tool grows no empty block.
+
+Coverage: every filesystem tool names its resolved target and the size of what
+it writes or replaces; every process tool (`run_process`, `stop_process`,
+`observe_process`, `project_build`, `project_test`) names the program, the
+synthetic argv line and the resolved cwd, which also travels as that call's
+authorization target; every MCP tool names its server and upstream tool, with
+Desktop Commander additionally contributing its hardened per-tool checks.
+Anything else is still fully described by the argument snapshot.
+
+`CsToolApprovalRequest` carries the same fields to Swift, where the single
+`ToolApprovalCard` paints them: command and cwd monospaced, the remaining
+targets below, and the argument snapshot in a bounded scroll so a long call
+cannot push Deny off the card. The card changes nothing about the verdict —
+Deny, timeout and cancel still never reach a handler.
+
 ### Restored tool inspector metadata
 
 `RealThreadsEngine` projects persisted messages from `CodescribeThreads` into

@@ -6,13 +6,16 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
+use codescribe_core::agent::{
+    ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolRegistry,
+    ToolResultContent, ToolRisk,
+};
 use serde_json::{Value, json};
 
 use super::{output_guard, path_policy, workspace};
@@ -111,42 +114,159 @@ fn process_table() -> &'static Mutex<HashMap<u32, TrackedProcess>> {
 
 /// Register the process tool family. Everything that can start or signal a
 /// process is [`ToolRisk::ProcessControl`]; only observation is read-only.
+///
+/// Every tool here carries a validator, so the approval card names the program,
+/// the argument vector and the resolved working directory before the operator
+/// answers — a process call is never only a tool name and a risk tier.
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register_native(
+        .register_with_policy(
             run_process_definition(),
             Box::new(|input| Box::pin(async move { handle_run_process(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(run_process_validator()),
         )
         .expect("register run_process");
     registry
-        .register_native(
+        .register_with_policy(
             observe_process_definition(),
             Box::new(|input| Box::pin(async move { handle_observe_process(input) })),
-            ToolRisk::ReadOnly,
+            ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+            Some(tracked_pid_validator("Check")),
         )
         .expect("register observe_process");
     registry
-        .register_native(
+        .register_with_policy(
             stop_process_definition(),
             Box::new(|input| Box::pin(async move { handle_stop_process(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(tracked_pid_validator("Stop")),
         )
         .expect("register stop_process");
     registry
-        .register_native(
+        .register_with_policy(
             project_build_definition(),
             Box::new(|input| Box::pin(async move { handle_project_build(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(project_validator("build")),
         )
         .expect("register project_build");
     registry
-        .register_native(
+        .register_with_policy(
             project_test_definition(),
             Box::new(|input| Box::pin(async move { handle_project_test(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(project_validator("test")),
         )
         .expect("register project_test");
+}
+
+/// Pre-flight validator for `run_process`: resolves the call exactly as
+/// [`run_process_from_input`] will, and hands the gate the program, the full
+/// argument vector and the canonical cwd it resolved them against.
+///
+/// The resolved cwd travels as the call's target, so a directory symlink
+/// re-pointed while the operator was deciding invalidates the approval through
+/// the registry's own `confirm_targets` check rather than being followed.
+fn run_process_validator() -> ToolInputValidator {
+    Arc::new(|input: &Value| {
+        let program = require_program(input)?;
+        let args = requested_args(input);
+        let cwd = resolve_cwd(require_cwd(input)?)?;
+        let cmdline = synthetic_command_line(program, &args);
+        path_policy::validate_terminal(&cmdline, cwd.to_str().context("cwd utf-8")?, &roots())?;
+        Ok(process_preview(
+            format!("Run {program} with {} argument(s)", args.len()),
+            cmdline,
+            cwd,
+        ))
+    })
+}
+
+/// Pre-flight validator for `project_build` / `project_test`: runs the same
+/// build-system detection the handler runs, so the card names the exact command
+/// the operator is approving instead of "a build".
+fn project_validator(kind: &'static str) -> ToolInputValidator {
+    Arc::new(move |input: &Value| {
+        let cwd = resolve_cwd(require_cwd(input)?)?;
+        let (program, args) = detect_project_command(&cwd, kind)?;
+        Ok(process_preview(
+            format!("Project {kind} in the workspace"),
+            synthetic_command_line(program, &args),
+            cwd,
+        ))
+    })
+}
+
+/// Pre-flight validator for `observe_process` / `stop_process`: a bare pid says
+/// nothing, so the card recalls the command and cwd that pid was started with.
+///
+/// A pid the agent never started is refused here, before any approval is asked
+/// for — the same rule the handlers enforce.
+fn tracked_pid_validator(verb: &'static str) -> ToolInputValidator {
+    Arc::new(move |input: &Value| {
+        let pid = require_pid(input)?;
+        let table = process_table().lock().expect("process table");
+        let Some(tracked) = table.get(&pid) else {
+            bail!("Unknown process pid {pid} (not started via run_process)");
+        };
+        Ok(process_preview(
+            format!("{verb} process {pid} started by this agent"),
+            tracked.command.clone(),
+            tracked.cwd.clone(),
+        ))
+    })
+}
+
+/// The single shape every process-tool preview takes: a one-line summary, the
+/// synthetic command line, and the resolved cwd carried both as the displayed
+/// directory and as the call's authorization target.
+fn process_preview(summary: String, command: String, cwd: PathBuf) -> ToolCallPreview {
+    let cwd = cwd.display().to_string();
+    ToolCallPreview {
+        summary,
+        command: Some(command),
+        cwd: Some(cwd.clone()),
+        paths: vec![cwd],
+    }
+}
+
+/// The required `program` field of a `run_process` call.
+fn require_program(input: &Value) -> Result<&str> {
+    input
+        .get("program")
+        .and_then(Value::as_str)
+        .context("Missing required string field 'program'")
+}
+
+/// The required `cwd` field shared by the process and project tools.
+fn require_cwd(input: &Value) -> Result<&str> {
+    input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .context("Missing required string field 'cwd'")
+}
+
+/// The required `pid` field of `observe_process` / `stop_process`.
+fn require_pid(input: &Value) -> Result<u32> {
+    let pid = input
+        .get("pid")
+        .and_then(Value::as_u64)
+        .context("Missing required integer field 'pid'")?;
+    u32::try_from(pid).context("pid out of range")
+}
+
+/// The optional `args` array of a `run_process` call, as owned strings.
+fn requested_args(input: &Value) -> Vec<String> {
+    input
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Wire schema for `run_process` (capability `process.run`).
@@ -324,24 +444,9 @@ fn apply_sanitized_child_env(command: &mut Command) {
 /// background runs return a pid registered in [`process_table`]. The child env
 /// is sanitized to the allowlist before either path.
 fn run_process_from_input(input: &Value) -> Result<String> {
-    let program = input
-        .get("program")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'program'")?;
-    let args: Vec<String> = input
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let cwd_str = input
-        .get("cwd")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'cwd'")?;
-    let cwd = resolve_cwd(cwd_str)?;
+    let program = require_program(input)?;
+    let args = requested_args(input);
+    let cwd = resolve_cwd(require_cwd(input)?)?;
     let timeout_secs = input
         .get("timeout_secs")
         .and_then(Value::as_u64)
@@ -503,10 +608,7 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<std::proc
 /// An exited process is reported once with its exit code and then dropped from
 /// the table, so the pid cannot be observed or stopped afterwards.
 fn observe_from_input(input: &Value) -> Result<String> {
-    let pid = input
-        .get("pid")
-        .and_then(Value::as_u64)
-        .context("Missing required integer field 'pid'")? as u32;
+    let pid = require_pid(input)?;
     let mut table = process_table().lock().expect("process table");
     let Some(tracked) = table.get_mut(&pid) else {
         bail!("Unknown process pid {pid} (not started via run_process)");
@@ -543,10 +645,7 @@ fn observe_from_input(input: &Value) -> Result<String> {
 
 /// Kill a tracked background process and reap it, removing it from the table.
 fn stop_from_input(input: &Value) -> Result<String> {
-    let pid = input
-        .get("pid")
-        .and_then(Value::as_u64)
-        .context("Missing required integer field 'pid'")? as u32;
+    let pid = require_pid(input)?;
     let mut table = process_table().lock().expect("process table");
     let Some(mut tracked) = table.remove(&pid) else {
         bail!("Unknown process pid {pid} (not started via run_process)");
@@ -563,18 +662,14 @@ fn stop_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
-/// Detect the build system in `cwd` and run its build or test command.
+/// The build or test command for `cwd`, detected from what is on disk.
 ///
 /// Cargo wins over Make when both are present; neither present is an error
-/// rather than a guess. Runs through [`run_process_from_input`] so the same
-/// policy, sandbox, and env sanitation apply, then relabels the capability.
-fn project_action(input: &Value, kind: &str) -> Result<String> {
-    let cwd_str = input
-        .get("cwd")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'cwd'")?;
-    let cwd = resolve_cwd(cwd_str)?;
-    let (program, args): (&str, Vec<&str>) = if cwd.join("Cargo.toml").exists() {
+/// rather than a guess. One throne: the approval card and the spawn read the
+/// same answer, so the operator cannot be shown a command the handler then
+/// replaces.
+fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<String>)> {
+    let (program, args): (&'static str, Vec<&'static str>) = if cwd.join("Cargo.toml").exists() {
         match kind {
             "build" => ("cargo", vec!["build", "--all-targets"]),
             "test" => ("cargo", vec!["test", "--all-targets", "--", "--quiet"]),
@@ -592,11 +687,20 @@ fn project_action(input: &Value, kind: &str) -> Result<String> {
             cwd.display()
         );
     };
+    Ok((program, args.into_iter().map(str::to_string).collect()))
+}
 
-    let args_owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+/// Detect the build system in `cwd` and run its build or test command.
+///
+/// Runs through [`run_process_from_input`] so the same policy, sandbox, and env
+/// sanitation apply, then relabels the capability.
+fn project_action(input: &Value, kind: &str) -> Result<String> {
+    let cwd = resolve_cwd(require_cwd(input)?)?;
+    let (program, args) = detect_project_command(&cwd, kind)?;
+
     let synthetic = json!({
         "program": program,
-        "args": args_owned,
+        "args": args,
         "cwd": cwd.display().to_string(),
         "timeout_secs": 300,
         "background": false,
