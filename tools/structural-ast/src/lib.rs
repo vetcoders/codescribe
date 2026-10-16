@@ -13,7 +13,7 @@ mod closed_take;
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=7";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=8";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

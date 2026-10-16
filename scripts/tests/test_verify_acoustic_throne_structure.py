@@ -2060,6 +2060,9 @@ def require_loct() -> None:
         )
 
 
+STOP_PASTE_CALL = 'clipboard::paste_to_stop_target(\n                &paste_text,\n                &target,\n                paste_mode,\n                config.restore_clipboard,\n                config.restore_clipboard_delay_ms,\n            )'
+
+
 class NeutralAstTests(unittest.TestCase):
     """Actual neutral executable on fresh Loctree data; never import product code."""
 
@@ -2230,11 +2233,15 @@ class NeutralAstTests(unittest.TestCase):
             ("capability_hold_bypassed", "decision.route == DeliveryRoute::ClipboardHold", "false"),
             ("capability_observation_forged", "helpers::observe_paste_target(frontmost.as_deref())",
              "PasteTarget::UNOBSERVED"),
-            ("identity_transport_replaced", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
+            ("identity_transport_replaced", STOP_PASTE_CALL,
              "clipboard::paste_and_restore(&paste_text)"),
+            ("restore_setting_ignored", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("config.restore_clipboard,", "true,")),
+            ("restore_delay_ignored", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("config.restore_clipboard_delay_ms,", "0,")),
             ("await_after_target_observation", "let target = clipboard::StopPasteTarget::capture();",
              "let target = clipboard::StopPasteTarget::capture(); self.get_config().await;"),
-            ("request_claimed_without_effect", "match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
+            ("request_claimed_without_effect", "match " + STOP_PASTE_CALL,
              "match fake_paste_receipt()"),
         ]
         for name, old, new in cases:
@@ -2251,8 +2258,8 @@ class NeutralAstTests(unittest.TestCase):
             ("overlay_mode_forged", "paste_text_from_overlay", "PasteMode::Comfort", "PasteMode::Safe"),
             ("mode_parameter_removed", "execute_clipboard_paste", "paste_mode: PasteMode,", ""),
             ("mode_parameter_ignored", "execute_clipboard_paste",
-             "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
-             "clipboard::paste_to_stop_target(&paste_text, &target, PasteMode::Comfort)"),
+             STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("paste_mode,", "PasteMode::Comfort,")),
         ]
         for name, symbol, old, new in cases:
             with self.subTest(mutation=name):
@@ -2272,8 +2279,8 @@ class NeutralAstTests(unittest.TestCase):
             ("foreign_transform_reintroduced", "let config = self.get_config().await;",
              "let config = self.get_config().await;\nlet paste_text = foreign_transform(&paste_text);"),
             ("identity_guard_removed", "target.matches_app_name(name)", "true"),
-            ("paste_mode_forged", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)",
-             "clipboard::paste_to_stop_target(&paste_text, &target, PasteMode::Comfort)"),
+            ("paste_mode_forged", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("paste_mode,", "PasteMode::Comfort,")),
         ]
         for name, old, new in cases:
             with self.subTest(mutation=name):
@@ -2326,8 +2333,8 @@ class NeutralAstTests(unittest.TestCase):
         cases = [
             ("else_effect", "execute_clipboard_paste", "self.arm_or_copy_deferred_payload(", "clipboard::paste_and_restore(&paste_text)?; self.arm_or_copy_deferred_payload("),
             ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::PasteRequested", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::PasteRequested"),
-            ("nested_false", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)", "if false { clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)?; } Ok::<_, Error>(fake_receipt)"),
-            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_to_stop_target(&paste_text, &target, paste_mode)", "(|| clipboard::paste_to_stop_target(&paste_text, &target, paste_mode))()"),
+            ("nested_false", "execute_clipboard_paste", STOP_PASTE_CALL, "if false { " + STOP_PASTE_CALL + "?; } Ok::<_, Error>(fake_receipt)"),
+            ("closure_effect", "execute_clipboard_paste", STOP_PASTE_CALL, "(|| " + STOP_PASTE_CALL + ")()"),
             ("closure_refusal", "finish", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
             ("unreachable_shutdown", "finish", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
             ("question_mark_stop", "stop", "self.close_capture().await", "self.close_capture().await?"),
@@ -2875,6 +2882,14 @@ class CurrentChainMutantTests(unittest.TestCase):
 
     def test_acoustic_chain_bypasses_are_rejected(self):
         cases = [
+            ("qualified_owner_subtraction_bypassed",
+             "uncovered_gap_ranges", "core/pipeline/streaming/apple_live_session.rs",
+             "if !range_overlaps_occurrence(&gap, owner) {", "if true {",
+             "uncovered_gap_ranges"),
+            ("qualified_owner_tail_geometry_forged",
+             "uncovered_gap_ranges", "core/pipeline/streaming/apple_live_session.rs",
+             "sample_start: owner.sample_end,", "sample_start: owner.sample_start,",
+             "uncovered_gap_ranges"),
             # Invalid capture measurement no longer wins over Silero speech, so
             # unreadable PCM can be certified by a later observer.
             ("invalid_capture_precedence_bypassed",
@@ -2949,6 +2964,14 @@ class CurrentChainMutantTests(unittest.TestCase):
             # The armed branch stops routing into the physical lane at all.
             ("armed_routing_removed", "seal_utterance_final",
              [("        seal_sliced_by_silero(state, ev_tx, &segments);\n        return true;\n", "")]),
+            # Raw capture PCM and processed decoder PCM have separate roles.
+            # Neither lane may silently replace the other's input.
+            ("silero_raw_capture_replaced_by_processed_pcm", "apple_stream_worker",
+             [("fusion.ingest(raw_samples, samples, samples_seen)",
+               "fusion.ingest(samples, samples, samples_seen)")]),
+            ("silero_processed_pcm_replaced_by_raw_capture", "apple_stream_worker",
+             [("fusion.ingest(raw_samples, samples, samples_seen)",
+               "fusion.ingest(raw_samples, raw_samples, samples_seen)")]),
             # The armed branch forwards cursor-filtered segments instead of the
             # original timed ones, so revised earlier coordinates are lost.
             ("armed_branch_forwards_filtered_input", "seal_utterance_final",

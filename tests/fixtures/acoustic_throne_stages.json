@@ -805,7 +805,7 @@
                 "samples_seen += raw_samples.len() as u64",
                 "state.audio.push(raw_samples)",
                 "state.pump_capture_windows(&ev_tx);",
-                "fusion.ingest(raw_samples, samples_seen)",
+                "fusion.ingest(raw_samples, samples, samples_seen)",
                 "emit_stream_events(events, &ev_tx, &mut state, audio_secs)",
                 "state.capture_stopping = true;",
                 "state.pump_capture_windows(&ev_tx);",
@@ -1739,7 +1739,7 @@
               "symbol": "paste_to_stop_target",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "let snapshot = ClipboardSnapshot::capture()?",
+                "let snapshot = if restore_clipboard",
                 "let mut written_epoch = None",
                 "let result = write_stop_paste(",
                 "let epoch = set_clipboard_with_epoch(text)?",
@@ -1747,14 +1747,16 @@
                 "|| target.check_current(mode)",
                 "simulate_cmd_v",
                 "let (receipt, epoch) = match result",
-                "if let Some(epoch) = written_epoch",
+                "if let (Some(snapshot), Some(epoch)) = (snapshot, written_epoch)",
                 "schedule_clipboard_restore(snapshot, epoch, Duration::ZERO)",
-                "if let Some(epoch) = epoch",
+                "if let (Some(snapshot), Some(epoch)) = (snapshot, epoch)",
                 "let delay = if receipt.delivery == StopPasteDelivery::Pasted",
-                "get_restore_delay()",
+                "Duration::from_millis(restore_clipboard_delay_ms)",
                 "Duration::ZERO",
                 "schedule_clipboard_restore(snapshot, epoch, delay)",
-                "Ok(receipt)"
+                "Ok(receipt)",
+                "match ClipboardSnapshot::capture()",
+                "Ok(snapshot) => Some(snapshot)"
               ]
             },
             {
@@ -2160,15 +2162,14 @@
                 "state.replay_completed_windows(ev_tx);",
                 "let speech = coverage_speech_evidence(state);",
                 "state.retained_word_decodes",
-                "let mut gaps = ledger",
                 ".assess_seal_coverage(",
-                "for owner in ledger.qualified_occurrences() {",
                 "admit_full_pass_gap_segments(",
                 "state.close_admission_horizon(ev_tx, state.window_plan.admission_horizon());",
                 "state.publish_resolved_word_seals(ev_tx);",
                 "state.seal_remaining_at_session_end(ev_tx);",
                 "let receipt = ledger.assess_seal_coverage(",
-                "ledger.record_seal_coverage(receipt.clone());"
+                "ledger.record_seal_coverage(receipt.clone());",
+                "uncovered_gap_ranges("
               ],
               "forbidden_code": [
                 "TailPatchRequest {",
@@ -2333,6 +2334,20 @@
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
               "ast_contract": "finalize_take_archive"
+            },
+            {
+              "symbol": "uncovered_gap_ranges",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let mut gaps = ledger",
+                ".assess_seal_coverage(session, capture_epoch, speech, threshold_samples)",
+                "for owner in ledger.qualified_occurrences() {",
+                "if !range_overlaps_occurrence(&gap, owner)",
+                "if gap.sample_start < owner.sample_start",
+                "sample_end: owner.sample_start",
+                "if owner.sample_end < gap.sample_end",
+                "sample_start: owner.sample_end"
+              ]
             }
           ],
           "required_invocations": [
@@ -2421,7 +2436,7 @@
               "callee_file": "core/pipeline/acoustic_ledger.rs",
               "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
-              "minimum_count": 2
+              "minimum_count": 1
             },
             {
               "callee": "record_seal_coverage",
@@ -2533,6 +2548,27 @@
               "caller": "finish",
               "caller_file": "core/audio/streaming_recorder.rs",
               "callee": "terminal_finality",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "reconcile_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "uncovered_gap_ranges",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "uncovered_gap_ranges",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "assess_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "uncovered_gap_ranges",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "qualified_occurrences",
               "callee_file": "core/pipeline/acoustic_ledger.rs",
               "minimum_count": 1
             }

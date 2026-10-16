@@ -105,7 +105,13 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
             self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
                 &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
         } else if focus_confirmed && preflight.can_post_events() {
-            match clipboard::paste_to_stop_target(&paste_text, &target, paste_mode) {
+            match clipboard::paste_to_stop_target(
+                &paste_text,
+                &target,
+                paste_mode,
+                config.restore_clipboard,
+                config.restore_clipboard_delay_ms,
+            ) {
                 Ok(receipt) if receipt.delivery == clipboard::StopPasteDelivery::Pasted => {
                     OverlayPasteDelivery::PasteRequested
                 }
