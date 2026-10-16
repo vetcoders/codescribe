@@ -3,11 +3,12 @@
 Status: **native merge queue enabled on protected `main`.** On 2026-10-16,
 [PR #172](https://github.com/vetcoders/codescribe/pull/172) landed the hosted
 workflow bootstrap as squash commit `8e45c489aa670f06d4e1dfef249307e7099f12f0`.
-The queue configuration was verified through GitHub's API. The first real
-`merge_group` entry has **not yet been exercised**; an enabled, empty queue is
-not proof of queue execution. The old self-hosted workflow is history (this
-repository is public; hosted runners only). The candidate's standalone
-`l10n.yml` still waits for its consumers on `main`.
+The queue configuration was verified through GitHub's API. At activation, the
+queue was empty and the first real `merge_group` entry had not been exercised.
+Configuration and each candidate's actual execution have separate receipts.
+The old self-hosted workflow is history (this repository is public; hosted
+runners only). This application line includes standalone `l10n.yml` together
+with its consumers; they are admitted as one application candidate.
 
 ## What the source provides
 
@@ -18,7 +19,7 @@ repository is public; hosted runners only). The candidate's standalone
 - Concurrency group = workflow + event + ref. `cancel-in-progress` is false for
   `merge_group`: a cancelled queue check removes the entry. Ordinary PR runs
   still cancel older runs.
-- `l10n.yml` measures the prose ratchet for a queue entry against
+- Both `l10n.yml` and Rust Quality measure the prose ratchet for a queue entry against
   `github.event.merge_group.base_sha`, fetched by SHA. A missing, all-zero or
   malformed value fails before any `git fetch`; there is no fallback to `main`.
   Main push keeps `github.event.before`; PRs keep their real destination
@@ -32,7 +33,7 @@ Tests: `scripts/tests/test_l10n_workflow_base.py` runs the extracted workflow
 shell against a fake `git`; `scripts/tests/test_ci_workflow_contract.py` parses
 the YAML (triggers, concurrency, required job shape, and that the tests
 themselves are wired in). Both are **required CI**: the unconditional step
-`Test CI workflow and merge-queue contracts` in the `Clippy + Tests` job runs
+`Run workflow merge-queue contract tests` in the `Clippy + Tests` job runs
 them before any compiler stage, in a private venv under `RUNNER_TEMP` with
 test-only `PyYAML==6.0.3` (no global install, no product dependency).
 
@@ -42,17 +43,18 @@ actionlint .github/workflows/rust.yml .github/workflows/l10n.yml .github/workflo
 ```
 
 Locally the first command needs PyYAML importable; CI provisions it itself.
-`main` has no `L10N_BASE` consumer or prose ratchet, which is why the l10n part
-of this contract is not a prerequisite there (see Activation receipt).
+CI invokes the three test files directly with Python's isolated `-I` option;
+module-name loading would lose the checkout from its import path. The required
+quality job fetches its comparison base before invoking the bridge census,
+including on a shallow checkout.
 
 ## Not exercised by the tests
 
 A real queue entry on GitHub (`gh-readonly-queue/main/...` branch, hosted
 `xcode-27` runner, the ruleset's check timeout) remains unexercised: at the
 2026-10-16 06:52 UTC activation receipt, the queue had zero entries and no
-`merge_group` run had been observed. Candidate-wide failures (known library
-test failures and Swift AX cases on the integration tip) are not hidden by the
-queue: admission depends on the real required checks.
+`merge_group` run had been observed. Admission depends on the actual required
+checks for the entry. Those checks do not replace native application acceptance.
 
 ## Activation receipt
 
@@ -66,7 +68,7 @@ queue: admission depends on the real required checks.
   check response timeout 180 minutes. Existing rules, `Clippy + Tests` and
   bypass actors were preserved. Repository `allow_auto_merge=true`;
   automatic branch deletion remains false.
-- `main` has no `L10N_BASE` consumer or prose ratchet. Admit standalone
+- At bootstrap, `main` had no `L10N_BASE` consumer or prose ratchet. Admit standalone
   `l10n.yml` only together with the consumers it checks, taken from the
   candidate. The candidate keeps all three workflows as one contract.
 
