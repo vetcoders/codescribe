@@ -34,10 +34,14 @@ Site redeploy:
 
 ```bash
 cd site && npm run build
-rsync -az --delete --exclude /appcast.xml dist/ libraxis-vm:/tmp/codescribe-landing-stage/
-ssh libraxis-vm 'sudo rsync -a --delete --exclude /appcast.xml /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
+rsync -az --delete --exclude /appcast.xml --exclude /rc/ dist/ libraxis-vm:/tmp/codescribe-landing-stage/
+ssh libraxis-vm 'sudo rsync -a --delete --exclude /appcast.xml --exclude /rc/ /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
   && rm -rf /tmp/codescribe-landing-stage'
 ```
+
+`/rc/` holds separately shared candidate downloads. Preserve it during site
+redeploys; publishing a candidate there does not update the homepage or stable
+Sparkle feed.
 
 `/srv/codescribe-landing/appcast.xml` is the live Sparkle feed. It is not part
 of the site build; the exclusion keeps `--delete` from removing it. Publish a

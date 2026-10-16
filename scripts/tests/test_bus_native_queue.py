@@ -72,6 +72,8 @@ class NativeQueueTests(unittest.TestCase):
     @patch("shutil.which", return_value="/fake/codex")
     @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
     def test_queue_distinguishes_original_address_from_delivery_channel(self, run, _which):
+        bus = (self.root / "bus.jsonl").resolve()
+        bus.touch()
         cases = [
             ({"channel": "0", "audience": "lena"}, "0 (all audience)"),
             ({"origin_channel": "0", "channel": "2", "audience": "lena"}, "0 (all audience)"),
@@ -81,8 +83,10 @@ class NativeQueueTests(unittest.TestCase):
         ]
         for index, (coordinates, expected) in enumerate(cases):
             self.pending[index].update(coordinates)
+            self.pending[index]["bus"] = str(bus)
             self.pending[index]["text"] = "@Leszek: to tekst, nie metadane adresowania."
         state = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
+        state["bus"] = str(bus)
         state["pending"] = self.pending
         DEMUX.atomic_json(self.root / "leases" / f"{self.lease_id}.json", state)
         wake = self.wake()
