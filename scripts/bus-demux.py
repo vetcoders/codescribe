@@ -2991,7 +2991,9 @@ def founder_provenance_label(payload: dict[str, Any]) -> str | None:
     producer_schema = payload.get("producer_schema")
     if producer_schema == AGENT_USER_MESSAGE_SCHEMA:
         return "Founder (typed)"
-    if producer_schema == EVENT_SCHEMA:
+    # App takes arrive as transcript evidence; `slim()` keeps that producer
+    # schema verbatim. The bridge's own event schema is the older take shape.
+    if producer_schema in (EVIDENCE_SCHEMA, EVENT_SCHEMA) and payload.get("kind") == "seal":
         return "Founder (voice)"
     return None
 
