@@ -1,11 +1,13 @@
 # Merge queue — operator runbook
 
-Status of this document: **candidate source, not activated.** The workflows in
-this tree can serve a native GitHub merge queue. Protected `main` does not run
-this tree: it still carries the old self-hosted workflow and has no `l10n.yml`.
-Nothing here is live until the workflow change reaches `main`, and the old
-self-hosted workflow must not be resurrected to bridge that gap (the repository
-is public; hosted runners only).
+Status: **native merge queue enabled on protected `main`.** On 2026-10-16,
+[PR #172](https://github.com/vetcoders/codescribe/pull/172) landed the hosted
+workflow bootstrap as squash commit `8e45c489aa670f06d4e1dfef249307e7099f12f0`.
+The queue configuration was verified through GitHub's API. The first real
+`merge_group` entry has **not yet been exercised**; an enabled, empty queue is
+not proof of queue execution. The old self-hosted workflow is history (this
+repository is public; hosted runners only). The candidate's standalone
+`l10n.yml` still waits for its consumers on `main`.
 
 ## What the source provides
 
@@ -41,39 +43,39 @@ actionlint .github/workflows/rust.yml .github/workflows/l10n.yml .github/workflo
 
 Locally the first command needs PyYAML importable; CI provisions it itself.
 `main` has no `L10N_BASE` consumer or prose ratchet, which is why the l10n part
-of this contract is not a prerequisite there (see Staged activation).
+of this contract is not a prerequisite there (see Activation receipt).
 
 ## Not exercised by the tests
 
 A real queue entry on GitHub (`gh-readonly-queue/main/...` branch, hosted
-`xcode-27` runner, the ruleset's check timeout) can only be observed after
-activation. Candidate-wide failures (known library test failures and Swift AX
-cases on the integration tip) are not hidden by the queue: admission depends on
-the real required checks.
+`xcode-27` runner, the ruleset's check timeout) remains unexercised: at the
+2026-10-16 06:52 UTC activation receipt, the queue had zero entries and no
+`merge_group` run had been observed. Candidate-wide failures (known library
+test failures and Swift AX cases on the integration tip) are not hidden by the
+queue: admission depends on the real required checks.
 
-## Staged activation (integrator only)
+## Activation receipt
 
-1. Land the minimal bootstrap on `main` through the normal protected path:
-   the hosted `rust.yml` (it produces the required `Clippy + Tests` status)
-   and `semgrep.yml`, both with `merge_group`. Do not deploy the candidate
-   wholesale. `main` has no `L10N_BASE` consumer or prose ratchet, so
-   `l10n.yml` is not a prerequisite there; admit it as a standalone workflow
-   only together with the consumers it checks, taken from the candidate. The
-   candidate keeps all three workflows as one contract.
-2. Confirm on `main` that those workflows contain `merge_group` and that a
-   `Clippy + Tests` run exists for that tip.
-3. Only then add the `merge_queue` rule to the `main` ruleset (repo ruleset
-   `24525207`), keeping the existing `Clippy + Tests` requirement. Reference
-   parameters used by Vibecrafted: merge method `SQUASH`, grouping `HEADGREEN`,
-   max entries to build 1, min/max entries to merge 1, min wait 0 minutes,
-   check response timeout 180 minutes. Existing bypass actors stay as they are;
-   do not copy Vibecrafted status names.
-4. Admission is by explicit enqueue guarded by the head SHA, for example the
-   GraphQL `enqueuePullRequest(input: {pullRequestId, expectedHeadOid})`. It
-   works with `allow_auto_merge=false`; `gh pr merge` may try
-   `enablePullRequestAutoMerge` and be refused. Alternatively the integrator
-   explicitly enables the repository auto-merge setting. Do not auto-enqueue
-   every PR, do not use `pull_request_target`, no admin bypass, no force.
+- PR #172 landed only the minimal hosted `rust.yml` and `semgrep.yml`
+  bootstrap, both with `merge_group`, plus their contract checks. All 13 PR
+  checks passed, including `Clippy + Tests` with full `make verify`. The squash
+  tree equals the tested PR tree; post-merge runs are separate evidence.
+- GitHub API verification on 2026-10-16 confirmed an active `merge_queue` rule
+  in `main` ruleset `24525207`: merge method `SQUASH`, grouping `HEADGREEN`,
+  max entries to build 1, min/max entries to merge 1, min wait 0 minutes,
+  check response timeout 180 minutes. Existing rules, `Clippy + Tests` and
+  bypass actors were preserved. Repository `allow_auto_merge=true`;
+  automatic branch deletion remains false.
+- `main` has no `L10N_BASE` consumer or prose ratchet. Admit standalone
+  `l10n.yml` only together with the consumers it checks, taken from the
+  candidate. The candidate keeps all three workflows as one contract.
+
+## Enqueue (integrator only)
+
+Admission is by explicit enqueue guarded by the head SHA, for example the
+GraphQL `enqueuePullRequest(input: {pullRequestId, expectedHeadOid})`.
+Activation did not enqueue another PR or retarget PR #170. Do not auto-enqueue
+every PR, do not use `pull_request_target`, no admin bypass, no force.
 
 ## Inspecting the queue
 
