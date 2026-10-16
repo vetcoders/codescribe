@@ -235,6 +235,83 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
+  /// Header-click cut (2026-10-17): the header is an upward switch. Mini opens
+  /// midi and each further click alternates midi <-> expanded; it never folds
+  /// back to mini, which stays the rotating preview control's exit.
+  func testHeaderClickClimbsThenAlternatesBetweenMidiAndExpanded() {
+    let state = OverlayState()
+    state.engine = OverlayChromePolicyEngine()
+    state.attach()
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .midi)
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    // The rotating preview control keeps its unchanged full cycle.
+    state.toggleCollapsed()
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  /// Outside mini only the header band advances the presentation: a still
+  /// click on the body drag region keeps its ordinary meaning.
+  func testPresentationClickHitsHeaderButNotBodyOutsideMini() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state) { panel, root in
+      for mode in [OverlayPresentationMode.midi, .expanded] {
+        state.setPresentationMode(mode)
+        settle(root)
+        let header = try XCTUnwrap(
+          regionClickPoint(identifier: "overlay-header-drag-region", in: root, panel: panel),
+          "\(mode): no clickable header drag point")
+        XCTAssertTrue(panel.isPresentationClickHit(at: header), "\(mode): header must advance")
+        if let body = regionClickPoint(
+          identifier: "overlay-body-drag-region", in: root, panel: panel)
+        {
+          XCTAssertFalse(panel.isPresentationClickHit(at: body), "\(mode): body must not advance")
+        }
+      }
+      state.setPresentationMode(.mini)
+      settle(root)
+      let anyRegion = try XCTUnwrap(
+        dragRegionViews(in: root).lazy.compactMap { view in
+          self.regionClickPoint(
+            identifier: view.accessibilityIdentifier(), in: root, panel: panel)
+        }.first, "mini: no clickable drag region")
+      XCTAssertTrue(panel.isPresentationClickHit(at: anyRegion), "mini keeps the whole-chrome click")
+    }
+  }
+
+  /// The first point across the region's width whose window hit-test resolves
+  /// to that drag region (controls above the band win their own clicks).
+  private func dragRegionViews(in root: NSView) -> [NSView] {
+    var found: [NSView] = []
+    func walk(_ view: NSView) {
+      if view is OverlayWindowDragRegionView { found.append(view) }
+      view.subviews.forEach(walk)
+    }
+    walk(root)
+    return found
+  }
+
+  private func regionClickPoint(
+    identifier: String, in root: NSView, panel: FloatingOverlayPanel
+  ) -> NSPoint? {
+    for view in dragRegionViews(in: root) {
+      guard view.accessibilityIdentifier() == identifier, !view.isHiddenOrHasHiddenAncestor
+      else { continue }
+      let frame = root.convert(view.bounds, from: view)
+      for step in stride(from: 0.1, through: 0.9, by: 0.1) {
+        let point = NSPoint(x: frame.minX + frame.width * step, y: frame.midY)
+        if root.hitTest(point) === view, panel.isWindowDragHit(at: point) { return point }
+      }
+    }
+    return nil
+  }
+
   func testHeaderStartHonorsThePersistedTakeStartPreference() {
     for expanded in [false, true] {
       for initialMode in [OverlayPresentationMode.mini, .midi, .expanded] {
