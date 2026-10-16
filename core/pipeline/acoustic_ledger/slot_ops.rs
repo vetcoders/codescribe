@@ -1573,6 +1573,17 @@ impl AcousticLedger {
                     self.group_speech_coverage(observation, word, std::slice::from_ref(word))
                         .is_some()
                 });
+            // A partial Cloud answer cannot retire the entire held phrase:
+            // its uncovered words would disappear before recovery completes.
+            // Keep the source and the returned alternative until the existing
+            // speech or decode-window accounting covers that whole source.
+            let partial_cloud_replacement = partial_refinement
+                && observation.producer == ObservationProducer::CloudLive
+                && authority
+                && geometry;
+            if partial_cloud_replacement {
+                self.require_text_recovery(&observation.occurrence);
+            }
             // With no observer snapshot, exact pin coverage may account for
             // the source PCM. Spelling agreement supplies no missing geometry.
             // A present but unusable snapshot never acts as absent evidence.
@@ -1618,7 +1629,7 @@ impl AcousticLedger {
             } else {
                 None
             };
-            let refusal = if !source_complete {
+            let refusal = if !source_complete || partial_cloud_replacement {
                 self.record_word_choice(
                     observation,
                     &sources,
@@ -2774,6 +2785,38 @@ mod slot_ops_tests {
                 })
                 .collect::<Vec<_>>();
                 let receipt = ledger.admit_word_slots(&observation, &pins);
+                if producer == ObservationProducer::CloudLive && window != Some((0, 16_000)) {
+                    // Cloud's partial answer retains the unaccounted source.
+                    // The complete-window case below must still replace it;
+                    // Whisper's existing partial-word contract stays intact.
+                    assert!(!receipt.grants_mutation(), "{window:?}: {receipt:?}");
+                    assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+                    assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                        alternative.observation == observation
+                            && alternative.candidate == "czy weryfikowałeś"
+                            && alternative.sources == source
+                    }));
+                    assert!(
+                        !ledger
+                            .slot_operations()
+                            .iter()
+                            .any(|operation| operation.observation == observation)
+                    );
+                    assert!(ledger.text_recovery_pending(&owner));
+                    assert!(ledger.note_frontier_return(&owner, producer));
+                    let coverage = ledger.assess_seal_coverage(
+                        &owner.session,
+                        owner.capture_epoch,
+                        &speech,
+                        0,
+                    );
+                    assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
+                    assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+                    assert!(ledger.word_deletions().is_empty());
+                    ledger.assert_slot_labels();
+                    assert_eq!(ledger.conservation().residue(), 0);
+                    continue;
+                }
                 assert!(
                     receipt.grants_mutation()
                         || matches!(receipt, MutationReceipt::Preserve { .. }),
@@ -3892,6 +3935,100 @@ mod slot_ops_tests {
     }
 
     #[test]
+    fn root_cloud_partial_retains_source_until_complete_scope() {
+        let (mut ledger, owner, pcm) = forensic_split_empty_capture("root-cloud-partial-source");
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1_101, 0, owner.clone());
+        let original = "z tego urodzi co się";
+        assert!(ledger.admit(&apple, original).grants_mutation());
+        let source = ledger.slots_of(&owner).unwrap().to_vec();
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::CloudLive]);
+        let partial = ledger.next_word_observation(ObservationProducer::CloudLive, 1_102, &owner);
+        let pins = [
+            WordPin::new(4_000, 6_000, "tego").with_decode_window(0, 9_000),
+            WordPin::new(6_000, 9_000, "urządzenia").with_decode_window(0, 9_000),
+        ];
+        let receipt = ledger.admit_word_slots(&partial, &pins);
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(original),
+            "a partial Cloud answer must not erase unaccounted source text: {receipt:?}"
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+        assert!(
+            ledger
+                .slot_alternatives()
+                .iter()
+                .any(|alternative| alternative.observation == partial
+                    && alternative.candidate == "tego urządzenia"
+                    && alternative.sources == source)
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(ledger.word_deletions().is_empty());
+
+        // A complete returned decode must still be able to partition the
+        // coarse source. Retention cannot turn a provisional label into a floor.
+        let full = ledger.next_word_observation(ObservationProducer::CloudLive, 1_103, &owner);
+        let tokens = ["tak", "to", "się", "właśnie", "urodzi"];
+        let width = owner.sample_len();
+        let full_pins: Vec<_> = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, word)| {
+                WordPin::new(
+                    owner.sample_start + width * i as u64 / 5,
+                    owner.sample_start + width * (i as u64 + 1) / 5,
+                    *word,
+                )
+                .with_decode_window(0, pcm.len() as u64)
+            })
+            .collect();
+        let receipt = ledger.admit_word_slots(&full, &full_pins);
+        assert!(
+            receipt.grants_mutation(),
+            "complete recovery must remain admissible: {receipt:?}"
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 5);
+        assert!(
+            ledger
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .all(|slot| slot.producer == ObservationProducer::CloudLive)
+        );
+        assert_eq!(ledger.text_of(&owner), Some("tak to się właśnie urodzi"));
+        assert!(!ledger.text_recovery_pending(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn root_cloud_partial_preserves_whisper_partial_contract() {
+        let (mut ledger, owner, _) = forensic_split_empty_capture("root-whisper-partial-source");
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1_111, 0, owner.clone());
+        assert!(
+            ledger
+                .admit(&apple, "z tego urodzi co się")
+                .grants_mutation()
+        );
+        let partial = ledger.next_word_observation(ObservationProducer::Whisper, 1_112, &owner);
+        let receipt = ledger.admit_word_slots(
+            &partial,
+            &[
+                WordPin::new(4_000, 6_000, "tego").with_decode_window(0, 9_000),
+                WordPin::new(6_000, 9_000, "urządzenia").with_decode_window(0, 9_000),
+            ],
+        );
+        assert!(
+            receipt.grants_mutation(),
+            "the candidate claims no Whisper policy change: {receipt:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("tego urządzenia"));
+        assert!(ledger.text_recovery_pending(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
     fn forensic_split_complete_word_needs_source_accounting_not_lexical_equality() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             for proof in ["absent", "partial", "different", "complete"] {
@@ -4111,12 +4248,26 @@ mod slot_ops_tests {
                 WordPin::new(8_000, 9_000, "zakłócenie").with_decode_window(0, 7_000),
             ];
             let receipt = ledger.admit_word_slots(&next, &pins);
-            assert!(receipt.grants_mutation(), "{producer:?}: {receipt:?}");
-            assert_eq!(ledger.text_of(&owner), Some("mamy"));
-            let output = &ledger.slots_of(&owner).unwrap()[0];
-            assert_eq!((output.sample_start, output.sample_end), (4_000, 6_000));
-            assert_eq!(output.observation, next);
-            assert!(ledger.slot_descends_from(output, &source));
+            if producer == ObservationProducer::CloudLive {
+                assert!(!receipt.grants_mutation(), "{receipt:?}");
+                assert_eq!(
+                    ledger.slots_of(&owner).unwrap(),
+                    std::slice::from_ref(&source)
+                );
+                assert_eq!(ledger.text_of(&owner), Some("czekam na całość"));
+                assert!(ledger.slot_alternatives().iter().any(
+                    |alternative| alternative.observation == next
+                        && alternative.candidate == "mamy"
+                        && alternative.sources == [source.clone()]
+                ));
+            } else {
+                assert!(receipt.grants_mutation(), "{producer:?}: {receipt:?}");
+                assert_eq!(ledger.text_of(&owner), Some("mamy"));
+                let output = &ledger.slots_of(&owner).unwrap()[0];
+                assert_eq!((output.sample_start, output.sample_end), (4_000, 6_000));
+                assert_eq!(output.observation, next);
+                assert!(ledger.slot_descends_from(output, &source));
+            }
             // Child refusals belong to their exact PCM occurrence. The
             // owner-linked alternative preserves their parent/source relation.
             let rejected_pin =
