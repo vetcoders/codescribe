@@ -100,7 +100,9 @@ jobs:
           venv="$RUNNER_TEMP/workflow-contract-venv"
           python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
-          "$venv/bin/python" -I -m unittest scripts/tests/test_ci_workflow_merge_queue.py scripts/tests/test_l10n_workflow_base.py scripts/tests/test_ci_workflow_contract.py
+          "$venv/bin/python" -I scripts/tests/test_ci_workflow_merge_queue.py
+          "$venv/bin/python" -I scripts/tests/test_l10n_workflow_base.py
+          "$venv/bin/python" -I scripts/tests/test_ci_workflow_contract.py
 
       - name: Show the Xcode this image selected
         run: xcodebuild -version

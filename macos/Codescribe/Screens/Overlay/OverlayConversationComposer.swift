@@ -514,6 +514,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     override func becomeFirstResponder() -> Bool {
       let accepted = super.becomeFirstResponder()
       if accepted {
+        // AppKit resigns the transcript while accepting this editor. Reclaim
+        // the panel gate after that resignation has finished.
+        (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
         isFirstResponderActive = true
         onEditorActive(true)
         notifyFocusChange()
@@ -554,6 +557,9 @@ private struct ConversationMessageField: NSViewRepresentable {
       super.mouseDown(with: event)
       notifyFocusChange()
     }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var needsPanelToBecomeKey: Bool { true }
   }
 }
 
