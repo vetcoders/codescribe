@@ -3730,6 +3730,27 @@ impl AppleSealState {
         self.publish_resolved_word_seals(ev_tx);
     }
 
+    /// Collect returned evidence while its request and producer reservations
+    /// still exist. Stop must do this before expiry can remove those identities:
+    /// a ready channel message is returned work, not a timed-out inference.
+    /// Validation and mutation remain with the same live admission methods.
+    fn collect_ready_refinement_returns(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        tail_patch_done: &std_mpsc::Receiver<TailPatchCompletion>,
+        cloud_notice: Option<&std_mpsc::Receiver<CloudWorkerNotice>>,
+        audio_secs: f32,
+    ) {
+        if let Some(notices) = cloud_notice {
+            while let Ok(notice) = notices.try_recv() {
+                self.handle_cloud_notice(ev_tx, notice);
+            }
+        }
+        while let Ok(completion) = tail_patch_done.try_recv() {
+            self.complete_whisper_window(ev_tx, completion, audio_secs);
+        }
+    }
+
     /// Return true while Stop still owns work. One absolute deadline applies
     /// to both pending transport and submitted jobs; completion races are
     /// resolved by the same registered request identity as the live path.
@@ -8801,15 +8822,12 @@ fn apple_stream_worker(
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
         state.flush_cloud_commits(&ev_tx);
-        if let Some(notices) = cloud_notice.as_ref() {
-            while let Ok(notice) = notices.try_recv() {
-                state.handle_cloud_notice(&ev_tx, notice);
-            }
-        }
-        while let Ok(completion) = tail_patch_done.try_recv() {
-            let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-            state.complete_whisper_window(&ev_tx, completion, audio_secs);
-        }
+        state.collect_ready_refinement_returns(
+            &ev_tx,
+            &tail_patch_done,
+            cloud_notice.as_ref(),
+            samples_seen as f32 / sample_rate.max(1) as f32,
+        );
         drain_dictation_witness_returns(&mut state, &ev_tx, &witness_done_rx);
         // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
@@ -9102,6 +9120,14 @@ fn apple_stream_worker(
             || !state.refinement_submitted.is_empty()
             || !state.refinement_pending.is_empty()
         {
+            // Account ready returns before the deadline can retire their
+            // registered requests. Count only the work still outstanding.
+            state.collect_ready_refinement_returns(
+                &ev_tx,
+                &tail_patch_done,
+                cloud_notice.as_ref(),
+                audio_secs,
+            );
             let outstanding = state.tail_patch_awaiting_completion();
             if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
                 tail_patch_timeout_residue = outstanding;
@@ -9128,6 +9154,14 @@ fn apple_stream_worker(
             || !state.refinement_pending.is_empty()
             || !state.cloud_inflight.is_empty()
         {
+            // Cloud finals have the same race as local completions: returning
+            // their observers first can seal Apple before a queued final lands.
+            state.collect_ready_refinement_returns(
+                &ev_tx,
+                &tail_patch_done,
+                cloud_notice.as_ref(),
+                audio_secs,
+            );
             let outstanding = state.tail_patch_awaiting_completion();
             let now = Instant::now();
             if (state.planned_work_pending()
@@ -9140,11 +9174,6 @@ fn apple_stream_worker(
             if now >= stop_deadline {
                 state.return_outstanding_cloud(&ev_tx);
                 break;
-            }
-            if let Some(notices) = cloud_notice.as_ref() {
-                while let Ok(notice) = notices.try_recv() {
-                    state.handle_cloud_notice(&ev_tx, notice);
-                }
             }
             if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
                 if state.cloud_inflight.is_empty() {
