@@ -2097,7 +2097,7 @@ mod tests {
         );
         assert_eq!(
             redact_command_line("curl -H 'Authorization: Bearer hunter2' https://example.test"),
-            "curl -H 'Authorization: [REDACTED] [REDACTED] https://example.test"
+            "curl -H 'Authorization: [REDACTED] [REDACTED]' https://example.test"
         );
         assert!(
             desktop_commander_preview(
