@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.13.0"
+  version: "0.13.1"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -91,6 +91,20 @@ gets a reply without a typed nudge. Then report `listening_verified` — the onl
 proof of a connection. A PID, live follower, armed hook, monitor or attach receipt
 does not prove message delivery. Let the Founder make the fresh take; attachment
 itself opens no microphone.
+
+Maintain the connection for the entire bus tenure: until the user cancels it,
+or an authorized successor takes over/detaches it after your handoff. Ending
+a reply, finishing work or a quiet mailbox does not end that tenure. Keep its
+notification transport armed while preserving the same listener and identity.
+
+## Anti-patterns
+
+Never add a timer or heartbeat that calls `--read-pending` (for example every
+2 seconds) beside an active watch, follower or native waiter. Wait for its
+notification; handle the message at the next work boundary. Read the mailbox
+only for an actual delivery, an incomplete/queued notification, or the bounded
+post-ACK drain. Silence is not a reason to cancel `--watch --bell`, restart it,
+or create another reader. Renew the notification window over the same watch.
 
 ## Read → ACK → act
 
