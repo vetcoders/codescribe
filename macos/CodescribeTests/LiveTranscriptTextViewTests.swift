@@ -102,17 +102,18 @@ final class LiveTranscriptTextViewTests: XCTestCase {
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(view.selectedRange(), selected)
-        XCTAssertFalse(marker.isHidden)
+        let context = "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
+        XCTAssertFalse(marker.isHidden, context)
         XCTAssertGreaterThanOrEqual(marker.frame.minX, 0)
         XCTAssertLessThanOrEqual(marker.frame.maxX, view.bounds.maxX + 1)
-        XCTAssertLessThanOrEqual(marker.frame.maxY, view.bounds.maxY + 1)
+        XCTAssertLessThanOrEqual(marker.frame.maxY, view.bounds.maxY + 1, context)
         if !text.isEmpty {
           let tail = NSRange(location: (text as NSString).length, length: 0)
           let caret = view.convert(
             window.convertFromScreen(view.firstRect(forCharacterRange: tail, actualRange: nil)),
             from: nil)
           XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
-          XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
+          XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5, context)
           view.setSelectedRange(NSRange(location: 0, length: tail.location))
           try await settle(view.copySelection())
           XCTAssertEqual(

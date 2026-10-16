@@ -7741,6 +7741,8 @@ mod hold_context_tests {
 }
 
 #[cfg(test)]
+// Terminal settlement projects into the process-wide tray and badge stores.
+#[serial_test::serial]
 mod terminal_delivery_target_falsifiers {
     use super::*;
     use crate::audio::streaming_recorder::CaptureSubscriberKind;
@@ -7856,7 +7858,6 @@ mod terminal_delivery_target_falsifiers {
     /// must not leave a target behind for an unrelated later Insert click.
     /// Its cleanup also writes the process-wide tray/badge projection.
     #[tokio::test]
-    #[serial_test::serial]
     async fn failed_start_clears_target_latch() {
         let controller = RecordingController::new_without_keychain();
         *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
@@ -8386,6 +8387,7 @@ mod terminal_delivery_target_falsifiers {
 /// capture input and receiver responses are synthetic. No process_recording
 /// test shortcut is evidence for these terminal decisions.
 #[cfg(test)]
+#[serial_test::serial]
 mod refusal_recovery_tests {
     #[tokio::test]
     async fn stop_light_plus_noop_is_not_reported_as_applied() {
@@ -10639,6 +10641,7 @@ mod refusal_recovery_tests {
 /// W2 contracts: UNRUN until the integrator closes the joined structure.
 /// Real controller/empty recorder/temporary Bus, no provider or microphone.
 #[cfg(test)]
+#[serial_test::serial]
 mod owned_capture_settlement_tests {
     use super::*;
     use crate::presentation::transcript_bus::CleanTranscriptEvent;
@@ -12567,6 +12570,7 @@ mod capture_failure_recovery_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn recovery_copy_failure_reaches_visible_warning_and_failed_terminal() {
         let dir = tempfile::tempdir().unwrap();
         let controller = RecordingController::new_without_keychain();
