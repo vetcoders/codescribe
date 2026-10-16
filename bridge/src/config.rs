@@ -165,6 +165,8 @@ pub struct CsSettings {
     pub start_at_login: bool,
     pub agent_enter_sends: bool,
     pub agent_auto_send: bool,
+    /// Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
+    pub agent_send_hold_sec: u32,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -274,6 +276,7 @@ impl CsSettings {
             start_at_login: config.start_at_login,
             agent_enter_sends: config.agent_enter_sends,
             agent_auto_send: config.agent_auto_send,
+            agent_send_hold_sec: runtime.agent_send_hold_sec(),
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -1973,6 +1976,7 @@ fn agent_env_keys() -> &'static [&'static str] {
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",
+        "CODESCRIBE_AGENT_SEND_HOLD_SEC",
     ]
 }
 
@@ -3394,6 +3398,34 @@ mod settings_snapshot_tests {
             endpoint: endpoint.into(),
             api_key: None,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn agent_send_hold_bridge_round_trip_preserves_zero_and_env_precedence() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let _hold = EnvGuard::remove("CODESCRIBE_AGENT_SEND_HOLD_SEC");
+        let config = CodescribeConfig::new();
+        assert_eq!(config.load_settings().agent_send_hold_sec, 10);
+        for seconds in [0, 7, 30] {
+            config
+                .update_config("CODESCRIBE_AGENT_SEND_HOLD_SEC".into(), seconds.to_string())
+                .unwrap();
+            assert_eq!(
+                CodescribeConfig::new().load_settings().agent_send_hold_sec,
+                seconds
+            );
+            let mut settings = UserSettings::load();
+            settings.show_dock_icon = Some(true);
+            settings.save().unwrap();
+            assert_eq!(config.load_settings().agent_send_hold_sec, seconds);
+        }
+        assert!(!Config::env_path().exists());
+        let _override = EnvGuard::set("CODESCRIBE_AGENT_SEND_HOLD_SEC", "0");
+        assert_eq!(config.load_settings().agent_send_hold_sec, 0);
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(30));
     }
 
     #[test]

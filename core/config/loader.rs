@@ -23,12 +23,12 @@ use tracing::{info, warn};
 
 use super::energy_calibration::{SealedEnergyCalibration, energy_calibration_path};
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution,
-    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
-    SILERO_FUSION_ENV, SettingsSnapshotDigest, SettingsSnapshotProvenance,
-    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
-    parse_agent_workspace_roots,
+    AGENT_SEND_HOLD_ENV, DEFAULT_AGENT_SEND_HOLD_SEC, DEFAULT_AGENT_WORKSPACE_ROOT,
+    DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
+    RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
+    RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SILERO_FUSION_ENV,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
+    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
 use super::types::{Config, DeferredInsertShortcut, PasteMode};
 use crate::llm::account_auth;
@@ -326,6 +326,17 @@ impl Config {
         ] {
             overrides.insert(key.to_string(), std::env::var(key));
         }
+        let send_hold_override =
+            Self::config_runtime_env_var(AGENT_SEND_HOLD_ENV).or_else(|error| {
+                if !matches!(error, VarError::NotPresent) {
+                    return Err(error);
+                }
+                Self::parse_env_file(&Self::env_path())
+                    .ok()
+                    .and_then(|vars| vars.get(AGENT_SEND_HOLD_ENV).cloned())
+                    .ok_or(VarError::NotPresent)
+            });
+        overrides.insert(AGENT_SEND_HOLD_ENV.to_string(), send_hold_override);
         let mut input = CapturedRuntimeInputs {
             values,
             user_settings,
@@ -394,6 +405,16 @@ impl Config {
                 .env_overlay_keys
                 .push(FORMAT_ON_DEVICE_ENV.to_string());
         }
+        let agent_send_hold_sec = input
+            .env(AGENT_SEND_HOLD_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok());
+        if agent_send_hold_sec.is_some() {
+            input.env_overlay_keys.push(AGENT_SEND_HOLD_ENV.to_string());
+        }
+        let agent_send_hold_sec = agent_send_hold_sec
+            .or(input.user_settings.agent_send_hold_sec)
+            .unwrap_or(DEFAULT_AGENT_SEND_HOLD_SEC);
         input.env_overlay_keys.sort_unstable();
         input.env_overlay_keys.dedup();
         let provenance = SettingsSnapshotProvenance {
@@ -474,7 +495,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\ndictation_witness_armed={dictation_witness_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\ndictation_witness_armed={dictation_witness_armed}\nagent_send_hold_sec={agent_send_hold_sec}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -494,6 +515,7 @@ impl Config {
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
             dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override: phase_override,
             tail_provider,
@@ -512,6 +534,7 @@ impl Config {
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
             dictation_witness_armed: parts.dictation_witness_armed,
+            agent_send_hold_sec: parts.agent_send_hold_sec,
             local_tail_patch: parts.local_tail_patch,
             layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
@@ -3796,6 +3819,74 @@ mod tests {
         assert!(!Config::load().agent_auto_send);
         restore_env_for_test("AGENT_AUTO_SEND", previous);
         restore_env_for_test("CODESCRIBE_ENV_PATH", previous_env_path);
+    }
+
+    #[test]
+    fn agent_send_hold_snapshot_defaults_overrides_and_rejects_invalid_numbers() {
+        let input = CapturedRuntimeInputs::defaults_at(PathBuf::from("/synthetic/send-hold"), 1);
+        assert_eq!(
+            Config::runtime_snapshot_from_captured(input.clone()).agent_send_hold_sec(),
+            10
+        );
+        let mut input = input;
+        input.user_settings.agent_send_hold_sec = Some(7);
+        let persisted = Config::runtime_snapshot_from_captured(input.clone());
+        assert_eq!(persisted.agent_send_hold_sec(), 7);
+        for raw in ["0", "12", "60"] {
+            input
+                .overrides
+                .insert(AGENT_SEND_HOLD_ENV.into(), Ok(raw.into()));
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(snapshot.agent_send_hold_sec(), raw.parse::<u32>().unwrap());
+            assert_eq!(snapshot.user_settings().agent_send_hold_sec, Some(7));
+            assert!(
+                snapshot
+                    .provenance()
+                    .env_overlay_keys
+                    .contains(&AGENT_SEND_HOLD_ENV.into())
+            );
+            assert_ne!(snapshot.digest(), persisted.digest());
+        }
+        for raw in ["-1", "1.5", "invalid", "4294967296"] {
+            input
+                .overrides
+                .insert(AGENT_SEND_HOLD_ENV.into(), Ok(raw.into()));
+            assert_eq!(
+                Config::runtime_snapshot_from_captured(input.clone()).agent_send_hold_sec(),
+                7
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn agent_send_hold_settings_round_trip_and_file_and_process_env_win() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env_path = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _hold = TestEnvGuard::unset(AGENT_SEND_HOLD_ENV);
+        let dir = setup_isolated_data_dir();
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 10);
+        Config::default()
+            .save_to_env(AGENT_SEND_HOLD_ENV, "7")
+            .unwrap();
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(7));
+        let saved = seal_lanes();
+        assert_eq!(saved.agent_send_hold_sec(), 7);
+        assert!(!Config::env_path().exists());
+        fs::write(
+            dir.path().join(".env"),
+            "CODESCRIBE_AGENT_SEND_HOLD_SEC=12\n",
+        )
+        .unwrap();
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 12);
+        set_env_for_test(AGENT_SEND_HOLD_ENV, "0");
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 0);
+        assert_eq!(
+            saved.agent_send_hold_sec(),
+            7,
+            "the previous snapshot remains frozen"
+        );
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(7));
     }
 
     #[test]
