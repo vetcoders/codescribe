@@ -355,9 +355,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertGreaterThan(
       headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.04,
       "\(name) hover did not move toward the shared accent")
-    XCTAssertTrue(
-      headerContains(frames.hover, near: headerSystemAccent(palette), tolerance: 0.2),
-      "\(name) hover has no shared accent pixel")
+    XCTAssertGreaterThan(
+      headerAccentPixelCount(frames.rest, frames.hover, accent: headerSystemAccent(palette)), 5,
+      "\(name) hover must blend the shared accent into its antialiased hairline")
     XCTAssertLessThan(
       headerDelta(frames.rest, frames.leave), 0.08, "\(name) hover did not clear")
   }
@@ -592,6 +592,43 @@ final class OverlayHeaderChromeTests: XCTestCase {
     return pixels.contains { pixel in
       pixel.alpha > 0.45 && headerDistance(pixel, target) < tolerance
     }
+  }
+
+  // A one-device-pixel 80%-opacity stroke is composited with the background;
+  // its pixels need the accent's direction, not the unblended opaque RGB value.
+  private func headerAccentPixelCount(
+    _ before: [HeaderPixel], _ after: [HeaderPixel], accent: OverlayColorToken
+  ) -> Int {
+    let target = headerPixel(accent.nsColor)
+    return zip(before, after).filter { background, observed in
+      let dr = target.red - background.red
+      let dg = target.green - background.green
+      let db = target.blue - background.blue
+      let length = dr * dr + dg * dg + db * db
+      guard length > 0.01 else { return false }
+      let coverage =
+        ((observed.red - background.red) * dr
+          + (observed.green - background.green) * dg
+          + (observed.blue - background.blue) * db) / length
+      guard (0.15...0.9).contains(coverage) else { return false }
+      let expected = HeaderPixel(
+        red: background.red + coverage * dr, green: background.green + coverage * dg,
+        blue: background.blue + coverage * db, alpha: observed.alpha)
+      return observed.alpha > 0.45 && headerDistance(observed, expected) < 0.08
+    }.count
+  }
+
+  func testHairlineColorMeasurementAcceptsCompositingAndRejectsAnotherHueOrNoChange() {
+    let background = HeaderPixel(red: 1, green: 1, blue: 1, alpha: 1)
+    let blueBlend = HeaderPixel(red: 0.6, green: 0.8, blue: 1, alpha: 1)
+    let wrongHue = HeaderPixel(red: 1, green: 0.6, blue: 0.8, alpha: 1)
+    let baseline = Array(repeating: background, count: 12)
+    let accent = OverlayColorToken(0x007FFF)
+    XCTAssertEqual(
+      headerAccentPixelCount(baseline, Array(repeating: blueBlend, count: 12), accent: accent), 12)
+    XCTAssertEqual(
+      headerAccentPixelCount(baseline, Array(repeating: wrongHue, count: 12), accent: accent), 0)
+    XCTAssertEqual(headerAccentPixelCount(baseline, baseline, accent: accent), 0)
   }
 
   private func headerShift(

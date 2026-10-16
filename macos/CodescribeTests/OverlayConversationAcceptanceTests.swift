@@ -230,11 +230,6 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   @MainActor
   func testConversationNamePillExposesChannelAtNormalAndLargeTextSizes() throws {
-    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
-      guard let element = object as? any NSAccessibilityProtocol else { return [] }
-      let native = (object as? NSView)?.subviews ?? []
-      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
-    }
     for channel in ["0", "2", "7"] {
       let conversationOwner = OverlayConversationOwner(row: owner(leaseA, channel: channel))
       let conversation = OverlayConversation(
@@ -259,12 +254,11 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         host.layoutSubtreeIfNeeded()
         let pill = try XCTUnwrap(
-          elements(host).first { $0.accessibilityIdentifier() == "overlay-conversation-name" })
-        let text = [pill.accessibilityLabel(), pill.accessibilityValue() as? String]
-          .compactMap { $0 }.joined(separator: " ")
+          NativeAccessibilityProbe.query("overlay-conversation-name").elements.first)
+        let text = [pill.label, pill.value].joined(separator: " ")
         XCTAssertTrue(text.contains(expected), "channel=\(channel) scale=\(scale): \(text)")
-        XCTAssertGreaterThan(pill.accessibilityFrame().width, 0)
-        XCTAssertLessThanOrEqual(pill.accessibilityFrame().width, host.bounds.width)
+        XCTAssertGreaterThan(pill.frame.width, 0)
+        XCTAssertLessThanOrEqual(pill.frame.width, host.bounds.width)
       }
     }
   }
@@ -941,25 +935,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       if let text = root as? NSTextView, text.isEditable { return text }
       return root.subviews.lazy.compactMap { editor($0) }.first
     }
-    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    func axAttribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
-      var value: CFTypeRef?
-      guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else {
-        return nil
-      }
-      return value
-    }
-    func jumpButtons(_ element: AXUIElement? = nil, depth: Int = 0) -> [AXUIElement] {
-      let element = element ?? application
-      guard depth < 16 else { return [] }
-      if axAttribute(element, kAXIdentifierAttribute) as? String
-        == "overlay-conversation-jump-to-current"
-      {
-        return [element]
-      }
-      let key = depth == 0 ? kAXWindowsAttribute : kAXChildrenAttribute
-      let children = axAttribute(element, key) as? [AXUIElement] ?? []
-      return children.flatMap { jumpButtons($0, depth: depth + 1) }
+    func jumpButtons() throws -> [NativeAccessibilityProbe.Element] {
+      try NativeAccessibilityProbe.query("overlay-conversation-jump-to-current").elements
     }
     window.orderFrontRegardless()
     settle()
@@ -967,7 +944,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let document = try XCTUnwrap(scroll.documentView)
     let originalEditor = try XCTUnwrap(editor(host))
     originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
-    XCTAssertTrue(jumpButtons().isEmpty, "The live edge needs no return affordance")
+    XCTAssertTrue(try jumpButtons().isEmpty, "The live edge needs no return affordance")
     NotificationCenter.default.post(
       name: NSScrollView.willStartLiveScrollNotification, object: scroll)
     scroll.contentView.scroll(to: .zero)
@@ -977,7 +954,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     settle()
     XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
     XCTAssertEqual(
-      jumpButtons().count, 1, "Manual history reading exposes one centered return pill")
+      try jumpButtons().count, 1, "Manual history reading exposes one centered return pill")
     // Reflow a long mounted conversation, not an empty geometry stand-in.
     // Reading history must not turn resize into a jump-to-current command.
     for width in [CGFloat(360), 680, 420, 600, 360, 532] {
@@ -989,22 +966,17 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
       XCTAssertLessThanOrEqual(document.bounds.width, scroll.bounds.width + 1)
     }
-    let button = try XCTUnwrap(jumpButtons().first)
+    let button = try XCTUnwrap(try jumpButtons().first)
     let input = try XCTUnwrap(originalEditor.enclosingScrollView)
-    var buttonPosition = CGPoint.zero
-    var buttonSize = CGSize.zero
-    let position = try XCTUnwrap(axAttribute(button, kAXPositionAttribute))
-    let size = try XCTUnwrap(axAttribute(button, kAXSizeAttribute))
-    XCTAssertEqual(CFGetTypeID(position), AXValueGetTypeID())
-    XCTAssertEqual(CFGetTypeID(size), AXValueGetTypeID())
-    XCTAssertTrue(AXValueGetValue(position as! AXValue, .cgPoint, &buttonPosition))
-    XCTAssertTrue(AXValueGetValue(size as! AXValue, .cgSize, &buttonSize))
-    let buttonFrame = NSRect(origin: buttonPosition, size: buttonSize)
+    let buttonFrame = button.frame
     XCTAssertGreaterThan(
       buttonFrame.minY,
       window.convertToScreen(input.convert(input.bounds, to: nil)).maxY,
       "The pill sits above the measured composer")
-    XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success)
+    XCTAssertEqual(
+      try NativeAccessibilityProbe.query("overlay-conversation-jump-to-current", press: true)
+        .pressStatus,
+      AXError.success.rawValue)
     settle()
     XCTAssertGreaterThan(scroll.documentVisibleRect.maxY, document.bounds.height - 50)
     for width in [CGFloat(360), 680, 420, 600, 360, 532] {
@@ -1014,7 +986,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         scroll.documentVisibleRect.maxY, document.bounds.height - 50,
         "Native size-change anchoring must keep the live edge through reflow")
     }
-    XCTAssertTrue(jumpButtons().isEmpty)
+    XCTAssertTrue(try jumpButtons().isEmpty)
     XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
     XCTAssertEqual(originalEditor.string, "Retained draft")
     XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))

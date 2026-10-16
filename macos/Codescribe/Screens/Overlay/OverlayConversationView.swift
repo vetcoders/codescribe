@@ -122,6 +122,7 @@ struct OverlayConversationView: View {
       }
       .foregroundStyle(palette.primaryText.color)
     }
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-conversation-body")
   }
 
@@ -170,6 +171,7 @@ struct OverlayConversationView: View {
         .background { OverlayMenuCursorRegion() }
       }
     )
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-conversation-navigation")
   }
 

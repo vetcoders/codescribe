@@ -22,6 +22,21 @@ they do not replace compositor screenshots or native functional acceptance.
 The target lives in the root `Makefile`; read its comment block before invoking
 `xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
+## Native accessibility reception
+
+`make test-swift` runs one parent-owned `/usr/bin/swift` accessibility client
+outside the XCTest host. A private mailbox under the disposable test-data root
+carries bounded requests for that host's DerivedData application only. The
+client queries native AX identifiers and can press one explicitly named
+conversation control; it takes no screenshots and emits no input events.
+The shell stops its owned client and preserves its log when the gate ends.
+
+The conversation name and jump-to-current tests use this real external AX
+path while the host services its main run loop. The client needs existing
+macOS accessibility permission; the gate never requests or changes it.
+Direct self-queries can hide SwiftUI elements or block AppKit, so they are not
+used as evidence that a control is absent.
+
 ## Credential operation fixtures
 
 License storage fixtures are Sendable and lock-protected because production

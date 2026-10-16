@@ -15,6 +15,14 @@ shift 6
 : "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
 export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
 export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
+# Keep the AX client outside the XCTest host's process and TCC identity.
+# Its private mailbox admits only this run's synthetic DerivedData host.
+mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?
+/usr/bin/swift -swift-version 6 -warnings-as-errors scripts/tests/native-ax-probe.swift \
+  "$CODESCRIBE_DATA_DIR/ax-probe" > "$CODESCRIBE_DATA_DIR/ax-probe.log" 2>&1 &
+AX_PROBE_PID=$!
+trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true; cp "$CODESCRIBE_DATA_DIR/ax-probe.log" "$SWIFT_TEST_LOG.ax-probe.log"' EXIT
+export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"
 # The host's overlay polls the agent bridge and its Rust core answers the
 # channel roster from it. A live ~/.codescribe/agent-bridge drew a second
 # overlay with the real conversations during a take (2026-10-13).
