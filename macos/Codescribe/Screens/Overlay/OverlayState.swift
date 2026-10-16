@@ -1436,6 +1436,12 @@ final class OverlayState {
     markVisibleConversationRead()
   }
 
+  /// Maciej (2026-10-16): clicking an agent's name in its reply bubble opens that agent's chat.
+  func openConversation(for owner: OverlayConversationOwner) {
+    guard let target = conversations.first(where: { $0.owner?.id == owner.id })?.id else { return }
+    selectConversation(target)
+  }
+
   func showTranscription() {
     selectConversation(nil)
     expandAgentSurface(cause: .user)
