@@ -121,6 +121,17 @@ Independent measured word pins cannot be contracted by repeated ASR agreement.
 Their identities and source ranges survive rejected many-to-one candidates;
 legal one-to-one corrections and coarse phrase refinement remain available.
 
+### Partial Cloud answers and coarse source accounting (2026-10-16 source cut)
+
+A partial Cloud word answer cannot retire an entire unsealed coarse source
+when neither measured speech coverage nor the returned decoder scope accounts
+for that source. The ledger keeps the source and the returned alternative,
+and requires text recovery for the uncovered range. A later complete answer
+still enters the existing refinement path; retaining a partial answer does not
+make the held label permanent. Existing Whisper partial-word admission remains
+unchanged. This policy governs source accounting, not whether a Cloud label is
+linguistically correct, and does not authorize rewriting sealed or human text.
+
 ### DictationTranscriber witness (2026-10-14 source cut; per-utterance trigger 2026-10-15)
 
 Arming has one owner: `audio.dictation_witness_armed` in `settings.json`
