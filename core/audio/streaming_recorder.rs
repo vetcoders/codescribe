@@ -499,6 +499,17 @@ struct ChannelTask {
     /// The channel's own exact archive, scoped to its subscription. The
     /// device spill spans every subscriber and is never this channel's audio.
     archive: Option<TakeArchive>,
+    /// Terminal handoff of that archive to the channel's own session, as a
+    /// take's. Sent after finalization and before the task is joined: the
+    /// session's stop tail waits on it to run the terminal dictation witness.
+    terminal_audio_sender: Option<
+        std::sync::mpsc::Sender<
+            Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
+        >,
+    >,
+    /// Identity the session checks the archive receipt against.
+    session_id: String,
+    sample_rate: u32,
 }
 
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
@@ -1049,8 +1060,13 @@ impl StreamingRecorder {
     /// `EpochGate::for_session` inside `transcription_session`. The take's
     /// silence field and capture epoch are not written.
     ///
-    /// `terminal_audio` stays `None`: a channel seal does not wait on a
-    /// whole-capture WAV.
+    /// `terminal_audio` carries the channel's own exact archive, as a take's.
+    /// Without it the session's terminal dictation witness has no owned PCM
+    /// and every gap Apple left stays unrecovered: Maciej's channel-0 take of
+    /// 2026-10-16 20:43 had 72 % of its speech without a document owner and
+    /// `dictation_witness_pcm_unavailable` at stop. The seal now waits on the
+    /// channel archive (disk finalization, never the device span) exactly as
+    /// a dictation take does.
     pub async fn begin_channel_session(
         &mut self,
         session_id: String,
@@ -1108,16 +1124,23 @@ impl StreamingRecorder {
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle, lifecycle_events) = recorder_lifecycle_channel();
         let (last_window_tx, last_window_rx) = oneshot::channel();
+        // The channel owes its session the same PCM receipt a take owes its
+        // own; a missing archive is reported through the receipt, not by
+        // leaving the session without a sender.
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        let terminal_audio = archive.is_some().then_some(terminal_rx);
+        let terminal_audio_sender = terminal_audio.is_some().then_some(terminal_tx);
         event_sink.on_capture_opened(&session_id, 1);
         let sink = event_sink;
         let feed = registration.receiver;
         let id = registration.id;
+        let task_session_id = session_id.clone();
         let task = tokio::spawn(async move {
             transcription_session(
                 feed,
                 sink,
                 SessionConfig {
-                    session_id,
+                    session_id: task_session_id,
                     capture_epoch: 1,
                     runtime_settings,
                     live_formatting_agent: None,
@@ -1130,7 +1153,7 @@ impl StreamingRecorder {
                     capture_turn: CaptureTurnIntent::AgentChannel,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
-                    terminal_audio: None,
+                    terminal_audio,
                     last_window_closed: Some(last_window_tx),
                 },
             )
@@ -1142,6 +1165,9 @@ impl StreamingRecorder {
             lifecycle,
             last_window: last_window_rx,
             archive,
+            terminal_audio_sender,
+            session_id,
+            sample_rate: actual_sample_rate,
         });
         Ok(id)
     }
@@ -1367,6 +1393,7 @@ impl ClosedChannel {
     pub async fn finish(mut self) -> Result<(bool, Option<std::path::PathBuf>)> {
         let owned = self.task.as_mut().and_then(|task| task.archive.take());
         let physical = self.physical_archive.take();
+        let expected_samples = owned.as_ref().map(TakeArchive::captured_samples);
         let archive = if owned.is_some() || physical.is_some() {
             tokio::task::spawn_blocking(move || {
                 let owned = match owned {
@@ -1387,6 +1414,27 @@ impl ClosedChannel {
         } else {
             Ok(None)
         };
+        // Hand the finalized archive to the session before joining it: its
+        // stop tail waits on this receipt to run the terminal witness. A
+        // missing or failed archive is reported, never silently withheld.
+        if let Some(sender) = self.task.as_mut().and_then(|task| task.terminal_audio_sender.take())
+        {
+            let task = self.task.as_ref().expect("sender was taken from the task");
+            let receipt = match (&archive, expected_samples) {
+                (Ok(Some(path)), Some(sample_count)) => Ok(
+                    crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
+                        session_id: task.session_id.clone(),
+                        capture_epoch: 1,
+                        sample_rate: task.sample_rate,
+                        sample_count,
+                        path: path.clone(),
+                    },
+                ),
+                (Ok(_), _) => Err("channel capture finalized without a WAV archive".into()),
+                (Err(error), _) => Err(format!("channel archive finalization failed: {error}")),
+            };
+            let _ = sender.send(receipt);
+        }
         // Archive failure still owes the original task's complete drain.
         let task = match self.task.take() {
             Some(removed) => {
@@ -2529,6 +2577,9 @@ mod tests {
             lifecycle,
             last_window,
             archive: None,
+            terminal_audio_sender: None,
+            session_id: String::new(),
+            sample_rate: 16_000,
         });
         let closed = recorder.close_channel_session(channel).await;
         assert_eq!(recorder.capture_subscriber_count(), 1);
@@ -2685,6 +2736,9 @@ mod tests {
             lifecycle,
             last_window,
             archive: Some(archive),
+            terminal_audio_sender: None,
+            session_id: String::new(),
+            sample_rate: 16_000,
         });
         offer_pcm_to_feeds(
             &mut recorder.pcm_feeds.lock().unwrap(),
@@ -2703,6 +2757,75 @@ mod tests {
         assert_eq!(take_rx.recv().await.unwrap(), vec![0.1; 40]);
         assert_eq!(take_rx.recv().await.unwrap(), vec![0.5; 160]);
         assert!(recorder.release_capture_subscriber(take));
+    }
+
+    /// A channel seal hands its own finalized archive to its session before
+    /// the session task is joined, under the identity the session's stop
+    /// tail checks. Maciej's channel-0 take of 2026-10-16 20:43 ended with
+    /// `dictation_witness_pcm_unavailable` because no receipt was ever sent;
+    /// the terminal witness then had nothing to decode the 72 % of speech
+    /// Apple never committed. The task below blocks on the receipt, so a
+    /// receipt sent after the join (or never) fails this test by timeout.
+    #[tokio::test]
+    #[serial]
+    #[serial(tts_duck)]
+    async fn channel_close_hands_its_archive_to_the_session_before_joining_it() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().unwrap();
+        recorder.sample_rate = 16_000;
+        let archive = TakeArchive::spawn(16_000, Arc::new(AtomicU64::new(0))).unwrap();
+        let registration = recorder.register_channel_feed_archived(Some(archive.feed().unwrap()));
+        let (lifecycle, _) = recorder_lifecycle_channel();
+        let (_, last_window) = oneshot::channel();
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        let received = Arc::new(StdMutex::new(None));
+        let sink = Arc::clone(&received);
+        let session_id = "agent-channel-0-receipt-order".to_string();
+        recorder.channel_tasks.push(ChannelTask {
+            subscriber: registration.id,
+            task: tokio::spawn(async move {
+                // The session's stop tail: wait for the archive, as
+                // `apple_live_session` does with `recv_timeout(30 s)`.
+                let receipt = tokio::task::spawn_blocking(move || {
+                    terminal_rx.recv_timeout(std::time::Duration::from_secs(5))
+                })
+                .await
+                .unwrap()
+                .expect("archive receipt must arrive before the session task is joined");
+                *sink.lock().unwrap() = Some(receipt);
+            }),
+            lifecycle,
+            last_window,
+            archive: Some(archive),
+            terminal_audio_sender: Some(terminal_tx),
+            session_id: session_id.clone(),
+            sample_rate: 16_000,
+        });
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.5; 160],
+            &recorder.dropped_chunks,
+        );
+        let closed = recorder.close_channel_session(registration.id).await;
+        let (_, path) = closed.finish().await.unwrap();
+        let path = path.expect("live channel owns an exact archive");
+        let receipt = received
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the session task stored the receipt")
+            .expect("a finalized archive is an Ok receipt");
+        assert_eq!(receipt.session_id, session_id);
+        assert_eq!(receipt.capture_epoch, 1);
+        assert_eq!(receipt.sample_rate, 16_000);
+        assert_eq!(receipt.sample_count, 160);
+        assert_eq!(receipt.path, path);
+        // The session loads it under the same identity and sample count it
+        // observed; a mismatch here would be `terminal_owned_pcm_unavailable`.
+        receipt
+            .load(&session_id, 1, 16_000, 160)
+            .expect("the channel archive is the session's owned terminal PCM");
+        std::fs::remove_file(path).unwrap();
     }
 
     /// The capture callback's fan-out is bounded and non-blocking: a full feed
