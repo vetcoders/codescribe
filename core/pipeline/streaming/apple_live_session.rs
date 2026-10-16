@@ -442,6 +442,16 @@ fn deliver_consultation_result(
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Closure budget when this session's local engine has not yet completed a
+/// single window. The warm assumption behind [`TAIL_PATCH_CLOSURE_TIMEOUT`]
+/// does not hold on first use: the one accepted job may still be paying the
+/// model cold-load, and expiring it discards the only text the take has
+/// (measured 2026-10-16, take 30ac82b4: 3.99s load + 8.755s encoder, while
+/// the 5s budget expired and the receipt closed submitted=3/applied=0).
+/// A stop that owes nothing still pays nothing: the budget is consulted only
+/// while accepted work is outstanding.
+const TAIL_PATCH_COLD_START_CLOSURE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
 /// 250 ms is not allowed to become terminal transcript truth.
 pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
@@ -1953,6 +1963,10 @@ struct AppleSealState {
     refinement_clock: Instant,
     word_trial_scan_at: Option<Instant>,
     refinement_lane_lost: bool,
+    /// A matched provider completion returned at least once this session, so
+    /// the local engine is demonstrably past cold start. Gates the choice
+    /// between the warm and cold-start closure budgets at stop.
+    first_whisper_window_completed: bool,
     refinement_started: Instant,
     /// Occurrence formatter hand-off. Presence means the frozen snapshot
     /// permits jobs; it is not itself a scheduled ledger return.
@@ -2485,6 +2499,7 @@ impl AppleSealState {
             refinement_clock: Instant::now(),
             word_trial_scan_at: None,
             refinement_lane_lost: false,
+            first_whisper_window_completed: false,
             refinement_started: Instant::now(),
             formatter: None,
             formatter_requested: BTreeSet::new(),
@@ -4141,6 +4156,9 @@ impl AppleSealState {
             .refinement_submitted
             .remove(&key.expect("matched key"))
             .expect("matched job");
+        // Any matched return, valid or not, proves the engine is past
+        // cold start; later stops may hold the warm closure budget.
+        self.first_whisper_window_completed = true;
         let valid = payload.as_ref().is_some_and(|payload| {
             payload.identity == job.request_identity
                 && payload.validate().is_ok()
@@ -9110,7 +9128,21 @@ fn apple_stream_worker(
     // measured 2026-08-12, `rec_stop=36.701s` of which 30.005s was this loop
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
-    let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
+    // The warm budget is honest only after the engine proved it executes:
+    // a session that still owes its first window may be paying the model
+    // cold-load with its only accepted text, so it gets the cold budget.
+    // When nothing is outstanding the loops below never wait, so the wider
+    // budget cannot slow an owing-nothing stop.
+    let owes_first_window = !state.first_whisper_window_completed
+        && (state.planned_work_pending()
+            || !state.refinement_submitted.is_empty()
+            || !state.refinement_pending.is_empty());
+    let closure_budget = if owes_first_window {
+        TAIL_PATCH_COLD_START_CLOSURE_TIMEOUT
+    } else {
+        TAIL_PATCH_CLOSURE_TIMEOUT
+    };
+    let stop_deadline = local_execution.begin_drain(closure_budget);
     if state.cloud_commit_tx.is_none()
         && state.cloud_uncommitted.is_empty()
         && state.cloud_commit_retry.is_empty()
