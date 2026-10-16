@@ -32,7 +32,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{
     ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolOrigin,
-    ToolRegistry, ToolResultContent, ToolRisk,
+    ToolRegistry, ToolResultContent, ToolRisk, redact_command_line,
 };
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use codescribe_core::config::settings::{
@@ -1782,7 +1782,7 @@ fn desktop_commander_preview(tool: &str, input: &serde_json::Value) -> Result<To
             let cwd = path_policy::validate_terminal(command, cwd, &roots)?;
             Ok(ToolCallPreview {
                 summary: "Start a process inside the configured workspace".to_string(),
-                command: Some(redact_command_for_approval(command)),
+                command: Some(redact_command_line(command)),
                 cwd: Some(cwd.display().to_string()),
                 ..Default::default()
             })
@@ -1814,58 +1814,6 @@ fn desktop_commander_preview(tool: &str, input: &serde_json::Value) -> Result<To
             ..Default::default()
         }),
     }
-}
-
-/// Redact secrets from a command line before it is shown in an approval
-/// prompt. Handles both shapes: `KEY=value` inline assignments, and a flag
-/// whose secret sits in the following token(s) — `Authorization`/`Cookie` take
-/// two, everything else one. Display only; the command sent upstream is
-/// unchanged.
-fn redact_command_for_approval(command: &str) -> String {
-    /// Substring markers that trigger redaction of `KEY=value` tokens or the
-    /// following flag argument(s) in approval previews.
-    const SENSITIVE_KEYS: &[&str] = &[
-        "token",
-        "password",
-        "passwd",
-        "secret",
-        "api_key",
-        "apikey",
-        "authorization",
-        "cookie",
-    ];
-    let mut redact_remaining = 0usize;
-    command
-        .split_whitespace()
-        .map(|token| {
-            if redact_remaining > 0 {
-                redact_remaining -= 1;
-                return "[REDACTED]".to_string();
-            }
-            let trimmed = token.trim_matches(|character| matches!(character, '\'' | '"'));
-            let normalized = trimmed.to_ascii_lowercase();
-            if let Some((key, _)) = trimmed.split_once('=')
-                && SENSITIVE_KEYS
-                    .iter()
-                    .any(|sensitive| key.to_ascii_lowercase().contains(sensitive))
-            {
-                return format!("{key}=[REDACTED]");
-            }
-            if SENSITIVE_KEYS
-                .iter()
-                .any(|sensitive| normalized.contains(sensitive))
-            {
-                redact_remaining =
-                    if normalized.contains("authorization") || normalized.contains("cookie") {
-                        2
-                    } else {
-                        1
-                    };
-            }
-            token.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// First non-blank string among the given keys, or an error naming all of
@@ -2047,9 +1995,9 @@ mod tests {
     use super::{
         McpRowTone, desktop_commander_preview, execution_policy, prepare_upstream_input,
         probe_agentic_readiness_at, probe_mcp_status_at, public_input_schema, public_tool_name,
-        redact_command_for_approval, register_mcp_tools_from_config_path,
+        register_mcp_tools_from_config_path,
     };
-    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
+    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk, redact_command_line};
     use serde_json::json;
 
     /// CS160-R010: a tool from any MCP server, classified or not, names the
@@ -2144,13 +2092,11 @@ mod tests {
     #[test]
     fn desktop_commander_terminal_preview_redacts_secrets_and_blocks_policy_key_aliases() {
         assert_eq!(
-            redact_command_for_approval("TOKEN=hunter2 curl --password swordfish example.test"),
+            redact_command_line("TOKEN=hunter2 curl --password swordfish example.test"),
             "TOKEN=[REDACTED] curl --password [REDACTED] example.test"
         );
         assert_eq!(
-            redact_command_for_approval(
-                "curl -H 'Authorization: Bearer hunter2' https://example.test"
-            ),
+            redact_command_line("curl -H 'Authorization: Bearer hunter2' https://example.test"),
             "curl -H 'Authorization: [REDACTED] [REDACTED] https://example.test"
         );
         assert!(

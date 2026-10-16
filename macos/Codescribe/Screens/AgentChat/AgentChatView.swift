@@ -732,7 +732,7 @@ struct ToolApprovalCard: View {
         }
         .help(
           Text(
-            "Secret-looking values read [redacted] and long values are shortened.",
+            "Secret-looking values read [REDACTED] and long values are shortened.",
             comment: "Tooltip for the argument snapshot on an agent permission card"
           )
         )

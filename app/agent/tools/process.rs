@@ -2,7 +2,10 @@
 //!
 //! No shell string concatenation — argv only. Terminal path policy from
 //! [`super::path_policy`] is applied to the synthetic command line for program
-//! and path gates. Mutating/process tools default to Ask.
+//! and path gates. Mutating/process tools default to Ask. What the approval
+//! card shows of that command line passes through the shared
+//! [`redact_command_line`] first, so a secret in the argv never becomes
+//! operator-visible text.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -14,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{
     ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolRegistry,
-    ToolResultContent, ToolRisk,
+    ToolResultContent, ToolRisk, redact_command_line,
 };
 use serde_json::{Value, json};
 
@@ -221,11 +224,16 @@ fn tracked_pid_validator(verb: &'static str) -> ToolInputValidator {
 /// The single shape every process-tool preview takes: a one-line summary, the
 /// synthetic command line, and the resolved cwd carried both as the displayed
 /// directory and as the call's authorization target.
+///
+/// The command line goes through the shared [`redact_command_line`] before it
+/// is shown: an argv like `["--token", "abc"]` joins into a line that would
+/// otherwise put the secret on the card verbatim. Display only — the argv
+/// actually spawned is untouched.
 fn process_preview(summary: String, command: String, cwd: PathBuf) -> ToolCallPreview {
     let cwd = cwd.display().to_string();
     ToolCallPreview {
         summary,
-        command: Some(command),
+        command: Some(redact_command_line(&command)),
         cwd: Some(cwd.clone()),
         paths: vec![cwd],
     }
