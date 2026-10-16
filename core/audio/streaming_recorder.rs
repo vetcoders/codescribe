@@ -1417,7 +1417,10 @@ impl ClosedChannel {
         // Hand the finalized archive to the session before joining it: its
         // stop tail waits on this receipt to run the terminal witness. A
         // missing or failed archive is reported, never silently withheld.
-        if let Some(sender) = self.task.as_mut().and_then(|task| task.terminal_audio_sender.take())
+        if let Some(sender) = self
+            .task
+            .as_mut()
+            .and_then(|task| task.terminal_audio_sender.take())
         {
             let task = self.task.as_ref().expect("sender was taken from the task");
             let receipt = match (&archive, expected_samples) {
@@ -2773,6 +2776,13 @@ mod tests {
         crate::audio::tts_duck::clear();
         let mut recorder = StreamingRecorder::new().unwrap();
         recorder.sample_rate = 16_000;
+        let (take_tx, mut take_rx) = mpsc::channel(8);
+        let take = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.1; 40],
+            &recorder.dropped_chunks,
+        );
         let archive = TakeArchive::spawn(16_000, Arc::new(AtomicU64::new(0))).unwrap();
         let registration = recorder.register_channel_feed_archived(Some(archive.feed().unwrap()));
         let (lifecycle, _) = recorder_lifecycle_channel();
@@ -2807,7 +2817,12 @@ mod tests {
             &recorder.dropped_chunks,
         );
         let closed = recorder.close_channel_session(registration.id).await;
-        let (_, path) = closed.finish().await.unwrap();
+        let (last, path) = closed.finish().await.unwrap();
+        assert!(
+            !last,
+            "the other subscriber keeps its capture while the witness receives PCM"
+        );
+        assert_eq!(recorder.capture_subscriber_count(), 1);
         let path = path.expect("live channel owns an exact archive");
         let receipt = received
             .lock()
@@ -2825,6 +2840,18 @@ mod tests {
         receipt
             .load(&session_id, 1, 16_000, 160)
             .expect("the channel archive is the session's owned terminal PCM");
+        let mut wav = hound::WavReader::open(&path).unwrap();
+        let pcm: Vec<i16> = wav.samples().map(Result::unwrap).collect();
+        assert_eq!(pcm, convert_mono_f32_to_i16(&[0.5; 160]));
+        offer_pcm_to_feeds(
+            &mut recorder.pcm_feeds.lock().unwrap(),
+            &[0.75; 80],
+            &recorder.dropped_chunks,
+        );
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.1; 40]);
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.5; 160]);
+        assert_eq!(take_rx.recv().await.unwrap(), vec![0.75; 80]);
+        assert!(recorder.release_capture_subscriber(take));
         std::fs::remove_file(path).unwrap();
     }
 

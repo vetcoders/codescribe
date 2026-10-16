@@ -351,9 +351,9 @@ pub fn prewarm_active_engine(
             match apple_stt::transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en"))
             {
                 Ok(_) => tracing::info!("STT active-engine warmup inference complete (apple)"),
-                Err(error) => tracing::warn!(
-                    "STT Apple warmup inference failed (non-fatal): {error:#}"
-                ),
+                Err(error) => {
+                    tracing::warn!("STT Apple warmup inference failed (non-fatal): {error:#}")
+                }
             }
             let mode = runtime_settings.user_settings().resolved_asr_mode().mode;
             let local_refiner = matches!(
@@ -361,9 +361,11 @@ pub fn prewarm_active_engine(
                 crate::config::cloud_asr::AsrProductMode::LocalPower
                     | crate::config::cloud_asr::AsrProductMode::Cloud
             ) && runtime_settings.local_tail_patch_decision().is_armed()
-                && runtime_settings.tail_provider() == Some(tail_provider::TailProviderId::InProcess);
+                && runtime_settings.tail_provider()
+                    == Some(tail_provider::TailProviderId::InProcess);
             if local_refiner {
-                match candle_transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
+                match candle_transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en"))
+                {
                     Ok(_) => tracing::info!(
                         "STT selected in-process refiner warmup inference complete (whisper)"
                     ),
