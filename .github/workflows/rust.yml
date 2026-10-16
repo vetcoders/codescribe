@@ -35,6 +35,10 @@ on:
   merge_group:
     types: [checks_requested]
 
+# Every job only reads the checkout (CodeQL #49/#50/#51).
+permissions:
+  contents: read
+
 # Queue entries are never cancelled: a merge_group run has a unique ref, and
 # only superseded pull_request runs are cancelled.
 concurrency:
