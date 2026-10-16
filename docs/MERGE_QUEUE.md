@@ -28,12 +28,20 @@ is public; hosted runners only).
 
 Tests: `scripts/tests/test_l10n_workflow_base.py` runs the extracted workflow
 shell against a fake `git`; `scripts/tests/test_ci_workflow_contract.py` parses
-the YAML (triggers, concurrency, required job shape).
+the YAML (triggers, concurrency, required job shape, and that the tests
+themselves are wired in). Both are **required CI**: the unconditional step
+`Test CI workflow and merge-queue contracts` in the `Clippy + Tests` job runs
+them before any compiler stage, in a private venv under `RUNNER_TEMP` with
+test-only `PyYAML==6.0.3` (no global install, no product dependency).
 
 ```
 python3 -m unittest scripts/tests/test_l10n_workflow_base.py scripts/tests/test_ci_workflow_contract.py
 actionlint .github/workflows/rust.yml .github/workflows/l10n.yml .github/workflows/semgrep.yml
 ```
+
+Locally the first command needs PyYAML importable; CI provisions it itself.
+`main` has no `L10N_BASE` consumer or prose ratchet, which is why the l10n part
+of this contract is not a prerequisite there (see Staged activation).
 
 ## Not exercised by the tests
 

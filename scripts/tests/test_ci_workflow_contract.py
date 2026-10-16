@@ -68,6 +68,27 @@ class CiWorkflowContractTests(unittest.TestCase):
             self.assertNotIn("if", step)
             self.assertNotIn("continue-on-error", step)
 
+    def test_contract_tests_are_a_required_step_before_compiler_stages(self):
+        steps = load("rust.yml")["jobs"]["quality"]["steps"]
+        index = next(
+            (i for i, step in enumerate(steps) if "test_ci_workflow_contract.py" in step.get("run", "")),
+            None,
+        )
+        self.assertIsNotNone(index, "no quality step runs the queue contract tests")
+        run = steps[index]["run"]
+        self.assertIn("scripts/tests/test_l10n_workflow_base.py", run)
+        self.assertIn("PyYAML==6.0.3", run)
+        self.assertIn("$RUNNER_TEMP", run)
+        self.assertIn("-m venv", run)
+        self.assertNotIn("sudo", run)
+        self.assertNotIn("--user", run)
+        # Cheap contract check precedes every Swift/Rust/Make stage.
+        for earlier in steps[:index]:
+            self.assertNotIn("make ", earlier.get("run", ""))
+            self.assertNotIn("xcodebuild", earlier.get("run", ""))
+            self.assertNotIn("cargo", earlier.get("run", ""))
+            self.assertNotIn("rust-toolchain", earlier.get("uses", ""))
+
     def test_pull_request_target_is_not_used(self):
         for name in CHECKS:
             self.assertNotIn("pull_request_target", load(name)["on"])
