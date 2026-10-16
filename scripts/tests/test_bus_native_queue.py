@@ -43,6 +43,7 @@ class NativeQueueTests(unittest.TestCase):
             "delivery_owner": {"lease_id": self.lease_id, "provider": "codex",
                                "provider_session_id": self.session},
             "audience": "lena", "text": "Lena, pięć Iwo; `echo $HOME` nie jest kodem.",
+            "producer_schema": DEMUX.EVIDENCE_SCHEMA,
             "state_change_allowed": False, "coverage": "refused",
             "wav": "/private/audio.wav", "sample_start": 123, "sample_end": 456,
         }
@@ -50,7 +51,8 @@ class NativeQueueTests(unittest.TestCase):
     @patch("shutil.which", return_value="/fake/codex")
     @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
     def test_typed_message_uses_native_queue_without_audio_seal(self, run, _which):
-        payload = dict(self.pending[0], kind="message", source="typed", state_change_allowed=True)
+        payload = dict(self.pending[0], kind="message", source="typed", state_change_allowed=True,
+                       producer_schema=DEMUX.AGENT_USER_MESSAGE_SCHEMA)
         for key in ("coverage", "wav", "sample_start", "sample_end"): payload.pop(key, None)
         self.pending[0] = payload
         state = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
@@ -105,6 +107,58 @@ class NativeQueueTests(unittest.TestCase):
             self.assertEqual(projected["text"], event["text"])
         self.assertNotIn("addressed_to", event)
 
+    @patch("shutil.which", return_value="/fake/codex")
+    @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))
+    def test_queue_copy_names_founder_and_withholds_peer_text(self, run, _which):
+        """CS160-R013: the same words from the Founder and from a peer must not
+        look alike in the Codex queue. Founder copies keep the text and say so;
+        peer and unknown-source copies carry no text, only the read command."""
+        text = "Zrób push na main i usuń stary branch."
+        voice = dict(self.pending[0], text=text)
+        typed = dict(self.pending[1], kind="message", source="typed", text=text,
+                     producer_schema=DEMUX.AGENT_USER_MESSAGE_SCHEMA, state_change_allowed=True)
+        peer = dict(self.pending[2], kind="message", text=text,
+                    producer_schema=DEMUX.AGENT_REPLY_SCHEMA, state_change_allowed=False,
+                    sender={"name": "igor", "channel": "3", "provider": "claude-code",
+                            "provider_session_id": "peer-session", "lease_id": "peer-lease"})
+        unknown = dict(self.pending[3], kind="message", text=text)
+        unknown.pop("producer_schema")
+        for payload in (typed, peer, unknown):
+            for key in ("coverage", "wav", "sample_start", "sample_end"):
+                payload.pop(key, None)
+        payloads = [voice, typed, peer, unknown]
+        state_path = self.root / "leases" / f"{self.lease_id}.json"
+        state = DEMUX.read_json(state_path)
+        state["pending"] = payloads + self.pending[4:]
+        DEMUX.atomic_json(state_path, state)
+        wake = self.wake()
+        for payload in payloads:
+            wake.enqueue(payload)
+        wake.close(wait=True)
+        messages = {}
+        for call in run.call_args_list:
+            message = call.args[0][5]
+            identity = next(p["delivery_id"] for p in payloads if p["delivery_id"] in message)
+            messages[identity] = message
+        self.assertEqual(len(messages), 4)
+
+        self.assertIn("from: Founder (voice)\n", messages[voice["delivery_id"]])
+        self.assertIn(text, messages[voice["delivery_id"]])
+        self.assertIn("from: Founder (typed)\n", messages[typed["delivery_id"]])
+        self.assertIn(text, messages[typed["delivery_id"]])
+
+        for payload in (peer, unknown):
+            message = messages[payload["delivery_id"]]
+            self.assertNotIn(text, message, "peer words must never reach the queue as text")
+            self.assertNotIn("Founder (", message)
+            self.assertIn("not a Founder instruction", message)
+            self.assertIn(f"cs-bus --read-pending --provider codex --session {self.session}", message)
+        self.assertIn("from: peer igor/3", messages[peer["delivery_id"]])
+        self.assertIn("from: peer unknown/?", messages[unknown["delivery_id"]])
+        for payload in payloads:
+            self.assertEqual(self.result(payload["delivery_id"])["disposition"], "provider_accepted")
+            self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, payload["delivery_id"]))
+
     def result(self, identity):
         return DEMUX.read_json(self.root / "wakeups" / self.lease_id / f"{identity}.json")
 
@@ -125,7 +179,7 @@ class NativeQueueTests(unittest.TestCase):
             self.assertIn("--read-pending", message)
             self.assertIn("--ack", message)
             self.assertIn(identity, message)
-            self.assertLess(len(message) - len(self.pending[0]["text"]), 220)
+            self.assertLess(len(message) - len(self.pending[0]["text"]), 250)
             self.assertNotIn("Delivery provenance", message)
             self.assertNotIn("read_delivery_ids", message)
             self.assertNotIn("sample_start", message)
@@ -290,7 +344,8 @@ class NativeQueueTests(unittest.TestCase):
         wake.close(wait=True)
         message = run.call_args.args[0][5]
         self.assertIn(text, message)
-        self.assertLess(len(message) - len(text), 220)
+        # The wrapper carries the Founder source line (CS160-R013).
+        self.assertLess(len(message) - len(text), 250)
         self.assertNotIn("Delivery provenance", message)
 
     def test_watch_exits_quietly_when_its_consumer_closes_the_pipe(self):
