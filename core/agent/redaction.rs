@@ -112,6 +112,52 @@ fn opening_quote(token: &str) -> Option<char> {
     (!closed).then_some(first)
 }
 
+/// An argv element that starts with a sensitive assignment
+/// (`--password=two words`) or header (`X-Api-Key: a b`) owns the rest of the
+/// element: the name and its separator stay, every word of the value becomes
+/// the placeholder. Spaces inside one argument are not separators, and keeping
+/// one placeholder per word lets a later pass over the joined line consume
+/// exactly the value and nothing after it.
+fn redact_owned_value(element: &str) -> Option<String> {
+    let start = element.len() - element.trim_start().len();
+    let body = &element[start..];
+    let cut = body.find(|character: char| {
+        character == '=' || character == ':' || character.is_whitespace()
+    })?;
+    let separator = body[cut..].chars().next()?;
+    if separator.is_whitespace() {
+        return None;
+    }
+    let name = &body[..cut];
+    let rest = &body[cut + separator.len_utf8()..];
+    if rest.trim().is_empty()
+        || !contains_sensitive_key(name.trim_matches(|character| matches!(character, '\'' | '"')))
+    {
+        return None;
+    }
+    Some(format!(
+        "{}{name}{separator}{}",
+        &element[..start],
+        mask_words(rest)
+    ))
+}
+
+/// Replace every word of `text` with the placeholder, keeping its whitespace.
+fn mask_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_word = false;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            in_word = false;
+            out.push(character);
+        } else if !in_word {
+            in_word = true;
+            out.push_str(REDACTED);
+        }
+    }
+    out
+}
+
 impl CommandRedactor {
     /// A redactor with no marker in flight.
     pub fn new() -> Self {
@@ -156,6 +202,11 @@ impl CommandRedactor {
         if self.pending > 0 && !value.is_empty() && !value.starts_with('-') {
             self.pending -= 1;
             return REDACTED.to_string();
+        }
+        if let Some(owned) = redact_owned_value(element) {
+            self.pending = 0;
+            self.quoted = None;
+            return owned;
         }
         let out = self.redact(element);
         self.quoted = None;
@@ -513,6 +564,29 @@ mod tests {
         let theme =
             redacted_arguments(&json!({"key": "theme", "value": "dark"})).expect("snapshot");
         assert!(theme.contains("dark"), "{theme}");
+    }
+
+    /// PR #173 review round 5: an assignment or header that starts one argv
+    /// element owns the rest of it, spaces included, and the next element is
+    /// still shown.
+    #[test]
+    fn an_assignment_inside_one_argv_element_is_hidden_through_its_end() {
+        let snapshot = redacted_arguments(&json!({"args": [
+            "--password=two words", "-H", "X-Api-Key: a b", "https://example.test"
+        ]}))
+        .expect("snapshot");
+        for leaked in ["two", "words", "X-Api-Key: a", " b\""] {
+            assert!(!snapshot.contains(leaked), "{leaked} leaked: {snapshot}");
+        }
+        assert!(
+            snapshot.contains("--password=[REDACTED] [REDACTED]"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("X-Api-Key: [REDACTED] [REDACTED]"),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("https://example.test"), "{snapshot}");
     }
 
     /// One key predicate for every surface: separator spellings collapse, and
