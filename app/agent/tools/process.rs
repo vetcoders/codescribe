@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{
-    ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolRegistry,
-    ToolResultContent, ToolRisk, redact_command_line,
+    CommandRedactor, ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator,
+    ToolRegistry, ToolResultContent, ToolRisk, redact_command_line,
 };
 use serde_json::{Value, json};
 
@@ -180,10 +180,23 @@ fn run_process_validator() -> ToolInputValidator {
         path_policy::validate_terminal(&cmdline, cwd.to_str().context("cwd utf-8")?, &roots())?;
         Ok(process_preview(
             format!("Run {program} with {} argument(s)", args.len()),
-            cmdline,
+            display_command_line(program, &args),
             cwd,
         ))
     })
+}
+
+/// The card's rendering of program and argv. Each argument is redacted as one
+/// argv element before joining, so a spaced value inside one argument
+/// (`--password=two words`) is hidden whole; the policy still judges the raw
+/// [`synthetic_command_line`].
+fn display_command_line(program: &str, args: &[String]) -> String {
+    let mut redactor = CommandRedactor::new();
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(|part| redactor.redact_argument(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Pre-flight validator for `project_build` / `project_test`: runs the same
@@ -991,5 +1004,27 @@ mod tests {
             preview.command.as_deref(),
             Some("curl --token [REDACTED] -v")
         );
+    }
+
+    /// PR #173 review round 5: the process card redacts each argument as one
+    /// argv element, so a spaced value inside one argument is hidden whole,
+    /// and the card survives the registry's second redaction pass intact.
+    #[test]
+    fn process_card_hides_a_spaced_value_inside_one_argument() {
+        let args: Vec<String> = [
+            "--password=two words",
+            "-H",
+            "Authorization: Bearer x",
+            "https://example.test",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        let shown = display_command_line("curl", &args);
+        assert_eq!(
+            shown,
+            "curl --password=[REDACTED] [REDACTED] -H Authorization: [REDACTED] [REDACTED] https://example.test"
+        );
+        assert_eq!(codescribe_core::agent::redact_command_line(&shown), shown);
     }
 }
