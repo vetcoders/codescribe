@@ -254,7 +254,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         host.layoutSubtreeIfNeeded()
         let pill = try XCTUnwrap(
-          NativeAccessibilityProbe.query("overlay-conversation-name").elements.first)
+          NativeAccessibilityProbe.waitForElements("overlay-conversation-name").elements.first)
         let text = [pill.label, pill.value].joined(separator: " ")
         XCTAssertTrue(text.contains(expected), "channel=\(channel) scale=\(scale): \(text)")
         XCTAssertGreaterThan(pill.frame.width, 0)

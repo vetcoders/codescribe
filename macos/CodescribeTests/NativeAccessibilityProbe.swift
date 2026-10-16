@@ -22,6 +22,16 @@ enum NativeAccessibilityProbe {
     let pressStatus: Int32?
     let trace: [String]
   }
+  static func waitForElements(_ identifier: String) throws -> Reception {
+    let deadline = Date().addingTimeInterval(2)
+    var reception = try query(identifier)
+    while reception.elements.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+      reception = try query(identifier)
+    }
+    return reception
+  }
+
   static func query(_ identifier: String, press: Bool = false) throws -> Reception {
     let path = try XCTUnwrap(
       ProcessInfo.processInfo.environment["CODESCRIBE_AX_PROBE"],
