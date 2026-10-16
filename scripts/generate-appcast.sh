@@ -126,4 +126,6 @@ ARGS=(--ed-key-file - -o "$OUT")
 echo "==> generate_appcast: $GENERATE_APPCAST"
 echo "==> stable enclosure: $(basename "${SLIM_DMGS[0]}")"
 printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$GENERATE_APPCAST" "${ARGS[@]}" "$APPCAST_STAGE"
+RELEASE_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+python3 "$REPO_ROOT/scripts/verify-appcast-version.py" "$OUT" --version "$RELEASE_VERSION"
 echo "==> appcast written: $OUT"

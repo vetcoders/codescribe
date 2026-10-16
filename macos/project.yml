@@ -41,9 +41,11 @@ targets:
         CFBundleName: Codescribe
         # Build provenance — expanded from build settings at xcodebuild time;
         # scripts/build-app.sh passes the real values (Cargo version, git commit,
-        # commit count, UTC timestamp). settings.base holds bare-Xcode defaults.
+        # diagnostic commit count, UTC timestamp). Release ordering uses the
+        # Cargo/tag version; a branch's commit count never orders updates.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CSBuildNumber: $(CS_BUILD_NUMBER)
         CSBuildCommit: $(CS_BUILD_COMMIT)
         CSBuiltAt: $(CS_BUILT_AT)
         # Sparkle 2 update channel. Feed lives in site/public, served from
@@ -78,7 +80,8 @@ targets:
         # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
         # verified pipeline (scripts/build-app.sh) overrides all four.
         MARKETING_VERSION: 0.0.0-dev
-        CURRENT_PROJECT_VERSION: "0"
+        CURRENT_PROJECT_VERSION: "0.0.0"
+        CS_BUILD_NUMBER: "0"
         CS_BUILD_COMMIT: dev
         CS_BUILT_AT: unknown
         # Sparkle EdDSA public key — empty for bare Xcode/dev builds (updates

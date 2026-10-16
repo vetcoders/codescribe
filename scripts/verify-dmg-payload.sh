@@ -318,6 +318,12 @@ if [[ -n "${APP_PATH:-}" ]]; then
       ok "CFBundleShortVersionString == $VERSION"
     fi
 
+    UPDATE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || true)
+    if [[ "$UPDATE_VERSION" != "$VERSION" ]]; then
+      fail "Sparkle version '$UPDATE_VERSION' must equal release version '$VERSION'"
+    else
+      ok "CFBundleVersion == release version $VERSION"
+    fi
     SPARKLE_BUNDLE_KEY=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST" 2>/dev/null || true)
     if [[ -z "${SPARKLE_BUNDLE_KEY//[[:space:]]/}" ]]; then
       fail "SUPublicEDKey is empty or missing — Sparkle would reject every update"
