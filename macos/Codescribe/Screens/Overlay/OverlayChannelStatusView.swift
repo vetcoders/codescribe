@@ -1448,11 +1448,13 @@ struct OverlayAgentStatusDot: View {
 }
 
 /// The narrow-window roster: one glass row per conversation directly under
-/// the name pill, same width: the pill (dot, name, agent/model/repo, unread)
-/// with the row's microphone and speaker trailing it, as on the agent's card
-/// in the docked column. Clicking a pill selects; Esc closes; the 0 · All
-/// entry keeps the broadcast policy menu (878667f9f) underneath. Rows stagger
-/// in unless the user asked for reduced motion.
+/// the name pill, a mirror of the header's own cluster: the row's microphone
+/// and speaker lead, the pill (dot, name, agent/model/repo, unread) trails,
+/// right edges under the name pill, so pills stand in one column and controls
+/// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
+/// precyzyjniejszy"; host contract, klaudiusz). Clicking a pill selects; Esc
+/// closes; the 0 · All entry keeps the broadcast policy menu (878667f9f)
+/// underneath. Rows stagger in unless the user asked for reduced motion.
 struct OverlayAgentPillStack: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.csTextScale) private var textScale
@@ -1469,7 +1471,7 @@ struct OverlayAgentPillStack: View {
   var body: some View {
     ScrollView(.vertical) {
       overlayGlassGroup(
-        VStack(spacing: 6) {
+        VStack(alignment: .trailing, spacing: 6) {
           ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
             pillEntryView(entry)
               .opacity(revealed ? 1 : 0)
@@ -1548,7 +1550,6 @@ struct OverlayAgentPillStack: View {
     .modifier(OverlayNamePillGlass(interactive: true))
     .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
     let row = HStack(spacing: 6) {
-      pill
       if let controls = entry.controls {
         OverlayAgentAudioControls(
           open: controls.open, muted: controls.muted,
@@ -1561,6 +1562,7 @@ struct OverlayAgentPillStack: View {
         .fixedSize()
         .accessibilityIdentifier("overlay-agent-pill-controls-\(controls.channel)")
       }
+      pill
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
