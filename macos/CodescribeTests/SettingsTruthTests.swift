@@ -933,6 +933,36 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(writes.map(\.1), ["0.5", "10.0", "30.0"])
   }
 
+  /// A drag across the seconds slider persists once, at release — not once per
+  /// tick (463 settings writes in one sampled drag, each rebuilding the Whisper
+  /// catalog on the main thread). Writes outside a gesture pass through.
+  func testSliderCommitGatePersistsOncePerDragAndPassesDirectWritesThrough() {
+    var gate = SliderCommitGate()
+    var persisted: [Double] = []
+
+    // Keyboard / accessibility: no editing envelope, every change persists.
+    if let direct = gate.valueChanged(4.5) { persisted.append(direct) }
+    XCTAssertEqual(persisted, [4.5])
+
+    // A drag: 463 ticks are absorbed, the label follows the draft.
+    XCTAssertNil(gate.editingChanged(true))
+    for tick in 1...463 {
+      if let direct = gate.valueChanged(Double(tick) * 0.05) { persisted.append(direct) }
+    }
+    XCTAssertEqual(persisted, [4.5], "mid-drag ticks must not persist")
+    XCTAssertEqual(gate.displayed(persisted: 4.5), 463 * 0.05, accuracy: 0.001)
+
+    // Release: exactly one commit, the last tick's value.
+    if let committed = gate.editingChanged(false) { persisted.append(committed) }
+    XCTAssertEqual(persisted, [4.5, 463 * 0.05])
+    XCTAssertNil(gate.draft)
+
+    // A gesture with no movement commits nothing.
+    XCTAssertNil(gate.editingChanged(true))
+    XCTAssertNil(gate.editingChanged(false))
+    XCTAssertEqual(persisted.count, 2)
+  }
+
   /// The Lab pickers write their exact promoted keys on a developer build and
   /// nothing at all on a production bundle.
   func testLabPickersWriteExactPromotedKeysOnlyOnTheDeveloperSurface() {
