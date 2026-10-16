@@ -92,6 +92,19 @@ jobs:
       - name: Show the Xcode this image selected
         run: xcodebuild -version
 
+      # Regression suite for this file's own queue contract (merge_group trigger,
+      # event-isolated concurrency, hosted runners, preserved gates). It is not part
+      # of `make verify`, so it runs here, unconditionally, before the compiler gates.
+      # PyYAML is test-only: pinned, installed into a throwaway venv under
+      # RUNNER_TEMP, never into the runner's system Python.
+      - name: Run workflow merge-queue contract tests
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/workflow-contract-venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
+          "$venv/bin/python" -I scripts/tests/test_ci_workflow_merge_queue.py
+
       - name: Verify catalog localization contracts
         run: make verify-l10n-catalog
 

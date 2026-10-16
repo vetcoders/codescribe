@@ -29,6 +29,36 @@ REQUIRED = {
 
 CANCEL_ONLY_PR = "${{ github.event_name == 'pull_request' }}"
 
+SUITE = "scripts/tests/test_ci_workflow_merge_queue.py"
+SUITE_STEP = "Run workflow merge-queue contract tests"
+
+
+def suite_step_violations(wf):
+    """Ways the `quality` job fails to run this suite as a required gate."""
+    steps = wf["jobs"]["quality"]["steps"]
+    named = [i for i, s in enumerate(steps) if s.get("name") == SUITE_STEP]
+    if len(named) != 1:
+        return [f"exactly one {SUITE_STEP!r} step required, found {len(named)}"]
+    idx = named[0]
+    step = steps[idx]
+    found = []
+    run = step.get("run", "")
+    if "if" in step or step.get("continue-on-error"):
+        found.append("suite step must be unconditional and must not ignore failure")
+    if SUITE not in run:
+        found.append("suite step must execute the suite")
+    if "PyYAML==6.0.3" not in run:
+        found.append("PyYAML must be pinned to 6.0.3")
+    if "$RUNNER_TEMP" not in run or "-m venv" not in run:
+        found.append("PyYAML must be installed into a venv under RUNNER_TEMP")
+    if re.search(r"sudo|--user|--break-system-packages|(?<!-m )\bpip3? install", run, re.M):
+        found.append("no system or global pip installs")
+    later = [s.get("run", "") for s in steps[idx + 1 :]]
+    for gate in ("cargo clippy", "make verify"):
+        if not any(gate in r for r in later):
+            found.append(f"suite step must run before {gate!r}")
+    return found
+
 
 def load(name):
     return yaml.safe_load((WORKFLOWS / name).read_text())
@@ -106,6 +136,9 @@ class MergeQueueContract(unittest.TestCase):
         ):
             self.assertIn(command, runs)
 
+    def test_suite_runs_in_required_quality_job(self):
+        self.assertEqual(suite_step_violations(load("rust.yml")), [])
+
     def test_semgrep_scan_command_is_preserved(self):
         steps = load("semgrep.yml")["jobs"]["semgrep"]["steps"]
         scan = [s["run"] for s in steps if s.get("name") == "Run Semgrep"]
@@ -146,6 +179,39 @@ class HostileControls(unittest.TestCase):
                     any(needle in v for v in self.mutated(name, mutate)),
                     f"{needle!r} not detected in {name}",
                 )
+
+    def suite_mutated(self, mutate):
+        wf = copy.deepcopy(load("rust.yml"))
+        mutate(wf["jobs"]["quality"]["steps"])
+        return suite_step_violations(wf)
+
+    def test_absent_suite_step_is_rejected(self):
+        def mutate(steps):
+            steps[:] = [s for s in steps if s.get("name") != SUITE_STEP]
+
+        self.assertTrue(self.suite_mutated(mutate))
+
+    def test_conditional_or_failing_suite_step_is_rejected(self):
+        for key, value in (("if", "false"), ("continue-on-error", True)):
+            with self.subTest(key=key):
+                def mutate(steps, key=key, value=value):
+                    next(s for s in steps if s.get("name") == SUITE_STEP)[key] = value
+
+                self.assertTrue(self.suite_mutated(mutate))
+
+    def test_suite_step_after_compiler_gate_is_rejected(self):
+        def mutate(steps):
+            i = next(i for i, s in enumerate(steps) if s.get("name") == SUITE_STEP)
+            steps.append(steps.pop(i))
+
+        self.assertTrue(self.suite_mutated(mutate))
+
+    def test_unpinned_or_global_install_is_rejected(self):
+        def mutate(steps):
+            step = next(s for s in steps if s.get("name") == SUITE_STEP)
+            step["run"] = step["run"].replace("PyYAML==6.0.3", "PyYAML")
+
+        self.assertTrue(self.suite_mutated(mutate))
 
     def test_missing_merge_group_is_rejected(self):
         self.assertRejects(lambda wf: triggers(wf).pop("merge_group", None), "merge_group")
