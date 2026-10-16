@@ -48,10 +48,14 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
-  /// Opens the Agents drawer from the name pill, for All as for one agent.
+  /// Opens the Agents roster from the name pill: the docked column focuses its
+  /// selected row, the narrow window toggles the pill stack (state decides).
   var onShowAgents: (() -> Void)? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
+  /// The narrow-mode roster mounted under the name pill while it is open.
+  /// Nil whenever the stack is closed or the wide window docks the roster.
+  var agentPillStack: OverlayAgentPillStack? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -62,6 +66,11 @@ struct OverlayConversationView: View {
   var orderedMessages: [OverlayConversationMessage] { conversation.messages }
   private var followsLatest: Bool { scrollFollow.followingLive }
 
+  /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
+  static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
+    max(0, min(660 * textScale, (contentWidth - 40) * 0.82))
+  }
+
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
   var activeCaptureMessageID: String? {
     guard isPresented else { return nil }
@@ -71,79 +80,112 @@ struct OverlayConversationView: View {
   var body: some View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
-        trackedMessages(maxBubbleWidth: max(0, min(660, (geometry.size.width - 40) * 0.82)))
-          .padding(.trailing, OverlayResizeHit.scrollbarInset)
-          .transaction { transaction in
-            // Keep retained message geometry stable during the panel's transition.
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-          }
-          .overlay(alignment: .top) {
-            VStack(spacing: 0) {
-              Color.clear.frame(height: topInset)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-              navigation
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
-                .onGeometryChange(for: CGFloat.self) {
-                  $0.size.height
-                } action: {
-                  navigationHeight = $0
-                }
+        trackedMessages(
+          maxBubbleWidth: Self.bubbleCap(
+            contentWidth: geometry.size.width, textScale: textScale)
+        )
+        .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        // The open pill stack dims the conversation to 42 % (mockup).
+        .opacity(agentPillStack == nil ? 1 : 0.42)
+        .transaction { transaction in
+          // Keep retained message geometry stable during the panel's transition.
+          transaction.animation = nil
+          transaction.disablesAnimations = true
+        }
+        .overlay(alignment: .bottom) {
+          composer
+            .opacity(agentPillStack == nil ? 1 : 0.42)
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              composerHeight = $0
+            }
+        }
+        .overlay(alignment: .bottom) {
+          ZStack {
+            if !followsLatest {
+              Button {
+                scrollToLatest(proxy)
+              } label: {
+                Image(systemName: "chevron.down")
+                  .font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(palette.primaryText.color)
+                  .frame(width: 16, height: 16)
+              }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .accessibilityLabel("Jump to current")
+              .help("Jump to the current reply")
+              .accessibilityIdentifier("overlay-conversation-jump-to-current")
+              .padding(.bottom, composerHeight + 10)
+              .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .overlay(alignment: .bottom) {
-            composer
+          .animation(.easeOut(duration: 0.18), value: followsLatest)
+        }
+        .overlay {
+          // Clicking anywhere on the dimmed conversation closes the stack.
+          if let pillStack = agentPillStack {
+            Button {
+              pillStack.onDismiss()
+            } label: {
+              Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Close the agents list"))
+            .accessibilityIdentifier("overlay-agent-pill-dismiss")
+          }
+        }
+        .overlay(alignment: .top) {
+          VStack(spacing: 0) {
+            Color.clear.frame(height: topInset)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
+            navigation
+              .padding(.horizontal, 20)
+              .padding(.top, 4)
+              .padding(.bottom, 8)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
-                composerHeight = $0
+                navigationHeight = $0
               }
-          }
-          .overlay(alignment: .bottom) {
-            ZStack {
-              if !followsLatest {
-                Button {
-                  scrollToLatest(proxy)
-                } label: {
-                  Image(systemName: "chevron.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.primaryText.color)
-                    .frame(width: 16, height: 16)
-                }
-                .modifier(OverlayAgentControlStyle())
-                .csFocusOutline()
-                .accessibilityLabel("Jump to current")
-                .help("Jump to the current reply")
-                .accessibilityIdentifier("overlay-conversation-jump-to-current")
-                .padding(.bottom, composerHeight + 10)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            if let pillStack = agentPillStack {
+              HStack {
+                Spacer(minLength: 0)
+                pillStack
+                  .frame(
+                    maxHeight: max(
+                      160, geometry.size.height - topInset - navigationHeight - 120))
               }
-            }
-            .animation(.easeOut(duration: 0.18), value: followsLatest)
-          }
-          .onAppear { scrollToLatest(proxy) }
-          .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
-          .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
-          .onChange(of: isPresented) { _, presented in
-            if presented, followsLatest { scrollToLatest(proxy) }
-          }
-          .onChange(of: geometry.size) { _, _ in
-            // Modern ScrollView owns size-change anchoring. A second scrollTo
-            // on every resize frame races its lazy row remeasurement.
-            if #available(macOS 15.0, *) {
-              return
-            } else if isPresented, followsLatest {
-              scrollToLatest(proxy)
+              .padding(.horizontal, 20)
+              .padding(.top, 2)
+              .onExitCommand { pillStack.onDismiss() }
             }
           }
-          .onChange(of: orderedMessages.last) { _, _ in
-            if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
-              scrollToLatest(proxy)
-            }
+        }
+        .onAppear { scrollToLatest(proxy) }
+        .onChange(of: conversation.id) { _, _ in scrollToLatest(proxy) }
+        .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+        .onChange(of: isPresented) { _, presented in
+          if presented, followsLatest { scrollToLatest(proxy) }
+        }
+        .onChange(of: geometry.size) { _, _ in
+          // Modern ScrollView owns size-change anchoring. A second scrollTo
+          // on every resize frame races its lazy row remeasurement.
+          if #available(macOS 15.0, *) {
+            return
+          } else if isPresented, followsLatest {
+            scrollToLatest(proxy)
           }
+        }
+        .onChange(of: orderedMessages.last) { _, _ in
+          if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
+            scrollToLatest(proxy)
+          }
+        }
       }
       .foregroundStyle(palette.primaryText.color)
     }
@@ -207,7 +249,7 @@ struct OverlayConversationView: View {
       Button(action: onShowAgents) { namePillLabel }
         .buttonStyle(.plain)
         .csFocusOutline()
-        .accessibilityHint("Opens the Agents sidebar")
+        .accessibilityHint("Shows the agents list")
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: true))
         .background { OverlayMenuCursorRegion() }
@@ -248,6 +290,8 @@ struct OverlayConversationView: View {
     .truncationMode(.middle)
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
+    // The pill stack measures itself against this width (mockup: 224 × scale).
+    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
     .frame(minHeight: 28)
     .contentShape(Capsule())
     .accessibilityElement(children: .combine)
@@ -478,7 +522,8 @@ struct OverlayConversationView: View {
 }
 
 /// The name pill's capsule of glass; interactive when the pill is a button.
-private struct OverlayNamePillGlass: ViewModifier {
+/// The narrow-mode pill stack reuses the same capsule for its rows.
+struct OverlayNamePillGlass: ViewModifier {
   let interactive: Bool
 
   @ViewBuilder

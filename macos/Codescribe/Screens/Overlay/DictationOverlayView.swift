@@ -287,6 +287,8 @@ struct OverlayDrawerFramePreferenceKey: PreferenceKey {
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.csTextScale) private var textScale
+  @Environment(\.displayScale) private var displayScale
   @Environment(\.openWindow) private var openWindow
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var closeDotHovered = false
@@ -400,97 +402,97 @@ struct DictationOverlayView: View {
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
     ZStack {
       GeometryReader { geometry in
-        ZStack {
-          // Both ends are numbers, so the fold interpolates with the window's
-          // morph, over the same duration (it follows the distance since
-          // 2026-10-15). A `nil` height has nothing to animate from: the body
-          // snapped to zero on the first frame while the glass kept shrinking
-          // (presentation ledger, 2026-10-14).
-          bodySection
-            .frame(height: state.isCollapsed ? 0 : geometry.size.height)
-            .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
-            .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
-            .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
-          if let conversation = state.selectedConversation {
-            OverlayConversationView(
-              conversation: conversation, palette: palette,
-              topInset: headerHeight + 8, bottomInset: 20,
-              pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
-              onControl: { message, stop in
-                Task { await state.controlReply(message, stop: stop) }
-              },
-              focusRevision: state.conversationFocusRevision,
-              isPresented: !state.isCollapsed,
-              draft: Binding(
-                get: { state.conversationDrafts[conversation.id] ?? "" },
-                set: { state.conversationDrafts[conversation.id] = $0 }),
-              sending: state.pendingTextMessages.contains(conversation.id),
-              sendError: state.textMessageErrors[conversation.id],
-              onSend: { Task { await state.sendConversationText(conversation) } },
-              microphoneOpen: state.conversationMicrophoneOpen(conversation),
-              microphoneEnabled: state.canToggleConversationMicrophone(conversation)
-                && !state.pendingChannelToggles.contains(conversation.channel),
-              playbackMuted: state.conversationPlaybackMuted(conversation),
-              playbackEnabled: conversation.channel == "0"
-                ? !state.globalPlaybackPending
-                : !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
-              onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
-              onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
-              playbackError: state.playbackPreferenceError,
-              agentDescriptor: state.conversationAgentDescriptor(conversation),
-              onShowAgents: { state.showAgentMonitor() },
-              onOpenOwnerConversation: { state.openConversation(for: $0) },
-              onComposerEditorActive: { state.noteComposerEditorActive($0) },
-              onComposerTypingActivity: { state.noteComposerTypingActivity() }
-            )
-            .opacity(state.isCollapsed ? 0 : 1)
-            .allowsHitTesting(!state.isCollapsed)
-            .accessibilityHidden(state.isCollapsed)
-          }
-        }
-        .animation(
-          reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
-          value: state.isCollapsed
-        )
-        .overlay(alignment: .topTrailing) {
-          if state.showsAgentMonitor && !state.isCollapsed {
-            ZStack(alignment: .topTrailing) {
-              Button {
-                state.hideAgentSidebar()
-              } label: {
-                Color.clear
-                  .frame(maxWidth: .infinity, maxHeight: .infinity)
-                  .contentShape(Rectangle())
-              }
-              .buttonStyle(.plain)
-              .accessibilityLabel("Close agent sidebar")
-              .accessibilityIdentifier("overlay-agent-drawer-dismiss")
-              channelStatusView.monitorBody(
-                maximumHeight: max(0, geometry.size.height - headerHeight - 8 - 16 - 24)
+        let docked = OverlayAgentDrawerLayout.isDocked(
+          windowWidth: geometry.size.width, textScale: textScale)
+        HStack(spacing: 0) {
+          ZStack {
+            // Both ends are numbers, so the fold interpolates with the window's
+            // morph, over the same duration (it follows the distance since
+            // 2026-10-15). A `nil` height has nothing to animate from: the body
+            // snapped to zero on the first frame while the glass kept shrinking
+            // (presentation ledger, 2026-10-14).
+            bodySection
+              .frame(height: state.isCollapsed ? 0 : geometry.size.height)
+              .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
+              .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
+              .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
+            if let conversation = state.selectedConversation {
+              OverlayConversationView(
+                conversation: conversation, palette: palette,
+                topInset: headerHeight + 8, bottomInset: 20,
+                pendingControls: state.pendingReplyControls,
+                controlErrors: state.replyControlErrors,
+                onControl: { message, stop in
+                  Task { await state.controlReply(message, stop: stop) }
+                },
+                focusRevision: state.conversationFocusRevision,
+                isPresented: !state.isCollapsed,
+                draft: Binding(
+                  get: { state.conversationDrafts[conversation.id] ?? "" },
+                  set: { state.conversationDrafts[conversation.id] = $0 }),
+                sending: state.pendingTextMessages.contains(conversation.id),
+                sendError: state.textMessageErrors[conversation.id],
+                onSend: { Task { await state.sendConversationText(conversation) } },
+                microphoneOpen: state.conversationMicrophoneOpen(conversation),
+                microphoneEnabled: state.canToggleConversationMicrophone(conversation)
+                  && !state.pendingChannelToggles.contains(conversation.channel),
+                playbackMuted: state.conversationPlaybackMuted(conversation),
+                playbackEnabled: conversation.channel == "0"
+                  ? !state.globalPlaybackPending
+                  : !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? ""),
+                onMicrophone: { Task { await state.toggleConversationMicrophone(conversation) } },
+                onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
+                playbackError: state.playbackPreferenceError,
+                agentDescriptor: state.conversationAgentDescriptor(conversation),
+                onShowAgents: { state.showAgentMonitor() },
+                onOpenOwnerConversation: { state.openConversation(for: $0) },
+                agentPillStack: state.showsAgentMonitor && !docked
+                  ? channelStatusView.pillStack(
+                    onSelect: { state.selectConversation($0) },
+                    onDismiss: { state.hideAgentSidebar() })
+                  : nil,
+                onComposerEditorActive: { state.noteComposerEditorActive($0) },
+                onComposerTypingActivity: { state.noteComposerTypingActivity() }
               )
-              .padding(12)
-              .frame(width: min(360, max(0, (geometry.size.width - 16) * 0.78)))
-              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-              .clipShape(RoundedRectangle(cornerRadius: 14))
-              .background { OverlayMenuCursorRegion() }
-              .padding(.trailing, 8)
-              .accessibilityIdentifier("overlay-agent-sidebar")
-              .background {
-                GeometryReader { drawer in
-                  Color.clear.preference(
-                    key: OverlayDrawerFramePreferenceKey.self,
-                    value: drawer.frame(in: .named("overlay-canvas")))
-                }
-                .allowsHitTesting(false)
-              }
+              .opacity(state.isCollapsed ? 0 : 1)
+              .allowsHitTesting(!state.isCollapsed)
+              .accessibilityHidden(state.isCollapsed)
             }
-            .padding(.top, headerHeight + 8)
-            .padding(.bottom, 16)
-            .transition(.move(edge: .trailing).combined(with: .opacity))
-            .onExitCommand { state.hideAgentSidebar() }
+          }
+          .animation(
+            reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
+            value: state.isCollapsed
+          )
+          // Narrow + transcription has no name pill: the stack hangs top-right
+          // under the header, where the conversation's pill sits (mockup).
+          .overlay(alignment: .topTrailing) {
+            if state.showsAgentMonitor && !docked && !state.isCollapsed
+              && state.selectedConversation == nil
+            {
+              channelStatusView.pillStack(
+                onSelect: { state.selectConversation($0) },
+                onDismiss: { state.hideAgentSidebar() }
+              )
+              .frame(maxHeight: max(160, geometry.size.height - headerHeight - 120))
+              .padding(.top, headerHeight + 12)
+              .padding(.trailing, 20)
+              .onExitCommand { state.hideAgentSidebar() }
+            }
+          }
+          // The wide window docks the roster as a column beside the
+          // conversation; nothing overlays the bubbles (mockup, Founder
+          // 2026-10-16). Below the threshold the name pill opens the pill
+          // stack instead.
+          if docked && !state.isCollapsed {
+            agentDrawerColumn(maximumHeight: geometry.size.height)
+              .transition(.move(edge: .trailing).combined(with: .opacity))
           }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.showsAgentMonitor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: docked)
+        .onAppear { state.setAgentDrawerDocked(docked) }
+        .onChange(of: docked) { _, docked in
+          state.setAgentDrawerDocked(docked)
+        }
       }
       VStack(spacing: 0) {
         header
@@ -684,6 +686,39 @@ struct DictationOverlayView: View {
       if collapsed { actions.reset() }
     }
     .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
+  }
+
+  /// The docked roster column (wide windows): full height under the header,
+  /// 300 × scale wide, hairline on its left edge, never overlaying the
+  /// conversation. The name pill focuses the selected row via the revision.
+  private func agentDrawerColumn(maximumHeight: CGFloat) -> some View {
+    channelStatusView.monitorBody(
+      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+      focusRevision: state.agentDrawerFocusRevision
+    )
+    .padding(.top, headerHeight + 8)
+    .padding(.horizontal, 10)
+    .padding(.bottom, 16)
+    .frame(width: OverlayAgentDrawerLayout.drawerWidth(textScale: textScale))
+    .frame(maxHeight: .infinity, alignment: .top)
+    .clipped()
+    .background { OverlayMenuCursorRegion() }
+    .overlay(alignment: .leading) {
+      Rectangle()
+        .fill(palette.border.color)
+        .frame(width: 1 / max(displayScale, 1))
+        .padding(.top, headerHeight)
+        .accessibilityHidden(true)
+    }
+    .accessibilityIdentifier("overlay-agent-sidebar")
+    .background {
+      GeometryReader { drawer in
+        Color.clear.preference(
+          key: OverlayDrawerFramePreferenceKey.self,
+          value: drawer.frame(in: .named("overlay-canvas")))
+      }
+      .allowsHitTesting(false)
+    }
   }
 
   // MARK: Header
@@ -917,10 +952,9 @@ struct DictationOverlayView: View {
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =
       !state.isCollapsed
-      && (state.showsAgentMonitor || state.selectedConversationID != nil)
+      && (state.showsAgentMonitor || state.agentDrawerDocked || state.selectedConversationID != nil)
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
-    view.onDismissMonitor = state.hideAgentSidebar
     view.onShowTranscription = state.showTranscription
     view.playbackError = state.playbackPreferenceError
     view.archiveCandidates = Dictionary(

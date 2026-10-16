@@ -4189,6 +4189,17 @@
         }
       }
     },
+    "Channel 0 wakes %lld of %lld" : {
+      "comment" : "Pill stack: agents woken by broadcasts out of all bound agents",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał 0 budzi %1$lld z %2$lld"
+          }
+        }
+      }
+    },
     "Channel status unavailable — last open state retained" : {
       "localizations" : {
         "pl" : {
@@ -4634,22 +4645,22 @@
         }
       }
     },
-    "Close agent sidebar" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Zamknij panel agentów"
-          }
-        }
-      }
-    },
     "Close overlay" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij nakładkę"
+          }
+        }
+      }
+    },
+    "Close the agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknij listę agentów"
           }
         }
       }
@@ -8822,6 +8833,16 @@
         }
       }
     },
+    "Live from the microphone" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na żywo z mikrofonu"
+          }
+        }
+      }
+    },
     "Live preview" : {
       "localizations" : {
         "pl" : {
@@ -11285,16 +11306,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API OpenAI"
-          }
-        }
-      }
-    },
-    "Opens the Agents sidebar" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwiera panel agentów"
           }
         }
       }
@@ -14902,6 +14913,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuje zakres zmian dotyczących tylko Agenta i wymaga wpisania %@ przed kontynuowaniem."
+          }
+        }
+      }
+    },
+    "Shows the agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuje listę agentów"
           }
         }
       }
@@ -18815,6 +18836,17 @@
     "You use dev power mode" : {
       "comment" : "Corner mark on a developer build while Voice Lab power mode is on",
       "shouldTranslate" : false
+    },
+    "You: %@" : {
+      "comment" : "Drawer preview of the user's own message; the placeholder is the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ty: %@"
+          }
+        }
+      }
     },
     "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash." : {
       "comment" : "The four file names stay verbatim",

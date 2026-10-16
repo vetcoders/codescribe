@@ -791,7 +791,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor
+    showsAgentMonitor = fold.agentMonitor && !agentDrawerDocked
   }
 
   func clearPointerHover() {
@@ -1074,6 +1074,19 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// Wide windows pin the roster as a docked column; the pill stack only
+  /// exists below the threshold. Reported by the overlay's layout pass.
+  private(set) var agentDrawerDocked = false
+  /// Bumped when the name pill asks the docked column to focus its selected row.
+  private(set) var agentDrawerFocusRevision: UInt64 = 0
+
+  /// The layout owns the call. Engaging the docked column closes the pill
+  /// stack; the selection, drafts and scroll follow survive the switch.
+  func setAgentDrawerDocked(_ docked: Bool) {
+    guard docked != agentDrawerDocked else { return }
+    agentDrawerDocked = docked
+    if docked { showsAgentMonitor = false }
+  }
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
@@ -1454,7 +1467,13 @@ final class OverlayState {
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    showsAgentMonitor = true
+    if agentDrawerDocked {
+      // Docked: the column is already on screen, so the click focuses the
+      // selected row instead of opening anything (mockup, Founder 2026-10-16).
+      agentDrawerFocusRevision &+= 1
+    } else {
+      showsAgentMonitor = true
+    }
     if let expansion { expandAgentSurface(cause: expansion) }
   }
 
@@ -1527,7 +1546,8 @@ final class OverlayState {
     }
     guard matches.count == 1 else {
       selectedConversationID = nil
-      showsAgentMonitor = true
+      // Docked the roster is always visible; the flag drives only the pills.
+      if !agentDrawerDocked { showsAgentMonitor = true }
       return
     }
     selectedConversationID = matches[0].id
@@ -4373,32 +4393,45 @@ final class OverlayState {
     switch refusal {
     case .archiveUnreadable:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript could not be read.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript could not be read.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .archiveChangedOutside:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript changed outside this take.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript changed outside this take.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .archiveHasForeignHistory:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archived transcript already had a history this take did not write.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .stepNotAdmitted:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archive refused to record a version.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archive refused to record a version.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .versionNotArchived:
       return String(
-        localized: "Versions of this take are no longer saved to history: the selected version has no archived copy.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the selected version has no archived copy.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .versionNotSelected:
       return String(
-        localized: "Versions of this take are no longer saved to history: the archive refused to select this version.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        localized:
+          "Versions of this take are no longer saved to history: the archive refused to select this version.",
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     case .mirrorFailed:
       return String(
         localized: "Versions of this take are no longer saved to history.",
-        comment: "Shown with the versions control after the live history stopped mirroring to the archive")
+        comment:
+          "Shown with the versions control after the live history stopped mirroring to the archive")
     }
   }
 
