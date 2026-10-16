@@ -264,3 +264,78 @@ fn bound_snapshot(snapshot: String) -> String {
     let dropped = snapshot.len() - cut;
     format!("{}\n… [truncated, {dropped} more bytes]", &snapshot[..cut])
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{contains_sensitive_key, redact_command_line, redacted_arguments};
+
+    /// PR #173 review: a header credential and a flag value are hidden, and the
+    /// operator still reads the command's real shape (spacing and newlines).
+    #[test]
+    fn command_line_redaction_preserves_whitespace_and_hides_header_credentials() {
+        assert_eq!(
+            redact_command_line("curl  -H 'Authorization: Bearer hunter2'\n  --token abc"),
+            "curl  -H 'Authorization: [REDACTED] [REDACTED]\n  --token [REDACTED]"
+        );
+        assert_eq!(
+            redact_command_line("TOKEN=hunter2 curl --password swordfish example.test"),
+            "TOKEN=[REDACTED] curl --password [REDACTED] example.test"
+        );
+    }
+
+    /// PR #173 review (P1): the exact Desktop Commander leak — a secret inside
+    /// an ordinary `command` string never reaches the argument snapshot.
+    #[test]
+    fn a_secret_inside_an_ordinary_string_is_redacted() {
+        let snapshot = redacted_arguments(&json!({
+            "command": "curl -H 'Authorization: Bearer live-key' https://example.test",
+            "cwd": "/work",
+        }))
+        .expect("snapshot");
+        assert!(!snapshot.contains("live-key"), "{snapshot}");
+        assert!(snapshot.contains("/work") && snapshot.contains("https://example.test"));
+    }
+
+    /// An argv split across array elements is redacted as one command line.
+    #[test]
+    fn argv_elements_share_one_redactor() {
+        let snapshot = redacted_arguments(&json!({"args": ["--token", "abc", "--verbose"]}))
+            .expect("snapshot");
+        assert!(!snapshot.contains("abc"), "{snapshot}");
+        assert!(snapshot.contains("--verbose"));
+
+        let header = redacted_arguments(&json!({"args": ["-H", "Authorization: Bearer live-key"]}))
+            .expect("snapshot");
+        assert!(!header.contains("live-key"), "{header}");
+    }
+
+    /// A non-string element ends the argv run; an empty string does not spend
+    /// the pending redaction.
+    #[test]
+    fn argv_state_resets_on_non_strings_and_survives_empty_elements() {
+        let reset = redacted_arguments(&json!({"args": ["--token", 7, "abc"]})).expect("snapshot");
+        assert!(reset.contains("\"abc\""), "{reset}");
+        let empty = redacted_arguments(&json!({"args": ["--token", "", "abc"]})).expect("snapshot");
+        assert!(!empty.contains("abc"), "{empty}");
+    }
+
+    /// One key predicate for every surface: separator spellings collapse, and
+    /// innocent words that merely contain "auth" or "key" stay visible.
+    #[test]
+    fn sensitive_keys_normalize_and_do_not_hide_innocent_words() {
+        for key in [
+            "X-Api-Key",
+            "access_key_id",
+            "privateKey",
+            "Set-Cookie",
+            "client_secret",
+        ] {
+            assert!(contains_sensitive_key(key), "{key} must be sensitive");
+        }
+        for key in ["author", "keyboard", "path", "cwd"] {
+            assert!(!contains_sensitive_key(key), "{key} must stay visible");
+        }
+    }
+}
