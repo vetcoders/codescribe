@@ -89,6 +89,17 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      # Queue/workflow regression tests (13). Cheap, so they run before any
+      # compiler stage. PyYAML is test-only: pinned, in a private venv under
+      # RUNNER_TEMP, never installed into the runner's Python.
+      - name: Test CI workflow and merge-queue contracts
+        run: |
+          set -euo pipefail
+          venv="$(mktemp -d "$RUNNER_TEMP/ci-contract-venv.XXXXXX")"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
+          "$venv/bin/python" -m unittest scripts/tests/test_l10n_workflow_base.py scripts/tests/test_ci_workflow_contract.py
+
       - name: Show the Xcode this image selected
         run: xcodebuild -version
 
