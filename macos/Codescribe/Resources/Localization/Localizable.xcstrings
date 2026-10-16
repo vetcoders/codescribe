@@ -1508,6 +1508,16 @@
         }
       }
     },
+    "%lld s left" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "pozostało %lld s"
+          }
+        }
+      }
+    },
     "%lld sec" : {
       "comment" : "Agent message hold duration in seconds",
       "localizations" : {
@@ -1515,16 +1525,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld s"
-          }
-        }
-      }
-    },
-    "%lld s left" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "pozostało %lld s"
           }
         }
       }
@@ -4200,17 +4200,6 @@
         }
       }
     },
-    "Channel 0 wakes %lld of %lld" : {
-      "comment" : "Pill stack: agents woken by broadcasts out of all bound agents",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kanał 0 budzi %1$lld z %2$lld"
-          }
-        }
-      }
-    },
     "Channel status unavailable — last open state retained" : {
       "localizations" : {
         "pl" : {
@@ -4662,16 +4651,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij nakładkę"
-          }
-        }
-      }
-    },
-    "Close the agents list" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zamknij listę agentów"
           }
         }
       }
@@ -6979,16 +6958,6 @@
         }
       }
     },
-    "Edit or withdraw a message to an agent during this window. 0 sends immediately." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W tym czasie możesz poprawić albo wycofać wiadomość do agenta. 0 wysyła od razu."
-          }
-        }
-      }
-    },
     "Edit" : {
       "localizations" : {
         "pl" : {
@@ -7025,6 +6994,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edytuj własnego dostawcę."
+          }
+        }
+      }
+    },
+    "Edit or withdraw a message to an agent during this window. 0 sends immediately." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W tym czasie możesz poprawić albo wycofać wiadomość do agenta. 0 wysyła od razu."
           }
         }
       }
@@ -7977,6 +7956,17 @@
         }
       }
     },
+    "Held" : {
+      "comment" : "Agent message waiting in the edit and withdrawal window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wstrzymana"
+          }
+        }
+      }
+    },
     "Help" : {
       "localizations" : {
         "pl" : {
@@ -8007,13 +7997,13 @@
         }
       }
     },
-    "Held" : {
-      "comment" : "Agent message waiting in the edit and withdrawal window",
+    "Hold Fn/Globe while you speak. Release to stop." : {
+      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wstrzymana"
+            "value" : "Przytrzymaj Fn/Globe podczas mówienia. Puść, aby zakończyć."
           }
         }
       }
@@ -8024,17 +8014,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przytrzymanie przed wysłaniem"
-          }
-        }
-      }
-    },
-    "Hold Fn/Globe while you speak. Release to stop." : {
-      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przytrzymaj Fn/Globe podczas mówienia. Puść, aby zakończyć."
           }
         }
       }
@@ -9380,22 +9359,22 @@
         }
       }
     },
-    "Message could not be sent. Your draft is retained." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie udało się wysłać wiadomości. Twój szkic został zachowany."
-          }
-        }
-      }
-    },
     "Message could not be changed." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się zmienić wiadomości."
+          }
+        }
+      }
+    },
+    "Message could not be sent. Your draft is retained." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się wysłać wiadomości. Twój szkic został zachowany."
           }
         }
       }
@@ -14565,24 +14544,6 @@
         }
       }
     },
-    "Sending in %lld s" : {
-      "comment" : "Countdown until a held agent message becomes eligible for sending",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sending in %lld s"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wysyłka za %lld s"
-          }
-        }
-      }
-    },
     "Send to everyone" : {
       "comment" : "Broadcast channel playback and input controls",
       "localizations" : {
@@ -14606,6 +14567,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij transkrypcję do Agenta"
+          }
+        }
+      }
+    },
+    "Sending in %lld s" : {
+      "comment" : "Countdown until a held agent message becomes eligible for sending",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sending in %lld s"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłka za %lld s"
           }
         }
       }
@@ -18334,16 +18313,6 @@
         }
       }
     },
-    "Wake this agent for channel 0 broadcasts" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybudzaj tego agenta po rozgłoszeniach na kanale 0"
-          }
-        }
-      }
-    },
     "What I checked · %lld running · %lld tools" : {
       "comment" : "Tool activity header: calls still running, then the total",
       "localizations" : {
@@ -18669,6 +18638,16 @@
         }
       }
     },
+    "Withdraw" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wycofaj"
+          }
+        }
+      }
+    },
     "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
       "comment" : "Consequence of a missing Speech Recognition scope",
       "localizations" : {
@@ -18729,16 +18708,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagranie tego słowa jest niedostępne"
-          }
-        }
-      }
-    },
-    "Withdraw" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wycofaj"
           }
         }
       }

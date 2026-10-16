@@ -350,23 +350,18 @@ struct OverlayAgentAudioControls: View {
   }
 }
 
-struct OverlayBroadcastDisclosure<Header: View>: View {
-  let channels: [OverlayChannelDelivery]
+/// Wake policy lives on the agent's own row (Maciej, 2026-10-17, "Słowo"):
+/// a right-click context menu with a checkmark replaces the disclosure list
+/// that used to hang under 0 · All. A single member gives the row its own
+/// actions; the 0 · All row carries every member as a submenu, so nine or
+/// fifteen agents never need a second column. The command path is unchanged.
+struct OverlayBroadcastPolicyMenu: ViewModifier {
+  let members: [OverlayChannelDelivery]
   let palette: OverlayAppearancePalette
   let enabled: Bool
-  let header: Header
+  var errorAlignment: HorizontalAlignment = .leading
   @State private var pending: Set<AgentPlaybackIdentity> = []
   @State private var commandError: String?
-
-  init(
-    channels: [OverlayChannelDelivery], palette: OverlayAppearancePalette, enabled: Bool,
-    @ViewBuilder header: () -> Header
-  ) {
-    self.channels = channels
-    self.palette = palette
-    self.enabled = enabled
-    self.header = header()
-  }
 
   @MainActor
   static func setPolicy(
@@ -377,8 +372,41 @@ struct OverlayBroadcastDisclosure<Header: View>: View {
       policy, for: identity, installer: installer)
   }
 
-  // Maciej (2026-10-16): the checkbox grid goes; the agent row carries its
-  // reception actions on click and right-click, like the overlay header menu.
+  func body(content: Content) -> some View {
+    if members.isEmpty {
+      content
+    } else {
+      VStack(alignment: errorAlignment, spacing: 2) {
+        content.contextMenu {
+          if members.count == 1, let member = members.first {
+            policyActions(for: member)
+          } else {
+            ForEach(members) { member in
+              Menu {
+                policyActions(for: member)
+              } label: {
+                if let symbol = member.broadcastPolicy.statusSymbol {
+                  Label {
+                    Text(verbatim: "\(member.channel) · \(member.agent)")
+                  } icon: {
+                    Image(systemName: symbol)
+                  }
+                } else {
+                  Text(verbatim: "\(member.channel) · \(member.agent)")
+                }
+              }
+            }
+          }
+        }
+        if let commandError {
+          Text(verbatim: commandError)
+            .foregroundStyle(palette.errorStatus.color)
+            .accessibilityIdentifier("overlay-broadcast-policy-error")
+        }
+      }
+    }
+  }
+
   @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
     ForEach(AgentBroadcastPolicy.allCases, id: \.self) { policy in
@@ -391,6 +419,9 @@ struct OverlayBroadcastDisclosure<Header: View>: View {
           Text(policy.menuTitle)
         }
       }
+      .disabled(
+        !enabled || channel.broadcastIdentity == nil
+          || channel.broadcastIdentity.map { pending.contains($0) } == true)
     }
   }
 
@@ -408,38 +439,6 @@ struct OverlayBroadcastDisclosure<Header: View>: View {
         commandError = String(localized: "Couldn't change broadcast reception.")
       }
     }
-  }
-
-  var body: some View {
-    DisclosureGroup {
-      ForEach(channels) { channel in
-        Menu {
-          policyActions(for: channel)
-        } label: {
-          HStack(spacing: 6) {
-            Text(verbatim: "\(channel.channel) · \(channel.agent)")
-            if let symbol = channel.broadcastPolicy.statusSymbol {
-              Image(systemName: symbol)
-            }
-          }
-        }
-        .disabled(
-          !enabled || channel.broadcastIdentity == nil
-            || channel.broadcastIdentity.map { pending.contains($0) } == true
-        )
-        .help(String(localized: "Wake this agent for channel 0 broadcasts"))
-        .contextMenu { policyActions(for: channel) }
-        .accessibilityIdentifier("overlay-broadcast-member-\(channel.channel)")
-      }
-      if let commandError {
-        Text(verbatim: commandError)
-          .foregroundStyle(palette.errorStatus.color)
-          .accessibilityIdentifier("overlay-broadcast-policy-error")
-      }
-    } label: {
-      header
-    }
-    .accessibilityIdentifier("overlay-broadcast-disclosure")
   }
 }
 
@@ -662,26 +661,25 @@ struct OverlayChannelStatusView: View {
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
           onSelectConversation != nil
         {
-          OverlayBroadcastDisclosure(
-            channels: broadcastMembers, palette: palette, enabled: !unavailable
-          ) {
-            rowGlassContainer(
-              HStack(spacing: 6) {
-                broadcastRow(broadcast, rowFocus: rowFocus)
-                OverlayAgentAudioControls(
-                  open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
-                  microphoneEnabled: !unavailable && hudStates["0"] != nil
-                    && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
-                  playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
-                  palette: palette, onMicrophone: { onToggleChannel?(0) },
-                  onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                  speaking: broadcast.replySpeaking
-                )
-                .fixedSize()
-                .accessibilityIdentifier("overlay-channel-toggle-0")
-              }
-            )
-          }
+          rowGlassContainer(
+            HStack(spacing: 6) {
+              broadcastRow(broadcast, rowFocus: rowFocus)
+              OverlayAgentAudioControls(
+                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                microphoneEnabled: !unavailable && hudStates["0"] != nil
+                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                palette: palette, onMicrophone: { onToggleChannel?(0) },
+                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                speaking: broadcast.replySpeaking
+              )
+              .fixedSize()
+              .accessibilityIdentifier("overlay-channel-toggle-0")
+            }
+          )
+          .modifier(
+            OverlayBroadcastPolicyMenu(
+              members: broadcastMembers, palette: palette, enabled: !unavailable))
         }
         Divider()
         detailsContent(rowFocus: rowFocus)
@@ -828,6 +826,10 @@ struct OverlayChannelStatusView: View {
     .help(tooltip)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
+    .modifier(
+      OverlayBroadcastPolicyMenu(
+        members: broadcastMembers.filter { $0.channel == channel.channel },
+        palette: palette, enabled: !unavailable))
   }
 
   /// The two-line roster row from the mockup: status dot, channel · name with
@@ -1352,13 +1354,9 @@ struct OverlayChannelStatusView: View {
   func pillStack(
     onSelect: @escaping (String?) -> Void, onDismiss: @escaping () -> Void
   ) -> OverlayAgentPillStack {
-    let listening = broadcastMembers.filter { $0.broadcastPolicy.receivesWake }.count
-    return OverlayAgentPillStack(
+    OverlayAgentPillStack(
       palette: palette, entries: pillEntries,
       broadcastMembers: broadcastMembers, broadcastEnabled: !unavailable,
-      broadcastSummary: String(
-        localized: "Channel 0 wakes \(listening) of \(broadcastMembers.count)",
-        comment: "Pill stack: agents woken by broadcasts out of all bound agents"),
       onSelect: onSelect, onDismiss: onDismiss)
   }
 }
@@ -1453,8 +1451,8 @@ struct OverlayAgentStatusDot: View {
 /// right edges under the name pill, so pills stand in one column and controls
 /// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
 /// precyzyjniejszy"; host contract, klaudiusz). Clicking a pill selects; Esc
-/// closes; the 0 · All entry keeps the broadcast policy menu (878667f9f)
-/// underneath. Rows stagger in unless the user asked for reduced motion.
+/// closes; wake policy rides each row's context menu (Maciej, 2026-10-17,
+/// "Słowo"). Rows stagger in unless the user asked for reduced motion.
 struct OverlayAgentPillStack: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.csTextScale) private var textScale
@@ -1462,8 +1460,6 @@ struct OverlayAgentPillStack: View {
   let entries: [OverlayAgentPillEntry]
   let broadcastMembers: [OverlayChannelDelivery]
   let broadcastEnabled: Bool
-  /// "Channel 0 wakes x of y" — the disclosure toggle under the 0 · All pill.
-  let broadcastSummary: String
   let onSelect: (String?) -> Void
   let onDismiss: () -> Void
   @State private var revealed = false
@@ -1549,7 +1545,7 @@ struct OverlayAgentPillStack: View {
     .csFocusOutline()
     .modifier(OverlayNamePillGlass(interactive: true))
     .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
-    let row = HStack(spacing: 6) {
+    HStack(spacing: 6) {
       if let controls = entry.controls {
         OverlayAgentAudioControls(
           open: controls.open, muted: controls.muted,
@@ -1566,26 +1562,18 @@ struct OverlayAgentPillStack: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
-    if entry.isBroadcast && !broadcastMembers.isEmpty {
-      VStack(spacing: 4) {
-        row
-        OverlayBroadcastDisclosure(
-          channels: broadcastMembers, palette: palette, enabled: broadcastEnabled
-        ) {
-          HStack(spacing: 6) {
-            Text(verbatim: broadcastSummary)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-            Spacer(minLength: 4)
-          }
-          .padding(.leading, 17)
-          .padding(.vertical, 2)
-          .contentShape(Rectangle())
-        }
-      }
-    } else {
-      row
-    }
+    .modifier(
+      OverlayBroadcastPolicyMenu(
+        members: policyMembers(for: entry), palette: palette,
+        enabled: broadcastEnabled, errorAlignment: .trailing))
+  }
+
+  /// The 0 · All row carries every member's wake policy; an agent's own row
+  /// carries only its own.
+  private func policyMembers(for entry: OverlayAgentPillEntry) -> [OverlayChannelDelivery] {
+    if entry.isBroadcast { return broadcastMembers }
+    guard let channel = entry.controls?.channel else { return [] }
+    return broadcastMembers.filter { $0.channel == channel }
   }
 }
 
