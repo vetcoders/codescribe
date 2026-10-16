@@ -481,7 +481,13 @@ Coverage: every filesystem tool names its resolved target and the size of what
 it writes or replaces; every process tool (`run_process`, `stop_process`,
 `observe_process`, `project_build`, `project_test`) names the program, the
 redacted synthetic argv line and the resolved cwd, which also travels as that
-call's authorization target; every MCP tool names its server and upstream tool, with
+call's authorization target. `project_build` / `project_test` bind a second
+target: the build file their detection rested on (`Cargo.toml`, or the
+`Makefile` actually found). Detection reads the directory's contents, not its
+path, so a `Cargo.toml` dropped in while the card was open would otherwise
+turn an approved `make test` into `cargo test` under an unchanged cwd; with
+the marker in `paths` the re-detection no longer matches and `confirm_targets`
+refuses. Every MCP tool names its server and upstream tool, with
 Desktop Commander additionally contributing its hardened per-tool checks.
 Anything else is still fully described by the argument snapshot.
 

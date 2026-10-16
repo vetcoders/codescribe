@@ -189,15 +189,23 @@ fn run_process_validator() -> ToolInputValidator {
 /// Pre-flight validator for `project_build` / `project_test`: runs the same
 /// build-system detection the handler runs, so the card names the exact command
 /// the operator is approving instead of "a build".
+///
+/// The call's targets are the resolved cwd *and* the build file the detection
+/// decided on. Binding only the directory would let a `Cargo.toml` dropped
+/// into it while the card was open silently promote an approved `make test`
+/// to `cargo test`; with the marker in `paths`, the re-detection at dispatch
+/// no longer matches what was authorized and `confirm_targets` refuses.
 fn project_validator(kind: &'static str) -> ToolInputValidator {
     Arc::new(move |input: &Value| {
         let cwd = resolve_cwd(require_cwd(input)?)?;
-        let (program, args) = detect_project_command(&cwd, kind)?;
-        Ok(process_preview(
+        let (program, args, marker) = detect_project_command(&cwd, kind)?;
+        let mut preview = process_preview(
             format!("Project {kind} in the workspace"),
             synthetic_command_line(program, &args),
             cwd,
-        ))
+        );
+        preview.paths.push(marker.display().to_string());
+        Ok(preview)
     })
 }
 
@@ -670,23 +678,39 @@ fn stop_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
-/// The build or test command for `cwd`, detected from what is on disk.
+/// The build or test command for `cwd`, detected from what is on disk, plus
+/// the build file the detection rests on.
 ///
 /// Cargo wins over Make when both are present; neither present is an error
 /// rather than a guess. One throne: the approval card and the spawn read the
 /// same answer, so the operator cannot be shown a command the handler then
 /// replaces.
-fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<String>)> {
-    let (program, args): (&'static str, Vec<&'static str>) = if cwd.join("Cargo.toml").exists() {
+///
+/// The marker travels back because detection is a function of the directory's
+/// *contents*, not its path: a `Cargo.toml` appearing while the card is open
+/// turns an approved `make test` into `cargo test` with the cwd unchanged.
+/// [`project_validator`] carries the marker as a second authorization target,
+/// so a changed detection changes the targets and `confirm_targets` refuses
+/// the call instead of running the command nobody approved.
+fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<String>, PathBuf)> {
+    let cargo = cwd.join("Cargo.toml");
+    let makefile = cwd.join("Makefile");
+    let lowercase_makefile = cwd.join("makefile");
+    let (program, args, marker): (&'static str, Vec<&'static str>, PathBuf) = if cargo.exists() {
         match kind {
-            "build" => ("cargo", vec!["build", "--all-targets"]),
-            "test" => ("cargo", vec!["test", "--all-targets", "--", "--quiet"]),
+            "build" => ("cargo", vec!["build", "--all-targets"], cargo),
+            "test" => ("cargo", vec!["test", "--all-targets", "--", "--quiet"], cargo),
             _ => bail!("unknown project action {kind}"),
         }
-    } else if cwd.join("Makefile").exists() || cwd.join("makefile").exists() {
+    } else if makefile.exists() || lowercase_makefile.exists() {
+        let marker = if makefile.exists() {
+            makefile
+        } else {
+            lowercase_makefile
+        };
         match kind {
-            "build" => ("make", vec!["build"]),
-            "test" => ("make", vec!["test"]),
+            "build" => ("make", vec!["build"], marker),
+            "test" => ("make", vec!["test"], marker),
             _ => bail!("unknown project action {kind}"),
         }
     } else {
@@ -695,7 +719,11 @@ fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<S
             cwd.display()
         );
     };
-    Ok((program, args.into_iter().map(str::to_string).collect()))
+    Ok((
+        program,
+        args.into_iter().map(str::to_string).collect(),
+        marker,
+    ))
 }
 
 /// Detect the build system in `cwd` and run its build or test command.
@@ -704,7 +732,7 @@ fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<S
 /// sanitation apply, then relabels the capability.
 fn project_action(input: &Value, kind: &str) -> Result<String> {
     let cwd = resolve_cwd(require_cwd(input)?)?;
-    let (program, args) = detect_project_command(&cwd, kind)?;
+    let (program, args, _marker) = detect_project_command(&cwd, kind)?;
 
     let synthetic = json!({
         "program": program,
@@ -909,6 +937,8 @@ mod tests {
 
     /// One throne for build detection: the card and the spawn read the same
     /// answer. Cargo wins over Make; neither present is refused, not guessed.
+    /// The detection also names the build file it rests on, so the card can
+    /// bind it.
     #[test]
     fn project_command_detection_is_shared_and_refuses_to_guess() {
         let tmp = TempDir::new().unwrap();
@@ -916,14 +946,19 @@ mod tests {
         std::fs::write(tmp.path().join("Makefile"), "build:\n").unwrap();
         assert_eq!(
             detect_project_command(tmp.path(), "test").unwrap(),
-            ("make", vec!["test".to_string()])
+            (
+                "make",
+                vec!["test".to_string()],
+                tmp.path().join("Makefile")
+            )
         );
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
         assert_eq!(
             detect_project_command(tmp.path(), "build").unwrap(),
             (
                 "cargo",
-                vec!["build".to_string(), "--all-targets".to_string()]
+                vec!["build".to_string(), "--all-targets".to_string()],
+                tmp.path().join("Cargo.toml")
             )
         );
     }
