@@ -1,13 +1,15 @@
 //! Dedicated live cloud transport for the Libraxis Voice Lab WebSocket.
 //!
 //! This module owns normal live capture: a `set` message, bounded base64 PCM
-//! `chunk` messages, client `flush` commits, and a bounded `end`/drain. While
+//! `chunk` messages, caller-owned `flush` commits, and a bounded `end`/drain. While
 //! the handshake is in progress, PCM sits in a time-bounded pre-connect buffer
 //! sized for `connect_timeout` at up to 192 kHz and drains in order when the
 //! socket opens. After that, the small live queue is unchanged: a slow server
 //! still surfaces overflow. The receive adapter converts Voice Lab events into
 //! Codescribe's normalized vocabulary. Every final pops exactly one client
 //! commit and keeps that commit's integer capture range.
+//! Segmentation belongs to the capture owner from the first PCM frame. Neither
+//! sending audio nor draining events may flush an open utterance on a timer.
 //! Whole-file multipart upload lives outside this session and is reserved for
 //! explicit retranscribe actions. This module does not own recorder wiring,
 //! consent, or provider selection.
@@ -25,9 +27,6 @@ use std::time::{Duration, Instant};
 
 /// Highest native capture rate the pre-connect buffer is sized for.
 const MAX_NATIVE_CAPTURE_HZ: u64 = 192_000;
-
-/// Wall-clock cadence of the periodic flush used until the first explicit commit.
-const PERIODIC_FLUSH_INTERVAL: Duration = Duration::from_millis(2_500);
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use futures_util::{SinkExt, StreamExt};
@@ -1539,7 +1538,7 @@ struct MatchedCommit {
 
 /// How a recorded commit is asked of the vendor.
 enum CommitWire {
-    /// Libraxis `flush`. The periodic path uses this until the first explicit commit.
+    /// Libraxis `flush`, requested at the capture owner's measured boundary.
     Flush,
     /// `end` is the last commit and must not be preceded by another flush.
     End,
@@ -1566,9 +1565,6 @@ pub struct LiveCloudAsrSession<T: CloudGatewayTransport> {
     last_commit_sample: u64,
     next_commit_number: u64,
     pending_commits: VecDeque<PendingCommit>,
-    /// Once set, the 2.5 s flush stops. The caller owns segmentation.
-    explicit_commit: bool,
-    last_periodic_flush: Instant,
     next_audio_sequence: u64,
     next_event_sequence: u64,
     utterance_revisions: HashMap<u64, u64>,
@@ -1610,8 +1606,6 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
             last_commit_sample: 0,
             next_commit_number: 1,
             pending_commits: VecDeque::new(),
-            explicit_commit: false,
-            last_periodic_flush: Instant::now(),
             next_audio_sequence: 1,
             next_event_sequence: 1,
             utterance_revisions: HashMap::new(),
@@ -1854,24 +1848,6 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         (FinalGrain::Word, placed, clamped, false)
     }
 
-    /// Send one flush for audio accepted since the previous commit.
-    ///
-    /// Stops after the first explicit [`AsrSessionProvider::commit`].
-    fn maybe_periodic_flush(&mut self) -> Result<(), AsrErrorKind> {
-        if self.explicit_commit || self.state != SessionState::Open {
-            return Ok(());
-        }
-        if self.last_periodic_flush.elapsed() < PERIODIC_FLUSH_INTERVAL {
-            return Ok(());
-        }
-        if self.capture_samples_offered == self.last_commit_sample {
-            return Ok(());
-        }
-        self.enqueue_commit(self.capture_samples_offered, CommitWire::Flush)?;
-        self.last_periodic_flush = Instant::now();
-        Ok(())
-    }
-
     fn normalize(&mut self, event: GatewayEvent) {
         let expected_session = match self.session_id.as_ref() {
             Some(value) => value.as_str(),
@@ -2098,7 +2074,6 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         }
         self.session_id = Some(input.session_id.clone());
         self.capture_rate_hz = offered_capture_rate_hz(input);
-        self.last_periodic_flush = Instant::now();
         if let Err(kind) = self
             .transport
             .start(GatewaySessionConfig::from_input(input))
@@ -2114,7 +2089,6 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         if self.state != SessionState::Open || samples.is_empty() {
             return Err(AsrErrorKind::Protocol);
         }
-        self.maybe_periodic_flush()?;
         let count = samples.len() as u64;
         if samples.len() > self.limits.max_frame_samples {
             self.telemetry.backpressure_events += 1;
@@ -2152,7 +2126,6 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
     }
 
     fn drain(&mut self) -> Vec<AsrSessionEvent> {
-        let _ = self.maybe_periodic_flush();
         for _ in 0..self.limits.max_events_per_drain {
             if !self.poll_transport_once() {
                 break;
@@ -2218,7 +2191,6 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         if self.state != SessionState::Open {
             return Err(AsrErrorKind::Protocol);
         }
-        self.explicit_commit = true;
         self.enqueue_commit(commit_sample, CommitWire::Flush)
     }
 }
@@ -3004,6 +2976,117 @@ mod tests {
 
     fn loopback_endpoint(addr: std::net::SocketAddr) -> String {
         format!("{}{addr}/v1/audio/transcribe", concat!("ws", "://"))
+    }
+
+    #[test]
+    fn first_utterance_transport_obeys_capture_commits() {
+        // Exercise the actual socket actor and its wire protocol. A long open
+        // utterance must not be segmented by event polling or the next frame.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback");
+        let address = listener.local_addr().expect("address");
+        let (wire_tx, wire_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(8)))
+                .expect("bounded server");
+            let mut socket = tokio_tungstenite::tungstenite::accept(stream).expect("handshake");
+            socket
+                .send(Message::Text(
+                    r#"{"type":"hello","protocol":"stt-ws-v1"}"#.into(),
+                ))
+                .expect("hello");
+            let mut final_number = 0;
+            loop {
+                let Message::Text(text) = socket.read().expect("wire message") else {
+                    panic!("Voice Lab uses JSON messages");
+                };
+                let value: serde_json::Value = serde_json::from_str(&text).expect("wire JSON");
+                wire_tx.send(value.clone()).expect("wire receipt");
+                let kind = value["type"].as_str().expect("message type");
+                if matches!(kind, "flush" | "end") && value["commit_id"].is_string() {
+                    final_number += 1;
+                    let reply = serde_json::json!({
+                        "type": "transcript.final", "text": format!("phrase {final_number}"),
+                        "response_id": format!("response-{final_number}"),
+                        "duration_ms": null, "commit_id": value["commit_id"]
+                    });
+                    socket
+                        .send(Message::Text(reply.to_string().into()))
+                        .expect("final");
+                }
+                if kind == "end" {
+                    socket
+                        .send(Message::Text(r#"{"type":"stream.closed"}"#.into()))
+                        .expect("closed");
+                    break;
+                }
+            }
+        });
+        let limits = CloudSessionLimits {
+            max_frame_samples: 480,
+            connect_timeout: Duration::from_secs(2),
+            send_timeout: Duration::from_secs(2),
+            close_timeout: Duration::from_secs(2),
+            ..CloudSessionLimits::default()
+        };
+        let connection =
+            GatewayConnection::new(loopback_endpoint(address), "").expect("connection");
+        let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
+        let mut session =
+            LiveCloudAsrSession::new(transport, limits, authorization()).expect("session");
+        session.open(&input_hz(48_000)).expect("open");
+        session.push_audio(&[0.125; 480]).expect("opening frame");
+        let mut wire = Vec::new();
+        while wire
+            .last()
+            .is_none_or(|value: &serde_json::Value| value["type"] != "chunk")
+        {
+            wire.push(
+                wire_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("initial wire"),
+            );
+        }
+        // Real elapsed time is intentional: the baseline defect uses Instant,
+        // rather than the audio clock or Tokio's controllable clock.
+        std::thread::sleep(Duration::from_millis(2_700));
+        let mut events = session.drain();
+        session
+            .push_audio(&[0.25; 480])
+            .expect("continuation frame");
+        session.commit(960).expect("measured pause");
+        session.push_audio(&[0.5; 480]).expect("trailing frame");
+        session.close().expect("bounded close");
+        events.extend(session.drain());
+        server.join().expect("server finished");
+        wire.extend(wire_rx.try_iter());
+        let kinds: Vec<_> = wire
+            .iter()
+            .map(|value| value["type"].as_str().expect("type"))
+            .collect();
+        assert_eq!(
+            kinds,
+            ["set", "chunk", "chunk", "flush", "chunk", "end"],
+            "only the measured pause and Stop may finalize audio"
+        );
+        assert_eq!(wire[3]["commit_id"], "cs-commit-1");
+        assert_eq!(wire[5]["commit_id"], "cs-commit-2");
+        let ranges: Vec<_> = events
+            .iter()
+            .filter(|event| event.is_final())
+            .map(|event| final_bounds(event, 48_000).1)
+            .collect();
+        assert_eq!(
+            ranges,
+            [(0, 960), (960, 1_440)],
+            "Stop must retain the trailing range"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AsrSessionEvent::Error(_)))
+        );
     }
 
     #[test]
