@@ -94,8 +94,22 @@ pub fn redact_command_line(text: &str) -> String {
 /// makes the argv form as safe as the joined form.
 #[derive(Debug, Default)]
 pub struct CommandRedactor {
-    /// How many further tokens the last marker still governs.
+    /// How many further values the last marker still governs.
     pending: usize,
+    /// The quote that opened a secret value still running across tokens;
+    /// every token up to the one that closes it belongs to that value.
+    quoted: Option<char>,
+}
+
+/// The quote a token opens without closing it, if any. A value such as
+/// `'two words'` spans tokens, so the redactor must follow it to its end.
+fn opening_quote(token: &str) -> Option<char> {
+    let first = token.chars().next()?;
+    if !matches!(first, '\'' | '"') {
+        return None;
+    }
+    let closed = token.len() > first.len_utf8() && token.ends_with(first);
+    (!closed).then_some(first)
 }
 
 impl CommandRedactor {
@@ -110,6 +124,7 @@ impl CommandRedactor {
     /// non-string element means the next string is not this flag's value.
     pub fn reset(&mut self) {
         self.pending = 0;
+        self.quoted = None;
     }
 
     /// Redact one chunk of command line, preserving its whitespace verbatim.
@@ -132,39 +147,80 @@ impl CommandRedactor {
         out
     }
 
+    /// Redact one argv element. An element is one argument, so a value the
+    /// previous element marked as secret is hidden whole even when it holds
+    /// spaces (`["--password", "two words"]`); otherwise the element is read
+    /// as command text. Shell quoting does not cross argv elements.
+    pub fn redact_argument(&mut self, element: &str) -> String {
+        let value = element.trim_start();
+        if self.pending > 0 && !value.is_empty() && !value.starts_with('-') {
+            self.pending -= 1;
+            return REDACTED.to_string();
+        }
+        let out = self.redact(element);
+        self.quoted = None;
+        out
+    }
+
     /// Redact a single whitespace-free token and update the marker state.
     fn redact_token(&mut self, token: &str) -> String {
+        if let Some(quote) = self.quoted {
+            if token.ends_with(quote) {
+                self.quoted = None;
+                return format!("{REDACTED}{quote}");
+            }
+            return REDACTED.to_string();
+        }
         let trimmed = token.trim_matches(|character| matches!(character, '\'' | '"'));
         if self.pending > 0 {
             if !trimmed.starts_with('-') {
                 self.pending -= 1;
+                if let Some(quote) = opening_quote(token) {
+                    // A quoted value is one value, however many words it has.
+                    self.pending = 0;
+                    self.quoted = Some(quote);
+                    return format!("{quote}{REDACTED}");
+                }
                 return REDACTED.to_string();
             }
             // An option is never a secret value: the card must show the action.
             self.pending = 0;
         }
-        if let Some((name, _)) = trimmed.split_once('=')
+        if let Some((name, value)) = trimmed.split_once('=')
             && contains_sensitive_key(name)
         {
+            if let Some(quote) = opening_quote(value) {
+                self.quoted = Some(quote);
+            }
             return format!("{name}={REDACTED}");
         }
         if let Some((name, value)) = trimmed.split_once(':') {
-            if contains_sensitive_key(name) {
-                if value.is_empty() {
-                    let normalized = name.to_ascii_lowercase();
-                    let header =
-                        normalized.contains("authorization") || normalized.contains("cookie");
-                    self.pending = if header { 2 } else { 1 };
-                    return token.to_string();
-                }
-                // `Authorization:Bearer <secret>` keeps its credential in the
-                // next token even when the scheme is glued to the header.
-                if value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic") {
-                    self.pending = 1;
-                }
-                return format!("{name}:{REDACTED}");
+            if !contains_sensitive_key(name) {
+                return token.to_string();
             }
-            return token.to_string();
+            // A header quoted as one argument (`'Cookie: a=1; b=2'`) ends at its
+            // closing quote, so its whole value is hidden and nothing after it.
+            if let Some(quote) = opening_quote(token) {
+                self.quoted = Some(quote);
+                return if value.is_empty() {
+                    token.to_string()
+                } else {
+                    format!("{quote}{name}:{REDACTED}")
+                };
+            }
+            if value.is_empty() {
+                // `Authorization: Bearer <secret>` carries a scheme and a
+                // credential; every other header one value.
+                let scheme_and_value = name.to_ascii_lowercase().contains("authorization");
+                self.pending = if scheme_and_value { 2 } else { 1 };
+                return token.to_string();
+            }
+            // `Authorization:Bearer <secret>` keeps its credential in the
+            // next token even when the scheme is glued to the header.
+            if value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic") {
+                self.pending = 1;
+            }
+            return format!("{name}:{REDACTED}");
         }
         let names_a_secret_option = trimmed.starts_with('-') && contains_sensitive_key(trimmed);
         let is_scheme =
@@ -234,7 +290,7 @@ fn redact_argument_array(items: &[Value]) -> Vec<Value> {
     items
         .iter()
         .map(|item| match item {
-            Value::String(text) => Value::String(bound_string(&redactor.redact(text))),
+            Value::String(text) => Value::String(bound_string(&redactor.redact_argument(text))),
             other => {
                 redactor.reset();
                 redact_argument_value(other, false)
@@ -282,7 +338,7 @@ mod tests {
     fn command_line_redaction_preserves_whitespace_and_hides_header_credentials() {
         assert_eq!(
             redact_command_line("curl  -H 'Authorization: Bearer hunter2'\n  --token abc"),
-            "curl  -H 'Authorization: [REDACTED] [REDACTED]\n  --token [REDACTED]"
+            "curl  -H 'Authorization: [REDACTED] [REDACTED]'\n  --token [REDACTED]"
         );
         assert_eq!(
             redact_command_line("TOKEN=hunter2 curl --password swordfish example.test"),
@@ -333,7 +389,7 @@ mod tests {
     fn header_names_match_like_json_keys() {
         assert_eq!(
             redact_command_line("curl -H 'X-Api-Key: live-key' https://example.test"),
-            "curl -H 'X-Api-Key: [REDACTED] https://example.test"
+            "curl -H 'X-Api-Key: [REDACTED]' https://example.test"
         );
         assert_eq!(
             redact_command_line("curl -H X-Api-Key:live-key"),
@@ -364,6 +420,48 @@ mod tests {
             snapshot.contains("--force") && snapshot.contains("push"),
             "{snapshot}"
         );
+    }
+
+    /// PR #173 review round 3: a secret value is hidden whole, whether it is a
+    /// quoted command-line value with spaces or one argv element with spaces,
+    /// and nothing after it is taken for part of it.
+    #[test]
+    fn a_spaced_secret_is_hidden_whole_and_nothing_after_it() {
+        assert_eq!(
+            redact_command_line("mysql --password 'two words' -h db"),
+            "mysql --password '[REDACTED] [REDACTED]' -h db"
+        );
+        let snapshot =
+            redacted_arguments(&json!({"args": ["--password", "two words", "-h", "db"]}))
+                .expect("snapshot");
+        assert!(
+            !snapshot.contains("two") && !snapshot.contains("words"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("\"-h\"") && snapshot.contains("\"db\""),
+            "{snapshot}"
+        );
+    }
+
+    /// PR #173 review round 3: a Cookie header hides its value and keeps the
+    /// destination visible, quoted or as its own argv element.
+    #[test]
+    fn a_cookie_header_never_hides_the_destination() {
+        assert_eq!(
+            redact_command_line("curl -H 'Cookie: session=abc' https://example.test"),
+            "curl -H 'Cookie: [REDACTED]' https://example.test"
+        );
+        assert_eq!(
+            redact_command_line("curl -H 'Cookie: a=1; b=2' https://example.test"),
+            "curl -H 'Cookie: [REDACTED] [REDACTED]' https://example.test"
+        );
+        let snapshot = redacted_arguments(
+            &json!({"args": ["-H", "Cookie: session=abc", "https://example.test"]}),
+        )
+        .expect("snapshot");
+        assert!(!snapshot.contains("session=abc"), "{snapshot}");
+        assert!(snapshot.contains("https://example.test"), "{snapshot}");
     }
 
     /// One key predicate for every surface: separator spellings collapse, and

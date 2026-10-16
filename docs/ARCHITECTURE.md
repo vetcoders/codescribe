@@ -473,12 +473,17 @@ can no longer reappear on the next.
   secret only in four shapes, judged by the same key predicate: an assignment
   (`TOKEN=…`, `--password=…` → `name=[REDACTED]`), a header with an attached
   value (`X-Api-Key:…` → `X-Api-Key:[REDACTED]`), a header name whose value
-  follows (one token, two after `Authorization` / `Cookie`), and an option
-  name (`--token …`, `--api-key …`), plus the bare `Bearer` / `Basic` scheme.
-  An ordinary word that only contains a marker (`tokenizer.py`) names nothing,
+  follows (one value; `Authorization` takes a scheme and a credential), and
+  an option name (`--token …`, `--api-key …`), plus the bare `Bearer` /
+  `Basic` scheme. A secret value is hidden whole: a quoted value runs to its
+  closing quote (`--password 'two words'`, `-H 'Cookie: a=1; b=2'`), and in a
+  string array one element is one value, so `["--password", "two words"]`
+  hides both words and the next element (a URL, `-h db`) stays visible. An
+  ordinary word that only contains a marker (`tokenizer.py`) names nothing,
   and an option is never taken for a secret value, so the card always shows
-  the action (`--delete-all`). Whitespace is preserved. In a string array the
-  redactor state carries across elements, so the argv pair `["--token", "abc"]` hides `abc`; a non-string element ends that run.
+  the action (`--delete-all`). Whitespace is preserved. The redactor state
+  carries across array elements, so the argv pair `["--token", "abc"]` hides
+  `abc`; a non-string element ends that run.
 - Bounds are unchanged: a string over 200 characters and a snapshot over
   4 KiB are cut with an explicit marker.
 
