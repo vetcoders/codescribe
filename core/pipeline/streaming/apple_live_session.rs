@@ -2024,11 +2024,26 @@ struct AppleSealState {
     cloud_live_lane_lost: u64,
     cloud_live_timed_out: u64,
     cloud_live_unmatched_final: u64,
-    /// Terminal DictationTranscriber witness arming, resolved ONCE at session
-    /// construction from the existing opt-in gate (`CODESCRIBE_APPLE_DICTATION_TRANSCRIBER`).
-    /// Nothing re-reads the environment mid-take; the bridge child inherits
-    /// this process environment, so one key arms both sides of the wire.
+    /// Witness arming. Construction reads the developer env gate; the worker
+    /// then applies the immutable settings snapshot verdict (Voice Lab key
+    /// with the same env as its power-user override). Nothing re-reads either
+    /// source mid-take.
     dictation_witness_armed: bool,
+    /// Sender half of the per-utterance witness return lane; the worker owns
+    /// the receiver. Witness threads never touch the ledger directly.
+    dictation_witness_return: Option<std_mpsc::Sender<DictationWitnessReturn>>,
+    /// One witness request in flight per session; the next seal re-checks
+    /// whatever debt is still open then.
+    dictation_witness_inflight: bool,
+    /// Target ranges already asked and their attempt counts. A range is asked
+    /// at most twice per session; persistent debt stays honestly unresolved
+    /// instead of charging the decoder at every seal.
+    dictation_witness_attempts: Vec<((u64, u64), u8)>,
+    /// Live witness requests mint ids in their own band above the terminal
+    /// ordinals, so a return can never pose as a terminal-phase answer.
+    dictation_witness_requests: u64,
+    /// Locale handed to the witness decode, captured at session start.
+    dictation_witness_language: Option<String>,
 }
 
 /// Capture-clock allowance for a final; the scheduled frontier is the hold.
@@ -2510,6 +2525,11 @@ impl AppleSealState {
             cloud_live_timed_out: 0,
             cloud_live_unmatched_final: 0,
             dictation_witness_armed: crate::stt::apple_stt::dictation_transcriber_enabled(),
+            dictation_witness_return: None,
+            dictation_witness_inflight: false,
+            dictation_witness_attempts: Vec::new(),
+            dictation_witness_requests: 0,
+            dictation_witness_language: None,
         };
         state
             .acoustic_ledger
@@ -7186,6 +7206,248 @@ const DICTATION_WITNESS_TOTAL_BUDGET: Duration = Duration::from_secs(90);
 /// ids and lexical trials live above `1 << 63`; this band keeps a witness
 /// return acoustically distinct from both.
 const DICTATION_WITNESS_REQUEST_BASE: u64 = 1 << 62;
+/// Live per-utterance witness requests mint ids in their own band, distinct
+/// from the terminal ordinals sharing the witness base.
+const DICTATION_WITNESS_LIVE_REQUEST_BASE: u64 = DICTATION_WITNESS_REQUEST_BASE | (1 << 61);
+/// One target range is re-asked at most this many times per session.
+const DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE: u8 = 2;
+
+/// A witness thread's answer: the request identity on the capture clock and
+/// the decode outcome, stringified on failure. The worker thread admits it.
+type DictationWitnessReturn = (TailRequestIdentity, Result<TailProviderPayload, String>);
+
+/// Outstanding recovery debt the witness may still answer: unsealed
+/// recovery-pending owners plus material measured-speech gaps. Both witness
+/// triggers (per-utterance and terminal) aim from this one picture.
+fn witness_recovery_targets(
+    state: &AppleSealState,
+    threshold_samples: u64,
+) -> (Vec<OccurrenceIdentity>, Vec<TailSampleRange>) {
+    let speech = coverage_speech_evidence(state);
+    let ledger = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pending = ledger
+        .pending_text_recoveries(&state.session_id, state.capture_epoch)
+        .into_iter()
+        .filter(|owner| !ledger.is_sealed(owner))
+        .collect::<Vec<_>>();
+    let gaps = uncovered_gap_ranges(
+        &ledger,
+        &state.session_id,
+        state.capture_epoch,
+        &speech,
+        threshold_samples,
+    )
+    .into_iter()
+    .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
+    .collect::<Vec<_>>();
+    (pending, gaps)
+}
+
+/// Debit only debt actually covered by the issued witness question.
+fn record_dictation_witness_attempts(
+    attempts: &mut Vec<((u64, u64), u8)>,
+    targets: &[(u64, u64)],
+    window_start: u64,
+    window_end: u64,
+    max_window: u64,
+) {
+    for (index, target) in targets.iter().enumerate() {
+        // An attempt binds only when the question was actually asked: the
+        // issued window covers the whole target, or the target leads the
+        // window while being wider than any legal window — its leading read
+        // counts and the range still ends honestly unresolved. A sliver of
+        // coverage, or an oversized range outside the window, costs nothing.
+        let covered_whole = target.0 >= window_start && target.1 <= window_end;
+        let leading_oversized = index == 0 && target.1.saturating_sub(target.0) > max_window;
+        if !covered_whole && !leading_oversized {
+            continue;
+        }
+        let entry = attempts.iter_mut().find(|(range, _)| range == target);
+        match entry {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => attempts.push((*target, 1)),
+        }
+    }
+}
+
+/// Per-utterance witness trigger: after a seal commits, re-ask outstanding
+/// recovery debt on closed PCM in the background. One request in flight; a
+/// target range is asked at most twice per session; the worker admits the
+/// return through the ordinary guarded corridor.
+fn maybe_spawn_utterance_witness(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    sealed_end: u64,
+) {
+    if !state.dictation_witness_armed
+        || state.dictation_witness_inflight
+        || sealed_end == 0
+        || state.dictation_witness_return.is_none()
+    {
+        return;
+    }
+    let threshold_samples =
+        u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    // Only closed PCM may be asked about: the decoder never reads past the
+    // seal that just landed.
+    let mut targets: Vec<(u64, u64)> = pending_owners
+        .iter()
+        .map(|owner| (owner.sample_start, owner.sample_end))
+        .chain(
+            gaps.iter()
+                .map(|range| (range.sample_start, range.sample_end)),
+        )
+        .filter(|&(start, end)| start < sealed_end && end > start)
+        .map(|(start, end)| (start, end.min(sealed_end)))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    // Debt already asked twice stays unresolved rather than re-charging the
+    // decoder on every seal.
+    targets.retain(|target| {
+        !state
+            .dictation_witness_attempts
+            .iter()
+            .any(|(range, attempts)| {
+                *range == *target && *attempts >= DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE
+            })
+    });
+    if targets.is_empty() {
+        return;
+    }
+    let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
+    let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let first_start = targets.first().expect("nonempty targets").0;
+    let last_end = targets.last().expect("nonempty targets").1;
+    let window_start = first_start.saturating_sub(context);
+    let window_end = last_end
+        .saturating_add(context)
+        .min(sealed_end)
+        .min(window_start.saturating_add(max_window));
+    if window_end <= window_start {
+        return;
+    }
+    let Some(window) = state.window_by_samples(window_start, window_end) else {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "dictation_witness_pcm_unavailable".into(),
+            message: format!(
+                "live window {window_start}..{window_end} is not in the retained capture"
+            ),
+        });
+        return;
+    };
+    record_dictation_witness_attempts(
+        &mut state.dictation_witness_attempts,
+        &targets,
+        window_start,
+        window_end,
+        max_window,
+    );
+    let identity = TailRequestIdentity {
+        request_id: DICTATION_WITNESS_LIVE_REQUEST_BASE | state.dictation_witness_requests,
+        range: TailSampleRange {
+            session: state.session_id.clone(),
+            capture_epoch: state.capture_epoch,
+            sample_start: window.sample_start,
+            sample_end: window.sample_end,
+        },
+    };
+    state.dictation_witness_requests = state.dictation_witness_requests.saturating_add(1);
+    state.dictation_witness_inflight = true;
+    let return_tx = state
+        .dictation_witness_return
+        .clone()
+        .expect("armed witness holds a return channel");
+    let language = state.dictation_witness_language.clone();
+    let sample_rate = state.sample_rate;
+    let samples = window.samples;
+    let thread_identity = identity.clone();
+    std::thread::spawn(move || {
+        let result = crate::stt::apple_stt::transcribe_dictation_witness(
+            &thread_identity,
+            &samples,
+            sample_rate,
+            language.as_deref(),
+            DICTATION_WITNESS_REQUEST_TIMEOUT,
+        )
+        .map_err(|error| format!("{error:#}"));
+        let _ = return_tx.send((thread_identity, result));
+    });
+    info!(
+        session = %state.session_id,
+        capture_epoch = state.capture_epoch,
+        request_id = identity.request_id,
+        sample_start = identity.range.sample_start,
+        sample_end = identity.range.sample_end,
+        "dictation_witness_live_request"
+    );
+}
+
+/// Admit witness returns on the worker thread. The document may have moved
+/// since the ask, so targets are recomputed at answer time; an owner that
+/// settled meanwhile is skipped by admission itself.
+fn drain_dictation_witness_returns(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
+) {
+    while let Ok((identity, result)) = witness_done.try_recv() {
+        state.dictation_witness_inflight = false;
+        let payload = match result {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "dictation_witness_unavailable".into(),
+                    message: format!(
+                        "window {}..{}: {error}",
+                        identity.range.sample_start, identity.range.sample_end
+                    ),
+                });
+                continue;
+            }
+        };
+        info!(
+            session = %state.session_id,
+            capture_epoch = state.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            segments = payload.segments.len(),
+            elapsed_ms = payload.elapsed_ms,
+            "dictation_witness_return"
+        );
+        let threshold_samples =
+            u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+        let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+        let pending_owners = pending_owners
+            .into_iter()
+            .filter(|owner| {
+                owner.sample_end > identity.range.sample_start
+                    && owner.sample_start < identity.range.sample_end
+            })
+            .collect::<Vec<_>>();
+        let gaps = gaps
+            .into_iter()
+            .filter(|range| {
+                range.sample_end > identity.range.sample_start
+                    && range.sample_start < identity.range.sample_end
+            })
+            .collect::<Vec<_>>();
+        admit_dictation_witness_payload(
+            state,
+            ev_tx,
+            &identity,
+            &payload,
+            &pending_owners,
+            &gaps,
+            threshold_samples,
+        );
+    }
+}
 
 /// Run the bounded terminal DictationTranscriber witness over the take's
 /// remaining unresolved acoustic debt: committed owners whose text recovery is
@@ -7212,35 +7474,17 @@ fn run_terminal_dictation_witness(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     language: Option<&str>,
+    witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
 ) {
     if !state.dictation_witness_armed {
         return;
     }
+    // Live witness answers that already returned land first; the terminal
+    // target picture below then sees the debt they resolved.
+    drain_dictation_witness_returns(state, ev_tx, witness_done);
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
-    let (pending_owners, gaps) = {
-        let speech = coverage_speech_evidence(state);
-        let ledger = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pending = ledger
-            .pending_text_recoveries(&state.session_id, state.capture_epoch)
-            .into_iter()
-            .filter(|owner| !ledger.is_sealed(owner))
-            .collect::<Vec<_>>();
-        let gaps = uncovered_gap_ranges(
-            &ledger,
-            &state.session_id,
-            state.capture_epoch,
-            &speech,
-            threshold_samples,
-        )
-        .into_iter()
-        .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
-        .collect::<Vec<_>>();
-        (pending, gaps)
-    };
+    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
     if pending_owners.is_empty() && gaps.is_empty() {
         return;
     }
@@ -8209,6 +8453,16 @@ fn close_apple_phrase(
         }
     }
     state.publish_unadmitted_words(ev_tx);
+    // A committed seal closes this phrase's PCM; outstanding debt on it may be
+    // re-asked in the background without holding the next utterance.
+    if committed {
+        let sealed_end = timed
+            .iter()
+            .map(|word| word.range.sample_end)
+            .max()
+            .unwrap_or(0);
+        maybe_spawn_utterance_witness(state, ev_tx, sealed_end);
+    }
     (committed, events)
 }
 
@@ -8501,6 +8755,12 @@ fn apple_stream_worker(
     // It is built whenever either consumer wants it — the fusion flag decides
     // whether identity reaches the seal, not whether the VAD exists.
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
+    // Voice Lab witness: the immutable snapshot verdict replaces the
+    // construction-time env read; the return lane belongs to this worker.
+    state.dictation_witness_armed = runtime_settings.dictation_witness_armed();
+    state.dictation_witness_language = language.map(str::to_owned);
+    let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
+    state.dictation_witness_return = Some(witness_done_tx);
     if state.fusion_seal_armed || utterance_silence_sec.is_some() {
         let ingress =
             SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);
@@ -8550,6 +8810,7 @@ fn apple_stream_worker(
             let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
             state.complete_whisper_window(&ev_tx, completion, audio_secs);
         }
+        drain_dictation_witness_returns(&mut state, &ev_tx, &witness_done_rx);
         // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(LIVE_WORKER_QUANTUM) {
@@ -8938,7 +9199,7 @@ fn apple_stream_worker(
     // negations, uncovered speech gaps). It reads only the recorder-owned
     // terminal PCM and every returned segment enters through ordinary ledger
     // admission; it never rewrites the document wholesale.
-    run_terminal_dictation_witness(&mut state, &ev_tx, language);
+    run_terminal_dictation_witness(&mut state, &ev_tx, language, &witness_done_rx);
     if let Some(owner) = consultation.as_mut() {
         owner.settle(&state, &ev_tx, samples_seen);
     }

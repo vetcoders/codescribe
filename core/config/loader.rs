@@ -319,7 +319,11 @@ impl Config {
             overrides.insert(key.to_string(), Self::config_runtime_env_var(key));
         }
         // These documented power-user keys also honor the seeded .env value.
-        for key in [SILERO_FUSION_ENV, FORMAT_ON_DEVICE_ENV] {
+        for key in [
+            SILERO_FUSION_ENV,
+            FORMAT_ON_DEVICE_ENV,
+            crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
+        ] {
             overrides.insert(key.to_string(), std::env::var(key));
         }
         let mut input = CapturedRuntimeInputs {
@@ -376,6 +380,13 @@ impl Config {
         let (seal_lane_armed, seal_lane_env_override) = Self::resolve_seal_lane_armed(&input);
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
+        }
+        let (dictation_witness_armed, dictation_witness_env_override) =
+            Self::resolve_dictation_witness_armed(&input);
+        if dictation_witness_env_override {
+            input
+                .env_overlay_keys
+                .push(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER.to_string());
         }
         if let Some(enabled) = Self::format_on_device_env_override(&input) {
             input.values.format_on_device = enabled;
@@ -463,7 +474,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\ndictation_witness_armed={dictation_witness_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -482,6 +493,7 @@ impl Config {
             digest,
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override: phase_override,
             tail_provider,
@@ -499,6 +511,7 @@ impl Config {
             digest: parts.digest,
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
+            dictation_witness_armed: parts.dictation_witness_armed,
             local_tail_patch: parts.local_tail_patch,
             layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
@@ -520,6 +533,24 @@ impl Config {
             .seal_lane_armed
             .unwrap_or(DEFAULT_SEAL_LANE_ARMED);
         match input.env(SILERO_FUSION_ENV) {
+            Ok(raw) => (
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ),
+                true,
+            ),
+            Err(_) => (configured, false),
+        }
+    }
+
+    /// Resolve the Voice Lab witness arming for this immutable generation. The
+    /// durable field is `audio.dictation_witness_armed`; the
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` process value is the documented
+    /// power-user override and wins when present.
+    fn resolve_dictation_witness_armed(input: &CapturedRuntimeInputs) -> (bool, bool) {
+        let configured = input.user_settings.dictation_witness_armed.unwrap_or(false);
+        match input.env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER) {
             Ok(raw) => (
                 matches!(
                     raw.trim().to_ascii_lowercase().as_str(),
@@ -1065,14 +1096,15 @@ impl Config {
 
     /// Inject optional .env values into the process environment without allowing
     /// legacy file overrides to shadow promoted settings.json-backed keys.
-    /// `CODESCRIBE_SILERO_FUSION` and `CODESCRIBE_FORMAT_ON_DEVICE` are the
-    /// deliberate exceptions: each remains a documented power-user override of
+    /// `CODESCRIBE_SILERO_FUSION`, `CODESCRIBE_FORMAT_ON_DEVICE`, and
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` remain power-user overrides of
     /// a product-owned settings field.
     fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
         for (key, value) in file_env {
             if super::settings::is_promoted_key(key)
                 && key != SILERO_FUSION_ENV
                 && key != FORMAT_ON_DEVICE_ENV
+                && key != crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER
             {
                 debug_assert!(
                     !super::settings::is_promoted_key(key) || !key.is_empty(),
@@ -2846,6 +2878,61 @@ mod tests {
         assert!(!snapshot.seal_lane_armed());
         assert!(snapshot.seal_lane_setting_armed());
         assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
+    }
+
+    #[test]
+    #[serial]
+    fn dictation_witness_lab_write_survives_other_settings_and_binds_next_take() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER);
+        let current = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!current.dictation_witness_armed());
+        Config::default()
+            .save_to_env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "1")
+            .unwrap();
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(UserSettings::settings_path()).unwrap())
+                .unwrap();
+        assert_eq!(json["audio"]["dictation_witness_armed"], true);
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+        let next = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(next.dictation_witness_armed());
+        assert!(!current.dictation_witness_armed());
+        assert_ne!(next.digest(), current.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn dictation_witness_environment_override_does_not_erase_the_lab_choice() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER);
+        Config::default()
+            .save_to_env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "1")
+            .unwrap();
+        set_env_for_test(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "0");
+        let overridden = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!overridden.dictation_witness_armed());
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+    }
+
+    #[test]
+    #[serial]
+    fn dictation_witness_env_file_override_survives_canonical_settings_write() {
+        let _tmp = setup_isolated_data_dir();
+        let key = crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER;
+        let _override = TestEnvGuard::unset(key);
+        fs::write(Config::env_path(), format!("{key}=0\n")).unwrap();
+        Config::default().save_to_env(key, "1").unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!snapshot.dictation_witness_armed());
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+        assert_eq!(
+            fs::read_to_string(Config::env_path()).unwrap(),
+            format!("{key}=0\n")
+        );
     }
 
     /// A take binds one snapshot at its start (`bind_session_authority`) and

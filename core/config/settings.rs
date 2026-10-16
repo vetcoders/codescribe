@@ -327,6 +327,12 @@ pub struct UserSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub seal_lane_armed: Option<bool>,
+    /// Voice Lab experiment: the DictationTranscriber witness re-checks
+    /// unresolved recovery debt on each sealed utterance, in the background.
+    /// Default off. The `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` process value
+    /// is the documented power-user override and wins when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_witness_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1080,6 +1086,10 @@ pub struct RuntimeSettingsSnapshot {
     /// Effective mandatory-lane verdict after `settings.json` plus the optional
     /// power-user env override. Consumers never re-read either source.
     seal_lane_armed: bool,
+    /// Effective Voice Lab witness verdict for this generation, resolved by the
+    /// same loader pass from `audio.dictation_witness_armed` plus the optional
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` override.
+    dictation_witness_armed: bool,
     local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
     layered_transcription_override: Option<String>,
     tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
@@ -1099,6 +1109,7 @@ impl std::fmt::Debug for RuntimeSettingsSnapshot {
             .field("digest", &self.digest)
             .field("energy_calibration", &self.energy_calibration)
             .field("seal_lane_armed", &self.seal_lane_armed)
+            .field("dictation_witness_armed", &self.dictation_witness_armed)
             .field("local_tail_patch", &self.local_tail_patch)
             .field(
                 "layered_transcription_override",
@@ -1124,6 +1135,7 @@ pub(crate) struct RuntimeSnapshotParts {
     pub(crate) digest: SettingsSnapshotDigest,
     pub(crate) energy_calibration: SealedEnergyCalibration,
     pub(crate) seal_lane_armed: bool,
+    pub(crate) dictation_witness_armed: bool,
     pub(crate) local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
     pub(crate) layered_transcription_override: Option<String>,
     pub(crate) tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
@@ -1147,6 +1159,7 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1164,6 +1177,7 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1184,6 +1198,7 @@ impl RuntimeSettingsSnapshot {
                 reason: error.to_string(),
             });
         parts.seal_lane_armed = false;
+        parts.dictation_witness_armed = false;
         let RuntimeSnapshotParts {
             captured_inputs,
             repair_receipt,
@@ -1196,6 +1211,7 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1212,6 +1228,7 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1322,6 +1339,11 @@ impl RuntimeSettingsSnapshot {
         } else {
             SealLaneSource::Settings
         }
+    }
+
+    /// Effective Voice Lab witness verdict for this immutable generation.
+    pub const fn dictation_witness_armed(&self) -> bool {
+        self.dictation_witness_armed
     }
 
     /// The ledger calibration for one live capture path at its actual rate,
@@ -1574,6 +1596,8 @@ struct AudioV2 {
     )]
     seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    dictation_witness_armed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
 
@@ -1729,6 +1753,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AUDIO_INPUT_DEVICE",
     "AUDIO_RETENTION",
     SILERO_FUSION_ENV,
+    crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -1803,6 +1828,7 @@ typed_setting_writes! {
         "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
         "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
         SILERO_FUSION_ENV => seal_lane_armed,
+        crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER => dictation_witness_armed,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
         "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
@@ -1915,6 +1941,7 @@ impl UserSettings {
                 input_device_id: self.audio_input_device.clone(),
                 retention: self.audio_retention,
                 seal_lane_armed: self.seal_lane_armed,
+                dictation_witness_armed: self.dictation_witness_armed,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -2072,6 +2099,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|audio| audio.seal_lane_armed)
                 .or(Some(DEFAULT_SEAL_LANE_ARMED)),
+            dictation_witness_armed: v2
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.dictation_witness_armed),
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
@@ -5185,6 +5216,7 @@ mod captured_sealer_tests {
             digest: SettingsSnapshotDigest::from_hex(String::new()),
             energy_calibration: snapshot.energy_calibration,
             seal_lane_armed: true,
+            dictation_witness_armed: false,
             local_tail_patch: snapshot.local_tail_patch,
             layered_transcription_override: snapshot.layered_transcription_override.clone(),
             tail_provider: snapshot.tail_provider,

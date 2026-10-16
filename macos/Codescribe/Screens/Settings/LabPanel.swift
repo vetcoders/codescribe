@@ -23,6 +23,8 @@ struct LabPanel: View {
 
       sealLaneRow
 
+      dictationWitnessRow
+
       Picker(
         "Whisper buffering",
         selection: Binding(
@@ -91,6 +93,34 @@ struct LabPanel: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
+  }
+
+  /// Voice Lab experiment: the DictationTranscriber witness re-checks
+  /// unresolved recovery debt after each sealed utterance, in the background.
+  /// The effective value comes from the settings snapshot; an exported
+  /// process env still overrides the switch.
+  @ViewBuilder
+  private var dictationWitnessRow: some View {
+    Toggle(
+      String(localized: "DictationTranscriber witness (experimental)"),
+      isOn: Binding(
+        get: { model.settings.dictationWitnessArmed },
+        set: { model.setDictationWitnessArmed($0) }
+      )
+    )
+    .toggleStyle(.switch)
+    .font(.body)
+    .tint(CSColor.chromeAccent)
+    .accessibilityIdentifier("lab-dictation-witness")
+    Text(
+      String(
+        localized:
+          "Re-checks words a take left unresolved, in the background after each sealed utterance. A process env value overrides this toggle."
+      )
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+    .fixedSize(horizontal: false, vertical: true)
   }
 
   private var sealLaneBinding: Binding<Bool> {
