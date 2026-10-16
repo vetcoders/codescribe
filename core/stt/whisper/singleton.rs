@@ -144,6 +144,17 @@ fn slot() -> &'static Mutex<WhisperSlot> {
     })
 }
 
+/// Non-blocking residency probe: true only when the engine already holds
+/// loaded weights AND no caller owns the lock. A busy lock means a load or a
+/// decode is in progress, so admitted work cannot complete on a warm-engine
+/// schedule yet — callers sizing a stop drain treat that the same as cold.
+pub fn engine_warm_and_idle() -> bool {
+    match slot().try_lock() {
+        Ok(guard) => guard.engine.is_some(),
+        Err(_) => false,
+    }
+}
+
 /// The effective residency policy at this instant.
 ///
 /// `effective_ttl_secs=0` is intentionally a meaningful, explicit keep-warm

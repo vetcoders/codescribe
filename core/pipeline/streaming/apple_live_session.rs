@@ -442,6 +442,28 @@ fn deliver_consultation_result(
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Extra stop-drain budget when admitted local jobs still face a cold Whisper
+/// engine, or an in-flight decode that owns the engine lock. The 5 s closure
+/// budget assumes a warm model; a first take pays the cold load inside the
+/// drain window. Measured 2026-10-16 on the 0.17.0 RC (a005d39fd): cold load
+/// 3.99 s + first encoder pass 8.755 s, so every admitted job expired with its
+/// text one second from completion — receipt submitted=3 applied=0 timed_out=3
+/// and the live transcript kept the truncated hallucination. The grace keeps a
+/// hard cap: a wedged job still terminates, a cold one gets to finish.
+const TAIL_PATCH_COLD_ENGINE_GRACE: Duration = Duration::from_secs(20);
+
+/// Stop-drain budget for the local Whisper lane. Pure policy so it is testable
+/// without the process-global engine slot: outstanding admitted work against a
+/// non-warm/non-idle engine earns the cold grace, everything else keeps the
+/// warm-path cap unchanged.
+fn stop_closure_budget(local_work_pending: bool, engine_warm_and_idle: bool) -> Duration {
+    if local_work_pending && !engine_warm_and_idle {
+        TAIL_PATCH_CLOSURE_TIMEOUT + TAIL_PATCH_COLD_ENGINE_GRACE
+    } else {
+        TAIL_PATCH_CLOSURE_TIMEOUT
+    }
+}
+
 /// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
 /// 250 ms is not allowed to become terminal transcript truth.
 pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
@@ -9092,7 +9114,16 @@ fn apple_stream_worker(
     // measured 2026-08-12, `rec_stop=36.701s` of which 30.005s was this loop
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
-    let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
+    // The budget is also the LocalExecutionControl expiry (`limit_until`), so a
+    // too-small value does not merely stop the wait — it aborts the decode
+    // itself mid-flight. Size it once, here, from the real engine state.
+    let local_work_pending = state.planned_work_pending()
+        || !state.refinement_submitted.is_empty()
+        || !state.refinement_pending.is_empty();
+    let stop_deadline = local_execution.begin_drain(stop_closure_budget(
+        local_work_pending,
+        crate::stt::whisper::singleton::engine_warm_and_idle(),
+    ));
     if state.cloud_commit_tx.is_none()
         && state.cloud_uncommitted.is_empty()
         && state.cloud_commit_retry.is_empty()
@@ -21482,6 +21513,29 @@ mod live_refinement_admission_tests {
             Some(before.as_str())
         );
         assert!(TAIL_PATCH_CLOSURE_TIMEOUT > Duration::from_secs(2));
+    }
+
+    /// The stop-drain budget is also the local execution expiry, so a cold
+    /// engine must earn the grace or admitted decodes abort mid-flight —
+    /// measured 2026-10-16 (RC a005d39fd): submitted=3 applied=0 timed_out=3
+    /// with the first encoder pass finishing one second after the 5 s cap.
+    #[test]
+    fn stop_closure_budget_extends_only_for_pending_work_on_a_non_warm_engine() {
+        let warm = stop_closure_budget(true, true);
+        let cold = stop_closure_budget(true, false);
+        let idle_cold = stop_closure_budget(false, false);
+        let idle_warm = stop_closure_budget(false, true);
+        assert_eq!(warm, TAIL_PATCH_CLOSURE_TIMEOUT);
+        assert_eq!(idle_cold, TAIL_PATCH_CLOSURE_TIMEOUT);
+        assert_eq!(idle_warm, TAIL_PATCH_CLOSURE_TIMEOUT);
+        assert_eq!(
+            cold,
+            TAIL_PATCH_CLOSURE_TIMEOUT + TAIL_PATCH_COLD_ENGINE_GRACE
+        );
+        // The grace must cover the measured cold path (3.99 s load + 8.755 s
+        // first encoder pass ≈ 12.8 s) with real margin, while staying a cap.
+        assert!(cold >= Duration::from_secs(15));
+        assert!(cold <= Duration::from_secs(30));
     }
 
     /// Synthetic boundary-driven integration witness, not a microphone proof.
