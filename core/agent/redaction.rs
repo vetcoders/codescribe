@@ -52,22 +52,6 @@ const SENSITIVE_KEYS: &[&str] = &[
     "environment",
 ];
 
-/// Command-line markers that redact a `KEY=value` token's value or the
-/// following argument(s). Matched against the raw lowercased token, which is
-/// why both `api_key` and `apikey` are listed: a command line is not
-/// normalized the way a JSON key is.
-const COMMAND_MARKERS: &[&str] = &[
-    "token",
-    "password",
-    "passwd",
-    "secret",
-    "api_key",
-    "apikey",
-    "authorization",
-    "cookie",
-    "bearer",
-];
-
 /// Whether a JSON key names something whose value must not be shown.
 ///
 /// Non-alphanumerics are dropped and the rest lowercased before matching, so
@@ -86,10 +70,16 @@ pub fn contains_sensitive_key(key: &str) -> bool {
 
 /// Redact secrets from one command line before it is shown to the operator.
 ///
-/// Handles both shapes: `KEY=value` inline assignments, and a flag whose
-/// secret sits in the following token(s) — `Authorization`/`Cookie` take two,
-/// every other marker one. Whitespace is preserved exactly, so the operator
-/// reads the command's real shape. Display only; what is dispatched upstream
+/// A token can name a secret in four shapes, and only these: an assignment
+/// (`TOKEN=…`, `--password=…`), a header with its value attached
+/// (`X-Api-Key:…`), a header name whose value follows (`Authorization: Bearer
+/// …` takes two tokens, every other header one), and an option name
+/// (`--token …`, `--api-key …`), plus the bare `Bearer` scheme. The name is
+/// judged by [`contains_sensitive_key`], so `X-Api-Key` and `api_key` match
+/// like JSON keys do. An ordinary word that merely contains a marker
+/// (`tokenizer.py`) names nothing, and a following option (`--delete-all`) is
+/// never taken for a secret value, so the card cannot hide the action itself.
+/// Whitespace is preserved exactly. Display only; what is dispatched upstream
 /// is never touched.
 pub fn redact_command_line(text: &str) -> String {
     CommandRedactor::new().redact(text)
@@ -144,28 +134,42 @@ impl CommandRedactor {
 
     /// Redact a single whitespace-free token and update the marker state.
     fn redact_token(&mut self, token: &str) -> String {
-        if self.pending > 0 {
-            self.pending -= 1;
-            return REDACTED.to_string();
-        }
         let trimmed = token.trim_matches(|character| matches!(character, '\'' | '"'));
-        let normalized = trimmed.to_ascii_lowercase();
-        if let Some((key, _)) = trimmed.split_once('=')
-            && COMMAND_MARKERS
-                .iter()
-                .any(|marker| key.to_ascii_lowercase().contains(marker))
-        {
-            return format!("{key}={REDACTED}");
+        if self.pending > 0 {
+            if !trimmed.starts_with('-') {
+                self.pending -= 1;
+                return REDACTED.to_string();
+            }
+            // An option is never a secret value: the card must show the action.
+            self.pending = 0;
         }
-        if COMMAND_MARKERS
-            .iter()
-            .any(|marker| normalized.contains(marker))
+        if let Some((name, _)) = trimmed.split_once('=')
+            && contains_sensitive_key(name)
         {
-            // A header name owns both the scheme and the credential that
-            // follow it ("Authorization: Bearer <secret>"); a plain flag owns
-            // one argument.
-            let header = normalized.contains("authorization") || normalized.contains("cookie");
-            self.pending = if header { 2 } else { 1 };
+            return format!("{name}={REDACTED}");
+        }
+        if let Some((name, value)) = trimmed.split_once(':') {
+            if contains_sensitive_key(name) {
+                if value.is_empty() {
+                    let normalized = name.to_ascii_lowercase();
+                    let header =
+                        normalized.contains("authorization") || normalized.contains("cookie");
+                    self.pending = if header { 2 } else { 1 };
+                    return token.to_string();
+                }
+                // `Authorization:Bearer <secret>` keeps its credential in the
+                // next token even when the scheme is glued to the header.
+                if value.eq_ignore_ascii_case("bearer") || value.eq_ignore_ascii_case("basic") {
+                    self.pending = 1;
+                }
+                return format!("{name}:{REDACTED}");
+            }
+            return token.to_string();
+        }
+        if trimmed.starts_with('-') && contains_sensitive_key(trimmed) {
+            self.pending = 1;
+        } else if trimmed.eq_ignore_ascii_case("bearer") || trimmed.eq_ignore_ascii_case("basic") {
+            self.pending = 1;
         }
         token.to_string()
     }
@@ -319,6 +323,46 @@ mod tests {
         assert!(reset.contains("\"abc\""), "{reset}");
         let empty = redacted_arguments(&json!({"args": ["--token", "", "abc"]})).expect("snapshot");
         assert!(!empty.contains("abc"), "{empty}");
+    }
+
+    /// PR #173 review round 2: header names match like JSON keys, in both the
+    /// spaced and the attached form, and a glued scheme still hides the
+    /// credential that follows.
+    #[test]
+    fn header_names_match_like_json_keys() {
+        assert_eq!(
+            redact_command_line("curl -H 'X-Api-Key: live-key' https://example.test"),
+            "curl -H 'X-Api-Key: [REDACTED] https://example.test"
+        );
+        assert_eq!(
+            redact_command_line("curl -H X-Api-Key:live-key"),
+            "curl -H X-Api-Key:[REDACTED]"
+        );
+        assert_eq!(
+            redact_command_line("curl -H Authorization:Bearer live-key"),
+            "curl -H Authorization:[REDACTED] [REDACTED]"
+        );
+    }
+
+    /// PR #173 review round 2: an ordinary word containing a marker names no
+    /// secret, and an option is never taken for a secret value, so the card
+    /// always shows the action the call would take.
+    #[test]
+    fn markers_never_hide_the_action() {
+        assert_eq!(
+            redact_command_line("python tokenizer.py --delete-all"),
+            "python tokenizer.py --delete-all"
+        );
+        assert_eq!(
+            redact_command_line("tool --tokenizer --delete-all --password hunter2"),
+            "tool --tokenizer --delete-all --password [REDACTED]"
+        );
+        let snapshot =
+            redacted_arguments(&json!({"args": ["--token", "--force", "push"]})).expect("snapshot");
+        assert!(
+            snapshot.contains("--force") && snapshot.contains("push"),
+            "{snapshot}"
+        );
     }
 
     /// One key predicate for every surface: separator spellings collapse, and

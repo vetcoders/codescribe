@@ -469,11 +469,16 @@ can no longer reappear on the next.
 - By command token: every surviving string value also passes through
   `redact_command_line`, because a secret inside an ordinary string sits under
   no key at all — `command: "curl -H 'Authorization: Bearer …'"` is redacted
-  in the snapshot exactly as it is in `preview.command`. A `KEY=value` token
-  becomes `KEY=[REDACTED]`; a marker token hides the next argument, or the
-  next two after `authorization` / `cookie`. Whitespace is preserved. In a
-  string array the redactor state carries across elements, so the argv pair
-  `["--token", "abc"]` hides `abc`; a non-string element ends that run.
+  in the snapshot exactly as it is in `preview.command`. A token names a
+  secret only in four shapes, judged by the same key predicate: an assignment
+  (`TOKEN=…`, `--password=…` → `name=[REDACTED]`), a header with an attached
+  value (`X-Api-Key:…` → `X-Api-Key:[REDACTED]`), a header name whose value
+  follows (one token, two after `Authorization` / `Cookie`), and an option
+  name (`--token …`, `--api-key …`), plus the bare `Bearer` / `Basic` scheme.
+  An ordinary word that only contains a marker (`tokenizer.py`) names nothing,
+  and an option is never taken for a secret value, so the card always shows
+  the action (`--delete-all`). Whitespace is preserved. In a string array the
+  redactor state carries across elements, so the argv pair `["--token", "abc"]` hides `abc`; a non-string element ends that run.
 - Bounds are unchanged: a string over 200 characters and a snapshot over
   4 KiB are cut with an explicit marker.
 
