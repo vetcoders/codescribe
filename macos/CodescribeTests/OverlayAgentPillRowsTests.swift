@@ -252,7 +252,7 @@ final class OverlayAgentPillRowsTests: XCTestCase {
 
     let controls = try section(
       of: roster, from: "struct OverlayAgentAudioControls: View",
-      to: "struct OverlayBroadcastDisclosure")
+      to: "struct OverlayBroadcastPolicyMenu")
     XCTAssertTrue(controls.contains(".accessibilityIdentifier(\"overlay-agent-microphone\")"))
     XCTAssertTrue(controls.contains(".accessibilityIdentifier(\"overlay-agent-speaker\")"))
 
@@ -277,8 +277,10 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     XCTAssertTrue(
       body.contains("VStack(alignment: .trailing, spacing: 6)"),
       "the stack aligns its rows to the trailing edge, under the name pill")
-    let row = try section(of: stack, from: "let row = HStack", to: "overlay-agent-pill-row-")
-    XCTAssertTrue(row.hasPrefix("let row = HStack(spacing: 6)"), "spacing 6 as in the header")
+    // The row is returned directly since the PPM cut (9058ffbaf) folded the
+    // disclosure branch; its first HStack in the stack's tail is the row.
+    let row = try section(of: stack, from: "HStack(spacing: 6) {", to: "overlay-agent-pill-row-")
+    XCTAssertTrue(row.hasPrefix("HStack(spacing: 6)"), "spacing 6 as in the header")
     let controls = try XCTUnwrap(row.range(of: "OverlayAgentAudioControls("))
     let pill = try XCTUnwrap(
       row.range(of: #"(?m)^\s*pill\s*$"#, options: .regularExpression),
