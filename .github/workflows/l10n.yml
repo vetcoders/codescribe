@@ -9,8 +9,9 @@
 # was the pull request into main, by which time the branch was the shape people
 # were reviewing. A gate that a branch can route around is a convention.
 #
-# This workflow runs on every branch and on every pull request, whatever its
-# base. It duplicates rust.yml's localization steps on a pull request into main,
+# This workflow runs on every branch, on every pull request whatever its base,
+# and on merge queue entries (merge_group, compared against the queue's
+# immutable base_sha). It duplicates rust.yml's localization steps on a pull request into main,
 # which is deliberate: the existing required status keeps its teeth and its job
 # name, and nothing here is load-bearing for it.
 #
@@ -28,10 +29,14 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
+# Event and ref isolate the group; queue (merge_group) runs are never cancelled
+# by a newer run, because a cancelled queue check removes the entry.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   l10n:
@@ -56,9 +61,20 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           BEFORE_SHA: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$REF_NAME" == main ]]; then
-            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ || "$BEFORE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+          zero=0000000000000000000000000000000000000000
+          if [[ "$EVENT_NAME" == merge_group ]]; then
+            # The queue's base is the immutable tip the entry was built on;
+            # never fall back to a moving branch name.
+            if [[ ! "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ || "$MERGE_GROUP_BASE_SHA" == "$zero" ]]; then
+              echo "::error::merge_group event has no immutable base_sha"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
+            printf 'L10N_BASE=%s\n' "$MERGE_GROUP_BASE_SHA" >> "$GITHUB_ENV"
+          elif [[ "$EVENT_NAME" == push && "$REF_NAME" == main ]]; then
+            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ || "$BEFORE_SHA" == "$zero" ]]; then
               echo "::error::main push has no immutable comparison baseline"
               exit 1
             fi
