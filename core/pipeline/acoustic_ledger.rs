@@ -2121,6 +2121,22 @@ impl AcousticLedger {
         }
         if removed.is_empty() && slots.as_slice() == self.slots_of(owner).unwrap_or(&[]) {
             if replayed_words == incoming.len() && replayed_words > 0 {
+                // Refusing another document occurrence does not erase a
+                // successful complete decode of the same physical words.
+                // Its recorded PCM window can close coverage, while retained
+                // cut/rejected sources still prevent debt settlement below.
+                if self
+                    .complete_decoded_words
+                    .get(observation)
+                    .is_some_and(|complete| {
+                        incoming
+                            .iter()
+                            .all(|word| complete.contains(&(word.sample_start, word.sample_end)))
+                    })
+                {
+                    self.word_pin_observations.insert(observation.clone());
+                    self.reconcile_returned_word_debt(owner);
+                }
                 tracing::info!(
                     target: "codescribe::acoustic_identity",
                     producer = ?observation.producer,
