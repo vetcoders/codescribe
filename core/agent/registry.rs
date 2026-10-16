@@ -1269,4 +1269,72 @@ mod tests {
             ToolDecision::Allow
         );
     }
+
+    /// CS160-R010: a secret under any key spelling, at any depth, never reaches
+    /// the approval card, while the call's ordinary arguments stay readable.
+    #[test]
+    fn redacted_arguments_hide_secrets_at_any_depth() {
+        let snapshot = super::redacted_arguments(&json!({
+            "path": "/work/notes.md",
+            "headers": {"Authorization": "Bearer live-bearer", "X-Api-Key": "live-key"},
+            "token": {"value": "live-token"},
+            "items": [{"password": "live-password"}],
+        }))
+        .expect("a call with arguments has a snapshot");
+        for secret in ["live-bearer", "live-key", "live-token", "live-password"] {
+            assert!(!snapshot.contains(secret), "{secret} leaked into {snapshot}");
+        }
+        assert_eq!(snapshot.matches("[redacted]").count(), 4);
+        assert!(snapshot.contains("/work/notes.md"));
+    }
+
+    /// A call without arguments gets no empty block on its card.
+    #[test]
+    fn redacted_arguments_are_absent_for_a_call_without_arguments() {
+        assert_eq!(super::redacted_arguments(&json!({})), None);
+        assert_eq!(super::redacted_arguments(&serde_json::Value::Null), None);
+    }
+
+    /// Long values are cut with a count of what was left out, and the whole
+    /// snapshot is bounded on a character boundary even when multibyte text
+    /// straddles the cut.
+    #[test]
+    fn redacted_arguments_are_bounded_and_say_what_was_cut() {
+        let long = "ż".repeat(1000);
+        let one = super::redacted_arguments(&json!({"content": long})).expect("snapshot");
+        assert!(one.contains("… [800 more characters]"), "{one}");
+
+        let mut fields = serde_json::Map::new();
+        for index in 0..100 {
+            fields.insert(format!("field_{index:03}"), json!("ż🙂".repeat(150)));
+        }
+        let many = super::redacted_arguments(&serde_json::Value::Object(fields)).expect("snapshot");
+        let (body, marker) = many
+            .rsplit_once("\n… [truncated, ")
+            .expect("an oversized snapshot ends with a truncation marker");
+        assert!(body.len() <= super::MAX_PREVIEW_ARGUMENTS_BYTES);
+        assert!(marker.ends_with(" more bytes]"));
+    }
+
+    /// The DoD case: two calls with different targets and contents produce
+    /// different cards even for a tool whose validator adds nothing, because
+    /// the card carries the call's own redacted arguments.
+    #[test]
+    fn approval_card_carries_the_suspended_call_arguments() {
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "type_text", ToolRisk::Mutating);
+        let card = |input: serde_json::Value| {
+            let ToolDecision::RequireApproval(request) =
+                registry.decide("type_text", &input, "c", "s", "t")
+            else {
+                panic!("a mutating native tool must ask");
+            };
+            request.arguments.expect("the card names the arguments")
+        };
+        let first = card(json!({"text": "git push origin main", "target": "Terminal"}));
+        let second = card(json!({"text": "echo hello", "target": "Notes", "api_key": "k-1"}));
+        assert_ne!(first, second);
+        assert!(first.contains("git push origin main") && first.contains("Terminal"));
+        assert!(second.contains("Notes") && !second.contains("k-1"));
+    }
 }

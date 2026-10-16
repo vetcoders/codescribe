@@ -2052,6 +2052,18 @@ mod tests {
     use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
     use serde_json::json;
 
+    /// CS160-R010: a tool from any MCP server, classified or not, names the
+    /// server and the upstream tool on its card and resolves no targets of its
+    /// own, so `confirm_targets` stays a no-op for it.
+    #[test]
+    fn generic_mcp_card_names_server_and_upstream_tool() {
+        let (_, validator) = execution_policy("notion", "search");
+        let preview = validator(&json!({"query": "budżet"})).expect("generic MCP preview");
+        assert!(preview.summary.contains("notion"), "{}", preview.summary);
+        assert!(preview.summary.contains("search"), "{}", preview.summary);
+        assert!(preview.paths.is_empty());
+    }
+
     /// Pin the Desktop Commander 0.26 tool surface: 26 tools, 15 read-only, 10
     /// approval-gated, and one Unknown (`give_feedback_to_desktop_commander`).
     #[test]

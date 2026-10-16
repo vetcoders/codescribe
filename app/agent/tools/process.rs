@@ -860,4 +860,62 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "hi");
     }
+
+    /// CS160-R010: the process card names the program, the full argv and the
+    /// resolved cwd, and that cwd is the call's authorization target.
+    #[test]
+    fn process_preview_names_program_argv_and_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let args = vec!["--release".to_string(), "--locked".to_string()];
+        let preview = process_preview(
+            "Run cargo with 2 argument(s)".to_string(),
+            synthetic_command_line("cargo", &args),
+            cwd.clone(),
+        );
+        let shown = cwd.display().to_string();
+        assert_eq!(preview.command.as_deref(), Some("cargo --release --locked"));
+        assert_eq!(preview.cwd.as_deref(), Some(shown.as_str()));
+        assert_eq!(preview.paths, vec![shown]);
+        assert!(preview.summary.contains("cargo"));
+    }
+
+    /// Two calls that differ only in argv cannot share a card.
+    #[test]
+    fn different_argv_produce_different_process_cards() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let card = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            process_preview(String::new(), synthetic_command_line("git", &args), cwd.clone())
+        };
+        assert_ne!(card(&["status"]).command, card(&["push", "--force"]).command);
+    }
+
+    /// One throne for build detection: the card and the spawn read the same
+    /// answer. Cargo wins over Make; neither present is refused, not guessed.
+    #[test]
+    fn project_command_detection_is_shared_and_refuses_to_guess() {
+        let tmp = TempDir::new().unwrap();
+        assert!(detect_project_command(tmp.path(), "build").is_err());
+        std::fs::write(tmp.path().join("Makefile"), "build:\n").unwrap();
+        assert_eq!(
+            detect_project_command(tmp.path(), "test").unwrap(),
+            ("make", vec!["test".to_string()])
+        );
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(
+            detect_project_command(tmp.path(), "build").unwrap(),
+            ("cargo", vec!["build".to_string(), "--all-targets".to_string()])
+        );
+    }
+
+    /// A pid the agent never started is refused before any approval is asked.
+    #[test]
+    fn stop_card_refuses_a_pid_this_agent_did_not_start() {
+        let validator = tracked_pid_validator("Stop");
+        assert!(validator(&json!({"pid": 1})).is_err());
+        assert!(validator(&json!({"pid": u64::from(u32::MAX) + 1})).is_err());
+        assert!(validator(&json!({})).is_err());
+    }
 }
