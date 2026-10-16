@@ -640,7 +640,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       credits.append(privacy)
       credits.append(NSAttributedString(string: "\n", attributes: mono))
       credits.append(terms)
-      NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+      NSApp.orderFrontStandardAboutPanel(options: [
+        .credits: credits,
+        .version: info["CSBuildNumber"] as? String ?? "unknown",
+      ])
     }
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)

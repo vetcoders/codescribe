@@ -16,7 +16,7 @@ version, inspect GitHub Releases. The candidate and the public release can diffe
       selected test counts and outstanding runtime acceptance separately.
 - [ ] Update the version, changelog and release notes to describe delivered
       behavior. A worker report, commit or green suite is not installed acceptance.
-- [ ] Confirm the candidate `CFBundleVersion` is greater than the published
+- [ ] Confirm the candidate `CFBundleVersion` equals the tagged release version and is newer than the published
       stable build. `scripts/build-app.sh` derives it from Git history; a squash
       merge can shorten that history. Preserve proven release ancestry and verify
       the resulting tree instead of silently publishing a lower build number.
@@ -83,7 +83,7 @@ or invalidate an independently verified local artifact; disclose that failure.
 - [ ] The shipped bundle has no broad ATS exception, has a nonempty
       `SUPublicEDKey`, and uses the controlled HTTPS `SUFeedURL`.
 - [ ] The live appcast returns 200 and advertises the exact signed stable DMG,
-      correct version, monotonic build, byte size and valid EdDSA signature.
+      correct release version, byte size and valid EdDSA signature.
 - [ ] Deploy the canonical site at `https://codescribe.vetcoders.io/` using the
       topology documented in [site/README.md](../site/README.md). GitHub Pages is
       a secondary copy; its green deployment is not canonical production proof.
@@ -93,3 +93,16 @@ or invalidate an independently verified local artifact; disclose that failure.
       and current screenshots. Do not advertise unfinished controls as released.
 - [ ] Complete the release report's security gate, exposed-surface inventory,
       deployment/rollback decision and cold install smoke with actual evidence.
+
+## Update version identity
+
+From 0.17.0, `CFBundleVersion`, `CFBundleShortVersionString`, Cargo version and
+the release tag (without `v`) are identical. Sparkle orders this release version.
+`CSBuildNumber` is the branch commit count for diagnostics only; squash, shallow
+clones and rebases cannot change release ordering. Rebuilding an already shipped
+version is not an update: publish a new patch version for changed release bytes.
+
+Pre-0.17.0 development installations used integer counters (for example 0.15.2
+used 1838 while 0.16.0 used 479). Those installations need the new DMG once;
+no numeric migration counter is published. The updater accepts only canonical
+release identities and never offers an equal or older marketing version.

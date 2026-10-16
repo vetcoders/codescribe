@@ -693,7 +693,7 @@ struct AppBuildInfo: Equatable {
     let info = bundle.infoDictionary ?? [:]
     return AppBuildInfo(
       version: info["CFBundleShortVersionString"] as? String ?? "unknown",
-      build: info["CFBundleVersion"] as? String ?? "unknown",
+      build: info["CSBuildNumber"] as? String ?? "unknown",
       commit: info["CSBuildCommit"] as? String ?? "unknown",
       builtAt: info["CSBuiltAt"] as? String ?? "unknown"
     )
