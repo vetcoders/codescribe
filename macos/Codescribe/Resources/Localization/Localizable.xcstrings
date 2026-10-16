@@ -14567,7 +14567,14 @@
     },
     "Sending in %lld s" : {
       "comment" : "Countdown until a held agent message becomes eligible for sending",
+      "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sending in %lld s"
+          }
+        },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
