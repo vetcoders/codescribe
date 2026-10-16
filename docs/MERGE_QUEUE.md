@@ -56,7 +56,7 @@ the real required checks.
 1. Land the minimal bootstrap on `main` through the normal protected path:
    the hosted `rust.yml` (it produces the required `Clippy + Tests` status)
    and `semgrep.yml`, both with `merge_group`. Do not deploy the candidate
-   wholesale. `main` has no localization consumer or prose ratchet, so
+   wholesale. `main` has no `L10N_BASE` consumer or prose ratchet, so
    `l10n.yml` is not a prerequisite there; admit it as a standalone workflow
    only together with the consumers it checks, taken from the candidate. The
    candidate keeps all three workflows as one contract.
