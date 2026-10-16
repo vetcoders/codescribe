@@ -14638,6 +14638,12 @@ public struct CsToolApprovalRequest: Equatable, Hashable {
      * Filesystem paths the call declares it will touch.
      */
     public var paths: [String]
+    /**
+     * Redacted, bounded JSON snapshot of the call's own arguments, so the card
+     * shows what will run even for a tool whose validator names no path or
+     * command. Absent only when the call carries no arguments.
+     */
+    public var arguments: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -14672,7 +14678,12 @@ public struct CsToolApprovalRequest: Equatable, Hashable {
          */cwd: String?,
         /**
          * Filesystem paths the call declares it will touch.
-         */paths: [String]) {
+         */paths: [String],
+        /**
+         * Redacted, bounded JSON snapshot of the call's own arguments, so the card
+         * shows what will run even for a tool whose validator names no path or
+         * command. Absent only when the call carries no arguments.
+         */arguments: String?) {
         self.callId = callId
         self.sessionId = sessionId
         self.threadId = threadId
@@ -14683,6 +14694,7 @@ public struct CsToolApprovalRequest: Equatable, Hashable {
         self.command = command
         self.cwd = cwd
         self.paths = paths
+        self.arguments = arguments
     }
 
 
@@ -14708,7 +14720,8 @@ public struct FfiConverterTypeCsToolApprovalRequest: FfiConverterRustBuffer {
                 summary: FfiConverterString.read(from: &buf),
                 command: FfiConverterOptionString.read(from: &buf),
                 cwd: FfiConverterOptionString.read(from: &buf),
-                paths: FfiConverterSequenceString.read(from: &buf)
+                paths: FfiConverterSequenceString.read(from: &buf),
+                arguments: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -14723,6 +14736,7 @@ public struct FfiConverterTypeCsToolApprovalRequest: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.command, into: &buf)
         FfiConverterOptionString.write(value.cwd, into: &buf)
         FfiConverterSequenceString.write(value.paths, into: &buf)
+        FfiConverterOptionString.write(value.arguments, into: &buf)
     }
 }
 

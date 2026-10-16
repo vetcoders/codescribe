@@ -3155,6 +3155,17 @@
         }
       }
     },
+    "Arguments" : {
+      "comment" : "Heading above the argument snapshot on an agent permission card",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Argumenty"
+          }
+        }
+      }
+    },
     "Arm modifier" : {
       "localizations" : {
         "pl" : {
@@ -6554,6 +6565,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie"
+          }
+        }
+      }
+    },
+    "Dictation audio will leave this Mac and be sent to the configured cloud speech provider." : {
+      "comment" : "Cloud consent confirmation: body naming the effect",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dźwięk z dyktowania opuści ten Mac i trafi do skonfigurowanego dostawcy rozpoznawania mowy w chmurze."
           }
         }
       }
@@ -14264,6 +14286,17 @@
         }
       }
     },
+    "Secret-looking values read [redacted] and long values are shortened." : {
+      "comment" : "Tooltip for the argument snapshot on an agent permission card",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wartości wyglądające na sekrety mają postać [redacted], a długie wartości są skracane."
+          }
+        }
+      }
+    },
     "See what to correct" : {
       "comment" : "About panel: opens the refusal with the file to correct",
       "localizations" : {
@@ -14373,6 +14406,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij potwierdzenie po pierwszym udanym dyktowaniu"
+          }
+        }
+      }
+    },
+    "Send dictation audio to the cloud?" : {
+      "comment" : "Cloud consent confirmation: dialog title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłać dźwięk z dyktowania do chmury?"
           }
         }
       }
@@ -16122,6 +16166,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podsumowanie"
+          }
+        }
+      }
+    },
+    "Switch to Cloud" : {
+      "comment" : "Cloud consent confirmation: button that grants consent and selects Cloud",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przełącz na Chmurę"
           }
         }
       }
