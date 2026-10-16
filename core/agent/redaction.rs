@@ -166,9 +166,10 @@ impl CommandRedactor {
             }
             return token.to_string();
         }
-        if trimmed.starts_with('-') && contains_sensitive_key(trimmed) {
-            self.pending = 1;
-        } else if trimmed.eq_ignore_ascii_case("bearer") || trimmed.eq_ignore_ascii_case("basic") {
+        let names_a_secret_option = trimmed.starts_with('-') && contains_sensitive_key(trimmed);
+        let is_scheme =
+            trimmed.eq_ignore_ascii_case("bearer") || trimmed.eq_ignore_ascii_case("basic");
+        if names_a_secret_option || is_scheme {
             self.pending = 1;
         }
         token.to_string()
