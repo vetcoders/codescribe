@@ -209,9 +209,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(menu.contains(".help(help)"))
   }
 
-  /// The floating name pill opens the Agents drawer for All as for one agent;
-  /// interactive glass gives it the system's hover and press feedback.
-  func testConversationNamePillOpensTheAgentsDrawer() throws {
+  /// The floating name pill toggles the Agents drawer for All as for one
+  /// agent (Maciej, 2026-10-17: with the clickable scrim gone, the second
+  /// click is the pointer's way back out); interactive glass gives it the
+  /// system's hover and press feedback.
+  func testConversationNamePillTogglesTheAgentsDrawer() throws {
     let conversation = try source("Overlay/OverlayConversationView.swift")
     XCTAssertTrue(conversation.contains("Button(action: onShowAgents) { namePillLabel }"))
     XCTAssertTrue(conversation.contains(".modifier(OverlayNamePillGlass(interactive: true))"))
@@ -219,7 +221,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
       conversation.contains(
         "content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())"))
     let overlay = try source("Overlay/DictationOverlayView.swift")
-    XCTAssertTrue(overlay.contains("onShowAgents: { state.showAgentMonitor() },"))
+    XCTAssertTrue(overlay.contains("if state.showsAgentMonitor {"))
+    XCTAssertTrue(overlay.contains("state.hideAgentSidebar()"))
 
     let state = OverlayState()
     let broadcast = OverlayConversation(
@@ -229,6 +232,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     state.showAgentMonitor()
     XCTAssertTrue(state.showsAgentMonitor)
     XCTAssertEqual(state.selectedConversationID, broadcast.id, "the drawer keeps the conversation")
+    state.hideAgentSidebar()
+    XCTAssertFalse(state.showsAgentMonitor, "the same pill click closes the open stack")
+    XCTAssertEqual(state.selectedConversationID, broadcast.id, "closing keeps the conversation")
   }
 
   /// Clicking an agent's name in its reply bubble jumps to that agent's own
