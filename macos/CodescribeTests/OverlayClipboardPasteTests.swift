@@ -6,6 +6,32 @@ import XCTest
 
 final class OverlayClipboardPasteTests: XCTestCase {
   @MainActor
+  func testProgrammaticComposerResponderKeepsThePanelKeyboardGateClosed() throws {
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant("Retained draft"), sending: false, onSubmit: {}))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+    let panel = FloatingOverlayPanel(
+      contentRect: host.frame, styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = host
+    defer { panel.close() }
+    host.layoutSubtreeIfNeeded()
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let text = try XCTUnwrap(editor(in: host))
+    XCTAssertTrue(panel.makeFirstResponder(text))
+    XCTAssertTrue(panel.firstResponder === text)
+    XCTAssertFalse(panel.allowsKeyForTranscript, "Preselection is not a user request for keyboard focus")
+    XCTAssertFalse(panel.canBecomeKey)
+    XCTAssertEqual(text.string, "Retained draft")
+  }
+
+  @MainActor
   func testComposerClickRetainsKeyAfterTheTranscriptResigns() throws {
     for prompt in [String(localized: "Send to everyone"), String(localized: "Message the Agent")] {
       var draft = ""

@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = Path(os.environ.get("WORKFLOWS_DIR", ROOT / ".github/workflows"))
 
 
-def base_selection_script():
-    lines = (WORKFLOWS / "l10n.yml").read_text().splitlines()
+def base_selection_script(workflow="l10n.yml"):
+    lines = (WORKFLOWS / workflow).read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if "Fetch the base the prose ratchet measures against" in line)
     run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     indent = len(lines[run]) - len(lines[run].lstrip()) + 2
@@ -28,6 +28,8 @@ HOSTILE = 'x"; touch pwned; $(touch pwned) `touch pwned`'
 
 
 class LocalizationWorkflowBaseTests(unittest.TestCase):
+    workflow = "l10n.yml"
+
     def run_selection(self, event, ref, before, base="main", queue_base="", script=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -46,7 +48,7 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
                    "GITHUB_ENV": str(output), "GIT_TEST_LOG": str(log),
                    "EVENT_NAME": event, "REF_NAME": ref, "BEFORE_SHA": before, "BASE_REF": base,
                    "MERGE_GROUP_BASE_SHA": queue_base}
-            done = subprocess.run(["/bin/bash", "-e", "-c", script or base_selection_script()],
+            done = subprocess.run(["/bin/bash", "-e", "-c", script or base_selection_script(self.workflow)],
                                   env=env, cwd=root, text=True, capture_output=True, check=False, timeout=10)
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             self.assertFalse((root / "pwned").exists(), "ref data reached the shell as code")
@@ -95,7 +97,7 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
         # `${{ github.base_ref }}` would be, the same payload executes in the
         # private temp cwd and the detector in run_selection fires.
         payload = 'x"; touch pwned; echo "'  # balanced, so the pasted script still parses
-        unsafe = base_selection_script().replace("$BASE_REF", payload)
+        unsafe = base_selection_script(self.workflow).replace("$BASE_REF", payload)
         with self.assertRaises(AssertionError) as caught:
             self.run_selection("pull_request", "1/merge", "", "main", script=unsafe)
         self.assertIn("ref data reached the shell as code", str(caught.exception))
@@ -110,6 +112,10 @@ class LocalizationWorkflowBaseTests(unittest.TestCase):
                                   f"+refs/heads/{hostile}:refs/remotes/origin/{hostile}"]])
         code, output, calls = self.run_selection("push", hostile, "", hostile)
         self.assertEqual(code, 0)
+
+
+class RustQualityWorkflowBaseTests(LocalizationWorkflowBaseTests):
+    workflow = "rust.yml"
 
 
 if __name__ == "__main__":

@@ -107,6 +107,39 @@ jobs:
       - name: Show the Xcode this image selected
         run: xcodebuild -version
 
+      # The ref reaches the shell through `env:`, never through `${{ }}` inside
+      # `run:`: a branch name is attacker-controlled input on a public repo.
+      - name: Fetch the base the prose ratchet measures against
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [[ "$EVENT_NAME" == merge_group ]]; then
+            # The queue's base is the immutable tip the entry was built on;
+            # never fall back to a moving branch name.
+            if [[ ! "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ || "$MERGE_GROUP_BASE_SHA" == "$zero" ]]; then
+              echo "::error::merge_group event has no immutable base_sha"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
+            printf 'L10N_BASE=%s\n' "$MERGE_GROUP_BASE_SHA" >> "$GITHUB_ENV"
+          elif [[ "$EVENT_NAME" == push && "$REF_NAME" == main ]]; then
+            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ || "$BEFORE_SHA" == "$zero" ]]; then
+              echo "::error::main push has no immutable comparison baseline"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$BEFORE_SHA"
+            printf 'L10N_BASE=%s\n' "$BEFORE_SHA" >> "$GITHUB_ENV"
+          else
+            git fetch --no-tags --depth=1 origin \
+              "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            printf 'L10N_BASE=origin/%s\n' "$BASE_REF" >> "$GITHUB_ENV"
+          fi
+
       - name: Verify catalog localization contracts
         run: make verify-l10n-catalog
 
