@@ -93,9 +93,11 @@ The Dictation pane is one tab per concern:
 
 1. **Engine** — **Recognition mode** is the first and only editable row (Apple
    only, Local power, Cloud). The two on-device modes carry a one-line
-   description; Cloud carries none — choosing it _is_ the consent, and the pane
-   does not restate that in a permanent caption. A missing consent never shows
-   as Cloud at all: the mode reads Apple only until it is granted. Below it,
+   description; Cloud carries none — selecting it opens a confirmation dialog
+   stating that dictation audio will leave the Mac, and only confirming grants
+   consent (Cancel leaves the previous mode untouched). A missing consent
+   never shows as Cloud at all: the mode reads Apple only until it is granted,
+   and leaving Cloud for either on-device mode revokes a standing grant. Below it,
    _Last transcription_ is one compact card — **Engine** (runtime truth from the
    serving verdict, “No transcription in this app session” before the first
    take, no readiness dot), the local Whisper model row only in Local power (the
@@ -155,8 +157,10 @@ on demand:
   model is installed separately on the Whisper tab). The **Configure cloud
   services** action below jumps to **Providers → Cloud transcription**.
 
-Selecting **Cloud** on the Engine tab is itself the audio-egress grant: it
-writes `CODESCRIBE_CLOUD_CONSENT=granted` together with the mode.
+Selecting **Cloud** on the Engine tab opens a confirmation dialog that names
+the effect; only confirming it writes `CODESCRIBE_CLOUD_CONSENT=granted`
+together with the mode. Leaving Cloud for Local power or Apple only writes
+`denied`, so selecting Cloud again always asks again.
 
 ## Shortcuts & control
 
