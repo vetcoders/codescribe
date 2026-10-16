@@ -225,9 +225,9 @@ fn redact_value(value: &serde_json::Value, under_secret_key: bool) -> serde_json
                 .map(|(key, value)| (key.clone(), redact_value(value, is_secret_key(key))))
                 .collect(),
         ),
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items.iter().map(|item| redact_value(item, false)).collect(),
-        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(|item| redact_value(item, false)).collect())
+        }
         serde_json::Value::String(text) => serde_json::Value::String(bound_string(text)),
         other => other.clone(),
     }
@@ -1282,7 +1282,10 @@ mod tests {
         }))
         .expect("a call with arguments has a snapshot");
         for secret in ["live-bearer", "live-key", "live-token", "live-password"] {
-            assert!(!snapshot.contains(secret), "{secret} leaked into {snapshot}");
+            assert!(
+                !snapshot.contains(secret),
+                "{secret} leaked into {snapshot}"
+            );
         }
         assert_eq!(snapshot.matches("[redacted]").count(), 4);
         assert!(snapshot.contains("/work/notes.md"));

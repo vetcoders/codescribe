@@ -887,9 +887,16 @@ mod tests {
         let cwd = tmp.path().to_path_buf();
         let card = |args: &[&str]| {
             let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-            process_preview(String::new(), synthetic_command_line("git", &args), cwd.clone())
+            process_preview(
+                String::new(),
+                synthetic_command_line("git", &args),
+                cwd.clone(),
+            )
         };
-        assert_ne!(card(&["status"]).command, card(&["push", "--force"]).command);
+        assert_ne!(
+            card(&["status"]).command,
+            card(&["push", "--force"]).command
+        );
     }
 
     /// One throne for build detection: the card and the spawn read the same
@@ -906,7 +913,10 @@ mod tests {
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
         assert_eq!(
             detect_project_command(tmp.path(), "build").unwrap(),
-            ("cargo", vec!["build".to_string(), "--all-targets".to_string()])
+            (
+                "cargo",
+                vec!["build".to_string(), "--all-targets".to_string()]
+            )
         );
     }
 
