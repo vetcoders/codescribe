@@ -140,9 +140,10 @@ final class CloudPrivacyCopyTests: XCTestCase {
     }
   }
 
-  /// Selecting Cloud on the Engine picker is the explicit grant: it writes the
-  /// consent record and the mode together. The copy above describes this write.
-  func testPickerPersistsCloudOnlyAfterExplicitGrant() {
+  /// A bare Cloud selection on the Engine picker writes nothing (CS160-F013):
+  /// the consent record and the mode are written together only by the
+  /// confirmation that names the effect, and leaving Cloud revokes the grant.
+  func testCloudIsGrantedOnlyByTheConfirmationAndRevokedOnLeave() {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
     persisted.asrMode = nil
@@ -166,10 +167,32 @@ final class CloudPrivacyCopyTests: XCTestCase {
       permissionProbe: MockPermissionProbe()
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
+
     model.setAsrMode("cloud")
+    XCTAssertTrue(writes.isEmpty, "selecting Cloud without confirming must not write")
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.confirmCloudConsent()
     XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
     XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
+    XCTAssertTrue(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.setAsrMode("local_power")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "local_power"])
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.confirmCloudConsent()
+    writes.removeAll()
+    model.setAsrMode("apple_only")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "apple_only"])
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
   }
 
   /// The status rows render the live mode label and a consent state that

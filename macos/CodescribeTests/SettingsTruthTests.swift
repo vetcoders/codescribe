@@ -2304,6 +2304,11 @@ final class SettingsTruthTests: XCTestCase {
 
     writes.removeAll()
     model.setAsrMode("cloud")
+    XCTAssertTrue(writes.isEmpty, "a bare Cloud selection only asks; it writes nothing")
+    XCTAssertEqual(model.asrModeId, "local_power")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.confirmCloudConsent()
     XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
     XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
@@ -2311,9 +2316,10 @@ final class SettingsTruthTests: XCTestCase {
 
     writes.removeAll()
     model.setAsrMode("apple_only")
-    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_ASR_MODE"])
-    XCTAssertEqual(writes.map(\.1), ["apple_only"])
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "apple_only"])
     XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted, "leaving Cloud revokes the grant")
 
     try model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.0, "STT_LIVE_ENDPOINT")
@@ -2509,7 +2515,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
     model.setAsrMode("apple_only")
     XCTAssertNil(model.sttModelRow)
     persisted.resolvedAsrMode = "cloud"
-    model.setAsrMode("cloud")
+    model.confirmCloudConsent()
     XCTAssertNil(model.sttModelRow, "Cloud has no runtime model preference to promise")
   }
 
