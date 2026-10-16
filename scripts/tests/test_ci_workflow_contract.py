@@ -38,8 +38,12 @@ class CiWorkflowContractTests(unittest.TestCase):
                 self.assertIn("github.event_name", concurrency["group"])
                 self.assertIn("github.ref", concurrency["group"])
                 cancel = concurrency["cancel-in-progress"]
-                self.assertIn("merge_group", str(cancel))
-                self.assertIn("!=", str(cancel))
+                expected = (
+                    "${{ github.event_name != 'merge_group' }}"
+                    if name == "l10n.yml"
+                    else "${{ github.event_name == 'pull_request' }}"
+                )
+                self.assertEqual(cancel, expected)
 
     def test_pull_request_and_push_triggers_survive(self):
         for name in ("rust.yml", "semgrep.yml"):

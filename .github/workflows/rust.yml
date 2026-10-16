@@ -35,11 +35,11 @@ on:
   merge_group:
     types: [checks_requested]
 
-# Event and ref isolate the group; queue (merge_group) runs are never cancelled
-# by a newer run, because a cancelled queue check removes the entry.
+# Queue entries are never cancelled: a merge_group run has a unique ref, and
+# only superseded pull_request runs are cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -89,16 +89,18 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Queue/workflow regression tests (13). Cheap, so they run before any
-      # compiler stage. PyYAML is test-only: pinned, in a private venv under
-      # RUNNER_TEMP, never installed into the runner's Python.
-      - name: Test CI workflow and merge-queue contracts
+      # Regression suite for this file's own queue contract (merge_group trigger,
+      # event-isolated concurrency, hosted runners, preserved gates). It is not part
+      # of `make verify`, so it runs here, unconditionally, before the compiler gates.
+      # PyYAML is test-only: pinned, installed into a throwaway venv under
+      # RUNNER_TEMP, never into the runner's system Python.
+      - name: Run workflow merge-queue contract tests
         run: |
           set -euo pipefail
-          venv="$(mktemp -d "$RUNNER_TEMP/ci-contract-venv.XXXXXX")"
+          venv="$RUNNER_TEMP/workflow-contract-venv"
           python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
-          "$venv/bin/python" -m unittest scripts/tests/test_l10n_workflow_base.py scripts/tests/test_ci_workflow_contract.py
+          "$venv/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
+          "$venv/bin/python" -I -m unittest scripts/tests/test_ci_workflow_merge_queue.py scripts/tests/test_l10n_workflow_base.py scripts/tests/test_ci_workflow_contract.py
 
       - name: Show the Xcode this image selected
         run: xcodebuild -version
