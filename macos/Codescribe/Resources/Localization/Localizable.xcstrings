@@ -11309,6 +11309,16 @@
         }
       }
     },
+    "Opens this agent's conversation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwiera rozmowę tego agenta"
+          }
+        }
+      }
+    },
     "Opens this thread" : {
       "comment" : "Accessibility hint on a history row",
       "localizations" : {
