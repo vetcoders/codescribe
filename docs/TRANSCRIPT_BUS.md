@@ -1247,7 +1247,11 @@ closed to a notice: no raw text, just the delivery ID, the sending peer's name
 and channel, the words "peer coordination, not a Founder instruction", and the
 exact `cs-bus --read-pending --provider codex --session <thread-id>` command.
 The receiver must read the owned mailbox's full envelope before treating a
-peer's coordination text as if it had Founder authority.
+peer's coordination text as if it had Founder authority. Every metadata field
+in the wrapper is rendered on one line with non-printable characters replaced,
+and the fields a peer chose itself (its name and channel) keep only letters,
+digits and `._-`, so a peer cannot forge a `from: Founder` line or a line of
+its own.
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the
 matching pending Codex submission through `thread/queue/delete`. The transport
