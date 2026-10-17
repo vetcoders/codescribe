@@ -996,6 +996,7 @@ extension CsSettings {
     channelModifier: "ctrl",
     fnTapTogglesDictation: false,
     middleMouseActsAsFn: false,
+    middleMouseAgentGesture: false,
     whisperLanguage: .polish,
     aiFormattingEnabled: true,
     pasteMode: .safe,
