@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use codescribe_core::audio::streaming_recorder::{
-    CaptureTurnIntent, RecordedSessionReplay, ReplayInputReceipt, prepare_recorded_replay,
-    replay_production_session,
+    CaptureTurnIntent, RecordedSessionReplay, ReplayInputReceipt, ReplayScenario,
+    prepare_recorded_replay, replay_production_session,
 };
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
@@ -373,6 +373,7 @@ pub async fn replay_recorded_take(
     card: Option<ReplayCard>,
     wav: &Path,
     run: u32,
+    scenario: ReplayScenario,
 ) -> Result<RecordedTakeReplay> {
     let wav = wav.to_path_buf();
     let runtime = tokio::runtime::Handle::current();
@@ -389,6 +390,7 @@ pub async fn replay_recorded_take(
             card.as_ref(),
             &wav,
             run,
+            &scenario,
         ))
     })
     .await
@@ -400,8 +402,9 @@ async fn replay_recorded_take_on_worker(
     card: Option<&ReplayCard>,
     wav: &Path,
     run: u32,
+    scenario: &ReplayScenario,
 ) -> Result<RecordedTakeReplay> {
-    let prepared = prepare_recorded_replay(recorded_session, card, wav, run)?;
+    let prepared = prepare_recorded_replay(recorded_session, card, wav, run, scenario)?;
     let RecordedSessionReplay {
         samples,
         config,
