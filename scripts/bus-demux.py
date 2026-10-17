@@ -4338,6 +4338,104 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
         return None, f"tts request failed ({error.__class__.__name__})", "network"
 
 
+SPEECH_CACHE_SCHEMA = "codescribe.speech-cache.v1"
+
+
+def speech_cache_key(fields: dict[str, Any]) -> str:
+    """sha256 of the canonical JSON of everything that shapes the audio."""
+    canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _read_cached_speech(path: Path) -> bytes | None:
+    """PCM s16le 24 kHz mono from one cached WAV, or None when absent or not that shape."""
+    import wave
+
+    try:
+        with wave.open(str(path), "rb") as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, 24000):
+                return None
+            return source.readframes(source.getnframes()) or None
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+def _write_speech_atomically(path: Path, write: Any) -> None:
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        staged = Path(handle.name)
+    try:
+        write(staged)
+        os.replace(staged, path)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _cached_speech(
+    root: Path | None,
+    fields: dict[str, Any],
+    synthesize: Any,
+    *,
+    reply_id: str | None = None,
+) -> tuple[bytes | None, str | None, str | None]:
+    """Every synthesis stays on disk; the same words in the same voice never call the API twice.
+
+    `<bridge_home>/speech/<sha256>.wav` holds the PCM and `<sha256>.json` says
+    what produced it. The key covers provider, voice, speed, language, text
+    and any provider model. A hit needs no credential and no network. A miss
+    synthesizes and stores both files atomically before playback is even
+    queued, so a refused, busy or stopped playback keeps the recording. A
+    failed write costs only the reuse: the fresh PCM still plays.
+    """
+    import wave
+
+    directory = (root if root is not None else bridge_home()) / "speech"
+    key = speech_cache_key(fields)
+    audio = directory / f"{key}.wav"
+    cached = _read_cached_speech(audio)
+    if cached is not None:
+        return cached, None, None
+    pcm, error, reason = synthesize()
+    if pcm is None:
+        return pcm, error, reason
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # `text` is the exact string sent to TTS and the PCM is whole, silence
+        # included: an utterance-level text+audio pair for STT and ledger
+        # fixtures, not word timings. Synthesis does not prove every word was
+        # spoken, so fidelity stays unverified until a listener checks it.
+        sidecar = {"schema": SPEECH_CACHE_SCHEMA, **fields, "sha256": key,
+                   "alignment": "utterance", "tts_fidelity": "unverified",
+                   "format": {"sample_rate": 24000, "encoding": "s16le", "channels": 1,
+                              "samples": len(pcm) // 2},
+                   "created_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")}
+        if reply_id:
+            sidecar["reply_id"] = reply_id
+        # Sidecar first: a WAV on disk always has its provenance beside it.
+        _write_speech_atomically(directory / f"{key}.json", lambda path: path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"))
+
+        def write_wav(path: Path) -> None:
+            with wave.open(str(path), "wb") as sink:
+                sink.setnchannels(1)
+                sink.setsampwidth(2)
+                sink.setframerate(24000)
+                sink.writeframes(pcm)
+
+        _write_speech_atomically(audio, write_wav)
+    except OSError as failure:
+        sys.stderr.write(f"cs-bus: speech cache write failed ({failure.__class__.__name__})\n")
+    return pcm, None, None
+
+
+def _control_reply_id(control: ReplyPlaybackControl | None) -> str | None:
+    reply = getattr(control, "reply", None)
+    value = reply.get("reply_id") if isinstance(reply, dict) else None
+    return value if isinstance(value, str) else None
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -4350,32 +4448,37 @@ def _speak_xai(
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
 
-    key = _xai_speech_key()
-    if not key:
-        return (
-            False,
-            "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
-            "credential_missing",
+    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+        key = _xai_speech_key()
+        if not key:
+            return (
+                None,
+                "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
+                "credential_missing",
+            )
+        body = json.dumps(
+            {
+                "text": text,
+                "voice_id": voice,
+                "language": "auto",
+                "output_format": {"codec": "pcm", "sample_rate": 24000},
+                "speed": speed,
+            }
+        ).encode("utf-8")
+        # The URL stays literal where the Request is built. Headers ride on the
+        # Request: opener.addheaders lose to the default Content-Type that
+        # do_request_ installs first for any request with data, and the API
+        # rejects a JSON body labelled x-www-form-urlencoded (415).
+        request = urllib.request.Request(
+            "https://api.x.ai/v1/tts",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-    body = json.dumps(
-        {
-            "text": text,
-            "voice_id": voice,
-            "language": "auto",
-            "output_format": {"codec": "pcm", "sample_rate": 24000},
-            "speed": speed,
-        }
-    ).encode("utf-8")
-    # The URL stays literal where the Request is built. Headers ride on the
-    # Request: opener.addheaders lose to the default Content-Type that
-    # do_request_ installs first for any request with data, and the API
-    # rejects a JSON body labelled x-www-form-urlencoded (415).
-    request = urllib.request.Request(
-        "https://api.x.ai/v1/tts",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
+        return _tts_exchange(request)
+
+    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
+    return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
 
 def _speak_pcm(
@@ -4704,32 +4807,39 @@ def _speak_openai(
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
     import urllib.request
 
-    key = _openai_speech_key()
-    if not key:
-        return (
-            False,
-            "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
-            "credential_missing",
-        )
     model = (
         os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip()
         or "gpt-4o-mini-tts-2025-12-15"
     )
-    body = json.dumps(
-        {
-            "model": model,
-            "input": text,
-            "voice": voice,
-            "response_format": "pcm",
-            "speed": speed,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/audio/speech",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
+
+    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+        key = _openai_speech_key()
+        if not key:
+            return (
+                None,
+                "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
+                "credential_missing",
+            )
+        body = json.dumps(
+            {
+                "model": model,
+                "input": text,
+                "voice": voice,
+                "response_format": "pcm",
+                "speed": speed,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/audio/speech",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        )
+        return _tts_exchange(request)
+
+    fields = {"provider": "openai", "model": model, "voice": voice, "speed": float(speed),
+              "language": None, "text": text}
+    speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
+    return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
 
 # =============================================================================
