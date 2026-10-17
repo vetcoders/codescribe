@@ -390,15 +390,19 @@ mod tests {
         let speech = [
             (1_000, 2_000),
             (2_000 + gap - 1, 9_000),
-            (9_000 + gap, 12_000),
+            (9_000 + gap, 20_000),
         ];
-        let evidence = measure_speech_islands(input(&speech, None, 20_000));
+        let evidence = measure_speech_islands(input(&speech, None, 30_000));
         let spans: Vec<_> = evidence
             .islands
             .iter()
             .map(|island| (island.sample_start, island.sample_end, island.inner_pauses))
             .collect();
-        assert_eq!(spans, vec![(1_000, 9_000, 1), (9_000 + gap, 12_000, 0)]);
+        assert_eq!(
+            spans,
+            vec![(1_000, 9_000, 1), (9_000 + gap, 20_000, 0)],
+            "a pause one sample short of the gap joins; a pause of exactly the gap splits"
+        );
         assert_eq!(evidence.gap_ms, SPEECH_ISLAND_GAP_MS);
     }
 
