@@ -162,6 +162,11 @@ pub fn set_tray_assistive_session(assistive: bool) {
 /// all consume this same `BadgeMode`; status (`Listening`/`Thinking`) remains a
 /// separate lifecycle axis. Processing always wins over the session lane.
 pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
+    // A refused chord only flashes the pointer; the tray shows what is being
+    // recorded, and a refusal records nothing.
+    if indicator_mode == BadgeMode::Refused {
+        return;
+    }
     let snapshot = {
         let mut current = current_status_store()
             .write()
@@ -338,6 +343,29 @@ mod tests {
         set_agent_channels_listening(false);
         update_tray_status(TrayStatus::Idle);
         assert_eq!(current_tray_status(), TrayStatus::Idle);
+    }
+
+    /// Maciej, 2026-10-17: a vacant channel chord answers at the pointer only;
+    /// the tray keeps showing whatever was recording before the refusal.
+    #[test]
+    #[serial_test::serial]
+    fn a_refused_chord_never_repaints_the_tray() {
+        update_tray_status(TrayStatus::Listening);
+        set_tray_indicator_mode(BadgeMode::Assistive);
+        let before = current_tray_status_snapshot();
+        assert_eq!(before.indicator_mode, BadgeMode::Assistive);
+
+        set_tray_indicator_mode(BadgeMode::Refused);
+        assert_eq!(current_tray_status_snapshot(), before);
+
+        update_tray_status(TrayStatus::Idle);
+        set_tray_indicator_mode(BadgeMode::Refused);
+        assert_ne!(
+            current_tray_status_snapshot().indicator_mode,
+            BadgeMode::Refused,
+            "the tray store never holds the refusal mode"
+        );
+        set_tray_assistive_session(false);
     }
 
     /// Idle/Success/Thinking and non-assistive lanes stay non-assistive.
