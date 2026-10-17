@@ -243,6 +243,15 @@ impl AcousticSpeechEvidence {
     }
 }
 
+/// One capture energy hop on the PCM clock, read-only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnergyHopLevel {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    /// Linear RMS of the hop's samples.
+    pub rms: f32,
+}
+
 /// One speech burst on the capture hop clock.
 ///
 /// Identity is `(range.capture_epoch, range.sample_start)`. The start stays
@@ -579,6 +588,39 @@ impl CaptureEnergyOwner {
             sample_start,
             sample_end,
             ACTIVE_SPEECH_LINEAR_FLOOR,
+        )
+    }
+
+    /// Every hop of this capture, in order, with its RMS.
+    ///
+    /// For readers that need the levels themselves, such as syllable-nucleus
+    /// counting. `None` means this owner cannot speak for the whole extent:
+    /// wrong identity, nothing observed, invalid PCM, or a hole in the clock.
+    pub fn session_hop_levels(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+    ) -> Option<Vec<EnergyHopLevel>> {
+        if !self.identity.matches(session, capture_epoch) {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0
+            || clock.first_invalid_sample.is_some()
+            || !speech_anchor_clock_contiguous(&clock)
+        {
+            return None;
+        }
+        Some(
+            clock
+                .hops
+                .iter()
+                .map(|hop| EnergyHopLevel {
+                    sample_start: hop.sample_start,
+                    sample_end: hop.sample_end,
+                    rms: hop.rms,
+                })
+                .collect(),
         )
     }
 

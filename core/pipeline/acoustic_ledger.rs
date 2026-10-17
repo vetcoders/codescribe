@@ -910,6 +910,7 @@ pub struct AcousticLedger {
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
+    latest_speech_islands: Option<super::speech_islands::SpeechIslandEvidence>,
     pending_text_recovery: BTreeSet<OccurrenceIdentity>,
     /// Observations handed to an admission API. Independent of [`Self::trail`].
     offered_observations: usize,
@@ -2369,6 +2370,29 @@ impl AcousticLedger {
 
     pub fn latest_seal_coverage(&self) -> Option<&SealCoverageReceipt> {
         self.latest_seal_coverage.as_ref()
+    }
+
+    /// Store the latest island accounting for this capture. Observational:
+    /// nothing reads it to admit, refuse or seal. Another session or epoch
+    /// cannot replace it, as with [`Self::record_seal_coverage`].
+    pub fn record_speech_islands(
+        &mut self,
+        evidence: super::speech_islands::SpeechIslandEvidence,
+    ) -> bool {
+        let binds_this_ledger = self.committed.is_empty()
+            || self.committed.keys().any(|occurrence| {
+                occurrence.session == evidence.session_id
+                    && occurrence.capture_epoch == evidence.capture_epoch
+            });
+        if !binds_this_ledger {
+            return false;
+        }
+        self.latest_speech_islands = Some(evidence);
+        true
+    }
+
+    pub fn latest_speech_islands(&self) -> Option<&super::speech_islands::SpeechIslandEvidence> {
+        self.latest_speech_islands.as_ref()
     }
 
     /// Read issued finality for exactly one capture; never mint a seal here.

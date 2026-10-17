@@ -179,6 +179,8 @@ pub struct LedgerSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<LedgerCoverageFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub islands: Option<LedgerIslandsFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<LedgerTerminalFact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shapings: Vec<LedgerShapingFact>,
@@ -283,6 +285,44 @@ pub struct LedgerCoverageFact {
     pub incomplete_threshold_samples: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncovered_speech: Vec<LedgerOccurrenceSpan>,
+}
+
+/// Island accounting for this capture: per island of Silero speech, the word
+/// starts heard and the words written. No text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LedgerIslandsFact {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_rate_hz: u32,
+    pub observed_samples: u64,
+    pub gap_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onset_threshold_dbfs: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_floor_dbfs: Option<f32>,
+    /// Words in `words` that overlap no island.
+    pub words_outside: u32,
+    #[serde(default)]
+    pub islands: Vec<LedgerIslandFact>,
+}
+
+/// One island between its clamps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerIslandFact {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub onsets: u32,
+    /// Words in `words` that overlap this island more than any other.
+    pub words: u32,
+    pub inner_pauses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_word_start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_word_end: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silence_before: Option<crate::pipeline::speech_islands::IslandSilence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silence_after: Option<crate::pipeline::speech_islands::IslandSilence>,
 }
 
 /// Terminal finality already issued for this capture.
@@ -587,6 +627,12 @@ impl TakeTruth {
             fact.diagnostics = Some(ledger.coverage_diagnostics(receipt));
             fact
         });
+        let islands = ledger
+            .latest_speech_islands()
+            .filter(|evidence| {
+                evidence.session_id == session_id && evidence.capture_epoch == capture_epoch
+            })
+            .map(|evidence| islands_fact(evidence, &words));
 
         let shapings = ledger
             .incremental_shapings()
@@ -659,6 +705,7 @@ impl TakeTruth {
                 decisions,
                 seals,
                 coverage,
+                islands,
                 terminal,
                 shapings,
                 manual_revisions,
@@ -1270,6 +1317,44 @@ fn coverage_fact(
     }
 }
 
+fn islands_fact(
+    evidence: &crate::pipeline::speech_islands::SpeechIslandEvidence,
+    words: &[WordPin],
+) -> LedgerIslandsFact {
+    let spans: Vec<(u64, u64)> = words
+        .iter()
+        .map(|word| (word.sample_start, word.sample_end))
+        .collect();
+    let (placed, outside) =
+        crate::pipeline::speech_islands::words_per_island(&evidence.islands, &spans);
+    LedgerIslandsFact {
+        session_id: evidence.session_id.clone(),
+        capture_epoch: evidence.capture_epoch,
+        sample_rate_hz: evidence.sample_rate_hz,
+        observed_samples: evidence.observed_samples,
+        gap_ms: evidence.gap_ms,
+        onset_threshold_dbfs: evidence.onset_threshold_dbfs,
+        sound_floor_dbfs: evidence.sound_floor_dbfs,
+        words_outside: u32::try_from(outside).unwrap_or(u32::MAX),
+        islands: evidence
+            .islands
+            .iter()
+            .zip(placed)
+            .map(|(island, words)| LedgerIslandFact {
+                sample_start: island.sample_start,
+                sample_end: island.sample_end,
+                onsets: island.onsets,
+                words: words.words,
+                inner_pauses: island.inner_pauses,
+                first_word_start: words.first_word_start,
+                last_word_end: words.last_word_end,
+                silence_before: island.silence_before,
+                silence_after: island.silence_after,
+            })
+            .collect(),
+    }
+}
+
 fn measured_speech_pct(
     coverage: &crate::pipeline::acoustic_ledger::SealCoverageReceipt,
 ) -> Option<f32> {
@@ -1390,6 +1475,7 @@ mod tests {
                 decisions: Vec::new(),
                 seals: Vec::new(),
                 coverage: None,
+                islands: None,
                 terminal: None,
                 shapings: Vec::new(),
                 manual_revisions: Vec::new(),
@@ -1778,6 +1864,81 @@ mod private_observer_receipt_controls {
         let json = serde_json::to_value(other).unwrap();
         assert!(json.get("refusal_silence").is_none());
         assert!(json.get("refusal_distance_ms").is_none());
+    }
+
+    #[test]
+    fn private_observer_copies_island_accounting_for_its_own_capture_only() {
+        use crate::pipeline::acoustic_ledger::SilenceUnderSpan;
+        use crate::pipeline::speech_islands::{IslandSilence, SpeechIsland, SpeechIslandEvidence};
+
+        let evidence = |session: &str, epoch: u64| SpeechIslandEvidence {
+            session_id: session.to_string(),
+            capture_epoch: epoch,
+            sample_rate_hz: 16_000,
+            observed_samples: 64_000,
+            gap_ms: 400,
+            onset_threshold_dbfs: Some(-42.0),
+            sound_floor_dbfs: None,
+            islands: vec![SpeechIsland {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                onsets: 4,
+                inner_pauses: 1,
+                silence_before: Some(IslandSilence {
+                    samples: 16_000,
+                    silence: SilenceUnderSpan::DigitalZero,
+                }),
+                silence_after: Some(IslandSilence {
+                    samples: 32_000,
+                    silence: SilenceUnderSpan::SoundWithoutSpeech,
+                }),
+            }],
+        };
+
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.record_speech_islands(evidence("islands", 5)));
+        let inventory = TakeTruth::observe_ledger(&ledger, "islands", 5)
+            .ledger
+            .unwrap();
+        let islands = inventory.islands.expect("the island accounting is copied");
+        assert_eq!(islands.gap_ms, 400);
+        assert_eq!(islands.words_outside, 0);
+        assert_eq!(
+            islands.islands,
+            vec![LedgerIslandFact {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                onsets: 4,
+                words: 0,
+                inner_pauses: 1,
+                first_word_start: None,
+                last_word_end: None,
+                silence_before: Some(IslandSilence {
+                    samples: 16_000,
+                    silence: SilenceUnderSpan::DigitalZero,
+                }),
+                silence_after: Some(IslandSilence {
+                    samples: 32_000,
+                    silence: SilenceUnderSpan::SoundWithoutSpeech,
+                }),
+            }],
+            "an island with onsets and no words is the cut-speech signal"
+        );
+        let json = serde_json::to_value(&islands).unwrap();
+        assert_eq!(
+            json["islands"][0]["silence_after"]["silence"],
+            "sound_without_speech"
+        );
+        assert!(json.get("sound_floor_dbfs").is_none());
+
+        assert!(
+            TakeTruth::observe_ledger(&ledger, "islands", 6)
+                .ledger
+                .unwrap()
+                .islands
+                .is_none(),
+            "another epoch reads no islands"
+        );
     }
 
     #[test]

@@ -12,6 +12,8 @@ pub mod light_plus;
 pub(crate) mod occurrence_slot_receipt;
 /// Event sink helpers: collectors and fan-out to consumers.
 pub mod sinks;
+/// Speech islands between word clamps: onsets, pauses and the silence beside them.
+pub mod speech_islands;
 /// Live streaming session state for partial/final engine events.
 pub mod streaming;
 /// Take truth sidecar (`.truth.json`) — the schema-v2 observer contract.
