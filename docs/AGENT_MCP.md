@@ -29,9 +29,16 @@ restrict it to the configured principal. Stdio is not an authentication
 mechanism.** Anything that can start the process, or reach the socket your
 transport exposes, is the agent as far as this surface is concerned. Run it
 behind a transport that proves who is calling, and give that transport no
-broader reach than the agent needs. Start this process with a minimal
-environment: credentials the transport or its launcher holds must not be
-inherited by it, because it never needs them.
+broader reach than the agent needs.
+
+Credentials the transport or its launcher holds in this process's environment
+never reach the BUS helpers it starts: `cs-bus` and everything `cs-bus` starts
+receive only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, `TZ`
+and `SPEECH_TTS_MODEL_OPENAI` (`CHILD_ENVIRONMENT` in `bus-mcp-agent.py`).
+Bridge home, bus, provider and session travel as explicit arguments, and speech
+credentials come from Keychain or a CLI session, exactly as for `cs-say`. The
+native key helper has its own, narrower allowlist. Still start the process with
+the smallest environment your transport allows.
 
 Everything the agent is allowed to be — provider, session, name, bus, paths,
 capabilities — comes from a scope file that the machine's owner writes and
@@ -40,19 +47,25 @@ path, a signing-key backend, a callback destination or speech permission. The
 `principal` field is a label the owner chooses so refusals are attributable; it
 is not a credential and does not authenticate anybody by itself.
 
-Ownership is then checked against canonical BUS state on every operation. The
+Read, acknowledge, send, speech and call operations then check ownership
+against canonical BUS state; `codescribe_status` reports only this session's own
+lease metadata and the participant roster, without message text. The
 lease is derived from `provider` plus `session_id`, so a scope with a different
 provider simply addresses a different mailbox rather than sharing one. The
 lease's recorded name must match the scope's name (compared case-insensitively),
 the audience binding used for sending must be owned by this agent, and an
 acknowledgment is only accepted for identifiers this connection actually read.
+Before this session has a lease, speech under the scope's name is refused while
+another session holds a BUS binding for that name. The owner is still
+responsible for giving each scope a name that is its own.
 Message text arriving from the BUS is untrusted data: receiving it is not
 execution, and acknowledging it only records a read.
 
 ## Scope file
 
 One JSON object, passed as `--scope /path/to/scope.json`. Unknown keys are
-refused; so is a missing required key. Nothing is defaulted silently.
+refused; so is a missing required key. Required fields are never defaulted;
+optional fields take the defaults shown below.
 
 | Field               | Required                         | Shape                                                  | Meaning                                                                     |
 | ------------------- | -------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
@@ -88,8 +101,10 @@ fallback:
   (validation alone and `--check-scope` never create it).
 
 Per-lease state then lives at `<state_dir>/<lease_id>/`, holding `calls/`,
-`send/`, `say/` and `events.sqlite`. Give each connection its own directory;
-two agents sharing one would share idempotency receipts.
+`send/`, `say/` and `events.sqlite`, so different sessions stay apart. Two
+processes must not serve the same lease at once: the Events database lock
+refuses the second, and that lease's idempotency receipts belong to whichever
+process serves it.
 
 The resolved path of `events.sqlite` is part of the Events signing-key
 namespace. A deployment that already has keys keeps them by naming the directory
@@ -215,9 +230,17 @@ equivalent in-process entry point for embedding.
 The agent-bridge payload carries these four files alongside `bus-mcp.py`,
 `bus-demux.py` and `cs-bus`. `make install-bus` stages, verifies and atomically
 replaces that code through the existing installer. Lease, cursor, acknowledgment
-and Events state live outside the replaceable payload, so an update does not
-disturb them — which is exactly what the shipped-payload regression in
-`scripts/tests/test_install_bus_payload.py` proves.
+and Events state live outside the replaceable payload. The regression in
+`scripts/tests/test_install_bus_payload.py` stages the payload, reads and
+acknowledges through it, restages and reads again; it does not run the Swift
+installer or a live connection.
+
+Replacing the payload replaces these files under the stable path below. A
+running connection keeps the code it loaded, but its next start uses the new
+generation: a scope written before `state_dir` existed then refuses to start.
+Move such a connection to a scope with `state_dir` — compare both with
+`--check-scope` — or to a copy it owns, before installing a payload that
+carries this generation.
 
 Point the connector at the stable managed path,
 `~/.codescribe/agent-bridge/runtime/bin/bus-mcp-runtime.py`, and start it with

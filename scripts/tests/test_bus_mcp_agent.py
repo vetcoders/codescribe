@@ -232,6 +232,17 @@ class ScopeContractTests(Fixture):
         self.assertFalse((self.root / "acknowledgments").exists())
         self.assertFalse(expected.exists())
 
+    def test_a_symlinked_runtime_root_cannot_relocate_state(self):
+        home = self.root / "other-home"
+        elsewhere = self.root / "elsewhere"
+        home.mkdir()
+        elsewhere.mkdir()
+        (home / "runtime").symlink_to(elsewhere, target_is_directory=True)
+        config = {**self.config, "bridge_home": str(home), "state_dir": str(home / "runtime" / "x-mcp")}
+        with self.assertRaises(ValueError):
+            AGENT.Scope(config)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
     def test_validation_and_check_scope_never_create_an_absent_state_directory(self):
         absent = self.root / "runtime" / "lin-mcp"
         config = {**self.config, "state_dir": str(absent)}
@@ -249,6 +260,39 @@ class ScopeContractTests(Fixture):
         self.assertEqual(scope.prepare_state(), absent)
         self.assertEqual(stat.S_IMODE(absent.stat().st_mode), 0o700)
         self.assertEqual(scope.prepare_state(), absent)
+
+    def test_check_scope_writes_no_bytecode_next_to_the_components(self):
+        scripts = self.root / "payload-bin"
+        scripts.mkdir()
+        for name in ("bus-mcp-runtime.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-demux.py"):
+            (scripts / name).write_bytes((SCRIPTS / name).read_bytes())
+        path = self.root / "scope.json"
+        path.write_text(json.dumps(self.config))
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        result = subprocess.run([sys.executable, str(scripts / "bus-mcp-runtime.py"), "--scope", str(path),
+                                 "--check-scope"], text=True, capture_output=True, check=True, timeout=15,
+                                env=environment)
+        self.assertEqual(json.loads(result.stdout)["lease_id"], self.lease)
+        self.assertEqual(sorted(p.name for p in scripts.iterdir()),
+                         ["bus-demux.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py"])
+
+    def test_bus_helper_children_receive_only_the_allowlisted_environment(self):
+        dump = self.root / "dump-env.py"
+        dump.write_text("import json, os\nprint(json.dumps(dict(os.environ)))\n")
+        planted = {"TRANSPORT_TOKEN": "transport-secret", "LLM_OPENAI_API_KEY": "model-secret",
+                   "CODESCRIBE_STT_SIDECAR_TOKEN": "sidecar-secret", "PATH": "/usr/bin:/bin",
+                   "HOME": str(self.root), "LANG": "pl_PL.UTF-8", "LC_ALL": "C", "TZ": "UTC"}
+        with patch.dict(os.environ, planted):
+            server = AGENT.AgentMailbox(DEMUX, NATIVE.Mailbox(DEMUX, self.root, self.bus), AGENT.Scope(self.config))
+        server.mailbox.command = [sys.executable, str(dump)]
+        seen = server.mailbox.run(["--status"])
+        for name in ("TRANSPORT_TOKEN", "LLM_OPENAI_API_KEY", "CODESCRIBE_STT_SIDECAR_TOKEN"):
+            self.assertNotIn(name, seen)
+        self.assertNotIn("transport-secret", json.dumps(seen))
+        for name in ("PATH", "HOME", "LANG", "LC_ALL", "TZ"):
+            self.assertEqual(seen[name], planted[name])
+        self.assertTrue(set(seen) <= AGENT.CHILD_ENVIRONMENT | {k for k in seen if k.startswith("LC_")}
+                        | {"__CF_USER_TEXT_ENCODING"})
 
     def test_check_scope_refuses_other_modes_and_an_invalid_scope(self):
         path = self.root / "scope.json"
@@ -369,6 +413,28 @@ class AgentToolsTests(Fixture):
         with patch.object(self.native, "run", side_effect=AssertionError("foreign lease used")):
             with self.assertRaises(PermissionError):
                 self.call("call", {"request_id": "b" * 24})
+
+    def test_unsolicited_speech_without_a_lease_cannot_borrow_a_bound_name(self):
+        (self.root / "leases" / (self.lease + ".json")).unlink()
+        self.server.scope.speech_enabled = True
+        binding = self.root / DEMUX.AUDIENCE_BINDING_FILENAME
+        def bind(provider, session):
+            DEMUX.atomic_json(binding, {"schema": DEMUX.AUDIENCE_BINDING_SCHEMA, "bindings": {"4": {
+                "audience": "ada", "bus": str(self.bus), "provider": provider, "provider_session_id": session}}})
+        bind("codex", OTHER_SESSION)
+        with patch.object(self.native, "run", side_effect=AssertionError("borrowed name spoke")):
+            for tool, args in (("call", {"request_id": "c" * 24}),
+                               ("say", {"request_id": "d" * 24, "text": "Hello."})):
+                with self.subTest(tool=tool), self.assertRaises(PermissionError):
+                    self.call(tool, args)
+        bind("claude-code", SESSION)  # Same session, other provider: still another participant.
+        with patch.object(self.native, "run", side_effect=AssertionError("borrowed name spoke")):
+            with self.assertRaises(PermissionError):
+                self.call("call", {"request_id": "e" * 24})
+        bind("codex", SESSION)  # This agent's own binding.
+        with patch.object(self.native, "run", return_value={"receipts": []}) as run:
+            self.call("call", {"request_id": "f" * 24})
+            self.assertEqual(run.call_count, 1)
 
     def test_six_tools_and_no_model_controlled_owner_or_path(self):
         tools = self.server.dispatch(PRINCIPAL, "tools/list", {})["tools"]

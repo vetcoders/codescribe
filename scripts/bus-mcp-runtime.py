@@ -295,6 +295,8 @@ def check_scope(scope_path):
     """
     import json
     from pathlib import Path
+    import sys
+    sys.dont_write_bytecode = True  # Importing the components must not write next to them.
     agent, events = load_components()
     scope = agent.Scope(json.loads(Path(scope_path).read_text()))
     demux = agent.load_module("codescribe_scope_check_demux",
