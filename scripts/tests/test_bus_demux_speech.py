@@ -218,7 +218,9 @@ class SpeechCacheTests(unittest.TestCase):
 
     def cached(self):
         directory = DEMUX.bridge_home() / "speech"
-        return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
+        if not directory.exists():
+            return []
+        return sorted(path.name for path in directory.iterdir() if path.suffix in (".wav", ".json"))
 
     def test_same_words_and_voice_synthesize_once_and_keep_an_aligned_pair(self):
         for _ in range(2):
@@ -258,6 +260,62 @@ class SpeechCacheTests(unittest.TestCase):
             DEMUX._speak_openai("hello", "leo", 1.0)
         self.assertEqual(self.opener.open.call_count, 4)
         self.assertEqual(len(self.cached()), 8)
+
+    def test_concurrent_misses_of_one_key_pay_once(self):
+        import threading
+
+        calls = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def synthesize_held():
+            calls.append("first")
+            started.set()
+            self.assertTrue(release.wait(5))
+            return b"\x02\x00\x03\x00", None, None
+
+        def synthesize_again():
+            calls.append("second")
+            return b"\xff\x7f", None, None
+
+        def synthesize_other():
+            calls.append("other")
+            return b"\x05\x00", None, None
+
+        fields = {"provider": "xai", "voice": "leo", "speed": 1.0, "language": "auto", "text": "once"}
+        results = {}
+
+        def speak(label, payload, synthesize):
+            results[label] = DEMUX._cached_speech(None, payload, synthesize)
+
+        first = threading.Thread(target=speak, args=("first", fields, synthesize_held))
+        first.start()
+        self.assertTrue(started.wait(5))
+        second = threading.Thread(target=speak, args=("second", fields, synthesize_again))
+        second.start()
+        other = threading.Thread(target=speak, args=("other", {**fields, "text": "another key"}, synthesize_other))
+        other.start()
+        other.join(5)
+        self.assertFalse(other.is_alive(), "another key must not wait for this one")
+        self.assertTrue(first.is_alive() and second.is_alive(), "the same key waits for the first synthesis")
+        release.set()
+        first.join(5)
+        second.join(5)
+        self.assertEqual(sorted(calls), ["first", "other"])
+        self.assertEqual(results["first"], (b"\x02\x00\x03\x00", None, None))
+        self.assertEqual(results["second"], results["first"])
+
+    def test_lock_timeout_synthesizes_instead_of_refusing(self):
+        fields = {"provider": "xai", "voice": "leo", "speed": 1.0, "language": "auto", "text": "late"}
+        directory = DEMUX.bridge_home() / "speech"
+        directory.mkdir(parents=True)
+        holder = os.open(directory / f"{DEMUX.speech_cache_key(fields)}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with patch.object(DEMUX, "SPEECH_LOCK_WAIT_SECONDS", 0.1):
+            result = DEMUX._cached_speech(None, fields, lambda: (b"\x04\x00", None, None))
+        self.assertEqual(result, (b"\x04\x00", None, None))
+        self.assertIn(f"{DEMUX.speech_cache_key(fields)}.wav", self.cached())
 
     def test_failed_synthesis_stores_nothing(self):
         self.response.status = 500
