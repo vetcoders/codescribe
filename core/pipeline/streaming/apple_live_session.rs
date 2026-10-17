@@ -1978,9 +1978,14 @@ struct AppleSealState {
     /// Direct-lane Whisper words dropped because Silero heard no speech within
     /// the near radius of their span. A diagnostic count; each drop is logged.
     direct_words_over_silence: u64,
+    /// Direct-lane Whisper words dropped by the other own-speech verdicts the
+    /// ledger lane applies: a loop copy without its own voiced segment, or a
+    /// pin with no voiced hop. A diagnostic count; each drop is logged.
+    direct_words_without_own_voice: u64,
     /// Valid direct finals withheld on purpose: Silero measured the whole
-    /// range quiet, or heard no speech near any word. Completed work, so it
-    /// never withholds the direct completion that Stop waits for.
+    /// range quiet, or the take's own speech evidence refused every word.
+    /// Completed work, so it never withholds the direct completion that Stop
+    /// waits for.
     direct_jobs_suppressed: u64,
     preview_rev: u64,
     speech_progress: SpeechProgress,
@@ -2662,6 +2667,7 @@ impl AppleSealState {
             direct_apple_epoch_has_final: false,
             direct_suppressed_no_measured_speech: 0,
             direct_words_over_silence: 0,
+            direct_words_without_own_voice: 0,
             direct_jobs_suppressed: 0,
             preview_rev: 0,
             speech_progress,
@@ -4420,9 +4426,8 @@ impl AppleSealState {
                         == crate::stt::tail_provider::TailEvidenceStability::Final
             }) {
                 self.window_plan_receipt(&job.request_identity.range, "returned");
-                let text = direct_text_heard_by_silero(self, &payload);
-                let every_word_over_silence =
-                    text.trim().is_empty() && !payload.text.trim().is_empty();
+                let text = direct_text_with_own_speech(self, &payload);
+                let every_word_refused = text.trim().is_empty() && !payload.text.trim().is_empty();
                 let range = payload.identity.range;
                 let observation = LedgerObservationIdentity::new(
                     LedgerObservationProducer::Whisper,
@@ -4435,12 +4440,12 @@ impl AppleSealState {
                         range.sample_end,
                     ),
                 );
-                if every_word_over_silence
-                    && !self.direct_range_measured_quiet(&observation.occurrence)
+                if every_word_refused && !self.direct_range_measured_quiet(&observation.occurrence)
                 {
-                    // Speech exists in the window, but Silero heard none near
-                    // any word: nothing to publish. A window with no speech at
-                    // all stays with the whole-range suppression and its count.
+                    // Speech exists in the window, but the take's own speech
+                    // evidence refused every word: nothing to publish. A window
+                    // with no speech at all stays with the whole-range
+                    // suppression and its count.
                     DirectJobOutcome::Suppressed
                 } else if self.publish_direct_transcript(ev_tx, observation, text, true) {
                     DirectJobOutcome::Published
@@ -7123,13 +7128,17 @@ fn measure_whisper_window_speech(
     WhisperWindowSpeech { facts, decisions }
 }
 
-/// Direct-lane text without the Whisper words Silero heard no speech near.
+/// Direct-lane text without the Whisper words the take's own speech evidence
+/// refuses.
 ///
-/// The direct lane has no ledger to receipt a refusal, so each dropped word is
-/// logged with its range, silence class and distance. Only the over-silence
-/// rule applies here; the repeat rules stay with the ledger. The window text
-/// is rejoined from the kept word pins only when a word was dropped.
-fn direct_text_heard_by_silero(
+/// The same verdicts as the ledger lane apply: a word Silero heard no speech
+/// near, a loop copy without its own voiced segment, and a pin with no voiced
+/// hop. The production default runs without the ledger, so a Whisper
+/// repetition loop must not reach the document here either. The direct lane
+/// has no ledger to receipt a refusal, so each dropped word is logged with its
+/// range and reason. The window text is rejoined from the kept word pins only
+/// when a word was dropped.
+fn direct_text_with_own_speech(
     state: &mut AppleSealState,
     payload: &TailProviderPayload,
 ) -> String {
@@ -7138,30 +7147,44 @@ fn direct_text_heard_by_silero(
     }
     let window = measure_whisper_window_speech(state, &payload.segments);
     let mut kept = Vec::with_capacity(payload.segments.len());
-    let mut dropped = 0u64;
+    let mut over_silence = 0u64;
+    let mut without_own_voice = 0u64;
     for (segment, decision) in payload.segments.iter().zip(&window.decisions) {
-        if let WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-            silence,
-            distance_ms,
-        }) = decision.verdict
-        {
-            dropped += 1;
-            info!(
-                session = %state.session_id,
-                sample_start = segment.range.sample_start,
-                sample_end = segment.range.sample_end,
-                silence = silence.as_str(),
-                distance_ms = ?distance_ms,
-                "direct_word_over_silence"
-            );
-            continue;
+        match decision.verdict {
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+                silence,
+                distance_ms,
+            }) => {
+                over_silence += 1;
+                info!(
+                    session = %state.session_id,
+                    sample_start = segment.range.sample_start,
+                    sample_end = segment.range.sample_end,
+                    silence = silence.as_str(),
+                    distance_ms = ?distance_ms,
+                    "direct_word_over_silence"
+                );
+            }
+            WhisperWordSpeechVerdict::Refuse(reason) => {
+                without_own_voice += 1;
+                info!(
+                    session = %state.session_id,
+                    sample_start = segment.range.sample_start,
+                    sample_end = segment.range.sample_end,
+                    reason = reason.as_str(),
+                    "direct_word_without_own_voice"
+                );
+            }
+            _ => kept.push(segment.text.trim()),
         }
-        kept.push(segment.text.trim());
     }
-    if dropped == 0 {
+    if over_silence == 0 && without_own_voice == 0 {
         return payload.text.clone();
     }
-    state.direct_words_over_silence = state.direct_words_over_silence.saturating_add(dropped);
+    state.direct_words_over_silence = state.direct_words_over_silence.saturating_add(over_silence);
+    state.direct_words_without_own_voice = state
+        .direct_words_without_own_voice
+        .saturating_add(without_own_voice);
     kept.retain(|word| !word.is_empty());
     kept.join(" ")
 }
@@ -26684,18 +26707,61 @@ mod relay_l1_overlap_admission_tests {
             WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan { .. })
         ));
         assert_eq!(
-            direct_text_heard_by_silero(&mut lane.state, &payload),
+            direct_text_with_own_speech(&mut lane.state, &payload),
             "mowa"
         );
         assert_eq!(lane.state.direct_words_over_silence, 1);
 
         let phrase = direct_payload(session, words(), TailSegmentGrain::Phrase);
         assert_eq!(
-            direct_text_heard_by_silero(&mut lane.state, &phrase),
+            direct_text_with_own_speech(&mut lane.state, &phrase),
             "mowa dziękuję",
             "a phrase-grain payload has no word spans to judge"
         );
         assert_eq!(lane.state.direct_words_over_silence, 1);
+    }
+
+    /// Maciej's 21:05 take of 17 X (session 4281b6c3, seal ledger off) carried
+    /// a Whisper loop of about 80 copies of "to," inside continuous speech; the
+    /// ledger lane refused the same loop as identical repeats. The direct lane
+    /// now applies that verdict too and keeps the first word of the run.
+    #[test]
+    fn direct_word_text_drops_loop_copies_without_their_own_voiced_segment() {
+        let session = "direct-repeat-loop";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        lane.state.existence_floor_rms = Some(0.01);
+        let payload = direct_payload(
+            session,
+            vec![
+                word_pin(session, "gdzieś", 40_400, 41_400),
+                word_pin(session, "to,", 41_400, 42_400),
+                word_pin(session, "to,", 42_400, 43_400),
+                word_pin(session, "to,", 43_400, 44_400),
+                word_pin(session, "w", 44_400, 45_400),
+            ],
+            TailSegmentGrain::Word,
+        );
+        let window = measure_whisper_window_speech(&lane.state, &payload.segments);
+        for index in [2, 3] {
+            assert_eq!(
+                window.decisions[index].verdict,
+                WhisperWordSpeechVerdict::Refuse(
+                    RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment
+                ),
+                "copy {index} has no valley and no Silero dip of its own"
+            );
+        }
+        assert_eq!(
+            direct_text_with_own_speech(&mut lane.state, &payload),
+            "gdzieś to, w"
+        );
+        assert_eq!(lane.state.direct_words_without_own_voice, 2);
+        assert_eq!(lane.state.direct_words_over_silence, 0);
     }
 
     /// A valid direct final withheld by the take's own Silero evidence is
