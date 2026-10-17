@@ -123,6 +123,42 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     XCTAssertEqual(try receipt(fixture(messages: previous.messages + [pending, reply])), "Queued")
   }
 
+  func testABroadcastToAnAgentOffChannelZeroReadsSkippedNotAddressed() throws {
+    // bus-demux `queue_delivery` skips a channel-0 delivery for an agent off
+    // channel 0; "Addressed" would wait for a receipt that never comes.
+    var broadcast = try XCTUnwrap(fixture().messages.first)
+    broadcast.sourceChannel = "0"
+    let conversation = try fixture(messages: [broadcast])
+    let drawer = view(conversation)
+    func policyReceipt(_ policy: AgentBroadcastPolicy) -> String? {
+      var row = channel
+      row.broadcastPolicy = policy
+      return drawer.deliveryReceiptText(for: row, conversation: conversation)
+    }
+    XCTAssertEqual(policyReceipt(.off), "Skipped: off channel 0")
+    XCTAssertEqual(policyReceipt(.quiet), "Addressed", "quiet queues; only off skips")
+    XCTAssertEqual(policyReceipt(.on), "Addressed")
+    broadcast.recipients[0].queued = true
+    let queued = try fixture(messages: [broadcast])
+    var offRow = channel
+    offRow.broadcastPolicy = .off
+    XCTAssertEqual(
+      view(queued).deliveryReceiptText(for: offRow, conversation: queued), "Queued",
+      "a queued copy was delivered before the agent left channel 0")
+
+    // The seal-derived fallback (no typed message for this owner) says the same.
+    var sealed = OverlayChannelDelivery(
+      channel: "2", agent: "Lena", deliveryID: "delivery", stage: .sent, isOpen: false)
+    sealed.broadcastPolicy = .off
+    sealed.addressedByBroadcast = true
+    XCTAssertTrue(sealed.skippedBroadcast)
+    XCTAssertEqual(
+      drawer.deliveryReceiptText(for: sealed, conversation: nil), "Skipped: off channel 0")
+    sealed.addressedByBroadcast = false
+    XCTAssertFalse(sealed.skippedBroadcast, "a direct to an agent off channel 0 still arrives")
+    XCTAssertEqual(drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed")
+  }
+
   func testWithdrawnMessageCannotAdvertiseAReceipt() throws {
     var question = try XCTUnwrap(fixture(read: true).messages.first)
     question.withdrawn = true
@@ -166,7 +202,8 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       let row = try XCTUnwrap(reception.elements.first)
       XCTAssertTrue(row.value.contains("Read"), "ACK remains historical read evidence")
       XCTAssertTrue(row.value.contains("Disconnected"), "liveness is separate from read evidence")
-      XCTAssertTrue(row.value.contains("8 unread replies"), "the count names Founder-unread replies")
+      XCTAssertTrue(
+        row.value.contains("8 unread replies"), "the count names Founder-unread replies")
       XCTAssertGreaterThan(row.height, 0)
       XCTAssertLessThanOrEqual(row.width, width)
     }

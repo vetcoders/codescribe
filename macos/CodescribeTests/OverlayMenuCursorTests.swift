@@ -163,7 +163,7 @@ final class OverlayMenuCursorTests: XCTestCase {
     func entry(_ channel: String, _ name: String, unread: Int) -> OverlayAgentPillEntry {
       OverlayAgentPillEntry(
         id: "channel-\(channel)", conversationID: "codex:\(name)", title: "\(channel) · \(name)",
-        descriptor: nil, unread: unread, dot: .listening, quietSymbol: nil, isBroadcast: false,
+        descriptor: nil, unread: unread, dot: .listening, broadcastPolicy: nil, isBroadcast: false,
         disconnected: false,
         controls: .init(
           channel: channel, open: false, muted: nil, microphoneEnabled: false,

@@ -13,7 +13,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   let isOpen: Bool
   var broadcastIdentity: AgentPlaybackIdentity? = nil
   var broadcastPolicy: AgentBroadcastPolicy = .on
+  /// The delivery this row reports went to channel 0, not to this agent alone.
+  var addressedByBroadcast = false
   var id: String { channel }
+
+  /// A channel-0 delivery the follower skipped: off channel 0 a broadcast is
+  /// never queued (`queue_delivery` in bus-demux.py records it as skipped),
+  /// so "sent" would wait for a receipt that never comes. The current policy
+  /// stands in for the policy at delivery time.
+  var skippedBroadcast: Bool {
+    stage == .sent && addressedByBroadcast && broadcastPolicy == .off
+  }
 
   /// Metadata projection of the bus; never a document reducer or delivery writer.
   struct Bus: Codable {
@@ -180,6 +190,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         ])
       }
       var stage: Stage? = deliveryID == nil ? nil : .sent
+      var broadcast = seal?.audience == "*"
       if let deliveryID {
         let pending = lease["pending"] as? [[String: Any]] ?? []
         if pending.contains(where: {
@@ -211,10 +222,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         } else if addressed.holdingSeconds(at: Date()) != nil {
           deliveryID = addressed.recipients.first?.deliveryID
           stage = .held
+          broadcast = addressed.sourceChannel == "0"
         }
       }
-      return OverlayChannelDelivery(
+      var delivery = OverlayChannelDelivery(
         channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
+      delivery.addressedByBroadcast = broadcast
+      return delivery
     }
 
     mutating func observeLease(_ lease: [String: Any], channel: String, binding: [String: Any]) {
@@ -686,7 +700,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       {
         return
       }
-      let ledgerCoordinates = row["occurrence_session_id"] is String
+      let ledgerCoordinates =
+        row["occurrence_session_id"] is String
         && row["capture_epoch"] is NSNumber && row["sample_start"] is NSNumber
         && row["sample_end"] is NSNumber
       let occurrence =
@@ -814,9 +829,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let utterance = Self.coordinate(row["utterance_id"])
       message.controlIdentity = utterance.isEmpty ? session : utterance
       // Ledger previews are not deliveries, even when they carry hold metadata.
-      message.deliverySealed = messages[key]?.deliverySealed == true
+      message.deliverySealed =
+        messages[key]?.deliverySealed == true
         || (evidence ? channelClosed : terminal)
-      message.holdUntil = (row["hold_until"] as? String).flatMap(Self.openingDate)
+      message.holdUntil =
+        (row["hold_until"] as? String).flatMap(Self.openingDate)
         ?? messages[key]?.holdUntil
       message.revisedText = messages[key]?.revisedText
       message.withdrawn = messages[key]?.withdrawn
@@ -842,20 +859,24 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if let typed {
           matches = id == "typed:" + typed
         } else if !utterance.isEmpty {
-          matches = !id.hasPrefix("typed:") && message.controlIdentity == utterance
+          matches =
+            !id.hasPrefix("typed:") && message.controlIdentity == utterance
             && ((row["session_id"] as? String).map { $0 == message.captureSessionID } ?? true)
         } else if let identity {
-          matches = identity == message.controlIdentity || identity == id
+          matches =
+            identity == message.controlIdentity || identity == id
             || identity == message.captureSessionID
         } else {
           matches = false
         }
         guard matches, message.holdingSeconds(at: emittedAt) != nil else { return false }
-        guard message.recipients.contains(where: { recipient in
+        guard
+          message.recipients.contains(where: { recipient in
             recipient.owner.provider == provider
               && recipient.owner.providerSessionID == providerSession
               && recipient.owner.leaseID == lease
-          }) else { return false }
+          })
+        else { return false }
         return true
       }
       // Reused numeric utterance labels do not identify a take on their own.
@@ -895,8 +916,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func finalizeRefused(session: String, holdUntil: Date? = nil) {
       for (id, origin) in deliveryOrigins
-      where origin.captureSession == session
-      {
+      where origin.captureSession == session {
         guard var message = messages[id] else { continue }
         message.deliverySealed = true
         message.holdUntil = holdUntil ?? message.holdUntil
