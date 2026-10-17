@@ -38,9 +38,11 @@ pub struct WhisperWordSpeech {
     /// `true` when a session-threshold speech range overlaps the span.
     pub silero_speech: Option<bool>,
     /// `Some` only when the calibrated existence floor was applied to this span.
-    /// `true` when a hop inside the span is at or above that floor.
+    /// `true` when a hop inside the span is at or above that floor. `None`
+    /// keeps the word unmeasured, whatever Silero says.
     pub energy_above_floor: Option<bool>,
-    /// Separation from the previous identical word.
+    /// Separation from the previous identical word, looked for in
+    /// [`separation_window`].
     /// `Some(true)` when a measured channel shows an energy valley or a Silero
     /// dip. `Some(false)` when at least one channel was measured and none of
     /// them found that split. `None` when neither channel was measured.
@@ -101,15 +103,24 @@ fn judge_one(
     index: usize,
     word: &WhisperWordSpeech,
 ) -> WhisperWordSpeechVerdict {
+    // Without the calibrated floor Silero alone does not decide: it merges
+    // gaps shorter than its merge window, so two real repeats inside one
+    // range look like one word. A take without a profile keeps today's path.
+    if word.energy_above_floor.is_none() {
+        return WhisperWordSpeechVerdict::Unmeasured;
+    }
     if !span_has_speech(word) {
-        return if speech_was_measured(word) {
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoVoicedHopInPin)
-        } else {
-            WhisperWordSpeechVerdict::Unmeasured
-        };
+        return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoVoicedHopInPin);
     }
     if !is_identical_repeat(words, index) {
         return WhisperWordSpeechVerdict::Admit;
+    }
+    // Energy above the floor is also what a loop on room noise has. A repeat
+    // that Silero observed and did not hear is not its own voiced segment.
+    if word.silero_speech == Some(false) {
+        return WhisperWordSpeechVerdict::Refuse(
+            RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
+        );
     }
     match word.separated_from_previous {
         Some(false) => {
@@ -127,13 +138,9 @@ fn judge_one(
 }
 
 /// Speech is present when any measured channel says so. Every measured
-/// channel saying no is silence. Two missing channels are unmeasured.
+/// channel saying no is silence.
 fn span_has_speech(word: &WhisperWordSpeech) -> bool {
     word.silero_speech == Some(true) || word.energy_above_floor == Some(true)
-}
-
-fn speech_was_measured(word: &WhisperWordSpeech) -> bool {
-    word.silero_speech.is_some() || word.energy_above_floor.is_some()
 }
 
 fn is_identical_repeat(words: &[WhisperWordSpeech], index: usize) -> bool {
@@ -151,6 +158,38 @@ pub(crate) fn repeat_key(text: &str) -> Option<String> {
         return None;
     }
     Some(word.to_lowercase())
+}
+
+/// Where a split between two identical neighbours is looked for: from the
+/// middle of the previous word to the middle of the current one.
+///
+/// Whisper word spans usually touch. In the truth files of 15–17 X, 13 925 of
+/// 19 967 consecutive Whisper word pairs share a boundary and 1 011 overlap;
+/// so do 535 of 803 identical neighbours. The open gap between two spans is
+/// therefore usually empty, and the split has to be looked for across the
+/// boundary. `None` when the current word does not start after the previous.
+pub(crate) fn separation_window(previous: (u64, u64), current: (u64, u64)) -> Option<(u64, u64)> {
+    let previous_mid = previous.0 + previous.1.saturating_sub(previous.0) / 2;
+    let current_mid = current.0 + current.1.saturating_sub(current.0) / 2;
+    (current_mid > previous_mid).then_some((previous_mid, current_mid))
+}
+
+/// `true` when the hops at or above the floor do not cover the whole window:
+/// the energy fell below the floor somewhere between the two words.
+pub(crate) fn window_has_energy_valley(window: (u64, u64), voiced: &[(u64, u64)]) -> bool {
+    let covered = voiced
+        .iter()
+        .map(|&(start, end)| end.min(window.1).saturating_sub(start.max(window.0)))
+        .sum::<u64>();
+    covered < window.1.saturating_sub(window.0)
+}
+
+/// `true` when no single Silero speech range holds the whole window.
+pub(crate) fn window_has_silero_dip(
+    window: (u64, u64),
+    mut speech_ranges: impl Iterator<Item = (u64, u64)>,
+) -> bool {
+    !speech_ranges.any(|(start, end)| start <= window.0 && window.1 <= end)
 }
 
 /// `Some` when the sample rate can turn the span into milliseconds.
@@ -223,8 +262,8 @@ mod tests {
         // 40 ms at 48 kHz. The corpus loop is 20–60 ms per "nie".
         let span = 1_920u64;
         let mut words = vec![word("nie", 0, span, Some(true), Some(true), None)];
-        for index in 1..14 {
-            let start = u64::from(index) * span;
+        for index in 1..14u64 {
+            let start = index * span;
             words.push(word(
                 "nie",
                 start,
@@ -262,9 +301,9 @@ mod tests {
 
     #[test]
     fn dziekuje_three_times_on_digital_zero_is_all_refused() {
-        let words = (0..3)
+        let words = (0..3u64)
             .map(|index| {
-                let start = u64::from(index) * 48_000;
+                let start = index * 48_000;
                 word(
                     "Dziękuję",
                     start,
@@ -299,8 +338,8 @@ mod tests {
         let span = 12_000u64;
         let gap = 4_800u64;
         let mut words = Vec::new();
-        for index in 0..5 {
-            let start = u64::from(index) * (span + gap);
+        for index in 0..5u64 {
+            let start = index * (span + gap);
             words.push(word(
                 "Iwo",
                 start,
@@ -325,9 +364,9 @@ mod tests {
     #[test]
     fn unmeasured_evidence_keeps_words_and_says_unmeasured() {
         let span = 960u64;
-        let words = (0..4)
+        let words = (0..4u64)
             .map(|index| {
-                let start = u64::from(index) * span;
+                let start = index * span;
                 word("nie", start, start + span, None, None, None)
             })
             .collect::<Vec<_>>();
@@ -349,8 +388,8 @@ mod tests {
         // 400 ms, above the one-syllable floor, so duration is not the reason.
         let span = 19_200u64;
         let mut words = vec![word("trzy", 0, span, Some(false), Some(true), None)];
-        for index in 1..16 {
-            let start = u64::from(index) * span;
+        for index in 1..16u64 {
+            let start = index * span;
             words.push(word(
                 "trzy",
                 start,
@@ -401,6 +440,73 @@ mod tests {
         assert!(
             nie.iter().all(|decision| decision.admits()),
             "nie is one syllable; 120 ms with its own valley clears the 100 ms floor"
+        );
+    }
+
+    #[test]
+    fn silero_alone_without_the_calibrated_floor_keeps_the_word_unmeasured() {
+        let decisions = judge_whisper_words(&[
+            word("Dziękuję", 0, 48_000, Some(false), None, None),
+            word("Iwo", 48_000, 60_000, Some(true), None, None),
+            word("Iwo", 60_000, 72_000, Some(true), None, Some(false)),
+        ]);
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| decision.receipt() == WHISPER_WORD_SPEECH_UNMEASURED),
+            "a take without a calibration profile keeps today's words: Silero merges short gaps, \
+             so on its own it would refuse real repeats inside one speech range"
+        );
+    }
+
+    #[test]
+    fn a_repeat_silero_did_not_hear_is_refused_even_with_a_valley() {
+        let decisions = judge_whisper_words(&[
+            word("trzy", 0, 19_200, Some(false), Some(true), None),
+            word("trzy", 19_200, 38_400, Some(false), Some(true), Some(true)),
+        ]);
+        assert!(
+            decisions[0].admits(),
+            "the first word is judged on its own span; energy above the floor is speech evidence"
+        );
+        assert_eq!(
+            decisions[1].receipt(),
+            RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment.as_str(),
+            "a loop on fluctuating room noise has valleys too; a repeat Silero observed and did \
+             not hear is not its own voiced segment"
+        );
+    }
+
+    #[test]
+    fn touching_whisper_spans_still_find_the_valley_between_two_words() {
+        // Two "Iwo" whose Whisper spans share the boundary at 12 000, the usual
+        // shape: 13 925 of 19 967 consecutive Whisper pairs in 15–17 X touch.
+        let window = separation_window((0, 12_000), (12_000, 24_000))
+            .expect("touching spans still have a window between their middles");
+        assert_eq!(window, (6_000, 18_000));
+        let two_words = [(1_000, 11_000), (13_000, 23_000)];
+        assert!(
+            window_has_energy_valley(window, &two_words),
+            "energy below the floor between two touching words is a valley, or real \
+             'Iwo Iwo' with touching timestamps would be refused"
+        );
+        let one_noise_region = [(0, 24_000)];
+        assert!(
+            !window_has_energy_valley(window, &one_noise_region),
+            "one region above the floor across both words is not a split"
+        );
+        assert!(
+            window_has_silero_dip(window, [(0, 11_000), (13_000, 24_000)].into_iter()),
+            "two Silero ranges around the boundary are a dip"
+        );
+        assert!(
+            !window_has_silero_dip(window, [(0, 24_000)].into_iter()),
+            "one Silero range across both middles is not a dip"
+        );
+        assert_eq!(
+            separation_window((0, 12_000), (0, 12_000)),
+            None,
+            "a word that does not start after the previous one has no window"
         );
     }
 }

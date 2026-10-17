@@ -91,7 +91,7 @@ use crate::pipeline::contracts::{
 };
 use crate::pipeline::whisper_word_speech::{
     WhisperWordSpeech, WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words,
-    repeat_key,
+    repeat_key, separation_window, window_has_energy_valley, window_has_silero_dip,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -6731,7 +6731,11 @@ fn measure_whisper_window_speech(
         let key = repeat_key(&segment.text);
         let separated = match (key.as_ref(), previous_key.as_ref(), previous_span) {
             (Some(key), Some(previous), Some(span)) if key == previous => combine_word_separation(
-                energy_valley_between(state, span.1, segment.range.sample_start),
+                energy_valley_between(
+                    state,
+                    span,
+                    (segment.range.sample_start, segment.range.sample_end),
+                ),
                 silero_dip_between(
                     state,
                     span,
@@ -6858,39 +6862,34 @@ fn energy_above_existence_floor(state: &AppleSealState, start: u64, end: u64) ->
 
 fn energy_valley_between(
     state: &AppleSealState,
-    previous_end: u64,
-    current_start: u64,
+    previous: (u64, u64),
+    current: (u64, u64),
 ) -> Option<bool> {
     let floor = state.existence_floor_rms?;
     if !floor.is_finite() || floor <= 0.0 {
         return None;
     }
-    if current_start <= previous_end {
-        let probe_end = previous_end.max(1);
-        let probe_start = probe_end - 1;
+    let Some(window) = separation_window(previous, current) else {
+        // Measured, and the current word does not start after the previous one.
         return state
             .capture_energy
             .hops_at_or_above(
                 &state.session_id,
                 state.capture_epoch,
-                probe_start,
-                probe_end,
+                current.0,
+                current.1,
                 floor,
             )
             .map(|_| false);
-    }
+    };
     let voiced = state.capture_energy.hops_at_or_above(
         &state.session_id,
         state.capture_epoch,
-        previous_end,
-        current_start,
+        window.0,
+        window.1,
         floor,
     )?;
-    let covered = voiced
-        .iter()
-        .map(|(start, end)| end.saturating_sub(*start))
-        .sum::<u64>();
-    Some(covered < current_start.saturating_sub(previous_end))
+    Some(window_has_energy_valley(window, &voiced))
 }
 
 fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
@@ -6908,14 +6907,17 @@ fn silero_dip_between(
     span_inside_observed(&evidence, previous.1.max(current.1))?;
     let previous_on = ranges_overlap_span(&evidence, previous.0, previous.1);
     let current_on = ranges_overlap_span(&evidence, current.0, current.1);
-    if !previous_on || !current_on || current.0 <= previous.1 {
+    let window = separation_window(previous, current);
+    let (true, true, Some(window)) = (previous_on, current_on, window) else {
         return Some(false);
-    }
-    let gap_inside_one_range = evidence
-        .ranges()
-        .iter()
-        .any(|range| range.sample_start <= previous.1 && current.0 <= range.sample_end);
-    Some(!gap_inside_one_range)
+    };
+    Some(window_has_silero_dip(
+        window,
+        evidence
+            .ranges()
+            .iter()
+            .map(|range| (range.sample_start, range.sample_end)),
+    ))
 }
 
 fn observed_silero(state: &AppleSealState) -> Option<AcousticSpeechEvidence> {
