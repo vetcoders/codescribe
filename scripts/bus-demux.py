@@ -1859,10 +1859,17 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
     local_root = (root or bridge_home()).expanduser().resolve(strict=False)
     if provider == "codex" and session:
         if "--attach" in args:
-            if flag_value(args, "--wakeup") == "codex-queue":
-                sys.stderr.write("cs-bus: remote Codex uses the local --watch queue; attach with --wakeup off\n")
-                return 2
-            args += ["--wakeup", "off"]
+            requested = flag_value(args, "--wakeup")
+            if requested is None:
+                args += ["--wakeup", "off"]
+            elif requested == "codex-queue":
+                # The conversation lives on this Mac, so its queue does too:
+                # the mailbox host attaches with wakeup off and the local
+                # --watch relay queues here. Say what ran instead of refusing.
+                args = remote_wakeup_resolved(args, "off")
+                emit({"kind": "wakeup_resolved", "requested": "codex-queue", "effective": "off",
+                      "reason": "remote Codex: the mailbox host never queues; "
+                                f"cs-bus --remote {host} --watch queues on this Mac"})
         if ("--watch" in args and flag_value(args, "--wakeup") != "off"
                 and not any(flag in args for flag in ("--human", "--until-event"))):
             return remote_codex_watch(host, args, session, local_root, environ)
@@ -1877,6 +1884,24 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
                              lease_identifier(provider, session), host,
                              "--attach" in args)
     return result.returncode
+
+
+def remote_wakeup_resolved(args: list[str], effective: str) -> list[str]:
+    """The same arguments with every --wakeup value replaced by `effective`."""
+    resolved: list[str] = []
+    replace_next = False
+    for item in args:
+        if replace_next:
+            resolved.append(effective)
+            replace_next = False
+        elif item == "--wakeup":
+            resolved.append(item)
+            replace_next = True
+        elif item.startswith("--wakeup="):
+            resolved.append("--wakeup=" + effective)
+        else:
+            resolved.append(item)
+    return resolved
 
 
 def remote_queue_root(root: Path, host: str) -> Path:
@@ -1968,10 +1993,9 @@ def remote_codex_ack(host: str, args: list[str], session: str, root: Path, envir
     collecting = False
     for item in args:
         if item == "--ack":
-            requested = set()
             collecting = True
         elif item.startswith("--ack="):
-            requested = {item.split("=", 1)[1]}
+            requested.add(item.split("=", 1)[1])
             collecting = False
         elif item.startswith("--"):
             collecting = False
@@ -2024,10 +2048,20 @@ def remote_codex_watch(host: str, args: list[str], session: str, root: Path, env
                 if not raw:
                     return process.wait()
                 if not raw.endswith(b"\n"):
-                    raise ValueError("remote watch envelope exceeds byte limit or is incomplete")
-                value = json.loads(raw)
+                    if len(raw) < 1 << 20:
+                        raise ValueError("remote watch envelope is incomplete")
+                    while raw and not raw.endswith(b"\n"):
+                        raw = process.stdout.readline(1 << 20)
+                    sys.stderr.write("cs-bus: skipped a remote watch line over 1 MiB\n")
+                    continue
+                try:
+                    value = json.loads(raw)
+                except json.JSONDecodeError:
+                    sys.stderr.write("cs-bus: skipped a remote watch line that is not JSON\n")
+                    continue
                 if not isinstance(value, dict):
-                    raise ValueError("invalid remote watch envelope")
+                    sys.stderr.write("cs-bus: skipped a remote watch line that is not an envelope\n")
+                    continue
                 if value.get("kind") == "queue_relay_ack":
                     if (value.get("provider") == "codex" and value.get("provider_session_id") == session
                             and value.get("lease_id") == wake.lease_id):
@@ -6882,12 +6916,14 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
+def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False) -> dict[str, Any] | None:
     """One complete message for an envelope worth waking the agent for.
 
     Drafts and revisions stay in the mailbox. The watch surfaces seals
     (certified or coverage-refused), anything allowed to change state, and
     routing-ambiguity notices that need the Founder to re-address.
+    `peer_replies` adds agent replies; only the remote queue relay asks for
+    them, so an ordinary watch keeps its wake set.
     """
     if not isinstance(payload, dict) or payload.get("schema") != EVENT_SCHEMA:
         return None
@@ -6896,7 +6932,8 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
     if not (
         payload.get("status") == SEALED
         or payload.get("state_change_allowed") is True
-        or (payload.get("kind") == "message" and payload.get("producer_schema") == AGENT_REPLY_SCHEMA)
+        or (peer_replies and payload.get("kind") == "message"
+            and payload.get("producer_schema") == AGENT_REPLY_SCHEMA)
         or payload.get("kind") == "routing_ambiguity"
         or payload.get("coverage") == COVERAGE_REFUSED
     ):
@@ -7046,7 +7083,7 @@ def watch_command(args: argparse.Namespace) -> int:
             if (lease_id and isinstance(payload, dict)
                     and delivery_broadcast_policy(args.bridge_home, payload) != "on"):
                 continue
-            line = watch_line(payload, lease_id)
+            line = watch_line(payload, lease_id, peer_replies=relay)
             if args.human:
                 if not isinstance(payload, dict) or payload.get("schema") not in (EVENT_SCHEMA, ATTACH_SCHEMA):
                     continue
