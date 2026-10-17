@@ -2042,7 +2042,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn second_press_closes_the_channel_and_leaves_dictation_idle() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -2089,6 +2089,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn conversation_refuses_while_a_channel_is_open() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -2113,7 +2114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -2180,7 +2181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -2229,7 +2230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
         let controller = Arc::new(RecordingController::new_without_keychain());
         let dir = tempfile::tempdir().expect("temp");
@@ -2278,7 +2279,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
@@ -2341,7 +2342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn hold_release_while_scheduling_waits_preserves_channel_and_cancels_take() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
@@ -2410,7 +2411,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn raw_hold_arm_preserves_channel_until_an_ordinary_take_is_admitted() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
         let controller = Arc::new(RecordingController::new_without_keychain());
@@ -2454,7 +2455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn detector_fn_prefix_then_channel_digit_never_admits_a_phantom_hold() {
         use super::super::{HotkeyAction, HotkeyInput, HotkeyType, State};
         use crate::os::hotkeys::{
@@ -2591,7 +2592,7 @@ mod tests {
     }
 
     #[test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {
         struct Restore;
         impl Drop for Restore {
@@ -2630,7 +2631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn silence_past_the_cap_seals_the_channel_and_clears_the_open_state() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2761,7 +2762,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn a_binding_bus_routes_the_channel_receipts_to_the_dedicated_file() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2807,7 +2808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn silence_seal_reopens_the_channel_on_the_same_binding() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2863,7 +2864,7 @@ mod tests {
     /// finality, and the Founder hung up before the silence boundary. The
     /// hang-up itself must put the closing row on the channel's own bus.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn hang_up_before_any_seal_writes_one_hangup_receipt_on_the_channel_bus() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -3213,7 +3214,7 @@ mod tests {
     /// by a hang-up. The hang-up closes the session the quiet contract
     /// reopened, and a digit press after a seal without reopen opens.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn a_silence_sealed_session_is_never_sealed_again_by_a_hang_up() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -3273,7 +3274,7 @@ mod tests {
     /// A hang-up ends one session, not the channel: the next press reopens
     /// on the same binding and the quiet contract runs as before.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn reopen_after_a_hang_up_keeps_the_quiet_contract() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -3557,6 +3558,7 @@ mod tests {
     /// A session this controller opened is live, not an orphan, even when its
     /// `open` row is its channel's newest.
     #[tokio::test]
+    #[serial_test::serial]
     async fn a_session_this_process_owns_is_never_sealed_as_an_orphan() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -3665,7 +3667,7 @@ mod capture_observer_channel_ownership_tests {
         ledger
     }
     #[tokio::test]
-    #[serial_test::serial(agent_ack_duck)]
+    #[serial_test::serial]
     async fn live_channel_observer_uses_its_own_ledger_and_keeps_receipt_identity() {
         let (_controller, _dir, mut open) = fixture().await;
         open.mode = ChannelOpenMode::Live;
@@ -3698,7 +3700,7 @@ mod capture_observer_channel_ownership_tests {
         assert_eq!(ledger.lock().unwrap().layer_trail().len(), 2);
     }
     #[tokio::test]
-    #[serial_test::serial(agent_ack_duck)]
+    #[serial_test::serial]
     async fn attached_channel_cannot_claim_live_evidence_even_if_a_handle_is_present() {
         let (_controller, _dir, mut open) = fixture().await;
         open.session_id = Some("owned-channel".into());
@@ -3822,6 +3824,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn an_open_controller_channel_refuses_archive_before_helper_spawn() {
         let fixture = ArchiveFixture::new();
         let controller = RecordingController::new_without_keychain();
@@ -3847,6 +3850,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn archive_completion_precedes_a_queued_channel_open() {
         let fixture = ArchiveFixture::new();
         let controller = Arc::new(RecordingController::new_without_keychain());
@@ -3894,6 +3898,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn cancelled_archive_keeps_serial_ownership_until_the_helper_exits() {
         let fixture = ArchiveFixture::new();
         let controller = Arc::new(RecordingController::new_without_keychain());

@@ -169,10 +169,13 @@ unsafe fn ns_string(value: &str) -> *mut Object {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
+    use crate::os::tray_status::{
+        TrayStatus, current_tray_status, set_agent_channels_listening, update_tray_status,
+    };
 
     /// Install publishes a level; a second call must not panic or drift.
     #[test]
+    #[serial_test::serial]
     fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
         // On macOS this genuinely registers the NSProcessInfo thermal observer
         // and reads the live thermal state into the canonical process state. A
@@ -192,6 +195,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn thermal_recovery_clears_only_thermal_tray_status() {
+        // An earlier channel test can leave the listening flag up, which
+        // resolves the recovered `Idle` to `Listening`.
+        set_agent_channels_listening(false);
         update_tray_status(TrayStatus::Thermal);
         clear_thermal_tray_status_if_current();
         assert_eq!(current_tray_status(), TrayStatus::Idle);

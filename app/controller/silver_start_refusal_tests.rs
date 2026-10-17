@@ -5,8 +5,9 @@ struct TrayRestore(TrayStatusSnapshot, bool);
 
 impl TrayRestore {
     fn capture() -> Self {
-        // Channels opened by non-serial neighbours leave the process-global
-        // listening flag up; Silver opens none, so its Idle truth stands.
+        // An earlier test's controller can drop with a channel still open,
+        // leaving the process-global listening flag up; Silver opens none,
+        // so its Idle truth stands.
         tray_status::set_agent_channels_listening(false);
         Self(
             tray_status::current_tray_status_snapshot(),
