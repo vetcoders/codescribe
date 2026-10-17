@@ -7734,6 +7734,21 @@ final class OverlayAgentGestureTests: XCTestCase {
     XCTAssertTrue(f.engine.toggledDigits.isEmpty)
   }
 
+  func testAMiddleClickOnADisconnectedAgentKeepsChoosing() throws {
+    let f = try fixture()
+    var gone = roster("2", "lena")
+    gone.followerAlive = false
+    f.state.applyChannelRoster([roster("0", "all"), gone, roster("3", "olek")])
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.lena.id))
+    XCTAssertTrue(f.engine.toggledDigits.isEmpty, "nobody listens on that channel")
+    XCTAssertEqual(f.captures.calls.last, true, "the wheel stays for another row")
+  }
+
   func testThePillStackLeavesOutTheOpenConversation() throws {
     let f = try fixture()
     f.state.selectConversation(f.lena.id)
