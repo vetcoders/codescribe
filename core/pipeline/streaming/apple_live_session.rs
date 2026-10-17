@@ -1978,6 +1978,9 @@ struct AppleSealState {
     /// Direct-lane Whisper words dropped because Silero heard no speech within
     /// the near radius of their span. A diagnostic count; each drop is logged.
     direct_words_over_silence: u64,
+    /// Direct-lane words dropped as unpinned copies of the word before them
+    /// (a decoder loop). A diagnostic count; each window's drop is logged.
+    direct_unpinned_repeats: u64,
     /// Valid direct finals withheld on purpose: Silero measured the whole
     /// range quiet, or heard no speech near any word. Completed work, so it
     /// never withholds the direct completion that Stop waits for.
@@ -2662,6 +2665,7 @@ impl AppleSealState {
             direct_apple_epoch_has_final: false,
             direct_suppressed_no_measured_speech: 0,
             direct_words_over_silence: 0,
+            direct_unpinned_repeats: 0,
             direct_jobs_suppressed: 0,
             preview_rev: 0,
             speech_progress,
@@ -7123,12 +7127,22 @@ fn measure_whisper_window_speech(
     WhisperWindowSpeech { facts, decisions }
 }
 
-/// Direct-lane text without the Whisper words Silero heard no speech near.
+/// Direct-lane text without the Whisper words that have no sound of their own.
 ///
-/// The direct lane has no ledger to receipt a refusal, so each dropped word is
-/// logged with its range, silence class and distance. Only the over-silence
-/// rule applies here; the repeat rules stay with the ledger. The window text
-/// is rejoined from the kept word pins only when a word was dropped.
+/// The direct lane has no ledger to receipt a refusal, so every drop is
+/// logged. Two drops apply here; the other repeat rules stay with the ledger:
+/// - a pinned word Silero heard no speech near, logged with its range,
+///   silence class and distance;
+/// - an unpinned word identical to the word before it. Pinning leaves out
+///   words with no lexical duration, which is what a decoder loop writes
+///   (`to, to, to, …` all at the window's last instant), so such a copy has
+///   nothing on the capture clock to show for itself.
+///
+/// The window text is walked token by token against the pins. An unpinned
+/// word that is not a copy stays: a failed pin is not evidence of silence.
+/// When every pinned word is over silence, nothing stays. When the pins do not
+/// line up with the text, the pins alone decide, as before. The text is
+/// rejoined only when something was dropped.
 fn direct_text_heard_by_silero(
     state: &mut AppleSealState,
     payload: &TailProviderPayload,
@@ -7137,15 +7151,19 @@ fn direct_text_heard_by_silero(
         return payload.text.clone();
     }
     let window = measure_whisper_window_speech(state, &payload.segments);
-    let mut kept = Vec::with_capacity(payload.segments.len());
-    let mut dropped = 0u64;
-    for (segment, decision) in payload.segments.iter().zip(&window.decisions) {
+    let mut over_silence = vec![false; payload.segments.len()];
+    for ((segment, decision), dropped) in payload
+        .segments
+        .iter()
+        .zip(&window.decisions)
+        .zip(over_silence.iter_mut())
+    {
         if let WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
             silence,
             distance_ms,
         }) = decision.verdict
         {
-            dropped += 1;
+            *dropped = true;
             info!(
                 session = %state.session_id,
                 sample_start = segment.range.sample_start,
@@ -7154,16 +7172,88 @@ fn direct_text_heard_by_silero(
                 distance_ms = ?distance_ms,
                 "direct_word_over_silence"
             );
-            continue;
         }
-        kept.push(segment.text.trim());
     }
-    if dropped == 0 {
+    let dropped = over_silence.iter().filter(|dropped| **dropped).count();
+    state.direct_words_over_silence = state
+        .direct_words_over_silence
+        .saturating_add(dropped as u64);
+    if dropped == payload.segments.len() {
+        return String::new();
+    }
+    let Some(pins) = pin_text_tokens(&payload.text, &payload.segments) else {
+        if dropped == 0 {
+            return payload.text.clone();
+        }
+        let kept: Vec<&str> = payload
+            .segments
+            .iter()
+            .zip(&over_silence)
+            .filter(|(_, dropped)| !**dropped)
+            .map(|(segment, _)| segment.text.trim())
+            .filter(|word| !word.is_empty())
+            .collect();
+        return kept.join(" ");
+    };
+    let mut kept = Vec::with_capacity(pins.len());
+    let mut copies = 0u64;
+    let mut previous: Option<String> = None;
+    for (token, pin) in payload.text.split_whitespace().zip(pins) {
+        let key = repeat_key(token);
+        let copy = pin.is_none() && key.is_some() && key == previous;
+        previous = key;
+        match pin {
+            Some(index) if over_silence[index] => {}
+            Some(_) => kept.push(token),
+            None if copy => copies += 1,
+            None => kept.push(token),
+        }
+    }
+    if copies > 0 {
+        state.direct_unpinned_repeats = state.direct_unpinned_repeats.saturating_add(copies);
+        info!(
+            session = %state.session_id,
+            sample_start = payload.identity.range.sample_start,
+            sample_end = payload.identity.range.sample_end,
+            copies,
+            "direct_unpinned_repeats_dropped"
+        );
+    }
+    if dropped == 0 && copies == 0 {
         return payload.text.clone();
     }
-    state.direct_words_over_silence = state.direct_words_over_silence.saturating_add(dropped);
-    kept.retain(|word| !word.is_empty());
     kept.join(" ")
+}
+
+/// The pin each whitespace token of a window's text belongs to, in order;
+/// `None` for a token no pin covers. `None` overall when the pins' own tokens
+/// do not appear in the text in that order.
+fn pin_text_tokens(text: &str, segments: &[TimedTailSegment]) -> Option<Vec<Option<usize>>> {
+    let pinned: Vec<(&str, usize)> = segments
+        .iter()
+        .enumerate()
+        .flat_map(|(index, segment)| {
+            segment
+                .text
+                .split_whitespace()
+                .map(move |token| (token, index))
+        })
+        .collect();
+    let mut next = 0;
+    let tokens = text
+        .split_whitespace()
+        .map(|token| {
+            let pin = pinned
+                .get(next)
+                .filter(|(pinned, _)| *pinned == token)
+                .map(|&(_, index)| index);
+            if pin.is_some() {
+                next += 1;
+            }
+            pin
+        })
+        .collect();
+    (next == pinned.len()).then_some(tokens)
 }
 
 fn retain_whisper_words_with_own_speech(
@@ -26696,6 +26786,90 @@ mod relay_l1_overlap_admission_tests {
             "a phrase-grain payload has no word spans to judge"
         );
         assert_eq!(lane.state.direct_words_over_silence, 1);
+    }
+
+    /// A decoder loop writes copies with no lexical duration, so pinning
+    /// leaves them out; the direct lane drops each unpinned copy of the word
+    /// before it. Spoken repeats carry their own pins and all stay.
+    #[test]
+    fn direct_word_text_drops_unpinned_copies_and_keeps_pinned_repeats() {
+        let session = "direct-unpinned-loop";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+
+        let mut looped = direct_payload(
+            session,
+            vec![
+                word_pin(session, "gdzieś", 41_000, 43_000),
+                word_pin(session, "to,", 43_500, 44_500),
+            ],
+            TailSegmentGrain::Word,
+        );
+        looped.text = " gdzieś to, to, to, to, w".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &looped),
+            "gdzieś to, w",
+            "three unpinned copies go; the unpinned word after them is no copy"
+        );
+        assert_eq!(lane.state.direct_unpinned_repeats, 3);
+        assert_eq!(lane.state.direct_words_over_silence, 0);
+
+        let counted = direct_payload(
+            session,
+            vec![
+                word_pin(session, "trzy,", 41_000, 42_500),
+                word_pin(session, "trzy,", 43_000, 44_500),
+                word_pin(session, "trzy.", 45_000, 46_500),
+            ],
+            TailSegmentGrain::Word,
+        );
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &counted),
+            counted.text,
+            "each spoken repeat has its own pin"
+        );
+        assert_eq!(lane.state.direct_unpinned_repeats, 3);
+    }
+
+    /// Dropping a word over silence no longer drops the unpinned words of the
+    /// same window; pins that do not line up with the text keep the old rule.
+    #[test]
+    fn direct_word_text_keeps_unpinned_words_beside_a_word_over_silence() {
+        let session = "direct-unpinned-kept";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let words = || {
+            vec![
+                word_pin(session, "mowa", 41_000, 47_000),
+                word_pin(session, "dziękuję", 120_000, 126_000),
+            ]
+        };
+
+        let mut payload = direct_payload(session, words(), TailSegmentGrain::Word);
+        payload.text = "mowa jakby dziękuję".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa jakby"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+
+        assert_eq!(pin_text_tokens("dziękuję mowa", &words()), None);
+        payload.text = "dziękuję mowa".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa",
+            "out-of-order pins fall back to the kept pins alone"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 2);
+        assert_eq!(lane.state.direct_unpinned_repeats, 0);
     }
 
     /// A valid direct final withheld by the take's own Silero evidence is
