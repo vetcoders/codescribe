@@ -145,9 +145,10 @@ class NativeKeyTests(NativeFixture):
         stdin=type('Input',(),{'buffer':io.BytesIO((''.join(json.dumps(r)+'\n' for r in requests)).encode())})()
         output=io.StringIO();captured=[]
         original=RUNTIME.configure
+        case=self
         class Callback:
-            def resolve(inner,host):return ['1.1.1.1']
-            def __call__(inner,*args):return self.callback(*args)
+            def resolve(self,host):return ['1.1.1.1']
+            def __call__(self,*args):return case.callback(*args)
         def configure(server,events,store,**kwargs):
             captured.append(server)
             kwargs.update(transport=Callback(),clock=lambda:self.now[0],
