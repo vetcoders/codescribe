@@ -19,6 +19,9 @@ struct TrayRestore(TrayStatusSnapshot, bool);
 
 impl TrayRestore {
     fn capture() -> Self {
+        // Non-serial neighbours may have opened channels without closing
+        // them; this file owns the flag's truth for its own assertions.
+        tray_status::set_agent_channels_listening(false);
         Self(
             tray_status::current_tray_status_snapshot(),
             is_assistive_session(),
@@ -28,6 +31,7 @@ impl TrayRestore {
 
 impl Drop for TrayRestore {
     fn drop(&mut self) {
+        tray_status::set_agent_channels_listening(false);
         set_assistive_session(self.1);
         tray_status::update_tray_status(self.0.status);
         tray_status::set_tray_indicator_mode(self.0.indicator_mode);
