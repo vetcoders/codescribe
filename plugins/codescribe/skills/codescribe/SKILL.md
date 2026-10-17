@@ -87,7 +87,7 @@ reads, ACKs or replies; the Stop waiter does not announce a probed delivery agai
 
 ### A channel on another Mac
 
-Another Mac with Codescribe (an ssh host such as `dragon`) has its own bus.
+Another Mac with Codescribe (an ssh host such as `host-a`) has its own bus.
 Attach there under this same identity:
 `cs-bus --remote HOST --attach --channel N --name NAME --provider claude-code`
 (the helper sends this session's id). The Stop hook then also waits on HOST,
