@@ -303,7 +303,8 @@ def check_scope(scope_path):
     state = scope.state / lease
     metadata = state / "events.sqlite"
     print(json.dumps({"schema": SCOPE_CHECK_SCHEMA, "provider": scope.provider, "name": scope.name,
-                      "lease_id": lease, "state_path": str(state.resolve()),
+                      "lease_id": lease, "state_dir_exists": scope.check_private_directory(scope.state),
+                      "state_path": str(state.resolve()),
                       "events_path": str(metadata.resolve()),
                       "key_namespace": events.key_namespace(scope.principal, scope.session, metadata)}))
     return 0
