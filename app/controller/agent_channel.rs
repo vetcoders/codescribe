@@ -39,7 +39,7 @@ pub const BINDING_FILENAME: &str = "vc.agent-audience-binding.v1.json";
 
 /// Construct the live channel reducer from the exact generation also sent to
 /// its decoder. Channels and dictation share the same track choices.
-fn channel_presentation_emitter(
+pub(crate) fn channel_presentation_emitter(
     bus: Arc<TranscriptBus>,
     ledger: Arc<StdMutex<AcousticLedger>>,
     settings: &codescribe_core::config::RuntimeSettingsSnapshot,
