@@ -982,6 +982,16 @@ impl RecordingController {
         );
         drop(recorder_guard);
         drop(channels);
+        // The tray glyph mirrors the pointer badge: any open channel listens in
+        // the Assistive lane even though the controller state stays Idle. The
+        // flag goes up regardless of state so a take ending mid-channel cannot
+        // blacken the dot (tray_status's Idle guard); the dot itself is only
+        // repainted here when no foreign take owns the lifecycle.
+        crate::os::tray_status::set_agent_channels_listening(true);
+        if self.current_state().await == super::State::Idle {
+            crate::os::tray_status::set_tray_indicator_mode(BadgeMode::Assistive);
+            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Listening);
+        }
         if matches!(mode, ChannelOpenMode::Live) {
             let line = crate::presentation::agent_ack::channel_session_line(
                 &crate::presentation::agent_ack::ChannelSessionLine {
@@ -1111,8 +1121,14 @@ impl RecordingController {
         // retained tail never changes a replacement channel's UI.
         let state = self.current_state().await;
         let channels = self.agent_channels.lock().await;
+        if channels.is_empty() {
+            // The glyph's Idle guard stands down with the last channel; during
+            // a dictation handoff the take's own lifecycle repaints the tray.
+            crate::os::tray_status::set_agent_channels_listening(false);
+        }
         if channels.is_empty() && state == super::State::Idle {
             hold_badge::hide_hold_badge();
+            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Idle);
         }
         Ok(())
     }

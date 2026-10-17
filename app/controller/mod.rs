@@ -39,6 +39,8 @@ mod hotkey_policy;
 mod lab_feed;
 pub(crate) mod live_archive;
 pub use live_archive::ArchiveRefusal;
+#[cfg(test)]
+mod channel_tray_tests;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
