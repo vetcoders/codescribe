@@ -10,11 +10,29 @@
 //! because they depend on `tray_icon::Icon` and `crate::tray::icons::*`, which
 //! die with the legacy AppKit tray.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use tracing::trace;
 
 use crate::os::hold_badge::{self, BadgeMode, CursorVoice};
+
+/// An open agent channel keeps the microphone listening without a dictation
+/// take, while the hotkey controller stays `Idle`. Every `Idle` producer —
+/// most importantly the end of a dictation take — must not blacken the glyph
+/// while a channel still listens (Maciej, 2026-10-17: the tray dot stayed
+/// black when speaking to agents; it has to read Assistive violet).
+static AGENT_CHANNELS_LISTENING: AtomicBool = AtomicBool::new(false);
+
+/// Record whether any agent channel currently listens. The channel's close
+/// path clears this before it publishes `Idle`, so ordering is caller-driven.
+pub fn set_agent_channels_listening(listening: bool) {
+    AGENT_CHANNELS_LISTENING.store(listening, Ordering::Release);
+}
+
+fn agent_channels_listening() -> bool {
+    AGENT_CHANNELS_LISTENING.load(Ordering::Acquire)
+}
 
 /// Process-local callback the UniFFI bridge registers to mirror status to Swift.
 type TrayStatusSink = Arc<dyn Fn(TrayStatusSnapshot) + Send + Sync + 'static>;
@@ -173,12 +191,23 @@ pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
 /// longer a stub: hotkeys, thermal throttling, and recording lifecycle changes
 /// flow through the registered bridge sink.
 pub fn update_tray_status(status: TrayStatus) {
+    // A finished take (or any other producer) publishing `Idle` while an agent
+    // channel still listens resolves to assistive listening instead; only the
+    // channel's own close path clears the flag and lets `Idle` through.
+    let channel_keeps_listening = status == TrayStatus::Idle && agent_channels_listening();
+    let status = if channel_keeps_listening {
+        TrayStatus::Listening
+    } else {
+        status
+    };
     let snapshot = {
         let mut current = current_status_store()
             .write()
             .unwrap_or_else(|error| error.into_inner());
         let indicator_mode = if status == TrayStatus::Thinking {
             BadgeMode::Processing
+        } else if channel_keeps_listening {
+            BadgeMode::Assistive
         } else {
             current.indicator_mode
         };
@@ -292,6 +321,23 @@ mod tests {
         );
         set_tray_assistive_session(false);
         update_tray_status(TrayStatus::Idle);
+    }
+
+    /// Maciej, 2026-10-17: speaking to agents must not leave the dot black —
+    /// an open channel turns every foreign `Idle` into assistive listening,
+    /// and only the channel's own close path (flag down) lets `Idle` through.
+    #[test]
+    #[serial_test::serial]
+    fn an_open_agent_channel_outlives_a_takes_idle() {
+        set_agent_channels_listening(true);
+        update_tray_status(TrayStatus::Idle);
+        let held = current_tray_status_snapshot();
+        assert_eq!(held.status, TrayStatus::Listening);
+        assert_eq!(held.indicator_mode, BadgeMode::Assistive);
+
+        set_agent_channels_listening(false);
+        update_tray_status(TrayStatus::Idle);
+        assert_eq!(current_tray_status(), TrayStatus::Idle);
     }
 
     /// Idle/Success/Thinking and non-assistive lanes stay non-assistive.
