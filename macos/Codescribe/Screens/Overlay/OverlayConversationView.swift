@@ -99,8 +99,9 @@ struct OverlayConversationView: View {
             contentWidth: geometry.size.width, textScale: textScale)
         )
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
-        // The open pill stack dims the conversation to 42 % (mockup).
-        .opacity(agentPillStack == nil ? 1 : 0.42)
+        // The open pill stack steals neither color nor scrolling (Maciej,
+        // 2026-10-17): the conversation keeps its full opacity and stays live;
+        // the pills' own glass carries their legibility.
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -108,7 +109,6 @@ struct OverlayConversationView: View {
         }
         .overlay(alignment: .bottom) {
           composer
-            .opacity(agentPillStack == nil ? 1 : 0.42)
             .onGeometryChange(for: CGFloat.self) {
               $0.size.height
             } action: {
@@ -136,21 +136,6 @@ struct OverlayConversationView: View {
             }
           }
           .animation(.easeOut(duration: 0.18), value: followsLatest)
-        }
-        .overlay {
-          // Clicking anywhere on the dimmed conversation closes the stack.
-          if let pillStack = agentPillStack {
-            Button {
-              pillStack.onDismiss()
-            } label: {
-              Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text("Close the agents list"))
-            .accessibilityIdentifier("overlay-agent-pill-dismiss")
-          }
         }
         .overlay(alignment: .top) {
           VStack(spacing: 0) {

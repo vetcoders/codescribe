@@ -4200,17 +4200,6 @@
         }
       }
     },
-    "Channel 0 wakes %lld of %lld" : {
-      "comment" : "Pill stack: agents woken by broadcasts out of all bound agents",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kanał 0 budzi %1$lld z %2$lld"
-          }
-        }
-      }
-    },
     "Channel status unavailable — last open state retained" : {
       "localizations" : {
         "pl" : {
@@ -4662,16 +4651,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij nakładkę"
-          }
-        }
-      }
-    },
-    "Close the agents list" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zamknij listę agentów"
           }
         }
       }
@@ -18330,16 +18309,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybudzaj po rozgłoszeniach na kanale 0"
-          }
-        }
-      }
-    },
-    "Wake this agent for channel 0 broadcasts" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybudzaj tego agenta po rozgłoszeniach na kanale 0"
           }
         }
       }

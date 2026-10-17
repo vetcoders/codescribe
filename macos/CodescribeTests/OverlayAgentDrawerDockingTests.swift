@@ -155,8 +155,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertFalse(state.showsAgentMonitor, "selecting a pill closes the stack")
   }
 
-  func testPillStackClosesOnEscapeAndDimsTheConversation() throws {
-    // Esc and the click-away both route to hideAgentSidebar.
+  func testPillStackClosesOnEscapeAndStealsNeitherColorNorScroll() throws {
+    // Maciej, 2026-10-17: the open stack steals neither color nor scrolling.
+    // Esc and the name pill's toggle route to hideAgentSidebar.
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
@@ -174,10 +175,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       topOverlay.contains("if let pillStack = agentPillStack"),
       "the stack mounts under the name pill")
-    XCTAssertTrue(
+    XCTAssertFalse(
       conversation.contains("overlay-agent-pill-dismiss"),
-      "a click on the conversation closes the stack")
-    XCTAssertTrue(conversation.contains("0.42"), "the conversation dims to 42% while open")
+      "no full-area catcher: the conversation keeps its clicks and its scroll")
+    XCTAssertFalse(
+      conversation.contains("agentPillStack == nil ? 1 : "),
+      "the open stack never dims the conversation or the composer")
     XCTAssertTrue(topOverlay.contains(".onExitCommand"), "Esc closes the stack")
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     XCTAssertTrue(
@@ -392,18 +395,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "PR is green", "an agent's own chat needs no prefix")
   }
 
-  func testBroadcastPolicyMenuSitsUnderTheAllRowInDockedAndInThePillStack() throws {
+  func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
+    // Maciej (2026-10-17, "Słowo"): wake policy moves to the agent row's
+    // right-click menu; the disclosure list under 0 · All is gone.
     let source = try overlaySource("OverlayChannelStatusView.swift")
+    XCTAssertFalse(
+      source.contains("overlay-broadcast-disclosure"),
+      "the chevron list under 0 · All is gone; Saved conversations keeps its own disclosure")
+    XCTAssertFalse(source.contains("OverlayBroadcastDisclosure"), "the old wrapper type is gone")
     let monitor = try section(
       of: source, from: "func monitorBody(maximumHeight:", to: "var currentConversations")
     XCTAssertTrue(
-      monitor.contains("OverlayBroadcastDisclosure("),
-      "the docked column keeps the 878667f9f menu under 0 · All")
+      monitor.contains("OverlayBroadcastPolicyMenu("),
+      "the docked 0 · All row carries every member's wake policy")
     let pills = try XCTUnwrap(
       source.range(of: "struct OverlayAgentPillStack"), "the pill stack exists")
     XCTAssertTrue(
-      String(source[pills.lowerBound...]).contains("OverlayBroadcastDisclosure("),
-      "the 0 · All pill entry carries the same broadcast policy menu")
+      String(source[pills.lowerBound...]).contains("OverlayBroadcastPolicyMenu("),
+      "pill rows carry the same wake policy menu")
+    XCTAssertTrue(
+      source.contains("members: broadcastMembers.filter { $0.channel == channel.channel }"),
+      "an agent's own docked row carries only its own policy")
   }
 
   // MARK: - Hosting structure (deliverables 1 and 4)
