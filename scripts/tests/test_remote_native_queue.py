@@ -223,11 +223,29 @@ class RemoteCodexTransportTests(unittest.TestCase):
         self.assertEqual(ssh.call_count, 1)
         self.assertIn("--wakeup off", ssh.call_args.args[0][-1])
 
-    def test_explicit_remote_queue_refuses_before_ssh(self):
-        with mock.patch("subprocess.run") as ssh:
-            self.assertNotEqual(self.invoke("--attach", "--channel", "2", "--name", "roman",
-                                            "--wakeup", "codex-queue"), 0)
-        ssh.assert_not_called()
+    def test_explicit_remote_queue_resolves_to_off_and_says_so(self):
+        """Graceful resolver: the mailbox host attaches with wakeup off, the
+        local --watch relay queues here, and the receipt names both modes."""
+        for flag in (["--wakeup", "codex-queue"], ["--wakeup=codex-queue"]):
+            with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as ssh, mock.patch.object(D, "emit") as output:
+                self.assertEqual(self.invoke("--attach", "--channel", "2", "--name", "roman", *flag), 0)
+            self.assertEqual(ssh.call_count, 1)
+            command = ssh.call_args.args[0][-1]
+            self.assertNotIn("codex-queue", command)
+            self.assertTrue("--wakeup off" in command or "--wakeup=off" in command, command)
+            resolution = output.call_args.args[0]
+            self.assertEqual((resolution["kind"], resolution["requested"], resolution["effective"]),
+                             ("wakeup_resolved", "codex-queue", "off"))
+            self.assertIn("--watch", resolution["reason"])
+
+    def test_ordinary_watch_keeps_peer_replies_out_and_relay_lets_them_in(self):
+        """Peer replies wake the remote Codex relay; every other watch keeps
+        the wake set it had before remote queueing existed."""
+        reply = dict(self.envelope(self.ids[0]), status=None, state_change_allowed=False,
+                     producer_schema=D.AGENT_REPLY_SCHEMA)
+        self.assertIsNone(D.watch_line(reply, self.lease))
+        self.assertEqual(D.watch_line(reply, self.lease, peer_replies=True)["delivery_id"], self.ids[0])
+        self.assertIsNotNone(D.watch_line(self.envelope(self.ids[1]), self.lease))
 
     def test_one_ssh_watch_replays_five_envelopes_into_local_queue_without_ack(self):
         process = self.process(*(self.envelope(identity) for identity in self.ids))
@@ -267,6 +285,21 @@ class RemoteCodexTransportTests(unittest.TestCase):
                 self.assertNotEqual(self.invoke("--watch", "--bell"), 0)
         ssh.assert_not_called()
 
+    def test_one_bad_line_is_skipped_and_the_watch_keeps_queueing(self):
+        import io
+        import json
+        good = (json.dumps(self.envelope(self.ids[0])) + "\n").encode()
+        later = (json.dumps(self.envelope(self.ids[1])) + "\n").encode()
+        for bad in (b"cs-bus: a diagnostic line\n", b"[1, 2]\n", b"x" * ((1 << 20) + 10) + b"\n"):
+            process = self.process()
+            process.stdout = io.BytesIO(good + bad + later)
+            with mock.patch("subprocess.Popen", return_value=process), mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue, mock.patch.object(D, "emit") as output:
+                self.assertEqual(self.invoke("--watch", "--bell"), 0, bad[:20])
+            self.assertEqual(queue.call_count, 2, bad[:20])
+            self.assertEqual([call.args[0]["delivery_id"] for call in output.call_args_list], self.ids[:2])
+            for path in self.root.rglob("wakeups/*/*.json"):
+                path.unlink()
+
     def test_incomplete_frame_never_submits_or_acknowledges(self):
         import io
         process = self.process()
@@ -299,6 +332,18 @@ class RemoteCodexTransportTests(unittest.TestCase):
                 withdraw.assert_called_once_with(returned)
             else:
                 withdraw.assert_not_called()
+
+    def test_several_ack_flags_settle_every_requested_id(self):
+        import json
+        receipts = "".join(json.dumps({"kind": "acknowledged", "lease_id": self.lease, "delivery_id": identity,
+                                       "native_queue_settled": True}) + "\n" for identity in self.ids[:3])
+        result = subprocess.CompletedProcess([], 0, receipts, "")
+        for flags in (["--ack=" + self.ids[0], "--ack=" + self.ids[1], "--ack=" + self.ids[2]],
+                      ["--ack", self.ids[0], "--ack", self.ids[1], self.ids[2]],
+                      ["--ack", self.ids[0], self.ids[1], "--ack=" + self.ids[2]]):
+            with mock.patch("subprocess.run", return_value=result), mock.patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, mock.patch.object(D, "emit"):
+                self.assertEqual(self.invoke(*flags), 0)
+            self.assertEqual(sorted(call.args[0] for call in withdraw.call_args_list), self.ids[:3], flags)
 
     def test_failed_remote_ack_never_confirms_or_withdraws_local_submission(self):
         import json
