@@ -1728,11 +1728,21 @@ final class OverlayState {
   }
 
   private func talkToAgent(_ focus: String?) {
-    endAgentChoosing()
-    guard let focus, let conversation = conversations.first(where: { $0.id == focus }),
+    guard let focus else {
+      endAgentChoosing()
+      return
+    }
+    guard let conversation = conversations.first(where: { $0.id == focus }),
       canToggleConversationMicrophone(conversation),
+      // A dead reader cannot be spoken to; the list disables its microphone too.
+      conversation.channel == "0" || channelHudStates[conversation.channel]?.followerAlive != false,
       let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
-    else { return }
+    else {
+      // Nothing to talk to on this row: the chooser stays for another one.
+      renewAgentChooser()
+      return
+    }
+    endAgentChoosing()
     let channel = conversation.channel
     agentGesturePhase = .talking(channel: channel)
     // An open microphone stays open; the next middle click closes it.
