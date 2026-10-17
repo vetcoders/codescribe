@@ -260,6 +260,10 @@ struct OverlayHeaderControlFrames: Equatable {
   var stop: CGRect? = nil
   var preview: CGRect? = nil
   var waveform: CGRect? = nil
+  /// The bottom chrome's actions handle, in the `overlay-canvas` space (the
+  /// window's content), not the header's: the morph falsifier checks that a
+  /// wide sibling never pushes the bottom chrome left of the window either.
+  var actions: CGRect? = nil
 }
 
 struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
@@ -273,6 +277,7 @@ struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
     value.stop = next.stop ?? value.stop
     value.preview = next.preview ?? value.preview
     value.waveform = next.waveform ?? value.waveform
+    value.actions = next.actions ?? value.actions
   }
 }
 
@@ -622,6 +627,17 @@ struct DictationOverlayView: View {
                       : "Show or hide transcript tools"
                   )
                   .accessibilityIdentifier("overlay-tools-handle")
+                  .background {
+                    GeometryReader { geometry in
+                      Color.clear.preference(
+                        key: OverlayHeaderControlFramesPreferenceKey.self,
+                        value: OverlayHeaderControlFrames(
+                          actions: geometry.frame(in: .named("overlay-canvas")))
+                      )
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                  }
                   .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
                   if actions.phase == .open {
                     intentRail
@@ -700,6 +716,15 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .bottom)
     }
+    // The canvas is pinned to the offered window width and anchored leading.
+    // Mid-morph a sibling can be wider than the window (the bottom chrome's
+    // fixed actions capsule, ~320 pt in a 236 pt frame); a centred ZStack then
+    // grew to that width and the parent centred it, pushing the header, body
+    // and chrome left of the window by half the excess (dragon gate
+    // 2026-10-17, OverlayHeaderMorphTests mini→midi @25 %, x -26). Same
+    // contract as the header row: overflow only to the trailing side, where
+    // the window clips it.
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
         // The container claims this entire bar and its vertical margin before
