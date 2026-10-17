@@ -1287,7 +1287,7 @@ impl RecordingController {
         // retention can yield and before any non-open channel receipt flushes it.
         if let Some(bus) = open.transcript_bus.as_ref() {
             let settings = Config::load_startup_runtime_snapshot(false);
-            if let Err(error) = bus.publish_channel_sealed(settings.agent_send_hold_sec()) {
+            if let Err(error) = bus.publish_channel_closed(settings.agent_send_hold_sec()) {
                 tracing::warn!(%error, digit, "channel seal snapshot persistence failed");
             }
         }
