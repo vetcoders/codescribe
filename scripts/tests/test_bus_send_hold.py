@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 HELPER = Path(__file__).resolve().parents[1] / "bus-demux.py"
 SPEC = importlib.util.spec_from_file_location("bus_send_hold", HELPER)
