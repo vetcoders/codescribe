@@ -3030,7 +3030,7 @@ fn project_admission_readiness(
             code: "admission_granted".to_string(),
             device_name: Some(grant.device_name),
             sample_rate: Some(grant.sample_rate),
-            calibration_version: Some(grant.calibration_version),
+            calibration_version: grant.calibration_version,
             ..base
         },
         Err(blocker) => CsAdmissionReadiness {

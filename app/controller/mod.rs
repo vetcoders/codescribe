@@ -6192,7 +6192,7 @@ impl RecordingController {
                     Ok(grant) => info!(
                         device = %grant.device_name,
                         sample_rate = grant.sample_rate,
-                        calibration_version = %grant.calibration_version,
+                        calibration_version = ?grant.calibration_version,
                         "acoustic admission granted for hold start"
                     ),
                     Err(blocker)
@@ -6505,7 +6505,7 @@ impl RecordingController {
                 Ok(grant) => info!(
                     device = %grant.device_name,
                     sample_rate = grant.sample_rate,
-                    calibration_version = %grant.calibration_version,
+                    calibration_version = ?grant.calibration_version,
                     "acoustic admission granted for toggle start"
                 ),
                 Err(blocker)
@@ -11684,7 +11684,10 @@ mod c15d_settings_one_path_falsifiers {
             measured_at,
         )
         .expect("immediate readiness probe sees the persisted profile");
-        assert_eq!(grant.calibration_version, "cal2-fixture-mic-10000@48000hz");
+        assert_eq!(
+            grant.calibration_version.as_deref(),
+            Some("cal2-fixture-mic-10000@48000hz")
+        );
     }
 
     /// C15D-A lifecycle falsifier: an unfinished delayed hold owns its selected

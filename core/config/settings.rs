@@ -1372,14 +1372,14 @@ impl RuntimeSettingsSnapshot {
         self.dictation_witness_armed
     }
 
-    /// Frozen persisted choice; missing fields preserve the existing engine.
+    /// Frozen persisted choice; ledger admission is an explicit opt-in.
     pub fn seal_ledger_enabled(&self) -> bool {
-        self.user_settings.seal_ledger_enabled.unwrap_or(true)
+        self.user_settings.seal_ledger_enabled.unwrap_or(false)
     }
 
     /// Frozen persisted choice, shared by the producer and presentation owners.
     pub fn apple_live_enabled(&self) -> bool {
-        self.user_settings.apple_live_enabled.unwrap_or(true)
+        self.user_settings.apple_live_enabled.unwrap_or(false)
     }
 
     /// Agent-channel send hold for this generation. Zero means immediate delivery.
