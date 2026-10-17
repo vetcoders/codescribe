@@ -104,7 +104,10 @@ struct LabPanel: View {
         "Seal-ledger admission",
         isOn: Binding(
           get: { model.settings.sealLedgerEnabled },
-          set: { model.setSealLedgerEnabled($0) }
+          set: { enabled in
+            model.setSealLedgerEnabled(enabled)
+            Task { await model.refreshAdmission() }
+          }
         )
       )
       .accessibilityIdentifier("lab-seal-ledger-enabled")
@@ -113,7 +116,10 @@ struct LabPanel: View {
         "Apple live speech",
         isOn: Binding(
           get: { model.settings.appleLiveEnabled },
-          set: { model.setAppleLiveEnabled($0) }
+          set: { enabled in
+            model.setAppleLiveEnabled(enabled)
+            Task { await model.refreshAdmission() }
+          }
         )
       )
       .accessibilityIdentifier("lab-apple-live-enabled")
