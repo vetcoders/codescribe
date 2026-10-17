@@ -2077,6 +2077,16 @@ final class OverlayState {
     // full idle interval. Unchanged roster polls must not extend that interval.
     if wasChannelCapturing != channelAudioCaptureActive {
       noteAutoCollapseActivity()
+      // The session counter runs for a channel take as it does for dictation:
+      // from the first open channel until the last one closes. An open
+      // dictation keeps its own clock.
+      if !recording {
+        if channelAudioCaptureActive {
+          beginCaptureClock()
+        } else {
+          freezeCaptureClock()
+        }
+      }
     }
     onChannelPresentationChanged?()
   }
