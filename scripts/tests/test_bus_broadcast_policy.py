@@ -232,16 +232,17 @@ class BroadcastPolicyTests(unittest.TestCase):
                 "sequence": index, "audience": audience, "text": f"message-{index}",
                 "emitted_at": "2026-10-15T18:00:00Z"}
 
-    def test_quiet_follower_has_no_output_native_or_hook_bell_but_direct_does(self):
+    def test_quiet_follower_has_no_output_native_or_hook_bell(self):
+        # The direct half moved to test_bus_steer_global.py: since Steer went
+        # global (Maciej, 2026-10-17) a quiet direct is mail too, not a bell.
         self.policy("quiet")
         state, output, native, hooks = self.run_follower([self.voice(1), self.voice(2, "lena")])
         self.assertEqual(len(state["pending"]), 2)
         self.assertNotIn("message-1", output)
-        self.assertIn("message-2", output)
-        self.assertEqual([call.args[0]["text"] for call in native], ["message-2"])
-        self.assertEqual([call.args[1]["text"] for call in hooks], ["message-2"])
+        self.assertNotIn("message-2", output)
+        self.assertEqual((native, hooks), ([], []))
         rows = [json.loads(line) for line in DEMUX.follower_paths(self.root, self.lease_id)[1].read_text().splitlines()]
-        self.assertEqual([row["text"] for row in rows if "text" in row], ["message-2"])
+        self.assertEqual([row["text"] for row in rows if "text" in row], [])
 
     def test_policy_switches_between_deliveries_in_the_same_follower(self):
         state, output, native, hooks = self.run_follower(
@@ -266,20 +267,9 @@ class BroadcastPolicyTests(unittest.TestCase):
             self.assertEqual(DEMUX.wait_for_pending_command(self.args(max_wait=0.5, interval=0.01)), 0)
         self.assertEqual(emitted.call_args.args[0]["kind"], "watch_timeout")
 
-    def test_watch_suppresses_broadcast_rows_but_not_direct_rows(self):
-        lease = self.lease()
-        events = DEMUX.follower_paths(self.root, self.lease_id)[1]
-        events.parent.mkdir(parents=True, exist_ok=True)
-        for index, channel in enumerate(("0", "2"), 1):
-            row = self.payload(lease, index, channel=channel)
-            lease.queue_delivery(row)
-            DEMUX.emit_follower(row, events, "2", human_output=False)
-        self.policy("quiet")
-        with mock.patch.object(DEMUX, "emit") as emitted:
-            self.assertEqual(DEMUX.watch_command(self.args(
-                from_file=None, once=True, human=False, full=False)), 0)
-        self.assertEqual(emitted.call_count, 1)
-        self.assertEqual(emitted.call_args.args[0]["channel"], "2")
+    # test_watch_suppresses_broadcast_rows_but_not_direct_rows left with the
+    # old contract: test_bus_steer_global.py pins watch over both channels
+    # now that a quiet direct row is suppressed exactly like a broadcast one.
 
     def test_restarting_a_quiet_follower_does_not_ring_for_its_pending_broadcast(self):
         self.policy("quiet")
