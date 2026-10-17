@@ -15,10 +15,13 @@ Source changes in preparation; validation and distribution have separate receipt
 
 ### Fixed
 
+- Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
+- Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
 - Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
 
 <!-- release-notes:0.17.1:start -->
 <!-- release-summary: generated -->
+
 ### Added
 
 - restructure the Shortcuts tab around honest save semantics
@@ -40,6 +43,7 @@ Source changes in preparation; validation and distribution have separate receipt
 - state the Max consultation self-heal contract
 
 Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+
 <!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
 <!-- release-notes:0.17.1:end -->
 
