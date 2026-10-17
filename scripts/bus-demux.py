@@ -124,6 +124,9 @@ PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
 PLAYBACK_SCAN_SECONDS = 0.5
+# A scan cut short by its budget proved nothing either way. Playback resumes the
+# cursor on the next tick and stops only after this many in a row.
+PLAYBACK_INCOMPLETE_SCANS_LIMIT = 3
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -4366,18 +4369,30 @@ def _play_pcm_24k(
         player = subprocess.Popen(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
+        incomplete_scans = 0
         while True:
             if control is not None and control.stopped():
                 _stop_playback(player)
                 return False, "playback stopped", "stopped"
+            scan_deadline = time.monotonic() + PLAYBACK_SCAN_SECONDS
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-                deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
+                deadline=scan_deadline,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
-            if not idle:
+            if idle:
+                incomplete_scans = 0
+            elif time.monotonic() < scan_deadline:
+                # The scan finished inside its budget and found a live take.
                 _stop_playback(player)
                 return False, "take started during playback", "take_started"
+            else:
+                # A loaded machine, not a take: the retained cursor resumes
+                # next tick. Only a run of unfinished scans stops the voice.
+                incomplete_scans += 1
+                if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
+                    _stop_playback(player)
+                    return False, "take started during playback", "take_started"
             result = player.poll()
             if result is not None:
                 if result != 0:
