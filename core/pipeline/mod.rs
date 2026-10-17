@@ -10,6 +10,7 @@ pub mod contracts;
 pub mod light_plus;
 /// Local, observational word-slot evidence emitted only when an occurrence seals.
 pub(crate) mod occurrence_slot_receipt;
+pub mod replay_card;
 /// Event sink helpers: collectors and fan-out to consumers.
 pub mod sinks;
 /// Live streaming session state for partial/final engine events.

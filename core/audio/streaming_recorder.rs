@@ -49,7 +49,8 @@ pub const STOP_CAPTURE_GRACE: Duration = Duration::from_millis(1500);
 /// evidence. Silero segmentation, ledger qualification, and Layer 1 tail repair
 /// remain active for every variant — only the UI-visible epoch lifecycle and
 /// the *live* paid formatter lane read this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureTurnIntent {
     /// Hotkey toggle, hold, tray, and the assistive overlay.
     ///

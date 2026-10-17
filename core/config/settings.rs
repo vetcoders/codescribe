@@ -1284,6 +1284,12 @@ impl RuntimeSettingsSnapshot {
         self.tail_provider
     }
 
+    /// The resolver inputs this snapshot sealed. Crate-only: they carry
+    /// credentials, which only a redacting record may read.
+    pub(crate) fn captured_inputs(&self) -> &super::loader::CapturedRuntimeInputs {
+        &self.captured_inputs
+    }
+
     /// Borrow the frozen runtime values.
     pub fn values(&self) -> &Config {
         &self.values
