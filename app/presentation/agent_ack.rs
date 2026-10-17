@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     fn a_spoken_reply_arms_the_channel_gate_once() {
         let _quiet = QuietDuck;
         crate::audio::tts_duck::clear();
