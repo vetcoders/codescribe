@@ -4339,6 +4339,10 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
 
 
 SPEECH_CACHE_SCHEMA = "codescribe.speech-cache.v1"
+# Longer than one TTS request (60 s timeout), so a waiter normally gets the
+# first caller's recording; past it the waiter synthesizes on its own.
+SPEECH_LOCK_WAIT_SECONDS = 75.0
+SPEECH_LOCK_POLL_SECONDS = 0.05
 
 
 def speech_cache_key(fields: dict[str, Any]) -> str:
@@ -4373,6 +4377,32 @@ def _write_speech_atomically(path: Path, write: Any) -> None:
         raise
 
 
+def _speech_lock(directory: Path, key: str) -> int | None:
+    """Single flight per key: a held flock on `<speech>/<sha256>.lock`, or None.
+
+    Bounded like the playback lock. None after the wait or on any OS error
+    means the caller synthesizes unlocked: a duplicate payment, never a refusal.
+    """
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(directory / f"{key}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    deadline = time.monotonic() + SPEECH_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return descriptor
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(descriptor)
+                return None
+            time.sleep(SPEECH_LOCK_POLL_SECONDS)
+        except OSError:
+            os.close(descriptor)
+            return None
+
+
 def _cached_speech(
     root: Path | None,
     fields: dict[str, Any],
@@ -4389,14 +4419,36 @@ def _cached_speech(
     queued, so a refused, busy or stopped playback keeps the recording. A
     failed write costs only the reuse: the fresh PCM still plays.
     """
-    import wave
-
     directory = (root if root is not None else bridge_home()) / "speech"
     key = speech_cache_key(fields)
     audio = directory / f"{key}.wav"
     cached = _read_cached_speech(audio)
     if cached is not None:
         return cached, None, None
+    # Two callers missing the same key at once pay once: the second waits for
+    # the first and reads its recording.
+    lock = _speech_lock(directory, key)
+    try:
+        if lock is not None:
+            cached = _read_cached_speech(audio)
+            if cached is not None:
+                return cached, None, None
+        return _synthesize_and_store(directory, key, audio, fields, synthesize, reply_id)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def _synthesize_and_store(
+    directory: Path,
+    key: str,
+    audio: Path,
+    fields: dict[str, Any],
+    synthesize: Any,
+    reply_id: str | None,
+) -> tuple[bytes | None, str | None, str | None]:
+    import wave
+
     pcm, error, reason = synthesize()
     if pcm is None:
         return pcm, error, reason
