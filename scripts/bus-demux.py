@@ -4679,7 +4679,15 @@ def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
 
 def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
     if not is_broadcast_delivery(payload):
-        return "on"
+        # Steer is global (Maciej, 2026-10-17): "quiet" queues every delivery
+        # without waking — direct and peer-to-peer included — while leaving
+        # channel 0 ("off") never blocks a direct; off stays broadcast-only so
+        # unticking Channel 0 cannot cut the agent off from addressed words.
+        if any(key not in payload for key in ("provider", "provider_session_id", "bus")):
+            return "on"
+        policy = agent_broadcast_policy(
+            root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
+        return "quiet" if policy == "quiet" else "on"
     return agent_broadcast_policy(
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
@@ -4722,6 +4730,17 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
            "policy": args.broadcast, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
+    # Steer back on must deliver what queued while quiet. The Claude/OMP
+    # waiter polls unread_pending and surfaces those rows on its own; the
+    # codex native queue fires only per new delivery, so resubmit the
+    # pending seals once (enqueue itself skips acknowledged and non-terminal
+    # rows under the per-delivery lock).
+    if args.broadcast == "on" and lease.get("provider") == "codex":
+        native = NativeQueueWakeup(args.bridge_home, args.session, None)
+        for payload in lease.get("pending", []):
+            if isinstance(payload, dict):
+                native.enqueue(dict(payload), retry=True)
+        native.close(wait=True)
     emit({**row, "broadcast": broadcast_policy_snapshot(args.bridge_home, args.provider, args.session, bus)})
     return 0
 
