@@ -420,6 +420,33 @@ action live in **Settings › Agent › Diagnostics**. Setup keeps only the clie
 choice and an inline setup failure. Setup can be reopened later from the
 existing **Setup Wizard…** tray action.
 
+#### Selecting clients without a window
+
+A headless host — SSH, a worker session, a machine with no logged-in GUI — has
+no Settings and no Setup, so the same explicit selection is expressed on the
+command line. `--install-agent-bridge` alone keeps today's behaviour: it
+installs the runtime and refreshes only the clients the receipt already names,
+which on a fresh host is none. `--agent-clients` adds the selection and
+replaces it exactly as the Settings panel does:
+
+```bash
+/Applications/Codescribe.app/Contents/MacOS/Codescribe \
+  --install-agent-bridge --agent-clients claude-code,codex
+```
+
+The list is comma-separated raw client names — `agents`, `claude-code`,
+`codex` — and `--agent-clients=claude-code,codex` is accepted too. The run
+prints one line naming each installed client and its path, and installs
+`~/.claude/skills/codescribe`, `~/.codex/skills/codescribe` or
+`~/.agents/skills/codescribe` accordingly.
+
+`--agent-clients` is only meaningful together with `--install-agent-bridge`.
+Passing it alone, with no value, or with a name that is not a client prints one
+usage line and exits 2 without touching the home directory. An installer
+refusal — an unowned folder, a checksum mismatch, a failed transaction —
+prints the installer's own message and exits 1, the same as before. Clearing
+the selection stays a windowed act: the CLI never installs an empty selection.
+
 ### Info.plist Keys
 
 | Key                                 | Value                    | Purpose                              |

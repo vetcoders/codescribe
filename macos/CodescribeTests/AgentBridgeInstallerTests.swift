@@ -1579,6 +1579,109 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertFalse(payloadPaths.contains { $0["path"] as? String == "docs/legacy.txt" })
   }
 
+  func testCommandLineParsesBothFlagFormsAndRefusesEverythingElse() {
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: ["Codescribe"]), .notRequested)
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: ["Codescribe", "--install-agent-bridge"]),
+      .runtime)
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "claude-code,codex"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=claude-code,codex"],
+      ["Codescribe", "--agent-clients", " claude-code , codex ", "--install-agent-bridge"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=codex,claude-code,codex"],
+    ] {
+      XCTAssertEqual(
+        AgentBridgeCommandLine.request(arguments: arguments),
+        .clients([.claudeCode, .codex]),
+        arguments.joined(separator: " "))
+    }
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--install-agent-bridge", "--agent-clients=agents",
+      ]),
+      .clients([.agents]))
+
+    // A selection without the installation verb is not a runnable request.
+    guard
+      case .usage(let orphan) = AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--agent-clients=codex",
+      ])
+    else { return XCTFail("a bare --agent-clients must be a usage error") }
+    XCTAssertTrue(orphan.contains("--install-agent-bridge"), orphan)
+    XCTAssertFalse(orphan.contains("\n"), orphan)
+
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "claude"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=codex,cursor"],
+    ] {
+      guard case .usage(let unknown) = AgentBridgeCommandLine.request(arguments: arguments) else {
+        return XCTFail(
+          "an unknown client must be a usage error: \(arguments.joined(separator: " "))")
+      }
+      for name in AgentBridgeClient.allCases.map(\.rawValue) {
+        XCTAssertTrue(unknown.contains(name), unknown)
+      }
+      XCTAssertFalse(unknown.contains("\n"), unknown)
+    }
+
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients="],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "  "],
+    ] {
+      guard case .usage(let empty) = AgentBridgeCommandLine.request(arguments: arguments) else {
+        return XCTFail(
+          "a valueless flag must not deselect clients: \(arguments.joined(separator: " "))")
+      }
+      XCTAssertTrue(empty.contains("--agent-clients"), empty)
+    }
+  }
+
+  func testCommandLineSelectionInstallsTheNamedClientsIntoTheBridgeHome() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("cli-home", isDirectory: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+
+    guard
+      case .clients(let selected) = AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--install-agent-bridge", "--agent-clients=claude-code,agents",
+      ])
+    else { return XCTFail("the CLI must reach the explicit selection path") }
+
+    let status = try installer.install(selectedClients: selected)
+    XCTAssertEqual(Set(status.installedClients), [.claudeCode, .agents])
+    for client in [".claude", ".agents"] {
+      XCTAssertTrue(
+        FileManager.default.fileExists(
+          atPath: home.appendingPathComponent("\(client)/skills/codescribe/SKILL.md").path),
+        client)
+    }
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codex/skills/codescribe").path))
+    XCTAssertTrue(
+      FileManager.default.isExecutableFile(
+        atPath: home.appendingPathComponent(
+          ".codescribe/agent-bridge/runtime/bin/bus-demux.py"
+        ).path))
+
+    let summary = AgentBridgeCommandLine.summary(status)
+    XCTAssertFalse(summary.contains("\n"), summary)
+    for (client, relative) in [
+      (AgentBridgeClient.claudeCode, ".claude/skills/codescribe"),
+      (AgentBridgeClient.agents, ".agents/skills/codescribe"),
+    ] {
+      XCTAssertTrue(summary.contains(client.displayName), summary)
+      XCTAssertTrue(
+        summary.contains(
+          home.appendingPathComponent(relative, isDirectory: true).standardizedFileURL.path),
+        summary)
+    }
+    XCTAssertFalse(summary.contains(AgentBridgeClient.codex.displayName), summary)
+  }
+
   private func makePayload(
     bundleVersion: String = "9.8.7",
     helperContent: String = "#!/usr/bin/env python3\nprint('bridge')\n",
