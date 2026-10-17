@@ -20,8 +20,56 @@
 //! the exact class of harm the lexicon's stopword gate was added to stop.
 //! Hesitation sounds and accepted acoustic event markers are preserved too.
 //!
+//! The one word rule is the product name: every spoken form of it becomes
+//! "Codescribe" (see [`brand_spelling`]).
+//!
 //! Every rule is idempotent: applying the pass twice yields the same string, so
 //! a re-delivered or re-formatted transcript never drifts.
+
+/// The product name, spelled one way whichever engine heard it.
+const BRAND: &str = "Codescribe";
+
+/// How engines hear the product name: Whisper writes "CodeScript" or
+/// "code script", cloud engines "Code Scribe", Polish decoders "kod skrajb".
+/// The brand is not a user preference, so a missing, reset or poisoned
+/// custom dictionary must not let it ship misspelt; the rule lives in this
+/// always-on pass that every committed span goes through.
+static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(?:code[ -]?scri(?:be|pt)|code[ -]?skrajb|kod[ -]?(?:scribe|skrybe|skraj ?b)|kodeskrajb|kołdskrajb)\b",
+    )
+    .expect("brand hearing pattern")
+});
+
+/// Rewrite spoken forms of the brand to [`BRAND`]. All-lowercase
+/// `codescribe` and any form glued to a path, identifier or address stay as
+/// written: `~/.codescribe/takes` and `codescribe.transcript.v1` are names,
+/// not speech. Lone "code", "script" or "scribe" never match.
+fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut rewritten = String::new();
+    let mut copied = 0;
+    for found in BRAND_HEARINGS.find_iter(text) {
+        let heard = found.as_str();
+        let before = text[..found.start()].chars().next_back();
+        let mut after = text[found.end()..].chars();
+        let next = after.next();
+        let glued = matches!(before, Some('.' | '/' | '\\' | '_' | '-' | '~' | '@'))
+            || matches!(next, Some('/' | '\\' | '_' | '@'))
+            || (matches!(next, Some('.' | '-' | ':'))
+                && after.next().is_some_and(char::is_alphanumeric));
+        if glued || heard == BRAND || heard == "codescribe" {
+            continue;
+        }
+        rewritten.push_str(&text[copied..found.start()]);
+        rewritten.push_str(BRAND);
+        copied = found.end();
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    rewritten.push_str(&text[copied..]);
+    std::borrow::Cow::Owned(rewritten)
+}
 
 /// Punctuation that closes a clause and may therefore be doubled by a seam.
 const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
@@ -133,7 +181,8 @@ pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bo
         return String::new();
     }
 
-    let tightened = tighten_punctuation(trimmed);
+    let branded = brand_spelling(trimmed);
+    let tightened = tighten_punctuation(&branded);
     let punctuated = place_polish_commas(&tightened);
     let tightened = punctuated.trim();
     if tightened.is_empty() {
@@ -319,6 +368,66 @@ fn ends_with_terminal_punctuation(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_heard_form_of_the_brand_becomes_codescribe() {
+        for heard in [
+            "CodeScript",
+            "Codescript",
+            "codescript",
+            "code script",
+            "Code Script",
+            "code-script",
+            "CodeScribe",
+            "Code Scribe",
+            "code scribe",
+            "kod scribe",
+            "kod-scribe",
+            "kod skrajb",
+            "kod skraj b",
+            "kod skrybe",
+            "kodeskrajb",
+            "kołdskrajb",
+            "code skrajb",
+            "Codescribe",
+        ] {
+            assert_eq!(
+                brand_spelling(&format!("pracuję nad {heard} dziś")),
+                "pracuję nad Codescribe dziś",
+                "{heard}"
+            );
+        }
+        assert_eq!(brand_spelling("CodeScript."), "Codescribe.");
+        assert_eq!(brand_spelling("CodeScript'a"), "Codescribe'a");
+        assert_eq!(
+            apply("otwórz CodeScript i code scribe"),
+            "Otwórz Codescribe i Codescribe."
+        );
+    }
+
+    #[test]
+    fn script_code_and_names_stay_as_spoken() {
+        for kept in [
+            "to jest Python script",
+            "TypeScript i JavaScript",
+            "ten skrypt i ten script",
+            "kod skryptu jest długi",
+            "napisz code, potem scribe",
+            "zajrzyj do ~/.codescribe/takes",
+            "schema codescribe.transcript.v1",
+            "plik codescribe-ffi i code_script.py",
+            "codescribe z małej litery",
+        ] {
+            assert_eq!(brand_spelling(kept), kept);
+        }
+    }
+
+    #[test]
+    fn brand_rule_is_idempotent_through_the_live_span() {
+        let once = apply_live_span("", "pracuję nad code script", false);
+        assert_eq!(once, "Pracuję nad Codescribe");
+        assert_eq!(apply_live_span("", &once, false), once);
+    }
 
     #[test]
     fn tick_budget_counts_queue_time_and_refuses_late_candidates() {

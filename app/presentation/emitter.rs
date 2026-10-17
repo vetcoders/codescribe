@@ -11180,6 +11180,56 @@ mod tests {
         );
     }
 
+    /// Acceptance: Whisper's hearing of the brand never reaches the user.
+    /// A Whisper word correction relabels the occurrence to "CodeScript"; the
+    /// live Light+ shape that paint, stop, paste and agent delivery read
+    /// presents "Codescribe", and the ledger authenticates that shape by
+    /// re-running the same pass over the corrected label.
+    #[test]
+    fn whisper_heard_brand_is_presented_as_codescribe() {
+        use codescribe_core::pipeline::acoustic_ledger::WordPin;
+        let mut reducer = TranscriptReducer::default();
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("brand-session", 22, 0, 32_000);
+        let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "pracuję nad kodem");
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = &mutation
+        else {
+            panic!("admitted_mutation must produce a ledger mutation");
+        };
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, observation, receipt)
+                .is_some()
+        );
+
+        let whisper =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, occurrence.clone());
+        let receipt = ledger.admit_word_slots_for_tests(
+            &whisper,
+            &[
+                WordPin::new(1_000, 9_000, "pracuję").with_decode_window(0, 48_000),
+                WordPin::new(10_000, 16_000, "nad").with_decode_window(0, 48_000),
+                WordPin::new(17_000, 31_000, "CodeScript").with_decode_window(0, 48_000),
+            ],
+        );
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &receipt)
+                .is_some()
+        );
+        assert_eq!(ledger.text_of(&occurrence), Some("pracuję nad CodeScript"));
+
+        let shaped = reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .expect("the corrected label is shaped");
+        assert_eq!(shaped.rendered_text, "Pracuję nad Codescribe");
+    }
+
     /// Acceptance: a terminal whole-document revision keeps ownership of the
     /// presentation, and an occurrence seal never opens the terminal corridor.
     ///
