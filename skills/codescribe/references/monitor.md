@@ -382,7 +382,8 @@ if (!start.session_id) {
 Keep `codex-queue` on beside the cell; each covers the other's gap. In the
 Founder's observed test (Maciej, 2026-10-18) an idle Codex read a native-queue
 message 5.6 s after it was sent, while a Codex in the middle of a turn read a
-queue message only about 5 min later, after its turn ended. That same
+queue message only after that turn ended: 5 min in that test, but the wait
+lasts as long as the turn does, hours for a long one. That same
 mid-turn Codex read a bus message through the cell 25 s after it was sent.
 A bus message to the idle Codex, without the queue, never woke it. Only the
 native queue wakes an idle Codex; the cell delivers during a turn.
