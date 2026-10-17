@@ -259,3 +259,52 @@ fn witness_attempts_charge_full_targets_and_only_the_leading_oversized_one() {
     super::record_dictation_witness_attempts(&mut attempts, &[(100, 110)], 98, 110, 30);
     assert_eq!(attempts, vec![((0, 90), 1), ((100, 110), 1)]);
 }
+
+// div0 2026-10-15..17: 130 live witness lookups failed on only 7 windows, the
+// 0..30 s window 85 times. The oldest debt had left the 120 s buffer, the
+// window stayed anchored on it, and newer gaps were never asked.
+#[test]
+fn live_witness_skips_evicted_debt_and_asks_the_retained_gap() {
+    let question = super::live_witness_question(&[(0, 2), (130, 134)], 100, 140, 3, 30);
+    assert_eq!(question, Some(((127, 137), vec![(130, 134)])));
+}
+
+#[test]
+fn live_witness_context_never_reaches_before_the_retained_start() {
+    let question = super::live_witness_question(&[(101, 104)], 100, 140, 3, 30);
+    assert_eq!(question, Some(((100, 107), vec![(101, 104)])));
+}
+
+#[test]
+fn live_witness_with_only_evicted_debt_asks_nothing() {
+    assert_eq!(
+        super::live_witness_question(&[(0, 2), (10, 12)], 100, 140, 3, 30),
+        None
+    );
+}
+
+#[test]
+fn live_witness_without_eviction_keeps_the_oldest_first_window() {
+    let question = super::live_witness_question(&[(0, 1), (60, 61)], 0, 70, 3, 30);
+    assert_eq!(question, Some(((0, 30), vec![(0, 1), (60, 61)])));
+}
+
+// div0 2026-10-15..17: the terminal budget (4 requests, 90 s) ran out in 53
+// takes. In time order it went to the first minutes of a long take.
+#[test]
+fn terminal_witness_spends_the_budget_on_the_largest_debt_first() {
+    let windows = super::terminal_witness_windows(&[(0, 2), (100, 120), (200, 201)], 300, 3, 30);
+    assert_eq!(windows, vec![(97, 123), (0, 5), (197, 204)]);
+}
+
+#[test]
+fn terminal_witness_breaks_debt_ties_in_time_order() {
+    let windows = super::terminal_witness_windows(&[(0, 10), (50, 60)], 300, 3, 30);
+    assert_eq!(windows, vec![(0, 13), (47, 63)]);
+}
+
+#[test]
+fn terminal_witness_still_clusters_neighbouring_targets_into_one_window() {
+    let windows = super::terminal_witness_windows(&[(0, 5), (8, 10), (60, 61)], 300, 3, 30);
+    assert_eq!(windows, vec![(0, 13), (57, 64)]);
+}
