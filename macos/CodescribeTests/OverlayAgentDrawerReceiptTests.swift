@@ -165,6 +165,20 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     XCTAssertNil(try receipt(fixture(messages: [question])))
   }
 
+  func testChangingCurrentPolicyCannotInventAHistoricalSkipReceipt() throws {
+    var broadcast = try XCTUnwrap(fixture().messages.first)
+    broadcast.sourceChannel = "0"
+    let conversation = try fixture(messages: [broadcast])
+    let drawer = view(conversation)
+    var row = channel
+    row.broadcastPolicy = .on
+    let publishedReceipt = drawer.deliveryReceiptText(for: row, conversation: conversation)
+    row.broadcastPolicy = .off
+    XCTAssertEqual(
+      drawer.deliveryReceiptText(for: row, conversation: conversation), publishedReceipt,
+      "Changing today's membership is not evidence that this frozen delivery was skipped")
+  }
+
   func testAReplacementOwnerDoesNotInheritTheSavedOwnersRead() throws {
     let saved = try fixture(read: true)
     let replacement = try XCTUnwrap(
@@ -205,6 +219,47 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       XCTAssertTrue(
         row.value.contains("8 unread replies"), "the count names Founder-unread replies")
       XCTAssertGreaterThan(row.height, 0)
+      XCTAssertLessThanOrEqual(row.width, width)
+    }
+  }
+
+  func testLongNativeRowFitsFiveTextLinesAtBothTextScales() throws {
+    var message = try XCTUnwrap(fixture(read: true).messages.first)
+    message.text = String(repeating: "A long routed message with enough text to wrap. ", count: 12)
+    message.sourceChannel = "0"
+    let conversation = try fixture(messages: [message])
+    for scale in [CGFloat(1), CGFloat(1.6)] {
+      let drawer = OverlayChannelStatusView(
+        channels: [channel], unavailable: false, palette: .dark, animates: false,
+        hudStates: view(conversation, alive: false).hudStates,
+        agentDescriptors: ["2": String(repeating: "provider model repository ", count: 8)],
+        conversations: [conversation], unreadCounts: [conversation.id: 123],
+        onSelectConversation: { _ in })
+      let width = 320 * scale
+      let host = NSHostingView(
+        rootView: drawer.monitorBody(maximumHeight: 420)
+          .environment(\.csTextScale, scale).frame(width: width))
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: width, height: 420),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      let reception = try NativeAccessibilityProbe.waitForElements(
+        "overlay-view-conversation-\(conversation.id)")
+      let row = try XCTUnwrap(reception.elements.first)
+      let layout = NSLayoutManager()
+      func lineHeight(_ size: CGFloat) -> CGFloat {
+        ceil(layout.defaultLineHeight(for: .systemFont(ofSize: size * scale)))
+      }
+      let fiveLines = lineHeight(13.5) + lineHeight(11) * 2 + lineHeight(12.5) * 2
+      let spacingAndBadge: CGFloat = 8 + 4 + 4
+      XCTAssertGreaterThan(row.height, 0)
+      XCTAssertLessThanOrEqual(
+        row.height, fiveLines + spacingAndBadge,
+        "Long descriptor, preview, unread and disconnected receipt must share the five-line budget")
       XCTAssertLessThanOrEqual(row.width, width)
     }
   }
