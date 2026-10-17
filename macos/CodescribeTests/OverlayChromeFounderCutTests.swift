@@ -281,7 +281,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
           self.regionClickPoint(
             identifier: view.accessibilityIdentifier(), in: root, panel: panel)
         }.first, "mini: no clickable drag region")
-      XCTAssertTrue(panel.isPresentationClickHit(at: anyRegion), "mini keeps the whole-chrome click")
+      XCTAssertTrue(
+        panel.isPresentationClickHit(at: anyRegion), "mini keeps the whole-chrome click")
     }
   }
 
@@ -1481,8 +1482,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     return try String(contentsOf: url, encoding: .utf8)
   }
 
-  /// `justifiedHeader(compact:)` — the single builder behind fullHeader and
-  /// narrowHeader, so one guard covers both widths.
+  /// `justifiedHeader(density:)` — the single header tree behind mini, midi and
+  /// expanded, so one guard covers every density.
   private func headerSource(_ source: String) throws -> String {
     try section(
       of: source, from: "private var closeButton: some View",

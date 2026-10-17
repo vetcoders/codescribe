@@ -284,6 +284,39 @@ struct OverlayDrawerFramePreferenceKey: PreferenceKey {
   }
 }
 
+/// Header density, a pure function of the presentation mode. It drives one
+/// header tree, so the layout never re-chooses a candidate per window frame.
+enum OverlayHeaderDensity: Equatable {
+  case mini, midi, expanded
+
+  /// Room around the row that the clip must not cut: the close dot's hover
+  /// growth (10/7 of 9 pt) and the 1 pt focus outlines.
+  static let clipInset: CGFloat = 4
+
+  init(_ mode: OverlayPresentationMode) {
+    switch mode {
+    case .mini: self = .mini
+    case .midi: self = .midi
+    case .expanded: self = .expanded
+    }
+  }
+
+  var brandSize: CGFloat { self == .expanded ? 15 : 13 }
+  var waveformBars: Int {
+    switch self {
+    case .mini, .midi: return 24
+    case .expanded: return 34
+    }
+  }
+  var waveformMinWidth: CGFloat {
+    switch self {
+    case .mini: return 4
+    case .midi: return 56
+    case .expanded: return 12
+    }
+  }
+}
+
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
@@ -750,74 +783,50 @@ struct DictationOverlayView: View {
   // MARK: Header
 
   private var header: some View {
-    VStack(spacing: 6) {
-      if state.isMini {
-        miniHeader
-          .transition(.opacity)
-      } else {
-        ViewThatFits(in: .horizontal) {
-          fullHeader
-          narrowHeader
+    // One header tree for every presentation mode. The density is a pure
+    // function of `presentationMode`, so it changes in the same animated
+    // transaction as the mode: the close dot and the recording controls keep
+    // one identity and glide between positions while the AppKit frame steps
+    // never re-choose a layout candidate (no ViewThatFits, no cross-fade of
+    // two trees; Founder report 2026-10-17 01:44Z).
+    justifiedHeader(density: OverlayHeaderDensity(state.presentationMode))
+      // The row is offered the full width first, so the clip below trims the
+      // window's width and not the row's own ideal width.
+      .frame(maxWidth: .infinity, alignment: .leading)
+      // Hover growth of the close dot and the focus outlines live in this
+      // inset; the clip then only trims a transient overflow mid-morph.
+      .padding(.horizontal, OverlayHeaderDensity.clipInset)
+      .padding(.vertical, OverlayHeaderDensity.clipInset)
+      .clipped()
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
+        value: state.presentationMode
+      )
+      .padding(.horizontal, 16 - OverlayHeaderDensity.clipInset)
+      .padding(.vertical, 10 - OverlayHeaderDensity.clipInset)
+      .coordinateSpace(name: "overlay-header")
+      // Keep the explicit drag region above the passive glass background.
+      // OverlayResizeHitTests verifies header dragging across its width.
+      .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
+      // Placement, the take-start preference and the panel routes live behind a
+      // secondary click anywhere on the header, drag region included, in every form.
+      .contextMenu { OverlayHeaderMenu(state: state) }
+      .modifier(OverlayControlGlass())
+      // The cached panel survives orderOut. Observe its window beside the header
+      // row so the visibility probe is installed exactly once.
+      .background {
+        OverlayRenderVisibility(onHidden: { state.clearPointerHover() }) { visible in
+          state.setConversationVisible(visible)
+          guard overlayVisible != visible else { return }
+          var transaction = Transaction(animation: nil)
+          transaction.disablesAnimations = true
+          withTransaction(transaction) { overlayVisible = visible }
         }
-        .transition(.opacity)
+        .frame(width: 0, height: 0)
       }
-    }
-    // The mini and the full header cross-fade over the window's morph instead
-    // of swapping on its first frame (presentation ledger, 2026-10-14).
-    .animation(
-      reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
-      value: state.presentationMode
-    )
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .coordinateSpace(name: "overlay-header")
-    // Keep the explicit drag region above the passive glass background.
-    // OverlayResizeHitTests verifies header dragging across its width.
-    .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
-    // Placement, the take-start preference and the panel routes live behind a
-    // secondary click anywhere on the header, drag region included, in every form.
-    .contextMenu { OverlayHeaderMenu(state: state) }
-    .modifier(OverlayControlGlass())
-    // The cached panel survives orderOut. Observe its window outside
-    // ViewThatFits so hidden header candidates cannot compete for visibility.
-    .background {
-      OverlayRenderVisibility(onHidden: { state.clearPointerHover() }) { visible in
-        state.setConversationVisible(visible)
-        guard overlayVisible != visible else { return }
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { overlayVisible = visible }
+      .onChange(of: state.presentationMode) { _, _ in
+        state.setConversationVisible(overlayVisible)
       }
-      .frame(width: 0, height: 0)
-    }
-    .onChange(of: state.presentationMode) { _, _ in
-      state.setConversationVisible(overlayVisible)
-    }
-  }
-
-  private var fullHeader: some View { justifiedHeader(compact: false) }
-
-  private var narrowHeader: some View { justifiedHeader(compact: true) }
-
-  private var miniHeader: some View {
-    HStack(spacing: 6) {
-      closeButton
-      Text(verbatim: "codescribe")
-        .font(CSFont.ui(13, .bold))
-        .tracking(-0.3)
-        .foregroundStyle(palette.primaryText.color)
-        .fixedSize()
-        .accessibilityIdentifier("overlay-mini-brand")
-        .allowsHitTesting(false)
-        .background {
-          OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
-        }
-      Spacer(minLength: 4)
-      recordingControls(compact: false)
-    }
-    .frame(height: 26)
-    .accessibilityIdentifier("overlay-mini-widget")
   }
 
   private var closeButton: some View {
@@ -865,32 +874,45 @@ struct DictationOverlayView: View {
     return controls
   }
 
-  private func justifiedHeader(compact: Bool) -> some View {
-    HStack(spacing: compact ? 6 : 10) {
-      HStack(spacing: 5) {
+  private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
+    let mini = density == .mini
+    let compact = density != .expanded
+    return HStack(spacing: density == .expanded ? 10 : 6) {
+      HStack(spacing: mini ? 6 : 5) {
         closeButton
 
         // The wordmark is the product name, never translated copy.
         Text(verbatim: "codescribe")
-          .font(CSFont.ui(state.presentationMode == .midi ? 13 : compact ? 12 : 15, .bold))
+          .font(CSFont.ui(density.brandSize, .bold))
           .tracking(-0.3)
           .foregroundStyle(palette.primaryText.color)
           .allowsHitTesting(false)
+          .accessibilityIdentifier(mini ? "overlay-mini-brand" : "")
+          .background {
+            if mini {
+              OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
+            }
+          }
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("overlay-header-leading")
+      .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
       .background {
-        OverlayWindowDragRegion(identifier: "overlay-header-inert-drag-region")
+        if !mini {
+          OverlayWindowDragRegion(identifier: "overlay-header-inert-drag-region")
+        }
       }
 
-      chromeWaveform(barCount: state.presentationMode == .midi ? 24 : compact ? 10 : 34)
-        .frame(
-          minWidth: state.presentationMode == .midi ? 56 : compact ? 12 : 100, maxWidth: .infinity
-        )
+      // The flexible centre keeps one identity in every density; in mini it
+      // collapses to a spacer so the recording controls stay trailing.
+      chromeWaveform(barCount: density.waveformBars)
+        .frame(minWidth: density.waveformMinWidth, maxWidth: .infinity)
         .layoutPriority(-1)
+        .opacity(mini ? 0 : 1)
+        .allowsHitTesting(!mini)
+        .accessibilityHidden(mini)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("overlay-header-center")
+        .accessibilityIdentifier(mini ? "" : "overlay-header-center")
         .background {
           GeometryReader { geometry in
             Color.clear.preference(
@@ -903,48 +925,58 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .accessibilityHidden(true)
         }
-      sessionTimer
-        .allowsHitTesting(false)
+      if !mini {
+        sessionTimer
+          .allowsHitTesting(false)
+      }
 
       HStack(spacing: compact ? 4 : 8) {
-        let transcriptionSelected =
-          !state.isCollapsed && !state.showsAgentMonitor
-          && state.selectedConversationID == nil
-        Button(action: state.showTranscription) {
-          OverlayMicrophoneGlyph(
-            character: OverlayHeaderGlyph.transcription,
-            tint: transcriptionSelected
-              ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
-              : palette.mutedText.color,
-            plateOpacity: transcriptionSelected ? 0 : 0.12)
+        if !mini {
+          transcriptionPreviewButton
+          if let error = state.expansionPreferenceError {
+            OverlayMicrophoneGlyph(
+              symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
+            )
+            .help(error)
+            .accessibilityLabel(error)
+            .accessibilityIdentifier("overlay-preference-save-error")
+          }
+          channelStatusView
+          OverlayPinButton(state: state, palette: palette)
         }
-        .buttonStyle(.plain)
-        .csFocusOutline()
-        .modifier(
-          OverlayHeaderControlChrome(
-            title: transcriptPreviewHelp, accent: .transcription, palette: palette,
-            selected: transcriptionSelected)
-        )
-        .accessibilityLabel("Show transcription")
-        .accessibilityAddTraits(transcriptionSelected ? .isSelected : [])
-        .accessibilityValue(transcriptPreviewAccessibilityValue)
-        .accessibilityIdentifier("overlay-transcription-preview")
-        if let error = state.expansionPreferenceError {
-          OverlayMicrophoneGlyph(
-            symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
-          )
-          .help(error)
-          .accessibilityLabel(error)
-          .accessibilityIdentifier("overlay-preference-save-error")
-        }
-        channelStatusView
-        OverlayPinButton(state: state, palette: palette)
-        recordingControls(compact: compact)
+        recordingControls(compact: compact && !mini)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("overlay-header-trailing")
+      .accessibilityIdentifier(mini ? "" : "overlay-header-trailing")
     }
+    .frame(height: mini ? 26 : nil)
+    .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
+  }
+
+  private var transcriptionPreviewButton: some View {
+    let transcriptionSelected =
+      !state.isCollapsed && !state.showsAgentMonitor
+      && state.selectedConversationID == nil
+    return Button(action: state.showTranscription) {
+      OverlayMicrophoneGlyph(
+        character: OverlayHeaderGlyph.transcription,
+        tint: transcriptionSelected
+          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
+          : palette.mutedText.color,
+        plateOpacity: transcriptionSelected ? 0 : 0.12)
+    }
+    .buttonStyle(.plain)
+    .csFocusOutline()
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: transcriptPreviewHelp, accent: .transcription, palette: palette,
+        selected: transcriptionSelected)
+    )
+    .accessibilityLabel("Show transcription")
+    .accessibilityAddTraits(transcriptionSelected ? .isSelected : [])
+    .accessibilityValue(transcriptPreviewAccessibilityValue)
+    .accessibilityIdentifier("overlay-transcription-preview")
   }
 
   /// Internal so a test can assert that two body passes share one search model.
