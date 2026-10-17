@@ -2,8 +2,12 @@
 //!
 //! The session measures Silero and the calibrated existence floor. This module
 //! does not read PCM and does not turn a missing channel into silence.
+//!
+//! One rule needs no calibration: a word with no Silero speech anywhere within
+//! [`WHISPER_WORD_SPEECH_NEAR_MS`] of its span was written over silence and is
+//! refused, in the ledger lane and in the direct lane alike.
 
-use super::acoustic_ledger::RefuseReason;
+use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
 
 /// Shortest voiced span, in milliseconds, that can be one syllable of an
 /// identical Whisper repeat.
@@ -31,6 +35,13 @@ pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
 /// word keeps today's path with its own receipt. 500 ms is chosen, not
 /// measured; it is wider than the 200 ms Silero merge gap and shorter than
 /// the silences the corpus hallucinations sit on (47–612 s of digital zero).
+///
+/// The same radius bounds the Silero-only rule. Div0 census of 15–17 X
+/// (231 takes, 21 080 Whisper words, `stasiu-silence/REPORT.md`): 689 words
+/// have no Silero speech under their span; 303 of them lie within 500 ms of
+/// speech (pin jitter is 0.1–0.3 s), 49 at 0.5–1 s and 337 further than 1 s.
+/// Every such word but two is Whisper's, and most sit on sound without speech,
+/// not on digital zero.
 pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 500;
 
 /// Receipt label when neither Silero nor the calibrated floor was measured.
@@ -40,6 +51,37 @@ pub const WHISPER_WORD_SPEECH_UNMEASURED: &str = "unmeasured";
 /// Receipt label for a word whose own span is silent while speech lies within
 /// [`WHISPER_WORD_SPEECH_NEAR_MS`]. The word is kept.
 pub const WHISPER_WORD_SPEECH_NEAR: &str = "speech_near_span";
+
+/// How far Silero places the nearest speech from one word's span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SileroSpeechDistance {
+    /// Silero has not observed the span and the radius after it.
+    Unmeasured,
+    /// Silero observed the span and the radius after it and heard no speech
+    /// anywhere in this capture epoch.
+    NoSpeechHeard,
+    /// Milliseconds from the span to the nearest speech range; 0 on overlap.
+    Ms(u64),
+}
+
+impl SileroSpeechDistance {
+    /// `true` only when Silero measured that no speech lies within the radius.
+    fn beyond_near_radius(self) -> bool {
+        match self {
+            Self::Unmeasured => false,
+            Self::NoSpeechHeard => true,
+            Self::Ms(distance) => distance > WHISPER_WORD_SPEECH_NEAR_MS,
+        }
+    }
+
+    /// Receipt value: the measured distance, `None` when nothing was heard.
+    fn receipt_ms(self) -> Option<u32> {
+        match self {
+            Self::Ms(distance) => Some(u32::try_from(distance).unwrap_or(u32::MAX)),
+            Self::Unmeasured | Self::NoSpeechHeard => None,
+        }
+    }
+}
 
 /// One Whisper word plus the speech facts already measured for its span.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +107,10 @@ pub struct WhisperWordSpeech {
     /// dip. `Some(false)` when at least one channel was measured and none of
     /// them found that split. `None` when neither channel was measured.
     pub separated_from_previous: Option<bool>,
+    /// Silero alone, with no energy channel: the nearest speech it heard.
+    pub silero_speech_distance: SileroSpeechDistance,
+    /// What the span itself holds, for the receipt of a word over silence.
+    pub silence_under_span: SilenceUnderSpan,
 }
 
 /// What the judge did with one word.
@@ -126,6 +172,15 @@ fn judge_one(
     index: usize,
     word: &WhisperWordSpeech,
 ) -> WhisperWordSpeechVerdict {
+    // No speech anywhere near the word: Silero alone decides this, with or
+    // without a calibration profile. Energy is not consulted, because sound
+    // above the floor without speech is where most of these words sit.
+    if word.silero_speech_distance.beyond_near_radius() {
+        return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+            silence: word.silence_under_span,
+            distance_ms: word.silero_speech_distance.receipt_ms(),
+        });
+    }
     // Without the calibrated floor Silero alone does not decide: it merges
     // gaps shorter than its merge window, so two real repeats inside one
     // range look like one word. A take without a profile keeps today's path.
@@ -284,12 +339,109 @@ mod tests {
             energy_above_floor: energy,
             speech_near_span: None,
             separated_from_previous: separated,
+            silero_speech_distance: SileroSpeechDistance::Unmeasured,
+            silence_under_span: SilenceUnderSpan::EnergyUnmeasured,
         }
     }
 
     fn near_speech(mut word: WhisperWordSpeech) -> WhisperWordSpeech {
         word.speech_near_span = Some(true);
         word
+    }
+
+    fn silero_distance(
+        mut word: WhisperWordSpeech,
+        distance: SileroSpeechDistance,
+        silence: SilenceUnderSpan,
+    ) -> WhisperWordSpeech {
+        word.silero_speech_distance = distance;
+        word.silence_under_span = silence;
+        word
+    }
+
+    #[test]
+    fn a_word_far_from_any_silero_speech_is_refused_without_a_calibration_profile() {
+        // Div0 cdff34c7 (17 X 03:41Z): "nie," 2 176 ms from the nearest speech,
+        // on sound the existence floor calls voiced.
+        let decisions = judge_whisper_words(&[silero_distance(
+            word("nie,", 0, 9_600, Some(false), None, None),
+            SileroSpeechDistance::Ms(2_176),
+            SilenceUnderSpan::SoundWithoutSpeech,
+        )]);
+        assert_eq!(
+            decisions[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+                silence: SilenceUnderSpan::SoundWithoutSpeech,
+                distance_ms: Some(2_176),
+            }),
+            "Silero heard no speech within the radius; a missing floor must not keep a word \
+             written over silence, and the receipt carries the class and the distance"
+        );
+        assert_eq!(decisions[0].receipt(), "no_speech_near_span");
+    }
+
+    #[test]
+    fn energy_above_the_floor_does_not_keep_a_word_silero_heard_no_speech_near() {
+        let decisions = judge_whisper_words(&[silero_distance(
+            word("trzy", 0, 19_200, Some(false), Some(true), None),
+            SileroSpeechDistance::Ms(6_680),
+            SilenceUnderSpan::SoundWithoutSpeech,
+        )]);
+        assert!(
+            !decisions[0].admits(),
+            "room noise above the existence floor is sound, not speech"
+        );
+    }
+
+    #[test]
+    fn digital_zero_with_no_speech_in_the_epoch_is_refused_with_no_distance() {
+        let decisions = judge_whisper_words(&[silero_distance(
+            word("Dziękuję.", 0, 48_000, Some(false), Some(false), None),
+            SileroSpeechDistance::NoSpeechHeard,
+            SilenceUnderSpan::DigitalZero,
+        )]);
+        assert_eq!(
+            decisions[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+                silence: SilenceUnderSpan::DigitalZero,
+                distance_ms: None,
+            }),
+            "no speech heard in the epoch has no distance to report"
+        );
+    }
+
+    #[test]
+    fn speech_within_the_radius_leaves_the_word_to_the_existing_rules() {
+        let edge = judge_whisper_words(&[silero_distance(
+            near_speech(word("the", 0, 4_800, Some(false), Some(false), None)),
+            SileroSpeechDistance::Ms(WHISPER_WORD_SPEECH_NEAR_MS),
+            SilenceUnderSpan::BelowFloor,
+        )]);
+        assert_eq!(
+            edge[0].receipt(),
+            WHISPER_WORD_SPEECH_NEAR,
+            "speech exactly at the radius is near; the word keeps its near-speech receipt"
+        );
+        let jitter = judge_whisper_words(&[silero_distance(
+            word("Co?", 0, 4_800, Some(false), None, None),
+            SileroSpeechDistance::Ms(64),
+            SilenceUnderSpan::EnergyUnmeasured,
+        )]);
+        assert_eq!(
+            jitter[0].receipt(),
+            WHISPER_WORD_SPEECH_UNMEASURED,
+            "a pin 64 ms off speech is Whisper's timing, not a word over silence"
+        );
+    }
+
+    #[test]
+    fn unmeasured_silero_never_refuses_a_word_as_over_silence() {
+        let decisions = judge_whisper_words(&[word("nie", 0, 1_920, None, None, None)]);
+        assert_eq!(
+            decisions[0].receipt(),
+            WHISPER_WORD_SPEECH_UNMEASURED,
+            "without Silero on the span and its radius, nothing is known about silence"
+        );
     }
 
     #[test]
