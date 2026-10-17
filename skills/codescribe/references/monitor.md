@@ -378,9 +378,13 @@ if (!start.session_id) {
   drain, consume the finished cell with `functions.wait`, and arm exactly one
   new cell.
 
-Those tests ran with `codex-queue` still on for the same lease, so it is not
-yet isolated which mechanism woke an idle Codex after a final answer.
-Reattaching with `--wakeup off` for one test isolates it.
+Keep `codex-queue` on beside the cell; each covers the other's gap. In the
+Founder's observed test (Maciej, 2026-10-18) an idle Codex read a native-queue
+message 5.6 s after it was sent, while a Codex in the middle of a turn read a
+queue message only about 5 min later, after its turn ended. That same
+mid-turn Codex read a bus message through the cell 25 s after it was sent.
+Whether the cell alone wakes an idle Codex after a final answer is still
+untested; reattaching with `--wakeup off` for one test isolates it.
 
 ## Acknowledge conversation receipt
 
