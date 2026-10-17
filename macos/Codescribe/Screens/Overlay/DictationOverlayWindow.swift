@@ -29,6 +29,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// The panel remains the only writer of the transition frame.
   var qualifiedExpandedHeight: ((CGFloat) -> CGFloat?)?
   fileprivate var presence: OverlayPresence?
+  fileprivate var appWindowYield: OverlayAppWindowYield?
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
   private var dragMoved = false
   private var resizeStart: (mouse: NSPoint, frame: NSRect, edge: OverlayResizeHit.Edge)?
@@ -899,6 +900,10 @@ enum DictationOverlayWindow {
     let presence = OverlayPresence(panel: panel)
     panel.presence = presence
     panel.startPresence()
+
+    let appWindowYield = OverlayAppWindowYield(panel: panel, state: state)
+    panel.appWindowYield = appWindowYield
+    appWindowYield.start()
 
     panel.setPresentationMode(state.presentationMode)
 
