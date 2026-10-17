@@ -260,10 +260,6 @@ struct OverlayHeaderControlFrames: Equatable {
   var stop: CGRect? = nil
   var preview: CGRect? = nil
   var waveform: CGRect? = nil
-  /// The bottom chrome's actions handle, in the `overlay-canvas` space (the
-  /// window's content), not the header's: the morph falsifier checks that a
-  /// wide sibling never pushes the bottom chrome left of the window either.
-  var actions: CGRect? = nil
 }
 
 struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
@@ -277,7 +273,6 @@ struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
     value.stop = next.stop ?? value.stop
     value.preview = next.preview ?? value.preview
     value.waveform = next.waveform ?? value.waveform
-    value.actions = next.actions ?? value.actions
   }
 }
 
@@ -341,10 +336,11 @@ struct DictationOverlayView: View {
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
-  // content fills the frame and never goes narrower than `windowMinWidth`.
+  // content fills the frame. The resting minimum width belongs to the window
+  // (`DictationOverlayWindow`); the root imposes none, because mid-morph the
+  // window is narrower than any resting minimum.
   // `DictationOverlayWindow.minSize.height` MUST stay ≥ chrome + `bodyMinHeight`
   // or the canvas paints past the window rect and squares the corners.
-  private let windowMinWidth: CGFloat = 320
   private let bodyMinHeight: CGFloat = 0
   private let transcriptMinHeight: CGFloat = 32
   private var palette: OverlayAppearancePalette {
@@ -395,10 +391,13 @@ struct DictationOverlayView: View {
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
-    .frame(
-      minWidth: state.isMini ? DictationOverlayWindow.collapsedSize.width : windowMinWidth,
-      maxWidth: .infinity, maxHeight: .infinity
-    )
+    // The root fills the window and never asks for more width than it gets.
+    // A 320 pt minimum here made the root wider than the 236 pt window at the
+    // start of a mini→midi morph (isMini drops at t=0); the hosting view then
+    // centred it and pushed the header 42 pt left (dragon gate 2026-10-17,
+    // OverlayHeaderMorphTests @25 %, x -26; stasiu's arithmetic). At rest the
+    // window's own minimum sizes keep the content at or above that width.
+    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
     // Terminal corner clip (U22): the canvas paints its background from the
     // CONTENT column's size, not the window's. Whenever the column outgrows
     // the window frame — a mid-edge-drag beat, a stale persisted size below
@@ -627,17 +626,6 @@ struct DictationOverlayView: View {
                       : "Show or hide transcript tools"
                   )
                   .accessibilityIdentifier("overlay-tools-handle")
-                  .background {
-                    GeometryReader { geometry in
-                      Color.clear.preference(
-                        key: OverlayHeaderControlFramesPreferenceKey.self,
-                        value: OverlayHeaderControlFrames(
-                          actions: geometry.frame(in: .named("overlay-canvas")))
-                      )
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                  }
                   .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
                   if actions.phase == .open {
                     intentRail
@@ -716,14 +704,10 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .bottom)
     }
-    // The canvas is pinned to the offered window width and anchored leading.
-    // Mid-morph a sibling can be wider than the window (the bottom chrome's
-    // fixed actions capsule, ~320 pt in a 236 pt frame); a centred ZStack then
-    // grew to that width and the parent centred it, pushing the header, body
-    // and chrome left of the window by half the excess (dragon gate
-    // 2026-10-17, OverlayHeaderMorphTests mini→midi @25 %, x -26). Same
-    // contract as the header row: overflow only to the trailing side, where
-    // the window clips it.
+    // The canvas is pinned to the offered width and anchored leading, so a
+    // child that is wider than the window mid-morph overflows to the trailing
+    // side only, where the window clips it, the same contract as the header
+    // row. (The −26 pt push itself came from the root's minimum width below.)
     .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
