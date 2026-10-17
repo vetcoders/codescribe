@@ -1139,9 +1139,11 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
         code, notice = self.probe()
         self.assertEqual((code, notice["addressed"]), (0, {self.ids[0]: "channel 0 (all audience)"}))
 
-    def test_probe_surfaces_a_quiet_broadcast_the_stop_waiter_keeps_silent(self):
-        # quiet means no wake; the probe runs inside a turn already being spent,
-        # so it is the natural place for a quiet channel-0 delivery to surface.
+    def test_probe_surfaces_quiet_deliveries_the_stop_waiter_keeps_silent(self):
+        # Maciej, 2026-10-17 (steer is global, 855dacd44): quiet queues every
+        # delivery, a direct one as much as a channel-0 broadcast, so the Stop
+        # waiter wakes for neither. The probe runs inside a turn already being
+        # spent, so it is the natural place for queued deliveries to surface.
         self.pending = [dict(self.envelope(self.ids[0]), channel="0", audience="*"),
                         self.envelope(self.ids[1])]
         self.save()
@@ -1150,14 +1152,16 @@ class ClaudeCodeProbeTests(ClaudeCodeWakeTests):
             "provider_session_id": self.session, "lease_id": self.lease, "bus": str(self.bus),
             "policy": "quiet", "emitted_at": DEMUX.utc_now()})
         code, notice = self.wake()
-        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, [self.ids[1]]),
-                         "the Stop waiter never wakes for a quiet broadcast")
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"),
+                         "the Stop waiter wakes for no delivery while steer is quiet")
         code, notice = self.probe()
-        self.assertEqual((code, notice["new_delivery_ids"], notice["pending_count"]), (0, [self.ids[0]], 2))
-        self.assertEqual(notice["addressed"], {self.ids[0]: "channel 0 (all audience)"})
-        self.assertEqual(self.probe(), (0, None))
+        self.assertEqual((code, notice["new_delivery_ids"], notice["pending_count"]),
+                         (0, [self.ids[0], self.ids[1]], 2))
+        self.assertEqual(notice["addressed"][self.ids[0]], "channel 0 (all audience)")
+        self.assertEqual(self.probe(), (0, None), "a surfaced delivery is not announced again")
         code, notice = self.wake()
         self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.assert_not_acknowledged()
         self.assert_not_acknowledged()
 
     def test_read_prose_names_channel_audience_and_peer_sender(self):
