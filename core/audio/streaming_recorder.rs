@@ -352,6 +352,44 @@ impl RecordedSessionReplay {
     }
 }
 
+/// Deliberate departures from the take. A replay under a scenario answers
+/// "what would this take have given with X", not "what did it give"; every
+/// input it changes is named in the receipt with a `scenario:` reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplayScenario {
+    /// Replay as if the take had been captured on this device.
+    pub capture_device: Option<String>,
+    /// Replay with seal-ledger admission on or off.
+    pub seal_ledger: Option<bool>,
+}
+
+impl ReplayScenario {
+    /// A session id tag, so a scenario's evidence sits beside the plain
+    /// replay's instead of replacing it.
+    fn session_tag(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(enabled) = self.seal_ledger {
+            parts.push(if enabled { "ledger-on" } else { "ledger-off" }.to_string());
+        }
+        if let Some(device) = &self.capture_device {
+            let slug: String = device
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            let slug: Vec<&str> = slug.split('-').filter(|part| !part.is_empty()).collect();
+            let slug: String = slug.join("-").chars().take(24).collect();
+            parts.push(format!("device-{}", slug.trim_end_matches('-')));
+        }
+        (!parts.is_empty()).then(|| parts.join("-"))
+    }
+}
+
 /// Rebuild one recorded session from its replay card and WAV archive.
 ///
 /// With a card every input is the take's own: the settings record reseals the
@@ -362,12 +400,14 @@ impl RecordedSessionReplay {
 ///
 /// Two lanes are never replayed: cloud Layer 1, because the card keeps no
 /// credentials, and the live formatter, whose LLM output is not reproducible.
-/// Replay parity is the reducer's Raw document.
+/// Replay parity is the reducer's Raw document. A [`ReplayScenario`] changes
+/// named inputs on purpose; its replay is a what-if, not a parity check.
 pub fn prepare_recorded_replay(
     recorded_session: Option<&str>,
     card: Option<&ReplayCard>,
     wav: &std::path::Path,
     run: u32,
+    scenario: &ReplayScenario,
 ) -> Result<RecordedSessionReplay> {
     let (samples, sample_rate, recorder_native) = load_replay_pcm(wav)?;
     if samples.is_empty() {
@@ -376,34 +416,51 @@ pub fn prepare_recorded_replay(
     let no_card = |what: &str| Some(format!("no replay card: {what}"));
     let mut inputs = Vec::new();
 
-    let runtime_settings = match card {
-        Some(card) => {
-            let snapshot = crate::config::Config::runtime_snapshot_from_captured(
-                card.settings.clone().into_captured(),
-            );
-            let effective = snapshot.digest().as_str().to_string();
-            inputs.push(ReplayInputReceipt {
-                input: "settings_digest",
-                recorded: Some(card.settings_digest.clone()),
-                reason: (effective != card.settings_digest).then(|| {
-                    "this build resolves the recorded settings to another snapshot".to_string()
-                }),
-                effective: Some(effective),
-            });
-            snapshot
-        }
-        None => {
-            let snapshot = crate::config::Config::load_runtime_snapshot_without_keychain()
-                .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?;
-            inputs.push(ReplayInputReceipt {
-                input: "settings_digest",
-                recorded: None,
-                effective: Some(snapshot.digest().as_str().to_string()),
-                reason: no_card("host settings at replay time"),
-            });
-            snapshot
-        }
+    let snapshot = match card {
+        Some(card) => crate::config::Config::runtime_snapshot_from_captured(
+            card.settings.clone().into_captured(),
+        ),
+        None => crate::config::Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?,
     };
+    let recorded_ledger = card.map(|_| snapshot.seal_ledger_enabled());
+    let ledger_changed = scenario
+        .seal_ledger
+        .is_some_and(|enabled| enabled != snapshot.seal_ledger_enabled());
+    let runtime_settings = match scenario.seal_ledger {
+        Some(enabled) if ledger_changed => {
+            let mut captured = snapshot.captured_inputs().clone();
+            captured.user_settings.seal_ledger_enabled = Some(enabled);
+            crate::config::Config::runtime_snapshot_from_captured(captured)
+        }
+        _ => snapshot,
+    };
+    let effective_digest = runtime_settings.digest().as_str().to_string();
+    inputs.push(ReplayInputReceipt {
+        input: "settings_digest",
+        recorded: card.map(|card| card.settings_digest.clone()),
+        reason: match card {
+            None => no_card("host settings at replay time"),
+            Some(_) if ledger_changed => {
+                Some("scenario: --ledger changes the take's settings".into())
+            }
+            Some(card) => (effective_digest != card.settings_digest).then(|| {
+                "this build resolves the recorded settings to another snapshot".to_string()
+            }),
+        },
+        effective: Some(effective_digest),
+    });
+    inputs.push(ReplayInputReceipt {
+        input: "seal_ledger",
+        recorded: recorded_ledger.map(|enabled| enabled.to_string()),
+        effective: Some(runtime_settings.seal_ledger_enabled().to_string()),
+        reason: match (scenario.seal_ledger, card) {
+            (Some(_), Some(_)) if !ledger_changed => None,
+            (Some(_), _) => Some("scenario: --ledger".into()),
+            (None, Some(_)) => None,
+            (None, None) => no_card("ledger choice from host settings"),
+        },
+    });
     let runtime_settings = Arc::new(runtime_settings);
     let values = runtime_settings.values();
 
@@ -419,24 +476,35 @@ pub fn prepare_recorded_replay(
         },
     });
 
-    let capture_device_name = match card {
-        Some(card) => card.capture_device_name.clone(),
-        None => runtime_settings
-            .energy_calibration()
-            .artifact()
-            .map(|artifact| artifact.device_names())
-            .filter(|devices| devices.len() == 1)
-            .and_then(|mut devices| devices.pop()),
+    let calibrated_devices = runtime_settings
+        .energy_calibration()
+        .artifact()
+        .map(|artifact| artifact.device_names())
+        .unwrap_or_default();
+    let recorded_device = card.and_then(|card| card.capture_device_name.clone());
+    let capture_device_name = match (&scenario.capture_device, card) {
+        (Some(device), _) => Some(device.clone()),
+        (None, Some(_)) => recorded_device.clone(),
+        (None, None) if calibrated_devices.len() == 1 => calibrated_devices.first().cloned(),
+        (None, None) => None,
     };
     inputs.push(ReplayInputReceipt {
         input: "capture_device",
-        recorded: card.and_then(|card| card.capture_device_name.clone()),
-        effective: capture_device_name.clone(),
-        reason: match (card, &capture_device_name) {
-            (Some(_), _) => None,
-            (None, Some(_)) => no_card("the only calibrated device"),
-            (None, None) => no_card("device unknown, so no occurrence can qualify"),
+        reason: match (&scenario.capture_device, card, &capture_device_name) {
+            (Some(device), Some(_), _) if recorded_device.as_ref() == Some(device) => None,
+            (Some(device), _, _) if calibrated_devices.contains(device) => {
+                Some("scenario: --device".into())
+            }
+            (Some(_), _, _) => Some(
+                "scenario: --device names a device the energy calibration has no profile for"
+                    .into(),
+            ),
+            (None, Some(_), _) => None,
+            (None, None, Some(_)) => no_card("the only calibrated device"),
+            (None, None, None) => no_card("device unknown, so no occurrence can qualify"),
         },
+        recorded: recorded_device,
+        effective: capture_device_name.clone(),
     });
 
     let language = match card {
@@ -556,8 +624,12 @@ pub fn prepare_recorded_replay(
         ),
     });
 
+    let tag = scenario
+        .session_tag()
+        .map(|tag| format!("-{tag}"))
+        .unwrap_or_default();
     let session_id = recorded_session
-        .map(|session| format!("replay-{session}-r{run}"))
+        .map(|session| format!("replay-{session}{tag}-r{run}"))
         .filter(|id| crate::pipeline::trail::trail_path(std::path::Path::new("/"), id).is_ok())
         .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4()));
     let capture_epoch = card.map_or(1, |card| card.capture_epoch);
@@ -4857,7 +4929,14 @@ mod recorded_replay_tests {
         let wav = dir.path().join("take.wav");
         write_mono_archive(&wav, 16_000, 1_600);
 
-        let replay = prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 2).unwrap();
+        let replay = prepare_recorded_replay(
+            Some(SESSION),
+            Some(&card),
+            &wav,
+            2,
+            &ReplayScenario::default(),
+        )
+        .unwrap();
 
         let config = &replay.config;
         assert_eq!(config.session_id, format!("replay-{SESSION}-r2"));
@@ -4892,7 +4971,9 @@ mod recorded_replay_tests {
         let wav = dir.path().join("take.wav");
         write_mono_archive(&wav, 16_000, 1_600);
 
-        let replay = prepare_recorded_replay(Some(SESSION), None, &wav, 1).unwrap();
+        let replay =
+            prepare_recorded_replay(Some(SESSION), None, &wav, 1, &ReplayScenario::default())
+                .unwrap();
 
         assert_eq!(replay.config.capture_turn, CaptureTurnIntent::AgentChannel);
         assert!(replay.config.terminal_audio.is_some());
@@ -4900,5 +4981,67 @@ mod recorded_replay_tests {
             assert!(input.recorded.is_none(), "{}", input.input);
             assert!(input.reason.is_some(), "{} names no source", input.input);
         }
+    }
+
+    #[test]
+    fn a_scenario_names_every_input_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+        let scenario = ReplayScenario {
+            capture_device: Some("USB Mic (2)".into()),
+            seal_ledger: Some(true),
+        };
+
+        let replay =
+            prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 1, &scenario).unwrap();
+
+        let config = &replay.config;
+        assert_eq!(
+            config.session_id,
+            format!("replay-{SESSION}-ledger-on-device-usb-mic-2-r1")
+        );
+        assert!(config.runtime_settings.seal_ledger_enabled());
+        assert_eq!(config.capture_device_name.as_deref(), Some("USB Mic (2)"));
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(
+            diverged,
+            [
+                "settings_digest",
+                "seal_ledger",
+                "capture_device",
+                "engine_env",
+                "data_dir_files"
+            ]
+        );
+        let device = replay
+            .inputs
+            .iter()
+            .find(|input| input.input == "capture_device")
+            .unwrap();
+        assert!(device.reason.as_deref().unwrap().contains("no profile"));
+    }
+
+    #[test]
+    fn a_scenario_that_matches_the_take_is_no_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+        let scenario = ReplayScenario {
+            capture_device: Some("MacBook Pro Microphone".into()),
+            seal_ledger: Some(false),
+        };
+
+        let replay =
+            prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 1, &scenario).unwrap();
+
+        assert_eq!(
+            replay.config.runtime_settings.digest().as_str(),
+            card.settings_digest
+        );
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(diverged, ["engine_env", "data_dir_files"]);
     }
 }
