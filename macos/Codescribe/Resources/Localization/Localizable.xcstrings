@@ -397,6 +397,28 @@
         }
       }
     },
+    "%@ → All: %@" : {
+      "comment" : "Drawer preview of an agent's message to channel 0: the agent, then the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ → Wszyscy: %2$@"
+          }
+        }
+      }
+    },
+    "%@ → You: %@" : {
+      "comment" : "Drawer preview of an agent's reply to the user: the agent, then the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ → Ty: %2$@"
+          }
+        }
+      }
+    },
     "%@, overridden" : {
       "comment" : "VoiceOver value: a toggle state frozen by an override",
       "localizations" : {
@@ -3673,16 +3695,6 @@
         }
       }
     },
-    "Broadcasts do not wake this agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozgłoszenia nie wybudzają tego agenta"
-          }
-        }
-      }
-    },
     "Broken" : {
       "comment" : "Model storage state: validation failed",
       "localizations" : {
@@ -4260,6 +4272,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kanał 0"
+          }
+        }
+      }
+    },
+    "Channel 0 · queued: deliveries wait, the agent is not woken" : {
+      "comment" : "Agent row mark: member of channel 0, deliveries queue without a wake",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał 0 · kolejka: wiadomości czekają, agent nie jest budzony"
+          }
+        }
+      }
+    },
+    "Channel 0 · steer: deliveries wake the agent" : {
+      "comment" : "Agent row mark: member of channel 0, deliveries start a turn",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał 0 · steruj: wiadomości budzą agenta"
           }
         }
       }
@@ -11116,6 +11150,17 @@
         }
       }
     },
+    "Off channel 0: broadcasts are skipped, direct messages still arrive" : {
+      "comment" : "Agent row mark: not a member of channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poza kanałem 0: rozgłoszenia są pomijane, wiadomości bezpośrednie dochodzą"
+          }
+        }
+      }
+    },
     "Off, set by the %@ override. Recording stays blocked until the override is removed." : {
       "comment" : "The placeholder is an environment variable name",
       "localizations" : {
@@ -15183,6 +15228,17 @@
         }
       }
     },
+    "Skipped: off channel 0" : {
+      "comment" : "Agent row receipt: a broadcast skipped because the agent is off channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pominięta: poza kanałem 0"
+          }
+        }
+      }
+    },
     "Smart" : {
       "comment" : "Formatting level: balanced editing\nPrompt file: balanced transcript editing",
       "localizations" : {
@@ -18981,6 +19037,28 @@
     "You use dev power mode" : {
       "comment" : "Corner mark on a developer build while Voice Lab power mode is on",
       "shouldTranslate" : false
+    },
+    "You → %@: %@" : {
+      "comment" : "Drawer preview of the user's direct message: the agent names, then the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ty → %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "You → All: %@" : {
+      "comment" : "Drawer preview of the user's channel-0 broadcast; the placeholder is the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ty → Wszyscy: %@"
+          }
+        }
+      }
     },
     "You: %@" : {
       "comment" : "Drawer preview of the user's own message; the placeholder is the text",

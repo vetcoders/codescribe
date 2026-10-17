@@ -13,7 +13,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   let isOpen: Bool
   var broadcastIdentity: AgentPlaybackIdentity? = nil
   var broadcastPolicy: AgentBroadcastPolicy = .on
+  /// The delivery this row reports went to channel 0, not to this agent alone.
+  var addressedByBroadcast = false
   var id: String { channel }
+
+  /// A channel-0 delivery the follower skipped: off channel 0 a broadcast is
+  /// never queued (`queue_delivery` in bus-demux.py records it as skipped),
+  /// so "sent" would wait for a receipt that never comes. The current policy
+  /// stands in for the policy at delivery time.
+  var skippedBroadcast: Bool {
+    stage == .sent && addressedByBroadcast && broadcastPolicy == .off
+  }
 
   /// Metadata projection of the bus; never a document reducer or delivery writer.
   struct Bus: Codable {
@@ -180,6 +190,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         ])
       }
       var stage: Stage? = deliveryID == nil ? nil : .sent
+      var broadcast = seal?.audience == "*"
       if let deliveryID {
         let pending = lease["pending"] as? [[String: Any]] ?? []
         if pending.contains(where: {
@@ -211,10 +222,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         } else if addressed.holdingSeconds(at: Date()) != nil {
           deliveryID = addressed.recipients.first?.deliveryID
           stage = .held
+          broadcast = addressed.sourceChannel == "0"
         }
       }
-      return OverlayChannelDelivery(
+      var delivery = OverlayChannelDelivery(
         channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
+      delivery.addressedByBroadcast = broadcast
+      return delivery
     }
 
     mutating func observeLease(_ lease: [String: Any], channel: String, binding: [String: Any]) {
