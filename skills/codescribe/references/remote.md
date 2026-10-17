@@ -37,7 +37,12 @@ Queue instructions include the remote mailbox, provider and exact session for
 both read and ACK; they do not depend on shell environment inference. Both
 `--ack ID` and the single-value `--ack=ID` form settle the local queue.
 
-The watch replays unread history on startup, preserving delivery IDs. Its
+The watch replays only envelopes still pending on the current mailbox bus,
+preserving delivery IDs. Reattaching the same session to another bus never
+makes an old request fresh again. Historical ACKs are validated against their
+original causal envelope and bus, and travel as settlement controls without
+replaying old words. Draft/revision IDs are not tracked for native queue
+withdrawal. Its
 transport receipts are local and separated by mailbox host and lease; it does
 not copy the mailbox or acknowledge words. The same stream carries confirmed
 remote ACKs, so local queue withdrawals recover after reconnect and also work
@@ -45,6 +50,20 @@ when an ACK was issued directly on the mailbox Mac. `--remote HOST --ack` report
 settlement of both sides. `--remote HOST --status` includes `local_native_queue`
 with monitor liveness and unsettled receipts; `--retry-wakeup ID` retries on the
 client Mac. Failed or ambiguous submissions are never automatically replayed.
+Retries first obtain source-side admission for the current mailbox and policy:
+`quiet` suppresses direct and broadcast wakeups, while `off` suppresses only
+broadcasts. Reading an envelope for context alone does not override that policy.
+Changing the policy to release eligible pending rows publishes them through the
+existing follower event stream; it never submits to the mailbox Mac's native
+queue when its follower wakeup is off.
+If the policy command was interrupted, repeating it republishes eligible
+pending rows with the same delivery IDs, which existing receipts deduplicate.
+
+ACK controls persist an absent confirmation once and schedule provider
+withdrawal on the existing worker, so a slow provider cannot hold later bells
+behind its RPC. Repeated confirmed ACKs reuse the valid marker and settled
+receipts without recurring fsyncs or worker tasks. Explicit `--ack` still waits
+for local settlement and reports its result.
 Use `--wakeup off` on the **watch** for deliberate monitor-only operation.
 An explicit `--wakeup codex-queue` on remote attach is refused because it would
 target the wrong provider store. Keep this watch alive after ending a reply:

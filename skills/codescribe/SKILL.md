@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.13.1"
+  version: "0.13.2"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -16,10 +16,9 @@ metadata:
 
 # Codescribe — connect, read, acknowledge, reply
 
-Use this skill to connect the current chat to a named Codescribe channel, receive
-spoken or typed messages, and answer through its attached voice. Execute the
-commands yourself when connection is requested. Editing this skill does not
-request a new connection.
+Connect this chat to a named Codescribe channel, receive voice/text messages
+and reply through its attached voice. Run commands when connection is requested.
+Editing the skill does not request a connection.
 
 Founder means the human. Operator means an agent role.
 Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in references.
@@ -86,8 +85,8 @@ with output notifications reuse one monitor over
 Native queue, a bare background shell or `tail -F` alone does not prove wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
 
-Channel 0 supports `--broadcast on|quiet|off`; direct messages still wake.
-See [Monitor](references/monitor.md#channel-0-reception) for quiet-mode reads.
+Channel 0: `off` skips broadcasts; `quiet` (Steer) queues all messages without waking.
+See [Monitor](references/monitor.md#channel-0-reception).
 
 Report `attached_unverified` until a fresh named utterance reaches this chat and
 gets a reply without a typed nudge. Then report `listening_verified` — the only

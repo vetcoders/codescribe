@@ -384,7 +384,8 @@ class RemoteQueueRelaySourceTests(unittest.TestCase):
         source.write_text("".join(json.dumps(payload) + "\n" for payload in payloads))
         D.atomic_json(self.root / "leases" / f"{self.lease}.json", {
             "schema": D.LEASE_SCHEMA, "lease_id": self.lease, "provider": "codex",
-            "provider_session_id": self.session, "wakeup_configuration": {"wakeup": "off"}})
+            "provider_session_id": self.session, "bus": "/remote-only/transcript-bus.jsonl",
+            "pending": payloads, "wakeup_configuration": {"wakeup": "off"}})
         if acknowledged:
             for payload in payloads:
                 identity = payload["delivery_id"]
@@ -432,7 +433,8 @@ class RemoteQueueRelaySourceTests(unittest.TestCase):
         source.write_text(json.dumps(payload) + "\n")
         D.atomic_json(self.root / "leases" / f"{self.lease}.json", {
             "schema": D.LEASE_SCHEMA, "lease_id": self.lease, "provider": "codex",
-            "provider_session_id": self.session, "wakeup_configuration": {"wakeup": "off"}})
+            "provider_session_id": self.session, "bus": payload["bus"], "pending": [payload],
+            "wakeup_configuration": {"wakeup": "off"}})
         args = argparse.Namespace(provider="codex", session=self.session, bridge_home=self.root,
                                   queue_relay=True, from_file=source, once=False, human=False,
                                   full=False, from_start=True, interval=0.1)

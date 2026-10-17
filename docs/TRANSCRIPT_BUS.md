@@ -139,11 +139,26 @@ SSH, second follower, second mailbox or provider network endpoint is created.
 Both producer and consumer validate provider/session/lease/delivery ownership
 before exposing an envelope. Peer messages wake the monitor without gaining
 Founder authority. Local receipts are namespaced by mailbox host, lease and
-delivery. Reconnect replays unread envelopes and confirmed ACKs; known queue
-attempts are not automatically resubmitted. ACK races use durable markers and
+delivery. Reconnect admits message envelopes only against the current source
+mailbox bus and pending state. Historical ACK controls instead validate the
+original causal envelope and bus, so reattachment cannot replay an old request
+while queue settlement can still recover. Only terminal delivery IDs are
+tracked for withdrawal. Reconnect replays admitted envelopes and confirmed
+ACKs; known queue attempts are not automatically resubmitted. ACK races use durable markers and
 the same per-delivery locks as local delivery. The relay forwards ACK controls
 again for failed withdrawals, including ACKs issued directly on the mailbox
-host. Remote status exposes local monitor and queue state; explicit retries
+host. Existing local ACK markers are reused; incoming controls schedule
+withdrawal on the same worker rather than waiting on the SSH reader. Settled
+controls cause no recurring marker writes or provider tasks; explicit ACK
+retains synchronous settlement reporting. Policy transitions publish newly
+wakeable pending terminal rows through the existing follower stream, respecting
+source `wakeup=off`. Repeating an explicit policy command repairs an interrupted
+event publication with the same delivery IDs. The follower and policy-release
+writers serialize each complete NDJSON frame in the follower event sidecar,
+including partial kernel writes. A remote retry requires a bounded source-side read with
+current bus, pending and wakeup-policy admission before client submission:
+quiet suppresses all wakeups, and channel-zero off suppresses broadcasts only.
+Remote status exposes local monitor and queue state; explicit retries
 execute on the client. A missing or interrupted relay leaves the remote mailbox
 intact and requires the existing watch to be resumed.
 
