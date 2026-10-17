@@ -1282,14 +1282,6 @@ struct OverlayChannelStatusView: View {
       comment: "Drawer cross on an agent whose reader process is still alive")
   }
 
-  /// Sent to channel 0, no receipt, and the agent is off channel 0 now. A
-  /// present fact beside the receipt, not a claim about the delivery's fate.
-  static var unconfirmedOffChannelZeroText: String {
-    String(
-      localized: "Addressed · now off channel 0",
-      comment: "Agent row receipt: a broadcast with no receipt yet; the agent is off channel 0 now")
-  }
-
   /// The newest completed delivery to this frozen owner, never a reply or another lease.
   /// Liveness and the Founder's unread replies remain separate row metadata.
   func deliveryReceiptText(
@@ -1309,20 +1301,14 @@ struct OverlayChannelStatusView: View {
         guard message.withdrawn != true else { return nil }
         if message.holdSecondsRemaining != nil { return String(localized: "Held") }
         // Skipped only on the follower's receipt for this delivery and owner
-        // (`receiptStatusText`); without one the row states the present policy.
-        if message.sourceChannel == "0", channel.broadcastPolicy == .off,
-          recipient.broadcastSkipped != true,
-          !recipient.queued, !recipient.accepted, !recipient.acknowledged
-        {
-          return Self.unconfirmedOffChannelZeroText
-        }
+        // (`receiptStatusText`). Today's channel-0 policy is the row's mark,
+        // never this delivery's receipt (Lena's and Olek's review, 2026-10-17).
         return OverlayConversationView.receiptStatusText(for: recipient)
       }
     }
     switch channel.stage {
     case .held: return String(localized: "Held")
     case .sent where channel.broadcastSkipped: return OverlayConversationView.skippedBroadcastText
-    case .sent where channel.unconfirmedOffChannelZero: return Self.unconfirmedOffChannelZeroText
     case .sent: return String(localized: "Addressed")
     case .queued: return String(localized: "Queued")
     case .received: return String(localized: "Read")
