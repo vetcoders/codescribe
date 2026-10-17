@@ -1088,22 +1088,30 @@ The receipt schema is `codescribe.broadcast-policy.v1`:
 }
 ```
 
-- `on`: queue broadcasts and wake normally (the default).
+- `on`: queue deliveries and wake normally (the default).
 - `quiet`: queue them in the existing pending mailbox without follower output,
   native queue submission, seal hook or waiter completion. On the next natural
   turn, `--read-pending` includes them and the agent ACKs only what it read.
+  Steer is global (Maciej, 2026-10-17): quiet applies to every delivery —
+  channel-zero broadcasts, directs and peer-to-peer alike — so an unticked
+  Steer means "nothing wakes me; everything waits in my mailbox".
 - `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
   row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
   existing follower events stream. A skip is not an ACK marker and contains no
-  transcript text. There is nothing to acknowledge.
+  transcript text. There is nothing to acknowledge. Off stays broadcast-only:
+  a direct or peer delivery to an `off` lease queues and wakes as `on`, so
+  leaving channel 0 never cuts the agent off from addressed words.
 
 Missing files mean `on`. Invalid, foreign or unreadable receipts log a warning
 and also mean `on`: unlike playback mute's fail-closed silence, policy fails
 open so damaged state never silently disconnects an agent. Typed Founder,
 spoken channel-zero and peer broadcasts all use the same policy gate; direct
-channel/name deliveries do not. Previously queued messages are retained when
-the policy changes; already submitted provider wakeups cannot be recalled by
-changing this preference.
+channel/name deliveries pass through only quiet, never off. Previously queued
+messages are retained when the policy changes; already submitted provider
+wakeups cannot be recalled by changing this preference. Switching back to `on`
+delivers what queued while quiet: the Claude/OMP waiter's unread poll surfaces
+the rows by itself, and for a codex lease the policy write resubmits the
+pending seals to the native queue once.
 
 `cs-bus --broadcast on|quiet|off --provider P --session S [--bus B]` validates
 the lease before atomically writing the receipt. The omitted bus is resolved
