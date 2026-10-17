@@ -287,6 +287,62 @@ pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
 }
 
+/// Pointer label flashed for a chord on a vacant digit. Three words on
+/// purpose: the pointer preview keeps only the tail of what it is given.
+pub fn channel_refusal_label(digit: u8) -> String {
+    format!("channel {digit} empty")
+}
+
+/// macOS's own refusal sound, played at the Settings volume.
+pub(crate) const CHANNEL_REFUSAL_SOUND: &str = "Basso";
+
+/// How long the refusal dot and its label stay beside the pointer; matches
+/// the pointer preview's own freshness window.
+pub(crate) const CHANNEL_REFUSAL_FLASH: Duration = Duration::from_millis(1200);
+
+/// What the user gets back for a chord the controller refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelRefusalFeedback {
+    /// System sound to play at the Settings volume; `None` stays quiet.
+    pub cue: Option<&'static str>,
+    /// Text flashed beside the pointer dot; `None` leaves the pointer alone.
+    pub cursor_label: Option<String>,
+}
+
+impl ChannelRefusalFeedback {
+    const NONE: Self = Self {
+        cue: None,
+        cursor_label: None,
+    };
+}
+
+/// Maciej, 2026-10-17 01:41Z: Ctrl+digit on a vacant channel answered with
+/// nothing — the only signal was a system notification the app never checks
+/// it may post. A vacant slot is a refused user action, so it answers like
+/// one: the refusal sound and one flash of a labelled pointer dot. A missing
+/// binding file means no agent has attached yet, so it is vacant too. Only a
+/// user chord (`Live`) is answered; an attached open is programmatic. A
+/// malformed binding or any other failure is a broken runtime and stays with
+/// the bridge's error path (tray + notification).
+pub(crate) fn channel_refusal_feedback(
+    digit: u8,
+    error: &anyhow::Error,
+    mode: ChannelOpenMode,
+    hold_indicator: bool,
+) -> ChannelRefusalFeedback {
+    let vacant = matches!(
+        error.downcast_ref::<ChannelOpenRefusal>(),
+        Some(ChannelOpenRefusal::DigitUnbound { .. } | ChannelOpenRefusal::BindingMissing { .. })
+    );
+    if !vacant || !matches!(mode, ChannelOpenMode::Live) {
+        return ChannelRefusalFeedback::NONE;
+    }
+    ChannelRefusalFeedback {
+        cue: Some(CHANNEL_REFUSAL_SOUND),
+        cursor_label: hold_indicator.then(|| channel_refusal_label(digit)),
+    }
+}
+
 /// Silence threshold that seals and delivers the current channel utterance.
 ///
 /// Unset or unreadable values use [`CHANNEL_AUTOSEAL_SECS_DEFAULT`]. `0`
@@ -758,9 +814,16 @@ impl RecordingController {
         if self.current_state().await == super::State::Idle {
             self.cancel_pending_hold_start().await;
         }
-        let opened = self
+        let opened = match self
             .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
-            .await?;
+            .await
+        {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.answer_channel_refusal(digit, &error, mode).await;
+                return Err(error);
+            }
+        };
         if opened && matches!(mode, ChannelOpenMode::Live) {
             let settings = self.runtime_settings_arc().await;
             if settings.values().beep_on_start {
@@ -768,6 +831,32 @@ impl RecordingController {
             }
         }
         Ok(opened)
+    }
+
+    /// Play and flash what a refused chord earns (see
+    /// [`channel_refusal_feedback`]). The error still travels to the bridge,
+    /// which logs it and leaves the tray alone for a vacant slot.
+    async fn answer_channel_refusal(
+        &self,
+        digit: u8,
+        error: &anyhow::Error,
+        mode: ChannelOpenMode,
+    ) {
+        let config = self.get_config().await;
+        let feedback = channel_refusal_feedback(digit, error, mode, config.hold_indicator);
+        if let Some(cue) = feedback.cue {
+            crate::audio::play_sound_with_volume(cue, config.sound_volume);
+        }
+        if let Some(label) = feedback.cursor_label {
+            hold_badge::flash_hold_badge(
+                hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
+                    BadgeMode::Refused,
+                    f64::from(config.hold_badge_size),
+                ),
+                &label,
+                CHANNEL_REFUSAL_FLASH,
+            );
+        }
     }
 
     /// `shared_bus` carries the rows and receipts of a channel whose binding
@@ -990,7 +1079,9 @@ impl RecordingController {
         crate::os::tray_status::set_agent_channels_listening(true);
         if self.current_state().await == super::State::Idle {
             crate::os::tray_status::set_tray_indicator_mode(BadgeMode::Assistive);
-            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Listening);
+            crate::os::tray_status::update_tray_status(
+                crate::os::tray_status::TrayStatus::Listening,
+            );
         }
         if matches!(mode, ChannelOpenMode::Live) {
             let line = crate::presentation::agent_ack::channel_session_line(
@@ -1639,6 +1730,81 @@ mod tests {
         let path = dir.join(BINDING_FILENAME);
         std::fs::write(&path, body).expect("write binding");
         path
+    }
+
+    fn chord_error(refusal: ChannelOpenRefusal) -> anyhow::Error {
+        super::refusal(refusal)
+    }
+
+    #[test]
+    fn a_chord_on_a_vacant_digit_earns_the_refusal_sound_and_a_pointer_flash() {
+        for vacant in [
+            ChannelOpenRefusal::DigitUnbound { digit: 7 },
+            ChannelOpenRefusal::BindingMissing {
+                path: "fixture.json".into(),
+            },
+        ] {
+            let feedback = channel_refusal_feedback(
+                7,
+                &chord_error(vacant.clone()),
+                ChannelOpenMode::Live,
+                true,
+            );
+            assert_eq!(feedback.cue, Some("Basso"), "{vacant:?}");
+            assert_eq!(
+                feedback.cursor_label.as_deref(),
+                Some("channel 7 empty"),
+                "{vacant:?}"
+            );
+        }
+        // The pointer preview keeps only the last three words of a label.
+        assert_eq!(channel_refusal_label(7).split_whitespace().count(), 3);
+    }
+
+    #[test]
+    fn pointer_indicator_off_keeps_the_sound_and_drops_the_flash() {
+        let feedback = channel_refusal_feedback(
+            4,
+            &chord_error(ChannelOpenRefusal::DigitUnbound { digit: 4 }),
+            ChannelOpenMode::Live,
+            false,
+        );
+        assert_eq!(feedback.cue, Some("Basso"));
+        assert_eq!(feedback.cursor_label, None);
+    }
+
+    #[test]
+    fn broken_bindings_other_failures_and_attached_opens_get_no_feedback() {
+        let silent = ChannelRefusalFeedback {
+            cue: None,
+            cursor_label: None,
+        };
+        for error in [
+            chord_error(ChannelOpenRefusal::BindingMalformed {
+                path: "fixture.json".into(),
+                detail: "invalid JSON".into(),
+            }),
+            chord_error(ChannelOpenRefusal::InvalidDigit),
+            anyhow::anyhow!("capture admission closed for shutdown"),
+            // The refusal's text without its type is not the refusal.
+            anyhow::anyhow!(ChannelOpenRefusal::DigitUnbound { digit: 2 }.to_string()),
+        ] {
+            assert_eq!(
+                channel_refusal_feedback(2, &error, ChannelOpenMode::Live, true),
+                silent,
+                "{error}"
+            );
+        }
+        assert_eq!(
+            channel_refusal_feedback(
+                2,
+                &chord_error(ChannelOpenRefusal::DigitUnbound { digit: 2 }),
+                ChannelOpenMode::AttachedOnly,
+                true,
+            ),
+            silent,
+            "an attached open is programmatic, not a user chord"
+        );
     }
 
     fn bus_rows(bus: &Path) -> Vec<serde_json::Value> {

@@ -110,6 +110,8 @@ pub use crate::presentation::emitter::CursorVoice;
 const LAGGING_COLOR: (f64, f64, f64, f64) = (1.0, 0.62, 0.0, 1.0);
 /// Agent mode between phrases.
 const AGENT_QUIET_COLOR: (f64, f64, f64, f64) = (0.97, 0.97, 0.97, 0.95);
+/// A refused chord: slate, so the flash never reads as a recording dot.
+const REFUSED_COLOR: (f64, f64, f64, f64) = (0.45, 0.45, 0.5, 0.92);
 
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,9 @@ pub enum BadgeMode {
     Processing,
     /// AI mode (Chat/Selection): Purple with glow - "AI słucha"
     Assistive,
+    /// Refused chord (a vacant channel digit): slate, solid, one flash with a
+    /// label beside it. Nothing is capturing while this dot shows.
+    Refused,
 }
 
 impl BadgeMode {
@@ -132,6 +137,7 @@ impl BadgeMode {
             BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),      // Red (will pulse)
             BadgeMode::Processing => (1.0, 0.5, 0.0, 0.85), // Orange
             BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85),  // Purple
+            BadgeMode::Refused => REFUSED_COLOR,
         }
     }
 
@@ -230,6 +236,27 @@ impl HoldBadgeConfig {
 #[cfg(test)]
 mod tests {
     use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, classify_input_role};
+
+    #[test]
+    fn refused_flash_is_a_still_slate_dot_unlike_any_recording_mode() {
+        let refused = BadgeMode::Refused;
+        for recording in [
+            BadgeMode::Hold,
+            BadgeMode::Toggle,
+            BadgeMode::Processing,
+            BadgeMode::Assistive,
+        ] {
+            assert_ne!(refused.color(), recording.color(), "{recording:?}");
+        }
+        assert!(!refused.should_pulse());
+        assert!(!refused.has_glow());
+        assert!(!refused.voice_pulses(CursorVoice::Quiet));
+        assert_eq!(refused.voice_ring(CursorVoice::Quiet), None);
+        assert_eq!(refused.diameter_multiplier(), 1.0);
+        let config = HoldBadgeConfig::from_mode(refused);
+        assert_eq!(config.mode, BadgeMode::Refused);
+        assert_eq!(config.color, super::REFUSED_COLOR);
+    }
 
     #[test]
     fn live_cue_pointer_keeps_three_latest_words_and_repetitions() {
@@ -1397,12 +1424,52 @@ mod imp {
             }
         });
     }
+
+    /// One timed flash of the dot with `label` beside it, for a refused
+    /// gesture (Maciej, 2026-10-17: a chord on a vacant channel was silent).
+    ///
+    /// A take's dot outranks a refusal: while any panel exists the flash is
+    /// skipped, and the delayed hide tears down only a panel that still shows
+    /// this flash. A take that opened meanwhile repainted the same panel in
+    /// its own mode and keeps it; a hide that raced the show bumped the
+    /// generation, so the show was dropped and there is nothing to hide.
+    pub fn flash_hold_badge(config: HoldBadgeConfig, label: &str, duration: Duration) {
+        {
+            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if state.window.is_some() || state.timer_running {
+                debug!("Skipping refusal flash: a live badge owns the pointer");
+                return;
+            }
+        }
+        let mode = config.mode;
+        show_hold_badge_with_config(config);
+        update_transcript(take_token(), label);
+        let spawned = thread::Builder::new()
+            .name("hold-badge-flash".into())
+            .spawn(move || {
+                thread::sleep(duration);
+                let still_flashing = {
+                    let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.window.is_some() && state.config.mode == mode
+                };
+                if still_flashing {
+                    hide_hold_badge();
+                }
+            });
+        if let Err(error) = spawned {
+            // No thread to end the flash: bump the generation now so the
+            // queued show is dropped instead of leaving a dot forever.
+            debug!("hold-badge flash thread unavailable: {error}");
+            hide_hold_badge();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript, update_voice_state,
+    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
+    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    update_voice_state,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1453,12 +1520,21 @@ mod stubs {
 
     /// No-op on non-macOS platforms.
     pub fn hide_hold_badge() {}
+
+    /// No-op on non-macOS platforms.
+    pub fn flash_hold_badge(
+        _config: HoldBadgeConfig,
+        _label: &str,
+        _duration: std::time::Duration,
+    ) {
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
-    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript, update_voice_state,
+    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
+    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    update_voice_state,
 };
 
 #[cfg(target_os = "macos")]
