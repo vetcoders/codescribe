@@ -1183,8 +1183,8 @@ class EvidenceNormalizer:
     terminal seal, so an addressed utterance would vanish without a trace.
     The normalizer keeps the latest whole snapshot of each unsealed
     channel session and, when the session is over — a ``channel-session``
-    receipt shows the channel moved on (any non-open state for the session,
-    or a fresh open of the same channel), or the session's own
+    receipt closes that exact session (any non-open state, including an
+    explicit orphan receipt), or the session's own
     ``session_ended`` lifecycle row marks a hang-up — flushes one message via
     :meth:`pop_flushes`. A ledger terminal receipt carries certification;
     without it the envelope keeps ``coverage: "refused"``. Physical occurrence
@@ -1348,11 +1348,10 @@ class EvidenceNormalizer:
         if previous is not None and previous != identity:
             return
         self._channel_open_times[session] = identity
-        for cached in list(self._session_docs):
-            known = self._channel_open_times.get(cached)
-            if (cached != session and known is not None
-                    and known[0] == channel and known[1] < timestamp):
-                self._flush_session(cached, row.get("emitted_at"))
+        # Capture reopen can precede its predecessor's retained decoder tail.
+        # Only that predecessor's named close/session-ended (including an
+        # explicit orphan receipt) owns its delivery boundary. A newer open
+        # cannot settle or flush another capture's unfinished document.
         while len(self._channel_open_times) > self.MAX_TRACKED_SESSIONS:
             oldest = min(self._channel_open_times,
                          key=lambda key: self._channel_open_times[key][1])

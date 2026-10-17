@@ -1661,8 +1661,23 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // The terminal mint closed the direct document; nothing follows it.
-        if writer.direct_terminal.is_some() {
+        // Completion closes decoder admission, not explicit document operations.
+        // Their reducer capability must continue the exact retained CAS/epoch.
+        let operation = capability.document_revision;
+        if let Some((source_revision, _)) = operation {
+            if !capability.terminal
+                || !writer.direct_terminal.as_ref().is_some_and(|owner| {
+                    owner.capture_epoch == capability.capture_epoch
+                        && owner.revision == source_revision
+                })
+                || !writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|last| last.reducer_revision == source_revision)
+            {
+                return Vec::new();
+            }
+        } else if writer.direct_terminal.is_some() {
             return Vec::new();
         }
         if writer
@@ -1672,10 +1687,12 @@ impl TranscriptBus {
         {
             return Vec::new();
         }
-        if writer.ended {
+        if writer.ended && operation.is_none() {
             return Vec::new();
         }
-        let phase = if capability.terminal {
+        let phase = if operation.is_some() {
+            TranscriptProjectionPhase::Formatted
+        } else if capability.terminal {
             TranscriptProjectionPhase::Finalizing
         } else {
             TranscriptProjectionPhase::Listening
@@ -1696,7 +1713,9 @@ impl TranscriptBus {
                 session_id: self.session.session_id.clone(),
                 mode: self.session.mode,
                 reducer_revision: revision.revision,
-                reducer_action: if capability.terminal {
+                reducer_action: if operation.is_some() {
+                    "apply_direct_document_revision".to_string()
+                } else if capability.terminal {
                     "apply_direct_transcript_terminal".to_string()
                 } else {
                     "apply_direct_transcript".to_string()
@@ -1718,7 +1737,7 @@ impl TranscriptBus {
                 can_send_to_agent: availability.can_send_to_agent,
                 // The channel close itself marks the closing snapshot terminal,
                 // exactly as in the ledger lane.
-                terminal: false,
+                terminal: operation.is_some(),
                 lifecycle_terminal: false,
                 delivery: TranscriptDelivery::Unattempted,
                 audience: self.session.audience.clone(),

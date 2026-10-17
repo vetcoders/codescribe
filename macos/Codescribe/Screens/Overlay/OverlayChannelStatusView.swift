@@ -792,17 +792,23 @@ struct OverlayChannelStatusView: View {
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {
     let conversation = conversation(for: channel)
+    let receiptText = deliveryReceiptText(for: channel, conversation: conversation)
     let open = isOpen(channel)
     let descriptor = agentDescriptor(for: channel)
     let status = statusHelp(for: channel)
     // Keep the full descriptor in the tooltip as well as the visible row.
     var tooltipParts: [String] = []
     if let descriptor, !descriptor.isEmpty { tooltipParts.append(descriptor) }
+    if let receiptText { tooltipParts.append(receiptText) }
     tooltipParts.append(status)
+    if let conversation, let count = unreadCounts[conversation.id], count > 0 {
+      tooltipParts.append(String(localized: "\(count) unread replies"))
+    }
     let tooltip = tooltipParts.joined(separator: ". ")
     let label = rosterRowLabel(
       title: "\(channel.channel) · \(conversation?.name ?? channel.agent)",
-      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
+      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel),
+      receiptText: receiptText)
     return rowGlassContainer(
       HStack(spacing: 6) {
         Group {
@@ -826,7 +832,7 @@ struct OverlayChannelStatusView: View {
             + ". " + status
         )
         .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
-        .accessibilityValue(Text(verbatim: descriptor.map { $0 + ". " + status } ?? status))
+        .accessibilityValue(Text(verbatim: tooltip))
         .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
         OverlayAgentAudioControls(
@@ -894,11 +900,12 @@ struct OverlayChannelStatusView: View {
   }
 
   /// The roster keeps identity above the preview in both wide and narrow modes.
-  /// Unread rows brighten the preview; the badge sits before the time.
+  /// Delivery receipts and explicitly labelled unread replies sit below the preview.
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
-    conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind
+    conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind,
+    receiptText: String? = nil
   ) -> some View {
     HStack(alignment: .top, spacing: 7) {
       OverlayAgentStatusDot(kind: dot, palette: palette)
@@ -932,9 +939,6 @@ struct OverlayChannelStatusView: View {
               .accessibilityIdentifier("overlay-broadcast-quiet-\(statusChannel.channel)")
           }
           Spacer(minLength: 4)
-          if let conversation, let count = unreadCounts[conversation.id], count > 0 {
-            unreadBadge(count)
-          }
           if let last = conversation?.messages.last,
             let date = MessageTimestamp.date(fromISO8601: last.emittedAt)
           {
@@ -961,6 +965,31 @@ struct OverlayChannelStatusView: View {
             )
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
+        }
+        if let statusChannel {
+          if let receiptText {
+            Text(receiptText)
+              .font(.system(size: 11 * textScale, weight: .medium))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("overlay-agent-receipt-\(statusChannel.channel)")
+          }
+          if receiptText == nil || hasDeadFollower(statusChannel) || hasStalledFollower(statusChannel) {
+            Text(shortStatus(for: statusChannel))
+              .font(.system(size: 11 * textScale))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(2)
+              .accessibilityIdentifier("overlay-agent-connection-\(statusChannel.channel)")
+          }
+        }
+        if let conversation, let count = unreadCounts[conversation.id], count > 0 {
+          Text("\(count) unread replies")
+            .font(.system(size: 11 * textScale, weight: .medium))
+            .foregroundStyle(palette.processingStatus.color)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("overlay-agent-unread-replies-\(conversation.id)")
         }
       }
     }
@@ -1249,6 +1278,34 @@ struct OverlayChannelStatusView: View {
     return String(
       localized: "Stop the agent's reader, remove from list and move to archive",
       comment: "Drawer cross on an agent whose reader process is still alive")
+  }
+
+  /// The newest completed delivery to this frozen owner, never a reply or another lease.
+  /// Liveness and the Founder's unread replies remain separate row metadata.
+  func deliveryReceiptText(
+    for channel: OverlayChannelDelivery, conversation: OverlayConversation?
+  ) -> String? {
+    guard !unavailable else { return nil }
+    if let conversation, let owner = conversation.owner {
+      for message in conversation.messages.reversed()
+      where message.kind == .user && message.showsDeliveryReceipts {
+        guard let recipient = message.recipients.first(where: {
+          $0.owner.provider == owner.provider
+            && $0.owner.providerSessionID == owner.providerSessionID
+            && $0.owner.leaseID == owner.leaseID
+        }) else { continue }
+        guard message.withdrawn != true else { return nil }
+        if message.holdSecondsRemaining != nil { return String(localized: "Held") }
+        return OverlayConversationView.receiptStatusText(for: recipient)
+      }
+    }
+    switch channel.stage {
+    case .held: return String(localized: "Held")
+    case .sent: return String(localized: "Addressed")
+    case .queued: return String(localized: "Queued")
+    case .received: return String(localized: "Read")
+    case nil: return nil
+    }
   }
 
   private func shortStatus(for channel: OverlayChannelDelivery) -> String {

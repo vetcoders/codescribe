@@ -31,7 +31,9 @@ struct Request: Codable {
   let press: Bool
 }
 func query(_ request: Request) throws -> Reception {
-  guard request.pid > 0, request.identifier.hasPrefix("overlay-conversation-"),
+  let admittedIdentifier = request.identifier.hasPrefix("overlay-conversation-")
+    || request.identifier.hasPrefix("overlay-view-conversation-")
+  guard request.pid > 0, admittedIdentifier,
     let bundle = NSRunningApplication(processIdentifier: request.pid)?.bundleURL?.path,
     bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/Codescribe.app")
   else { throw CocoaError(.fileReadNoPermission) }

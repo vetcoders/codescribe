@@ -1969,6 +1969,9 @@ struct AppleSealState {
     direct_producer: LedgerObservationProducer,
     direct_sample_end: u64,
     direct_apple_epoch_has_final: bool,
+    /// Direct publications suppressed by owned Silero non-speech evidence
+    /// over a valid capture range. A diagnostic count, never a receipt.
+    direct_suppressed_no_measured_speech: u64,
     preview_rev: u64,
     speech_progress: SpeechProgress,
     last_integrity: Option<SpeechIntegrity>,
@@ -2255,6 +2258,36 @@ struct AdmitWindow {
 }
 
 impl AppleSealState {
+    /// Only the session's Silero classifies speech. Both capture observers
+    /// must authenticate a complete, valid measurement before silence can
+    /// suppress a label. Energy above the ladder floor can be room noise;
+    /// it cannot overrule a measured absence of speech. Missing, partial,
+    /// foreign or invalid evidence always preserves the possible words.
+    fn direct_range_measured_quiet(&self, range: &OccurrenceIdentity) -> bool {
+        let fully_observed = |evidence: &AcousticSpeechEvidence| {
+            evidence
+                .identity()
+                .matches(&range.session, range.capture_epoch)
+                && matches!(evidence.availability(),
+                    AcousticAvailability::Observed { observed_samples }
+                        if observed_samples >= range.sample_end)
+        };
+        let Some(fusion) = &self.fusion else {
+            return false;
+        };
+        let speech = fusion.acoustic_speech_evidence();
+        let capture = self.capture_energy.session_active_speech_ranges(
+            &self.session_id,
+            self.capture_epoch,
+            self.sample_rate,
+        );
+        fully_observed(&speech)
+            && fully_observed(&capture)
+            && !speech.ranges().iter().any(|speech| {
+                speech.sample_end > range.sample_start && speech.sample_start < range.sample_end
+            })
+    }
+
     /// Publish raw recognizer bytes without claiming word or seal authority.
     fn publish_direct_transcript(
         &mut self,
@@ -2273,6 +2306,21 @@ impl AppleSealState {
             || range.sample_end <= range.sample_start
             || range.sample_end > self.audio.session_sample_end()
         {
+            return false;
+        }
+        // The direct lane has no ledger admission to stop a decoder's
+        // near-silence hallucination; the producer-side protection is the
+        // take's own measured evidence. A fully measured quiet range is the
+        // only suppressible input — anything unmeasured keeps its words.
+        if self.direct_range_measured_quiet(range) {
+            self.direct_suppressed_no_measured_speech += 1;
+            debug!(
+                session = %self.session_id,
+                sample_start = range.sample_start,
+                sample_end = range.sample_end,
+                suppressed = self.direct_suppressed_no_measured_speech,
+                "direct transcript suppressed: owned Silero measured no speech in the valid capture range"
+            );
             return false;
         }
         if final_chunk {
@@ -2574,6 +2622,7 @@ impl AppleSealState {
             direct_producer: LedgerObservationProducer::Apple,
             direct_sample_end: 0,
             direct_apple_epoch_has_final: false,
+            direct_suppressed_no_measured_speech: 0,
             preview_rev: 0,
             speech_progress,
             last_integrity: None,
@@ -9417,7 +9466,9 @@ fn apple_stream_worker(
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
-    // whether identity reaches the seal, not whether the VAD exists.
+    // whether identity reaches the seal, not whether the VAD exists. The
+    // ledger-free direct lane is a third consumer: opting out of admission
+    // must not switch off the take's only audio observer.
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
     // Voice Lab witness: the immutable snapshot verdict replaces the
     // construction-time env read; the return lane belongs to this worker.
@@ -9426,7 +9477,7 @@ fn apple_stream_worker(
     state.dictation_witness_language = language.map(str::to_owned);
     let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
     state.dictation_witness_return = Some(witness_done_tx);
-    if state.fusion_seal_armed || utterance_silence_sec.is_some() {
+    if state.fusion_seal_armed || utterance_silence_sec.is_some() || !seal_ledger_enabled {
         let ingress =
             SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);
         if ingress.vad_available() {
