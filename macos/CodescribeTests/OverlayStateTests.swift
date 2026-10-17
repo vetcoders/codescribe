@@ -62,6 +62,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var assistiveSendHandler: (() async throws -> Bool)?
   var revisionRequests: [RevisionRequest] = []
   var onRevision: (() -> Void)?
+  var retranscribeCommitHandler: ((String, UInt64, String) async throws -> CsUserRevisionResult)?
   var formatterRequests: [FormatterRequest] = []
   var formatterRenderedText = "Tekst sformatowany."
   var formatterShouldFail = false
@@ -156,6 +157,16 @@ private final class OverlayStateTestEngine: DictationEngine {
       provenanceReceipt: "user-edit-test-\(sourceRevision + 1)"
     )
   }
+  func commitRetranscribeRevision(
+    sessionId: String, sourceRevision: UInt64, renderedText: String
+  ) async throws -> CsUserRevisionResult {
+    if let retranscribeCommitHandler {
+      return try await retranscribeCommitHandler(sessionId, sourceRevision, renderedText)
+    }
+    return try await commitUserRevision(
+      sessionId: sessionId, sourceRevision: sourceRevision, renderedText: renderedText)
+  }
+
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult {
@@ -3969,6 +3980,85 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
+  func testEndedErrorDocumentKeepsItsExplicitFormatAction() async {
+    for phase in ["error", "coverage_refused", "formatted"] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      projectText("Zachowany długi tekst", to: state, phase: phase, canFormat: true, terminal: true)
+      XCTAssertTrue(
+        OverlayIntentRail.projectedIntents(for: state).contains(.format),
+        "producer-authorized review is available after Stop even with diagnostics")
+      state.formatTranscript(at: .smart)
+      for _ in 0..<30 { await Task.yield() }
+      XCTAssertEqual(engine.formatterRequests.count, 1)
+      XCTAssertEqual(engine.formatterRequests.first?.sourceRevision, state.revision)
+      XCTAssertEqual(state.activeText, "Zachowany długi tekst", "ACK never paints")
+    }
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    projectText("Zachowane", to: state, phase: "error", canFormat: false, terminal: true)
+    state.formatTranscript(at: .smart)
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertFalse(OverlayIntentRail.projectedIntents(for: state).contains(.format))
+    XCTAssertTrue(engine.formatterRequests.isEmpty)
+  }
+
+  func testRetranscribeWaitsForAcknowledgementAndMatchingProjectionInEitherOrder() async {
+    for projectionFirst in [false, true] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      engine.lastSessionAudioPathValue = "/tmp/synthetic-retranscribe-order.wav"
+      engine.transcriptionText = "Iwo Iwo Iwo Iwo Iwo po poprawie"
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: 1, emittedAt: "2026-10-17T00:00:00Z",
+          sessionId: "retranscribe-order", renderedText: "Original",
+          phase: "formatted", terminal: true, reducerAction: "session_ended",
+          reducerRevision: 7, captureEpoch: 7, canRetranscribe: true,
+          canFormat: true, lifecycleTerminal: true))
+      let projected = transcriptProjection(
+        sequence: 2, emittedAt: "2026-10-17T00:00:01Z",
+        sessionId: "retranscribe-order", renderedText: engine.transcriptionText,
+        phase: "formatted", terminal: true, reducerAction: "apply_direct_document_revision",
+        reducerRevision: 8, captureEpoch: 7, canRetranscribe: true, canFormat: true,
+        lifecycleTerminal: false,
+        documentRevisionReceipt: CsManualDocumentRevisionReceipt(
+          receiptId: "retranscribe-direct-retranscribe-order-8", provenance: .retranscribe,
+          sessionId: "retranscribe-order", sourceRevision: 7, revision: 8,
+          renderedText: engine.transcriptionText, captureEpoch: 7,
+          captureReceiptId: "direct-publication-test"))
+      let gate = ExpectationGate(expectation(description: "retranscribe commit awaiting ACK"))
+      engine.retranscribeCommitHandler = { session, source, text in
+        if projectionFirst { state.applyTranscriptProjection(projected) }
+        await gate.wait()
+        return CsUserRevisionResult(
+          sessionId: session, sourceRevision: source, revision: source + 1,
+          renderedText: text, provenanceReceipt: "retranscribe-direct-retranscribe-order-8")
+      }
+      state.retranscribe(pass: .fullHq)
+      await fulfillment(of: [gate.entered], timeout: 1)
+      XCTAssertTrue(state.retranscribePending)
+      if !projectionFirst {
+        gate.release()
+        for _ in 0..<40 { await Task.yield() }
+        XCTAssertTrue(state.retranscribePending, "ACK alone must not unblock actions on the old CAS")
+        XCTAssertEqual(state.activeText, "Original")
+      }
+      state.formatTranscript(at: .smart)
+      for _ in 0..<10 { await Task.yield() }
+      XCTAssertTrue(engine.formatterRequests.isEmpty, "a result still in transit owns the operation slot")
+      if projectionFirst { gate.release() } else { state.applyTranscriptProjection(projected) }
+      for _ in 0..<50 { await Task.yield() }
+      XCTAssertFalse(state.retranscribePending)
+      XCTAssertFalse(state.documentOperationPending)
+      XCTAssertEqual(state.activeText, engine.transcriptionText)
+      XCTAssertTrue(state.latestTranscriptProjection?.acousticReceipts.isEmpty == true)
+    }
+  }
+
   func testMalformedFirstDocumentReceiptCannotCompletePendingDraft() async {
     let text = "Odzyskany tekst"
     let receipts = [
@@ -5167,7 +5257,13 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.revisionRequests.first?.renderedText, "gorsza wersja")
     projectText(
       "gorsza wersja", to: state, canRetranscribe: true, terminal: true,
-      sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit")
+      sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit",
+      documentReceipt: CsManualDocumentRevisionReceipt(
+        receiptId: "user-edit-test-8", provenance: .retranscribe,
+        sessionId: "take-undo", sourceRevision: 7, revision: 8,
+        renderedText: "gorsza wersja", captureEpoch: nil, captureReceiptId: nil))
+    let settled = await waitUntil { !state.retranscribePending }
+    XCTAssertTrue(settled, "Undo starts after the authenticated retranscription projection")
     let undoable = await waitUntil { state.transcriptVersions.canUndo }
     XCTAssertTrue(undoable, "revision 8 history applied with a step behind it")
     let restored = expectation(description: "undo selected original")

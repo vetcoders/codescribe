@@ -701,6 +701,66 @@ async fn direct_operation_edit_retranscribe_and_navigation_work_after_completed_
 }
 
 #[tokio::test]
+async fn direct_document_actions_wait_for_lifecycle_end_and_survive_later_edits() {
+    let mut take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48000,
+        "Iwo Iwo Iwo Iwo Iwo",
+    ));
+    take.emitter.on_event(&terminal());
+    let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+    let closing: serde_json::Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        closing["can_format"], false,
+        "decoder completion is not capture lifecycle completion"
+    );
+    assert_eq!(closing["can_retranscribe"], false);
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    let ended = take
+        .bus
+        .publish_ended(
+            TranscriptSessionEndReason::TranscriptionFailed,
+            true,
+            TranscriptDelivery::Unattempted,
+        )
+        .unwrap();
+    assert!(ended.can_format && ended.can_retranscribe);
+    for provenance in [
+        DocumentRevisionProvenance::UserEdit,
+        DocumentRevisionProvenance::Retranscribe,
+    ] {
+        let source = take.emitter.document_timeline("translation").0;
+        take.emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "translation".into(),
+                source_revision: source,
+                rendered_text: format!("Pięć Iwo pozostaje po {}.", provenance.as_str()),
+                provenance,
+            })
+            .unwrap();
+        let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+        let revised: serde_json::Value =
+            serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            revised["can_format"], true,
+            "an accepted edit cannot disable the next format"
+        );
+        assert_eq!(
+            revised["can_retranscribe"], true,
+            "the same retained audio remains available"
+        );
+        assert_eq!(revised["lifecycle_terminal"], false);
+    }
+    take.emitter.finish().await;
+}
+
+#[tokio::test]
 async fn direct_document_edit_projects_its_typed_receipt_without_acoustic_receipts() {
     let mut take = take(false);
     take.emitter.on_event(&direct(
