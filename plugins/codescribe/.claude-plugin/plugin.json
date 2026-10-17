@@ -1,6 +1,6 @@
 {
   "name": "codescribe",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Codescribe in the current Claude Code, Junie or OMP conversation: connect, wake, read, ACK and reply.",
   "author": { "name": "Vetcoders" },
   "hooks": "./hooks/claude-code.json"
