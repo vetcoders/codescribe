@@ -13681,6 +13681,16 @@
         }
       }
     },
+    "Resize agents sidebar" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmień szerokość panelu agentów"
+          }
+        }
+      }
+    },
     "Resolve the conflict above to save the mode shortcuts." : {
       "localizations" : {
         "pl" : {
