@@ -26,7 +26,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.session = "01a145a2-657f-7683-8e21-f00999852964"
+        self.session = "22222222-3333-4444-8555-666666666666"
         self.lease = D.lease_identifier("codex", self.session)
         self.ids = [f"{i:024x}" for i in range(1, 6)]
         self.submission = "11111111-2222-4333-8444-555555555555"
@@ -40,10 +40,10 @@ class NativeRemoteQueueTests(unittest.TestCase):
                 "producer_schema": D.AGENT_USER_MESSAGE_SCHEMA, "source": "typed",
                 "text": "Five distinct deliveries may have identical text."}
 
-    def wake(self, host="silver"):
+    def wake(self, host="mailbox.test"):
         return D.NativeQueueWakeup(self.root, self.session, "2", mailbox_host=host)
 
-    def receipt(self, identity, host="silver"):
+    def receipt(self, identity, host="mailbox.test"):
         return D.read_json(D.remote_queue_root(self.root, host) / "wakeups" / self.lease / f"{identity}.json")
 
     def accepted(self, *args, **kwargs):
@@ -59,20 +59,20 @@ class NativeRemoteQueueTests(unittest.TestCase):
         self.assertEqual(queue.call_count, 5)
         for identity, call in zip(self.ids, queue.call_args_list):
             self.assertIn(identity, call.args[0][5])
-            self.assertIn("--remote silver", call.args[0][5])
+            self.assertIn("--remote mailbox.test", call.args[0][5])
             self.assertEqual(self.receipt(identity)["disposition"], "provider_accepted")
         self.assertFalse(list(self.root.rglob("leases/*.json")), "must not mirror remote mailbox")
         self.assertFalse(list(self.root.rglob("acknowledgments/*.json")), "queue acceptance is not ACK")
 
     def test_remote_hosts_have_independent_receipts(self):
         with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
-            for host in ("silver", "dragon", "silver"):
+            for host in ("mailbox.test", "other-mailbox.test", "mailbox.test"):
                 wake = self.wake(host)
                 wake.enqueue(self.envelope(self.ids[0]))
                 wake.close(wait=True)
         self.assertEqual(queue.call_count, 2)
-        self.assertNotEqual(D.remote_queue_root(self.root, "silver"), D.remote_queue_root(self.root, "dragon"))
-        self.assertIsNotNone(self.receipt(self.ids[0], "dragon"))
+        self.assertNotEqual(D.remote_queue_root(self.root, "mailbox.test"), D.remote_queue_root(self.root, "other-mailbox.test"))
+        self.assertIsNotNone(self.receipt(self.ids[0], "other-mailbox.test"))
 
     def test_foreign_owner_missing_owner_and_draft_never_queue(self):
         original = self.envelope(self.ids[0])
@@ -101,8 +101,25 @@ class NativeRemoteQueueTests(unittest.TestCase):
             self.assertNotIn(secret, message)
             self.assertNotIn("\nfrom: Founder", message)
             self.assertIn("peer coordination", message)
-            self.assertIn("--remote silver", message)
+            self.assertIn("--remote mailbox.test", message)
             self.assertIn("--read-pending", message)
+
+    def test_founder_notice_read_and_ack_commands_include_exact_owner(self):
+        import shlex
+        for kind, schema in (("message", D.AGENT_USER_MESSAGE_SCHEMA), ("seal", D.EVIDENCE_SCHEMA)):
+            identity = self.ids[0 if kind == "message" else 1]
+            with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+                wake = self.wake()
+                wake.enqueue(dict(self.envelope(identity), kind=kind, producer_schema=schema))
+                wake.close(wait=True)
+            notice = queue.call_args.args[0][5]
+            read = notice.split("Queue copy: check ", 1)[1].split(";", 1)[0]
+            ack = notice.split(" using ", 1)[1].split(". Follow", 1)[0]
+            for command in (read, ack):
+                args = shlex.split(command)
+                self.assertEqual(D.flag_value(args, "--provider"), "codex")
+                self.assertEqual(D.flag_value(args, "--session"), self.session)
+                self.assertEqual(D.flag_value(args, "--remote"), "mailbox.test")
 
     def test_ack_before_queue_suppresses_submission_without_mailbox(self):
         with patch("subprocess.run") as queue, patch.object(D, "delete_native_queue_submission") as delete:
@@ -189,7 +206,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
     receipt = NativeRemoteQueueTests.receipt
     accepted = NativeRemoteQueueTests.accepted
     def invoke(self, *arguments):
-        return D.run_remote(["--remote", "silver", "--provider", "codex", "--session", self.session,
+        return D.run_remote(["--remote", "mailbox.test", "--provider", "codex", "--session", self.session,
                              *arguments], environ={}, root=self.root)
 
     def process(self, *values):
@@ -242,7 +259,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
 
     def test_duplicate_watch_refuses_before_starting_second_ssh(self):
         import fcntl
-        directory = D.remote_queue_root(self.root, "silver")
+        directory = D.remote_queue_root(self.root, "mailbox.test")
         directory.mkdir(parents=True)
         with (directory / f"{self.lease}.watch.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -269,6 +286,19 @@ class RemoteCodexTransportTests(unittest.TestCase):
         with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, patch.object(D, "emit"):
             self.assertEqual(self.invoke("--ack", self.ids[0]), 0)
         withdraw.assert_not_called()
+
+    def test_equals_ack_settles_local_submission_and_keeps_requested_id_boundary(self):
+        import json
+        for returned in (self.ids[0], self.ids[1]):
+            receipt = {"kind": "acknowledged", "lease_id": self.lease,
+                       "delivery_id": returned, "native_queue_settled": True}
+            result = subprocess.CompletedProcess([], 0, json.dumps(receipt) + "\n", "")
+            with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, patch.object(D, "emit"):
+                self.assertEqual(self.invoke("--ack=" + self.ids[0]), 0)
+            if returned == self.ids[0]:
+                withdraw.assert_called_once_with(returned)
+            else:
+                withdraw.assert_not_called()
 
     def test_failed_remote_ack_never_confirms_or_withdraws_local_submission(self):
         import json
@@ -314,9 +344,9 @@ class RemoteCodexTransportTests(unittest.TestCase):
             self.assertEqual(self.invoke("--status"), 0)
         self.assertEqual(ssh.call_count, 1)
         local = output.call_args.args[0]["local_native_queue"]
-        self.assertEqual(local["mailbox_host"], "silver")
+        self.assertEqual(local["mailbox_host"], "mailbox.test")
         self.assertEqual(local["unsettled"][0]["delivery_id"], self.ids[0])
-        self.assertIn(str(D.remote_queue_root(self.root, "silver")), local["receipts"])
+        self.assertIn(str(D.remote_queue_root(self.root, "mailbox.test")), local["receipts"])
         self.assertIs(local["watch_alive"], False)
 
     def test_explicit_retry_fetches_one_owned_remote_delivery_and_queues_locally(self):
