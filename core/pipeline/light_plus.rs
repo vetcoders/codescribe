@@ -41,47 +41,93 @@ static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
     .expect("brand hearing pattern")
 });
 
-/// Byte ranges that hold data rather than speech: fenced blocks, inline code
-/// and straight-quoted literals. An apostrophe inside a word (`Codescribe'a`,
-/// `don't`) does not open a literal; an unclosed backtick or quote protects
-/// nothing, an unclosed fence protects the rest of the text.
+/// Byte ranges that hold data rather than speech: code in backtick runs and
+/// straight-quoted literals. A run of n backticks closes at the next run of
+/// exactly n (CommonMark), so ``a `b` c`` is one span; an unclosed run of
+/// three or more (a fence) protects the rest of the text, a shorter one
+/// protects nothing. A quote closes only when an even number of backslashes
+/// precedes it, so JSON escapes stay inside their string. An apostrophe
+/// inside a word (`Codescribe'a`, `don't`) does not open a literal.
 fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut regions = Vec::new();
     let mut index = 0;
     while let Some(ch) = text[index..].chars().next() {
-        let rest = &text[index..];
-        let end = if let Some(body) = rest.strip_prefix("```") {
-            Some(body.find("```").map_or(text.len(), |at| index + 3 + at + 3))
-        } else {
-            match ch {
-                '`' | '"' => rest[1..].find(ch).map(|at| index + 1 + at + 1),
-                '\'' if text[..index]
+        let (end, skip) = match ch {
+            '`' => {
+                let run = backtick_run(&text[index..]);
+                let end = closing_backtick_run(text, index + run, run)
+                    .or((run >= 3).then_some(text.len()));
+                (end, run)
+            }
+            '"' if unescaped(text, index) => (closing_quote(text, index + 1, '"'), 1),
+            '\'' if unescaped(text, index)
+                && text[..index]
                     .chars()
                     .next_back()
                     .is_none_or(|before| !before.is_alphanumeric()) =>
-                {
-                    rest[1..]
-                        .match_indices('\'')
-                        .map(|(at, _)| index + 1 + at + 1)
-                        .find(|&close| {
-                            text[close..]
-                                .chars()
-                                .next()
-                                .is_none_or(|after| !after.is_alphanumeric())
-                        })
-                }
-                _ => None,
+            {
+                (closing_quote(text, index + 1, '\''), 1)
             }
+            _ => (None, ch.len_utf8()),
         };
         match end {
             Some(end) => {
                 regions.push(index..end);
                 index = end;
             }
-            None => index += ch.len_utf8(),
+            None => index += skip,
         }
     }
     regions
+}
+
+/// Length of the backtick run that starts `text`.
+fn backtick_run(text: &str) -> usize {
+    text.bytes().take_while(|&byte| byte == b'`').count()
+}
+
+/// End of the first run of exactly `run` backticks at or after `from`.
+fn closing_backtick_run(text: &str, from: usize, run: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(offset) = text[at..].find('`') {
+        let start = at + offset;
+        let length = backtick_run(&text[start..]);
+        if length == run {
+            return Some(start + run);
+        }
+        at = start + length;
+    }
+    None
+}
+
+/// True when the byte at `at` is not escaped: an even number of
+/// backslashes precedes it.
+fn unescaped(text: &str, at: usize) -> bool {
+    text[..at]
+        .bytes()
+        .rev()
+        .take_while(|&byte| byte == b'\\')
+        .count()
+        % 2
+        == 0
+}
+
+/// End of the literal opened by `quote` before `from`: the next unescaped
+/// `quote`. A single quote also needs a non-alphanumeric character after it,
+/// so `'CodeScript'a'` closes at the last quote, not inside a word.
+fn closing_quote(text: &str, from: usize, quote: char) -> Option<usize> {
+    text[from..]
+        .match_indices(quote)
+        .map(|(offset, _)| from + offset)
+        .find(|&close| {
+            unescaped(text, close)
+                && (quote == '"'
+                    || text[close + 1..]
+                        .chars()
+                        .next()
+                        .is_none_or(|after| !after.is_alphanumeric()))
+        })
+        .map(|close| close + 1)
 }
 
 /// Rewrite spoken forms of the brand to [`BRAND`]. All-lowercase
@@ -489,6 +535,9 @@ mod tests {
             "uruchom `code script --help`",
             "```\nCodeScript = 1\n```",
             "```sh\necho code scribe",
+            r#"{"text": "call \"CodeScript help\" now"}"#,
+            "``CodeScript help``",
+            "``a `CodeScript` b``",
         ] {
             assert_eq!(brand_spelling(kept), kept);
         }
@@ -503,6 +552,15 @@ mod tests {
         assert_eq!(
             brand_spelling("```\nCodeScript\n```\npo bloku CodeScript działa"),
             "```\nCodeScript\n```\npo bloku Codescribe działa"
+        );
+        assert_eq!(brand_spelling("`a` CodeScript `b`"), "`a` Codescribe `b`");
+        assert_eq!(
+            brand_spelling(r#""a\\" CodeScript "b""#),
+            r#""a\\" Codescribe "b""#
+        );
+        assert_eq!(
+            brand_spelling("`` CodeScript i code script"),
+            "`` Codescribe i Codescribe"
         );
         assert_eq!(
             brand_spelling("nie don't i CodeScript'a"),
