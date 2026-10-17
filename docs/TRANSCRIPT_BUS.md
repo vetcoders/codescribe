@@ -131,6 +131,22 @@ API, `deleted: true`, and a subsequent list without that exact ID. A valid
 it does not recall a message already consumed by the conversation. This contract
 does not select or discover a remote queue endpoint.
 
+For a remote Codex mailbox, the client-side `cs-bus --remote HOST --watch` owns
+native queue submission and withdrawal. Remote attach selects follower wakeup
+`off`; the existing SSH watch transports full conversational envelopes and
+durable ACK control frames to the Mac where the Codex thread exists. No reverse
+SSH, second follower, second mailbox or provider network endpoint is created.
+Both producer and consumer validate provider/session/lease/delivery ownership
+before exposing an envelope. Peer messages wake the monitor without gaining
+Founder authority. Local receipts are namespaced by mailbox host, lease and
+delivery. Reconnect replays unread envelopes and confirmed ACKs; known queue
+attempts are not automatically resubmitted. ACK races use durable markers and
+the same per-delivery locks as local delivery. The relay forwards ACK controls
+again for failed withdrawals, including ACKs issued directly on the mailbox
+host. Remote status exposes local monitor and queue state; explicit retries
+execute on the client. A missing or interrupted relay leaves the remote mailbox
+intact and requires the existing watch to be resumed.
+
 The helper bounds total provider stdout to 64 KiB and RPC execution to ten
 seconds, then closes its child
 process after each withdrawal. Failures retain the ACK and owned queue receipt

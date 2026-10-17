@@ -27,6 +27,11 @@ wake normally. The policy file is reread without restarting or reattaching.
 
 ## Codex native queue
 
+For a remote mailbox, follow [Remote bus](remote.md): the existing local remote
+watch submits to Codex on the conversation's Mac; the mailbox follower does not
+submit there. A remote watch also forwards peer coordination messages while
+preserving their attribution and lack of Founder authority.
+
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
 automatically selects `codex-queue`. The follower submits a short
 name/channel/delivery header to `codex queue`, but what follows the header
@@ -77,6 +82,9 @@ be answered together; there is no text-based deduplication or age-based deletion
 
 Receipts under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` distinguish
 `requesting`, `provider_accepted`, `rejected`, `unavailable` and `uncertain`.
+Provider failures retain bounded stderr as `provider_error` in the private
+receipt; inspect it locally, never broadcast raw receipts. For remote mailboxes,
+`--remote HOST --status` points to local receipts under `runtime/remote-native/`.
 `cs-bus --status` reports pending wakeup dispositions. Provider acceptance is
 not conversation receipt: only the receiving conversation calls `--ack` after
 reading. Restart never resubmits accepted or ambiguous deliveries. Inspect a
