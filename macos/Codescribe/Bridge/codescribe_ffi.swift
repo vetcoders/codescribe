@@ -1546,6 +1546,12 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func onboardingProgress()  -> UInt32
 
     /**
+     * Read the auto-fold interval. `0` means never. Unset, or a stored value
+     * outside {0, 5, 10, 30, 60}, reads as 10 seconds.
+     */
+    func overlayAutoFoldSeconds()  -> UInt32
+
+    /**
      * Read the presentation preference from the canonical settings snapshot.
      */
     func overlayExpandedByDefault()  -> Bool
@@ -1697,6 +1703,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * promoted `ONBOARDING_MODE` key.
      */
     func setOnboardingMode(mode: String) throws
+
+    /**
+     * Persist the auto-fold interval. `0` means never. A value outside
+     * {0, 5, 10, 30, 60} is refused and nothing is written. An unchanged
+     * value does not rewrite settings.
+     */
+    func setOverlayAutoFoldSeconds(seconds: UInt32)  -> Bool
 
     /**
      * Persist only the preferred presentation; never change live capture.
@@ -2120,6 +2133,18 @@ open func onboardingProgress() -> UInt32  {
 }
 
     /**
+     * Read the auto-fold interval. `0` means never. Unset, or a stored value
+     * outside {0, 5, 10, 30, 60}, reads as 10 seconds.
+     */
+open func overlayAutoFoldSeconds() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_overlay_auto_fold_seconds(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Read the presentation preference from the canonical settings snapshot.
      */
 open func overlayExpandedByDefault() -> Bool  {
@@ -2422,6 +2447,20 @@ open func setOnboardingMode(mode: String)throws   {try rustCallWithError(FfiConv
         FfiConverterString.lower(mode),$0
     )
 }
+}
+
+    /**
+     * Persist the auto-fold interval. `0` means never. A value outside
+     * {0, 5, 10, 30, 60} is refused and nothing is written. An unchanged
+     * value does not rewrite settings.
+     */
+open func setOverlayAutoFoldSeconds(seconds: UInt32) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_auto_fold_seconds(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(seconds),$0
+    )
+})
 }
 
     /**
@@ -21243,6 +21282,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress() != 28580) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_auto_fold_seconds() != 28291) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_expanded_by_default() != 62379) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21316,6 +21358,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_onboarding_mode() != 39503) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_auto_fold_seconds() != 36923) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_expanded_by_default() != 25199) {
