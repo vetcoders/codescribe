@@ -130,7 +130,8 @@ struct OverlayHeaderMenu: View {
         Button {
           state.setAutoFoldSeconds(seconds)
         } label: {
-          autoFoldChoice("\(seconds) s", selected: state.autoFoldSeconds == seconds)
+          // Int, not UInt32: the catalog key is "%lld s", a UInt32 would extract "%u s".
+          autoFoldChoice("\(Int(seconds)) s", selected: state.autoFoldSeconds == seconds)
         }
         .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
       }
