@@ -8054,13 +8054,13 @@ fn record_dictation_witness_attempts(
 /// newer gap behind it, so older debt waits for the terminal archive pass. The
 /// window's leading context never reaches before the retained start.
 fn live_witness_question(
-    targets: &[SampleSpan],
+    targets: &[(u64, u64)],
     retained_start: u64,
     sealed_end: u64,
     context: u64,
     max_window: u64,
-) -> Option<(SampleSpan, Vec<SampleSpan>)> {
-    let askable: Vec<SampleSpan> = targets
+) -> Option<((u64, u64), Vec<(u64, u64)>)> {
+    let askable: Vec<(u64, u64)> = targets
         .iter()
         .copied()
         .filter(|&(start, _)| start >= retained_start)
@@ -8075,9 +8075,6 @@ fn live_witness_question(
     (window_end > window_start).then_some(((window_start, window_end), askable))
 }
 
-/// A capture-clock sample range, `[start, end)`.
-type SampleSpan = (u64, u64);
-
 /// Terminal witness windows: targets (sorted, deduplicated) clustered into
 /// disjoint windows with bounded context, ordered by the debt each covers,
 /// largest first, earlier window on a tie.
@@ -8085,11 +8082,11 @@ type SampleSpan = (u64, u64);
 /// The request budget is bounded. Spent in time order, a long take's whole
 /// budget went to its first minutes while later holes stayed empty.
 fn terminal_witness_windows(
-    targets: &[SampleSpan],
+    targets: &[(u64, u64)],
     capture_samples: u64,
     context: u64,
     max_window: u64,
-) -> Vec<SampleSpan> {
+) -> Vec<(u64, u64)> {
     // (first target start, last target end, summed target length)
     let mut clusters: Vec<(u64, u64, u64)> = Vec::new();
     for &(start, end) in targets {
