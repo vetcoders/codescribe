@@ -36,18 +36,23 @@ PROVIDER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 #: One reviewed per-connection directory directly under `<bridge_home>/runtime`.
 STATE_DIRECTORY_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}-mcp")
 
-#: The only variables BUS helper children (cs-bus and what it starts) receive.
-#: Bridge home, bus, provider and session travel as explicit arguments, and
-#: speech credentials come from Keychain or a CLI session, so whatever the
-#: transport or its launcher holds in this process's environment stays here.
+#: The only variables BUS helper children (cs-bus and what it starts) receive,
+#: besides the canonical bus location keys `bus-demux` itself declares
+#: (`BUS_PATH_ENV_KEYS`): the capture guard resolves the app's transcript bus
+#: from those, not from the mailbox `--bus`. Bridge home, bus, provider and
+#: session travel as explicit arguments. `LLM_OPENAI_API_KEY` is the one
+#: credential the BUS helper itself consumes (OpenAI speech, before Keychain).
+#: Anything else the transport or its launcher holds stays in this process.
 CHILD_ENVIRONMENT = frozenset({"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ",
-                               "SPEECH_TTS_MODEL_OPENAI", "CODESCRIBE_DISABLE_KEYCHAIN"})
+                               "CODESCRIBE_ENV_PATH", "SPEECH_TTS_MODEL_OPENAI",
+                               "LLM_OPENAI_API_KEY"})
 CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
 
 
-def child_environment(environ):
+def child_environment(environ, bus_path_keys):
+    allowed = CHILD_ENVIRONMENT | frozenset(bus_path_keys)
     return {k: v for k, v in environ.items()
-            if k in CHILD_ENVIRONMENT or k.startswith(CHILD_ENVIRONMENT_PREFIXES)}
+            if k in allowed or k.startswith(CHILD_ENVIRONMENT_PREFIXES)}
 
 
 def protocol_params(method, params):
@@ -243,7 +248,7 @@ class AgentMailbox:
         self.lock = threading.RLock()
         self.mailbox.provider, self.mailbox.owner = scope.provider, scope.session
         self.mailbox.bus = scope.bus
-        self.mailbox.environment = child_environment(os.environ)
+        self.mailbox.environment = child_environment(os.environ, demux.BUS_PATH_ENV_KEYS)
         self.lease = demux.lease_identifier(scope.provider, scope.session)
         self.calls = scope.prepare_state() / self.lease / "calls"
 
