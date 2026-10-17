@@ -22,7 +22,20 @@ final class OverlayPresentationTraceTests: XCTestCase {
   override func tearDown() {
     trace.clock = { ProcessInfo.processInfo.systemUptime }
     trace.mirrorsToLog = true
+    trace.diagnosticSink = nil
     super.tearDown()
+  }
+
+  func testDiagnosticSinkPersistsTheLedgerLine() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("OverlayPresentationTraceTests-\(UUID().uuidString).log")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let sink = DiagnosticLog(url: url)
+    trace.diagnosticSink = sink
+    trace.record(.modeRequested, from: .mini, mode: .midi, note: "user")
+    let lines = try sink.lines()
+    XCTAssertEqual(lines.count, 1)
+    XCTAssertTrue(lines[0].hasSuffix(" overlay-presentation mode.requested mini→midi user"))
   }
 
   private func makePanel(_ name: String) throws -> (OverlayState, FloatingOverlayPanel) {
