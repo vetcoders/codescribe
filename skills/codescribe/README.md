@@ -23,6 +23,17 @@ with the app; choose new clients in Settings → Agent. An unowned skill is kept
 If this shell does not include `~/.local/bin` on PATH, use those two stable full
 paths. No private checkout or hook script is required.
 
+On a host with no window — SSH, a worker session — name the clients on the
+command line instead of in Settings:
+
+```bash
+/Applications/Codescribe.app/Contents/MacOS/Codescribe \
+  --install-agent-bridge --agent-clients claude-code,codex
+```
+
+Valid names are `agents`, `claude-code` and `codex`; the flag replaces the
+selection exactly as the Settings panel does. See `docs/INSTALLATION.md`.
+
 To install only helpers and update already selected skills from source, run
 `make install-bus`. It uses the same Swift installer without building,
 restarting or replacing the app. Reattach the current session afterward; an
