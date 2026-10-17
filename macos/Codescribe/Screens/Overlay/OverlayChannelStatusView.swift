@@ -861,10 +861,14 @@ struct OverlayChannelStatusView: View {
         )
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
+          // Maciej 2026-10-17: names were cut to "6…r" in the sidebar because
+          // the fixed-size time won the squeeze. The name is offered room
+          // first and the time is compact.
           Text(verbatim: title)
             .font(.system(size: 13.5 * textScale, weight: .semibold))
             .lineLimit(1)
             .truncationMode(.middle)
+            .layoutPriority(1)
           if let statusChannel, let symbol = statusChannel.broadcastPolicy.statusSymbol {
             Image(systemName: symbol)
               .font(.system(size: 10 * textScale))
@@ -880,7 +884,7 @@ struct OverlayChannelStatusView: View {
           if let last = conversation?.messages.last,
             let date = MessageTimestamp.date(fromISO8601: last.emittedAt)
           {
-            MessageTimestampLabel(date: date)
+            MessageTimestampLabel(date: date, compact: true)
               .font(.system(size: 11 * textScale))
               .foregroundStyle(palette.mutedText.color)
           }

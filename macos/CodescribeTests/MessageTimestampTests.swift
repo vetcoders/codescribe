@@ -48,6 +48,37 @@ final class MessageTimestampTests: XCTestCase {
     }
   }
 
+  func testCompactLabelIsTimeToday() {
+    let now = instant("2026-10-11T16:00:00Z")
+    XCTAssertEqual(
+      MessageTimestamp.compactLabel(
+        for: instant("2026-10-11T11:05:00Z"), now: now, calendar: calendar(),
+        locale: Locale(identifier: "en_GB")),
+      "13:05")
+  }
+
+  func testCompactLabelYesterdayIsTheWordAlone() {
+    let label = MessageTimestamp.compactLabel(
+      for: instant("2026-10-10T20:05:00Z"), now: instant("2026-10-11T00:05:00Z"),
+      calendar: calendar(), locale: Locale(identifier: "pl_PL"), yesterday: "Wczoraj")
+    XCTAssertEqual(label, "Wczoraj")
+    XCTAssertNil(label.rangeOfCharacter(from: .decimalDigits))
+  }
+
+  func testCompactLabelOlderAndFutureCarryDateWithoutTime() {
+    for input in ["2026-10-09T11:05:00Z", "2026-10-12T11:05:00Z"] {
+      let label = MessageTimestamp.compactLabel(
+        for: instant(input), now: instant("2026-10-11T16:00:00Z"), calendar: calendar(),
+        locale: Locale(identifier: "en_GB"))
+      XCTAssertFalse(label.contains(":"), label)
+      XCTAssertTrue(label.contains("2026"), label)
+    }
+  }
+
+  func testCompactLabelMissingTimeIsDash() {
+    XCTAssertEqual(MessageTimestamp.compactLabel(for: nil, now: Date()), "—")
+  }
+
   func testYesterdayAcrossDaylightSavingIsNotTwentyFourHoursAgo() {
     XCTAssertEqual(
       MessageTimestamp.label(

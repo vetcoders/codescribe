@@ -89,15 +89,43 @@ enum MessageTimestamp {
       Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day())
     return "\(day) \(time)"
   }
+
+  /// Short form for tight places (the sidebar roster): the clock for today,
+  /// the word alone for yesterday, a short numeric date for anything older.
+  static func compactLabel(
+    for date: Date?, now: Date, calendar: Calendar = .autoupdatingCurrent,
+    locale: Locale = .autoupdatingCurrent,
+    yesterday: String = String(localized: "Yesterday", comment: "Message sent yesterday")
+  ) -> String {
+    guard let date else { return "—" }
+    if calendar.isDate(date, inSameDayAs: now) {
+      return clock(locale: locale, timeZone: calendar.timeZone).string(from: date)
+    }
+    if let previousDay = calendar.date(byAdding: .day, value: -1, to: now),
+      calendar.isDate(date, inSameDayAs: previousDay)
+    {
+      return yesterday
+    }
+    return date.formatted(
+      Date.FormatStyle(
+        date: .numeric, time: .omitted, locale: locale, calendar: calendar,
+        timeZone: calendar.timeZone))
+  }
 }
 
 struct MessageTimestampLabel: View {
   let date: Date?
+  /// Tight places (the sidebar roster) take the short form.
+  var compact: Bool = false
 
   var body: some View {
     // History left open across midnight must acquire its new day label.
     TimelineView(.periodic(from: .now, by: 60)) { context in
-      Text(verbatim: MessageTimestamp.label(for: date, now: context.date))
+      Text(
+        verbatim: compact
+          ? MessageTimestamp.compactLabel(for: date, now: context.date)
+          : MessageTimestamp.label(for: date, now: context.date)
+      )
         .monospacedDigit()
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
