@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
 
+### Fixed
+
+- A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
+- An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
+
 ## [0.17.1] - 2026-10-17
 
 Source changes in preparation; validation and distribution have separate receipts.
