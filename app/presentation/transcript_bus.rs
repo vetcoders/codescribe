@@ -1689,9 +1689,16 @@ impl TranscriptBus {
     }
 
     /// Publish the joined channel's final snapshot before its non-open receipt.
-    /// The ledger already sealed it; this copies document authority unchanged.
-    /// Hold metadata belongs only to these closing wire rows, never drafts.
-    pub(crate) fn publish_channel_sealed(&self, hold_sec: u32) -> io::Result<()> {
+    /// The producer has stopped, so no ledger seal can follow. A sealed
+    /// document keeps its authority unchanged; an unsealed one still closes,
+    /// marked `coverage: refused`, so the send hold covers spoken words without
+    /// claiming the ledger certified them. Hold metadata belongs only to these
+    /// closing wire rows, never drafts.
+    ///
+    /// Maciej, 2026-10-17 09:59Z: the pause before sending covered typed
+    /// messages only. On a day the ledger sealed no channel take, every spoken
+    /// message left at once, with no Cancel/Edit.
+    pub(crate) fn publish_channel_closed(&self, hold_sec: u32) -> io::Result<()> {
         if self.session.mode != TranscriptMode::Agent || self.session.audience.is_none() {
             return Ok(());
         }
@@ -1699,9 +1706,10 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !writer.started || !writer.sealed || writer.channel_seal_published {
+        if !writer.started || writer.channel_seal_published {
             return Ok(());
         }
+        let certified = writer.sealed;
         let Some(mut projection) = writer.last_projection.clone() else {
             return Ok(());
         };
@@ -1714,6 +1722,9 @@ impl TranscriptBus {
         projection.terminal = true;
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
+        if !certified {
+            evidence["coverage"] = serde_json::json!("refused");
+        }
         if hold_sec > 0 {
             evidence["hold_until"] = serde_json::json!(
                 (now + chrono::TimeDelta::seconds(i64::from(hold_sec)))
@@ -2848,7 +2859,6 @@ mod tests {
             bus.publish_started();
             let (mut ledger, mut reducer, revision) = committed_fixture(id);
             bus.publish_revision(&revision, &ledger);
-            bus.publish_channel_sealed(seconds).unwrap();
             let draft = std::fs::read_to_string(&path).unwrap();
             assert!(!draft.contains("hold_until"));
             assert!(!draft.contains("transcript_sealed"));
@@ -2864,7 +2874,7 @@ mod tests {
                 !before_close.contains("hold_until"),
                 "the reducer seal is still pre-close"
             );
-            bus.publish_channel_sealed(seconds).unwrap();
+            bus.publish_channel_closed(seconds).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -2881,6 +2891,10 @@ mod tests {
             assert_eq!(closing[1]["schema"], "codescribe.transcript.v1");
             assert_eq!(closing[0]["rendered_text"], closing[1]["text"]);
             assert_eq!(closing[0]["reducer_revision"], sealed.revision);
+            assert!(
+                closing.iter().all(|row| row.get("coverage").is_none()),
+                "a ledger-sealed close keeps its authority"
+            );
             assert!(
                 closing.iter().all(|row| row.get("utterance_id").is_none()),
                 "a producer request is not the engine's canonical utterance ID"
@@ -2917,7 +2931,7 @@ mod tests {
                     2
                 );
             }
-            bus.publish_channel_sealed(seconds).unwrap();
+            bus.publish_channel_closed(seconds).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 raw,
@@ -2929,6 +2943,65 @@ mod tests {
                 )
                 .unwrap()
                 .contains("hold_until")
+            );
+        }
+    }
+
+    /// Maciej, 2026-10-17 09:59Z: on a day the ledger sealed no channel take,
+    /// spoken messages left at once while typed ones waited out the hold.
+    #[test]
+    fn unsealed_channel_close_still_holds_the_spoken_words_without_certifying_them() {
+        for seconds in [0, 10] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("unsealed-channel.jsonl");
+            let id = "channel-unsealed-hold";
+            let mut channel = session(id);
+            channel.audience = Some("Leon".into());
+            channel.badge_only = true;
+            let bus = TranscriptBus::open_at(channel, path.clone(), None).unwrap();
+            bus.publish_started();
+            let (ledger, _, revision) = committed_fixture(id);
+            bus.publish_revision(&revision, &ledger);
+            assert!(!bus.writer.lock().unwrap().sealed);
+            bus.publish_channel_closed(seconds).unwrap();
+            bus.record_channel_receipt(&serde_json::json!({
+                "schema": "codescribe.channel-session.v1",
+                "state": "sealed",
+                "session_id": id,
+            }));
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
+            let closing = rows
+                .iter()
+                .filter(|row| row["status"] == "transcript_sealed")
+                .collect::<Vec<_>>();
+            assert_eq!(closing.len(), 2);
+            assert_eq!(closing[0]["schema"], "codescribe.transcript-evidence.v1");
+            assert_eq!(closing[1]["schema"], "codescribe.transcript.v1");
+            assert_eq!(closing[0]["rendered_text"], closing[1]["text"]);
+            assert_eq!(closing[0]["rendered_text"], revision.rendered_text);
+            assert_eq!(closing[0]["reducer_revision"], revision.revision);
+            assert!(
+                closing.iter().all(|row| row["coverage"] == "refused"),
+                "the words are held and delivered, not certified by the ledger"
+            );
+            assert_eq!(closing[0]["hold_until"], closing[1]["hold_until"]);
+            assert_eq!(closing[0].get("hold_until").is_some(), seconds > 0);
+            assert!(
+                bus.publish_ended(
+                    TranscriptSessionEndReason::CoverageRefused,
+                    true,
+                    TranscriptDelivery::Unattempted,
+                )
+                .is_some(),
+                "the joined close lets the unsealed session end"
+            );
+            let ended = std::fs::read_to_string(&path).unwrap();
+            bus.publish_channel_closed(seconds).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                ended,
+                "closing is idempotent"
             );
         }
     }
@@ -2979,7 +3052,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before_end);
             assert!(!bus.writer.lock().unwrap().ended);
 
-            bus.publish_channel_sealed(seconds).unwrap();
+            bus.publish_channel_closed(seconds).unwrap();
             assert!(
                 bus.publish_ended(
                     TranscriptSessionEndReason::Completed,
@@ -3031,7 +3104,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture("plain-send-hold");
             bus.publish_revision(&revision, &ledger);
             let before = std::fs::read(&path).unwrap();
-            bus.publish_channel_sealed(10).unwrap();
+            bus.publish_channel_closed(10).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
