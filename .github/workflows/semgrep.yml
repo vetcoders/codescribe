@@ -9,6 +9,10 @@ on:
     types: [checks_requested]
   workflow_dispatch:
 
+# The scan only reads the checkout (CodeQL #38).
+permissions:
+  contents: read
+
 # Queue entries are never cancelled: a merge_group run has a unique ref, and
 # only superseded pull_request runs are cancelled.
 concurrency:

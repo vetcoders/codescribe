@@ -453,7 +453,15 @@ struct DictationOverlayView: View {
                 onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
                 playbackError: state.playbackPreferenceError,
                 agentDescriptor: state.conversationAgentDescriptor(conversation),
-                onShowAgents: { state.showAgentMonitor() },
+                // The name pill toggles the agents list: with the clickable
+                // scrim gone, a second click is the pointer's way back out.
+                onShowAgents: {
+                  if state.showsAgentMonitor {
+                    state.hideAgentSidebar()
+                  } else {
+                    state.showAgentMonitor()
+                  }
+                },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 agentPillStack: state.showsAgentMonitor && !docked
                   ? channelStatusView.pillStack(
