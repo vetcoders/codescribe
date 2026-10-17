@@ -1665,16 +1665,16 @@ impl TranscriptBus {
         // Their reducer capability must continue the exact retained CAS/epoch.
         let operation = capability.document_revision;
         if let Some((source_revision, _)) = operation {
-            if !capability.terminal
-                || !writer.direct_terminal.as_ref().is_some_and(|owner| {
+            let continues_terminal = capability.terminal
+                && writer.direct_terminal.as_ref().is_some_and(|owner| {
                     owner.capture_epoch == capability.capture_epoch
                         && owner.revision == source_revision
                 })
-                || !writer
+                && writer
                     .last_projection
                     .as_ref()
-                    .is_some_and(|last| last.reducer_revision == source_revision)
-            {
+                    .is_some_and(|last| last.reducer_revision == source_revision);
+            if !continues_terminal {
                 return Vec::new();
             }
         } else if writer.direct_terminal.is_some() {
