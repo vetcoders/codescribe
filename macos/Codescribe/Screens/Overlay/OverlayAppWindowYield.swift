@@ -55,12 +55,15 @@ final class OverlayAppWindowYield {
 
   private func observe(
     _ name: Notification.Name,
-    _ action: @escaping @MainActor (OverlayAppWindowYield, Notification) -> Void
+    _ action: @escaping @MainActor (OverlayAppWindowYield, NSWindow) -> Void
   ) -> NSObjectProtocol {
+    // Only the window crosses into the isolated closure: NSWindow is main-actor
+    // isolated and therefore Sendable, the Notification that carries it is not.
     let handler: @Sendable (Notification) -> Void = { [weak self] notification in
+      guard let window = notification.object as? NSWindow else { return }
       MainActor.assumeIsolated {
         guard let self else { return }
-        action(self, notification)
+        action(self, window)
       }
     }
     return NotificationCenter.default.addObserver(
@@ -71,8 +74,7 @@ final class OverlayAppWindowYield {
   /// regular-window rules is ignored. A regular window is marked as seen even
   /// while the panel is hidden or compact, so an overlay brought up by hand
   /// later does not fold on the next click into that window.
-  private func noteBecameKey(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow else { return }
+  private func noteBecameKey(_ window: NSWindow) {
     guard let panel, window !== (panel as NSWindow) else { return }
     guard OverlayAppWindowPolicy.shouldYield(to: window) else { return }
     guard yieldedWindows.insert(window.windowNumber).inserted else { return }
@@ -81,17 +83,14 @@ final class OverlayAppWindowYield {
   }
 
   /// A closed window that opens again is a new appearance.
-  private func noteGone(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow else { return }
+  private func noteGone(_ window: NSWindow) {
     yieldedWindows.remove(window.windowNumber)
   }
 
   /// An ordered-out window (the agent chat when minimised) is a new appearance
   /// once it is back on screen.
-  private func noteOcclusion(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow,
-      !window.occlusionState.contains(.visible)
-    else { return }
+  private func noteOcclusion(_ window: NSWindow) {
+    guard !window.occlusionState.contains(.visible) else { return }
     yieldedWindows.remove(window.windowNumber)
   }
 }
