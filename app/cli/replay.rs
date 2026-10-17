@@ -6,11 +6,15 @@
 //! terminal archive. Takes recorded before cards resolve each input to the
 //! nearest honest value, and the receipt names every substitution. Replay
 //! keeps live pacing: a 60 s take needs about 60 s per run.
+//!
+//! `--ledger on|off` and `--device NAME` replay the take as a what-if. The
+//! receipt lists them under `scenario`, and their evidence gets its own
+//! session id, so a plain replay of the same take is never overwritten.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
-use codescribe_core::audio::streaming_recorder::ReplayInputReceipt;
+use codescribe_core::audio::streaming_recorder::{ReplayInputReceipt, ReplayScenario};
 use codescribe_core::config::Config;
 use codescribe_core::pipeline::replay_card::{self, ReplayBuild};
 use serde::Serialize;
@@ -29,6 +33,20 @@ pub struct ReplayArgs {
     /// Print the full receipt as JSON on stdout instead of the text
     #[arg(long)]
     pub json: bool,
+    /// Scenario: replay as if the take had been captured on this device
+    #[arg(long, value_name = "NAME")]
+    pub device: Option<String>,
+    /// Scenario: replay with seal-ledger admission on or off
+    #[arg(long, value_name = "on|off", value_parser = on_off)]
+    pub ledger: Option<bool>,
+}
+
+fn on_off(value: &str) -> Result<bool, String> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(format!("expected on or off, got {other}")),
+    }
 }
 
 #[derive(Serialize)]
@@ -49,6 +67,9 @@ struct ReplayReceipt {
     inputs: Vec<ReplayInputReceipt>,
     /// Inputs whose replay value is not the take's own.
     divergences: Vec<&'static str>,
+    /// Switches that changed the take on purpose; non-empty means a what-if,
+    /// not a parity check.
+    scenario: Vec<String>,
     runs: Vec<RecordedTakeRun>,
     runs_agree: bool,
 }
@@ -61,6 +82,17 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
             .map_err(|error| anyhow!("replay card for {session} is unreadable: {error}"))?,
         None => None,
     };
+    let scenario = ReplayScenario {
+        capture_device: args.device.clone(),
+        seal_ledger: args.ledger,
+    };
+    let mut switches = Vec::new();
+    if let Some(enabled) = args.ledger {
+        switches.push(format!("--ledger {}", if enabled { "on" } else { "off" }));
+    }
+    if let Some(device) = &args.device {
+        switches.push(format!("--device {device}"));
+    }
     let mut runs = Vec::new();
     let mut inputs = Vec::new();
     let mut recorded_build = None;
@@ -68,7 +100,9 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         if !args.json {
             eprintln!("replay run {run}/{} at live pace", args.runs);
         }
-        let replay = replay_recorded_take(session.clone(), card.clone(), &audio, run).await?;
+        let replay =
+            replay_recorded_take(session.clone(), card.clone(), &audio, run, scenario.clone())
+                .await?;
         inputs = replay.inputs;
         recorded_build = replay.recorded_build;
         runs.push(replay.run);
@@ -94,6 +128,7 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
             .filter(|input| input.reason.is_some())
             .map(|input| input.input)
             .collect(),
+        scenario: switches,
         inputs,
         runs_agree: runs.windows(2).all(|pair| pair[0].text == pair[1].text),
         runs,
@@ -117,6 +152,9 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
             _ => "",
         }
     );
+    if !receipt.scenario.is_empty() {
+        eprintln!("scenario (not parity): {}", receipt.scenario.join(" "));
+    }
     for input in receipt.inputs.iter().filter(|input| input.reason.is_some()) {
         eprintln!(
             "  {}: {} ({})",
