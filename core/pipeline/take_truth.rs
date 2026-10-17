@@ -230,6 +230,13 @@ pub struct LedgerDecisionFact {
     pub serials: Vec<LedgerSerialFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
+    /// For `no_speech_near_span`: what lay under the refused span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_silence: Option<String>,
+    /// For `no_speech_near_span`: milliseconds to the nearest Silero speech;
+    /// absent when the capture epoch held no speech at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_distance_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor_ordinal: Option<u64>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -424,7 +431,7 @@ impl TakeTruth {
         session_id: &str,
         capture_epoch: u64,
     ) -> Self {
-        use crate::pipeline::acoustic_ledger::{MutationReceipt, TerminalFinality};
+        use crate::pipeline::acoustic_ledger::{MutationReceipt, RefuseReason, TerminalFinality};
 
         let same = |occurrence: &crate::pipeline::acoustic_ledger::OccurrenceIdentity| {
             occurrence.session == session_id && occurrence.capture_epoch == capture_epoch
@@ -447,6 +454,17 @@ impl TakeTruth {
             if let Some(reason) = refusal.clone() {
                 refusals.push(reason);
             }
+            let (refusal_silence, refusal_distance_ms) = match &entry.decision {
+                MutationReceipt::Refuse {
+                    reason:
+                        RefuseReason::NoSpeechNearSpan {
+                            silence,
+                            distance_ms,
+                        },
+                    ..
+                } => (Some(silence.as_str().to_string()), *distance_ms),
+                _ => (None, None),
+            };
             decisions.push(LedgerDecisionFact {
                 ordinal: entry.ordinal as u64,
                 receipt_id: entry.receipt_id.clone(),
@@ -461,6 +479,8 @@ impl TakeTruth {
                 generation: Some(entry.observation.generation),
                 serials: entry.serials.iter().map(serial_fact).collect(),
                 refusal,
+                refusal_silence,
+                refusal_distance_ms,
                 predecessor_ordinal: entry.predecessor_ordinal.map(|ordinal| ordinal as u64),
                 clock_lie: entry.clock_lie,
             });
@@ -1706,6 +1726,58 @@ mod private_observer_receipt_controls {
         for (occ, slots) in occurrences.iter().zip(original_words) {
             assert_eq!(ledger.slots_of(occ).unwrap(), slots);
         }
+    }
+
+    #[test]
+    fn private_observer_keeps_the_silence_class_and_distance_of_a_word_refused_over_silence() {
+        use crate::pipeline::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
+
+        let mut ledger = AcousticLedger::new();
+        add_occurrence(&mut ledger, "over-silence", 4, 0, "mowa", true);
+        let word = OccurrenceIdentity::new("over-silence", 4, 40_000, 44_000);
+        let observation = ObservationIdentity::new(ObservationProducer::Whisper, 8, 0, word);
+        ledger.refuse_replacement(
+            &observation,
+            "dziękuję",
+            RefuseReason::NoSpeechNearSpan {
+                silence: SilenceUnderSpan::SoundWithoutSpeech,
+                distance_ms: Some(1_500),
+            },
+        );
+
+        let inventory = TakeTruth::observe_ledger(&ledger, "over-silence", 4)
+            .ledger
+            .unwrap();
+        assert!(
+            inventory
+                .refusals
+                .iter()
+                .any(|r| r == "no_speech_near_span")
+        );
+        let refused = inventory
+            .decisions
+            .iter()
+            .find(|d| d.refusal.as_deref() == Some("no_speech_near_span"))
+            .expect("the refusal is on the decision trail");
+        assert_eq!((refused.sample_start, refused.sample_end), (40_000, 44_000));
+        assert_eq!(
+            refused.refusal_silence.as_deref(),
+            Some("sound_without_speech")
+        );
+        assert_eq!(refused.refusal_distance_ms, Some(1_500));
+        let json = serde_json::to_value(refused).unwrap();
+        assert_eq!(json["refusal_silence"], "sound_without_speech");
+        assert_eq!(json["refusal_distance_ms"], 1_500);
+
+        let other = inventory
+            .decisions
+            .iter()
+            .find(|d| d.refusal.is_none())
+            .expect("the admitted word is on the trail too");
+        assert!(other.refusal_silence.is_none() && other.refusal_distance_ms.is_none());
+        let json = serde_json::to_value(other).unwrap();
+        assert!(json.get("refusal_silence").is_none());
+        assert!(json.get("refusal_distance_ms").is_none());
     }
 
     #[test]
