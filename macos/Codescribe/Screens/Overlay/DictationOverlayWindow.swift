@@ -499,9 +499,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
     guard let contentView else { return false }
-    if containsMenuCursorPoint(point) {
-      guard NSCursor.current != .arrow else { return false }
-      NSCursor.arrow.set()
+    if let desired = menuCursor(at: point) {
+      guard NSCursor.current != desired else { return false }
+      desired.set()
       return true
     }
     let resizeEdge =
@@ -517,7 +517,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Resolve from this panel's hit surface, never the inactive app below it.
   func cursor(at point: NSPoint) -> NSCursor {
     guard let contentView else { return .arrow }
-    if containsMenuCursorPoint(point) { return .arrow }
+    if let desired = menuCursor(at: point) { return desired }
     if styleMask.contains(.resizable),
       let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode)
     {
@@ -533,10 +533,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   private func containsMenuCursorPoint(_ point: NSPoint) -> Bool {
+    menuCursor(at: point) != nil
+  }
+
+  private func menuCursor(at point: NSPoint) -> NSCursor? {
     if styleMask.contains(.resizable), let contentView,
       OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
     {
-      return false
+      return nil
     }
     // The drawer can contain native text entry (live search). Its field
     // editor keeps native tracking, unlike the transcript behind the drawer.
@@ -545,22 +549,27 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if let text = view as? NSTextView, text.isEditable,
         !(text is LiveTranscriptNativeTextView)
       {
-        return false
+        return nil
       }
-      if let field = view as? NSTextField, field.isEditable { return false }
+      if let field = view as? NSTextField, field.isEditable { return nil }
       hit = view.superview
     }
     // Events use window coordinates. Bound the override by the mounted
     // drawer's frame as well as its clipped visible rect, in that same space.
     // A native text hit outside this frame must never inherit menu ownership.
-    return menuCursorRegions.allObjects.contains { region in
+    // A small divider region wins over the enclosing drawer. The panel stays
+    // the single cursor owner; nested SwiftUI hover handlers cannot fight it.
+    return menuCursorRegions.allObjects.compactMap { $0 as? OverlayMenuCursorRegionView }.filter {
+      region in
       guard region.window === self, !region.isHiddenOrHasHiddenAncestor,
         let parent = region.superview
       else { return false }
       let frameInWindow = parent.convert(region.frame, to: nil)
       let visibleInWindow = region.convert(region.visibleRect, to: nil)
       return frameInWindow.contains(point) && visibleInWindow.contains(point)
-    }
+    }.min { lhs, rhs in
+      lhs.bounds.width * lhs.bounds.height < rhs.bounds.width * rhs.bounds.height
+    }?.cursor
   }
 
   func isWindowDragHit(at point: NSPoint) -> Bool {

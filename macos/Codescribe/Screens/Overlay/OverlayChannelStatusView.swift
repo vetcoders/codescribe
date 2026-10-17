@@ -746,7 +746,7 @@ struct OverlayChannelStatusView: View {
     let open = isOpen(channel)
     let descriptor = agentDescriptor(for: channel)
     let status = statusHelp(for: channel)
-    // The descriptor leaves the row body; it joins the status in the tooltip.
+    // Keep the full descriptor in the tooltip as well as the visible row.
     var tooltipParts: [String] = []
     if let descriptor, !descriptor.isEmpty { tooltipParts.append(descriptor) }
     tooltipParts.append(status)
@@ -838,8 +838,7 @@ struct OverlayChannelStatusView: View {
         palette: palette, enabled: !unavailable))
   }
 
-  /// The two-line roster row from the mockup: status dot, channel · name with
-  /// the last message's time on the right, and a two-line preview underneath.
+  /// The roster keeps identity above the preview in both wide and narrow modes.
   /// Unread rows brighten the preview; the badge sits before the time.
   @ViewBuilder
   private func rosterRowLabel(
@@ -888,6 +887,15 @@ struct OverlayChannelStatusView: View {
               .font(.system(size: 11 * textScale))
               .foregroundStyle(palette.mutedText.color)
           }
+        }
+        if let statusChannel, let descriptor = agentDescriptor(for: statusChannel) {
+          Text(verbatim: descriptor)
+            .font(.system(size: 11 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+            .lineLimit(2)
+            .truncationMode(.tail)
+            .help(descriptor)
+            .accessibilityIdentifier("overlay-agent-descriptor-\(statusChannel.channel)")
         }
         if let conversation, let last = conversation.messages.last {
           Text(verbatim: Self.drawerPreview(message: last, channel: conversation.channel))
