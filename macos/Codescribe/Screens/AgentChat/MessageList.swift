@@ -888,6 +888,10 @@ struct AttachmentChip: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
     .csFocusRing(cornerRadius: CSRadius.pill)
+    // Inside the overlay panel the chip floats above message text whose
+    // tracking set the I-beam (Maciej, 2026-10-17 01:15Z); the region claims
+    // the arrow there and registers nothing in an ordinary window.
+    .background { OverlayMenuCursorRegion() }
     .help(
       attachment.url == nil
         ? String(localized: "Preview attachment (original file may be missing)")
