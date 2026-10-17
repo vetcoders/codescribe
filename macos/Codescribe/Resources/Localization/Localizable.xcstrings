@@ -4662,6 +4662,16 @@
         }
       }
     },
+    "Click opens the agents. Scroll moves, left click opens, middle click talks until the next one." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klik pokazuje agentów. Kółko przesuwa, lewy klik otwiera rozmowę, środkowy włącza mikrofon do następnego środkowego."
+          }
+        }
+      }
+    },
     "Click to edit. Edits stay local until committed to the transcript ledger." : {
       "localizations" : {
         "pl" : {
@@ -9591,6 +9601,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Mikrofon wyłączony"
+          }
+        }
+      }
+    },
+    "Middle click picks an agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Środkowy klik wybiera agenta"
           }
         }
       }
