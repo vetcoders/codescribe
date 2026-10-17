@@ -12,6 +12,7 @@ pub mod engine_tuning;
 pub mod light_plus;
 /// Local, observational word-slot evidence emitted only when an occurrence seals.
 pub(crate) mod occurrence_slot_receipt;
+pub mod replay_card;
 /// Event sink helpers: collectors and fan-out to consumers.
 pub mod sinks;
 /// Speech islands between word clamps: onsets, pauses and the silence beside them.
