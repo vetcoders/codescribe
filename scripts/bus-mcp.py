@@ -137,11 +137,17 @@ def ledger_guard(path, *, wait_seconds=None):
         os.close(descriptor)
 
 
-def wake_armed(root, lease_id):
-    """True while a wake process holds this lease's lock; observing never arms."""
-    lock, _record = wake_paths(root, lease_id)
+def watch_lock_path(root, lease_id):
+    """Held shared for the whole life of this lease's `--watch --until-event`
+    task. While it is held the native waiter leaves deliveries to that task,
+    so one message wakes the conversation once."""
+    return root / "runtime" / "native-wake" / f"{lease_id}.watch.lock"
+
+
+def lock_held(path):
+    """True while another process holds `path`; observing never takes it."""
     try:
-        descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return False
     try:
@@ -151,6 +157,38 @@ def wake_armed(root, lease_id):
     finally:
         os.close(descriptor)
     return False
+
+
+def wake_armed(root, lease_id):
+    """True while a wake process holds this lease's lock; observing never arms."""
+    return lock_held(wake_paths(root, lease_id)[0])
+
+
+@contextlib.contextmanager
+def until_event_watch(demux, root, lease_id):
+    """Mark a live `--watch --until-event` task of this lease for its waiter.
+
+    Yields `announce(ids)`. The task calls it after reporting deliveries and
+    before it exits, so the ledger already holds them when the waiter takes
+    over: the waiter wakes neither alongside the task nor after it for the
+    same message. A task stopped before it reported anything leaves no entry,
+    and the waiter announces those deliveries itself."""
+    path = watch_lock_path(root, lease_id)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+
+        def announce(ids):
+            _lock, record = wake_paths(root, lease_id)
+            with ledger_guard(ledger_lock_path(root, lease_id)):
+                saved = (demux.read_json(record) or {}).get("announced")
+                seen = set(saved) if isinstance(saved, list) else set()
+                demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(ids))})
+
+        yield announce
+    finally:
+        os.close(descriptor)
 
 
 def bound_channel(demux, root, provider, session):
@@ -294,8 +332,11 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
     The hook never reads, ACKs or replies. It wakes only the Claude Code
     conversation whose exported session id equals the hook payload, and only
     while that session owns a channel. One process per lease holds the lock;
-    a later Stop finds it armed and returns at once. Announced IDs are kept
-    until acknowledged, so a message left unread does not wake every turn.
+    a later Stop or tool call finds it armed and returns at once. Claude Code
+    runs no Stop hook after a user interrupt, and StopFailure instead of Stop
+    after an API error, so the plugin also arms after every tool call: a turn
+    the wake started cannot end without a waiter. Announced IDs are kept until
+    acknowledged, so a message left unread does not wake every turn.
     A channel attached on another Mac (`cs-bus --remote HOST --attach`) is
     waited on there, by that Mac's own waiter, in parallel with this one.
     """
@@ -327,7 +368,7 @@ def remote_wake_command(session):
         "(",
         f"  CLAUDE_CODE_SESSION_ID={shlex.quote(session)}",
         "  export CLAUDE_CODE_SESSION_ID",
-        f"  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
+        "  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
         json.dumps({"session_id": session}),
         "CODESCRIBE_WAKE",
         ") &",
@@ -514,10 +555,17 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                     probed = (demux.read_json(record) or {}).get("announced")
                     if isinstance(probed, list):
                         seen |= set(probed)
-                    fresh = [identity for identity in unread if identity not in seen]
+                    # A live `--watch --until-event` task of this lease reports its
+                    # deliveries itself and records them before it exits; waking
+                    # here as well would wake the conversation twice. The waiter
+                    # stays armed and takes over once the task is gone.
+                    watched = lock_held(watch_lock_path(root, lease_id))
+                    fresh = [] if watched else [identity for identity in unread if identity not in seen]
                     # After this pass every unread delivery is announced; an ACKed
-                    # delivery or a resolved problem leaves the set.
-                    prior, seen = seen, set(unread) | ({problem} if problem else set())
+                    # delivery or a resolved problem leaves the set. A delivery the
+                    # task has not reported yet stays unannounced.
+                    prior = seen
+                    seen = ((seen & set(unread)) if watched else set(unread)) | ({problem} if problem else set())
                     if fresh:
                         notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
                                   "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
@@ -527,6 +575,11 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                         notice = {"kind": "codescribe_listener_problem", "problem": problem,
                                   "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
                     elif time.monotonic() >= deadline:
+                        if watched:
+                            # The task keeps waking this conversation; an idle
+                            # re-arm would only spend a model turn. The next turn
+                            # end or tool call arms a fresh waiter.
+                            return 0
                         notice = {"kind": "codescribe_wait_idle", "waited_seconds": window,
                                   "instructions": "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms."}
                     else:

@@ -78,6 +78,8 @@ class ReadAckTests(unittest.TestCase):
         self.assertNotIn("Iwo", result.stdout)
         self.assertEqual((self.root / "leases" / f"{self.lease}.json").read_bytes(), before)
         self.assertFalse((self.root / "acknowledgments").exists())
+        # Codex has no native waiter to coordinate with: no mark, no ledger.
+        self.assertFalse((self.root / "runtime" / "native-wake").exists())
 
     def test_bounded_watch_ignores_acked_messages_and_drafts(self):
         self.ack(self.ids)
