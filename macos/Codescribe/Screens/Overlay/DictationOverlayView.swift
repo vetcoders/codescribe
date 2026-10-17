@@ -1002,7 +1002,7 @@ struct DictationOverlayView: View {
       hudStates: state.channelHudStates,
       agentDescriptors: state.channelAgentDescriptors,
       onToggleChannel: { digit in
-        Task { await state.toggleAgentChannel(digit) }
+        Task { await state.toggleAgentChannel(digit, keepsAgentList: true) }
       },
       toggleError: state.channelToggleError,
       pendingToggleChannels: state.pendingChannelToggles,
