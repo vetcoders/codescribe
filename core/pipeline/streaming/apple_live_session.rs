@@ -1978,6 +1978,10 @@ struct AppleSealState {
     /// Direct-lane Whisper words dropped because Silero heard no speech within
     /// the near radius of their span. A diagnostic count; each drop is logged.
     direct_words_over_silence: u64,
+    /// Valid direct finals withheld on purpose: Silero measured the whole
+    /// range quiet, or heard no speech near any word. Completed work, so it
+    /// never withholds the direct completion that Stop waits for.
+    direct_jobs_suppressed: u64,
     preview_rev: u64,
     speech_progress: SpeechProgress,
     last_integrity: Option<SpeechIntegrity>,
@@ -2263,6 +2267,18 @@ struct AdmitWindow {
     sample_end: u64,
 }
 
+/// How one completed Whisper job of the ledger-free direct lane ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectJobOutcome {
+    /// The final reached the presentation.
+    Published,
+    /// A valid final the take's own Silero evidence withheld on purpose.
+    Suppressed,
+    /// No valid final, or a publication refused for identity, range or a
+    /// closed sink.
+    Failed,
+}
+
 impl AppleSealState {
     /// Only the session's Silero classifies speech. Both capture observers
     /// must authenticate a complete, valid measurement before silence can
@@ -2339,6 +2355,22 @@ impl AppleSealState {
                 final_chunk,
             })
             .is_ok()
+    }
+
+    /// Count one completed direct Whisper job. Only a failed job withholds
+    /// the direct completion; a deliberate suppression owes no words.
+    fn account_direct_job(&mut self, outcome: DirectJobOutcome) {
+        match outcome {
+            DirectJobOutcome::Published => {
+                self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
+            }
+            DirectJobOutcome::Suppressed => {
+                self.direct_jobs_suppressed = self.direct_jobs_suppressed.saturating_add(1);
+            }
+            DirectJobOutcome::Failed => {
+                self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+            }
+        }
     }
 
     /// Replace the presentation mirror from the worker's actual held words.
@@ -2630,6 +2662,7 @@ impl AppleSealState {
             direct_apple_epoch_has_final: false,
             direct_suppressed_no_measured_speech: 0,
             direct_words_over_silence: 0,
+            direct_jobs_suppressed: 0,
             preview_rev: 0,
             speech_progress,
             last_integrity: None,
@@ -4378,7 +4411,8 @@ impl AppleSealState {
         // cold start; later stops may hold the warm closure budget.
         self.first_whisper_window_completed = true;
         if !self.seal_ledger_enabled {
-            let published = if let Some(payload) = payload.filter(|payload| {
+            let quiet_before = self.direct_suppressed_no_measured_speech;
+            let outcome = if let Some(payload) = payload.filter(|payload| {
                 payload.identity == job.request_identity
                     && payload.validate().is_ok()
                     && payload.evidence.source == TailEvidenceSource::Whisper
@@ -4407,9 +4441,13 @@ impl AppleSealState {
                     // Speech exists in the window, but Silero heard none near
                     // any word: nothing to publish. A window with no speech at
                     // all stays with the whole-range suppression and its count.
-                    false
+                    DirectJobOutcome::Suppressed
+                } else if self.publish_direct_transcript(ev_tx, observation, text, true) {
+                    DirectJobOutcome::Published
+                } else if self.direct_suppressed_no_measured_speech > quiet_before {
+                    DirectJobOutcome::Suppressed
                 } else {
-                    self.publish_direct_transcript(ev_tx, observation, text, true)
+                    DirectJobOutcome::Failed
                 }
             } else {
                 self.window_plan_receipt(&job.request_identity.range, "failed");
@@ -4418,13 +4456,9 @@ impl AppleSealState {
                     message: "The accepted PCM request returned no valid final decoder payload."
                         .into(),
                 });
-                false
+                DirectJobOutcome::Failed
             };
-            if published {
-                self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
-            } else {
-                self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
-            }
+            self.account_direct_job(outcome);
             return;
         }
         let valid = payload.as_ref().is_some_and(|payload| {
@@ -26662,6 +26696,29 @@ mod relay_l1_overlap_admission_tests {
             "a phrase-grain payload has no word spans to judge"
         );
         assert_eq!(lane.state.direct_words_over_silence, 1);
+    }
+
+    /// A valid direct final withheld by the take's own Silero evidence is
+    /// complete work: Stop's direct completion requires zero skipped jobs,
+    /// so counting it as skipped turned a quiet window into CaptureStopFailure.
+    #[test]
+    fn suppressed_direct_final_is_complete_work_not_a_skipped_job() {
+        let mut lane = open("direct-suppressed-accounting");
+        lane.state.account_direct_job(DirectJobOutcome::Suppressed);
+        lane.state.account_direct_job(DirectJobOutcome::Published);
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped,
+                lane.state.direct_jobs_suppressed,
+            ),
+            (1, 0, 1)
+        );
+        lane.state.account_direct_job(DirectJobOutcome::Failed);
+        assert_eq!(
+            lane.state.tail_patch_jobs_skipped, 1,
+            "a failed job still withholds the direct completion"
+        );
     }
 
     #[test]
