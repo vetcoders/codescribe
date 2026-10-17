@@ -1817,8 +1817,12 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   // MARK: - Command-C on an agent bubble, the whole path
 
-  /// The real overlay, one agent reply. Each step returns on failure, so the
-  /// first report is the broken link: hit-walk, keyboard gate, selection, ⌘C.
+  /// The real overlay, one agent reply. The contract is two steps: a click on
+  /// the bubble opens the keyboard gate, and ⌘C then puts its text on a
+  /// clipboard. The hit-walk and the first responder are recorded, not
+  /// required: the gate may open through a registered text region and the
+  /// copy may travel the responder chain. Their record goes into the failing
+  /// step's message, so a red run still names the broken link.
   @MainActor
   func testCommandCOnAnAgentBubbleCopiesItsSelectionThroughTheRealOverlay() throws {
     let probe = "BUBBLE COPY PROBE alpha beta gamma"
@@ -1882,10 +1886,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let windowPoint = panel.convertPoint(
       fromScreen: NSPoint(x: bubbleFrame.midX, y: bubbleFrame.midY))
 
-    guard let contentView = panel.contentView else {
-      XCTFail("step A hit-walk: no copy-capable responder above the bubble; chain=[]")
-      return
-    }
+    let contentView = try XCTUnwrap(panel.contentView)
     var chain: [String] = []
     var copyCapable = false
     var hit = contentView.hitTest(contentView.convert(windowPoint, from: nil))
@@ -1897,10 +1898,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       }
       hit = view.superview
     }
-    guard copyCapable else {
-      XCTFail("step A hit-walk: no copy-capable responder above the bubble; chain=\(chain)")
-      return
-    }
+    let hitWalk = "hit-walk copy-capable=\(copyCapable) chain=\(chain)"
 
     let event = try XCTUnwrap(
       NSEvent.mouseEvent(
@@ -1915,7 +1913,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     NSApp.postEvent(mouseUp, atStart: true)
     panel.sendEvent(event)
     guard panel.allowsKeyForTranscript, panel.canBecomeKey else {
-      XCTFail("step B gate: click on the bubble did not open the keyboard gate")
+      XCTFail("step B gate: click on the bubble did not open the keyboard gate; \(hitWalk)")
       return
     }
 
@@ -1940,10 +1938,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     }
     let responder = panel.firstResponder
     let responderClass = responder.map { String(describing: type(of: $0)) } ?? "nil"
-    guard let responder, responder.responds(to: #selector(NSText.copy(_:))) else {
-      XCTFail("step C selection: first responder \(responderClass) does not respond to copy:")
-      return
-    }
+    let responderCopies = responder?.responds(to: #selector(NSText.copy(_:))) ?? false
+    let selection =
+      "selectAll=\(selectedAll) responder=\(responderClass) copies=\(responderCopies); \(hitWalk)"
 
     let generalBoard = NSPasteboard.general
     let savedItems: [NSPasteboardItem] = (generalBoard.pasteboardItems ?? []).map { item in
@@ -1959,6 +1956,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       generalBoard.clearContents()
       if !savedItems.isEmpty { generalBoard.writeObjects(savedItems) }
     }
+    // A probe left on the clipboard by an earlier run must not pass this one.
+    generalBoard.clearContents()
     let routed = NSPasteboard.withUniqueName()
     defer { routed.releaseGlobally() }
     let restoreClipboard = ClipboardCapture.route(into: routed)
@@ -1969,14 +1968,15 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         windowNumber: panel.windowNumber, context: nil, characters: "c",
         charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8))
     guard panel.performKeyEquivalent(with: key) else {
-      XCTFail("step D: ⌘C not handled by the overlay panel")
+      XCTFail("step D: ⌘C not handled by the overlay panel; \(selection)")
       return
     }
     let general = generalBoard.string(forType: .string) ?? ""
     let routedText = routed.string(forType: .string) ?? ""
     guard general.contains("alpha beta gamma") || routedText.contains("alpha beta gamma") else {
       XCTFail(
-        "step D: ⌘C handled but nothing copied; general=\(general), routed=\(routedText)")
+        "step D: ⌘C handled but nothing copied; general=\(general), routed=\(routedText); "
+          + selection)
       return
     }
   }
