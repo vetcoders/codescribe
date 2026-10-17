@@ -72,8 +72,11 @@ cancelling it, restarting its follower or adding a second reader.
 After connecting and after each drained batch, **end the turn**. The plugin's
 `Stop` hook (`asyncRewake`) waits in the background with no model turn and wakes
 this conversation once per new delivery with a `codescribe_mailbox_ready` notice;
-then do the steps above. It re-arms on every turn end, so there is no watcher to
-remember. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
+then do the steps above. It re-arms on every turn end and after every tool call,
+so an interrupted turn (Claude Code runs no `Stop` then) does not leave you deaf
+and there is no watcher to remember. A `cs-bus --watch --until-event` background
+task of this session may run beside it: the waiter then leaves the wake to that
+task and takes over when it is gone. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
 means nothing was read: inspect `codescribe_status` and connect again with the same
 name and channel. A `codescribe_wait_idle` notice after six silent hours only
 re-arms: end the turn. `codescribe_status` reports `native_wake_armed`.
