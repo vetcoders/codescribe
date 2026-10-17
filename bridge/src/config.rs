@@ -837,11 +837,16 @@ impl CodescribeConfig {
     /// Read the auto-fold interval. `0` means never. Unset, or a stored value
     /// outside {0, 5, 10, 30, 60}, reads as 10 seconds.
     pub fn overlay_auto_fold_seconds(&self) -> u32 {
-        // The doc lines above are part of the UniFFI checksum: keep them.
-        let stored = Config::load_runtime_snapshot_without_keychain()
-            .expect("canonical runtime settings must load for overlay auto-fold")
-            .user_settings()
-            .overlay_auto_fold_seconds;
+        // The doc lines above are part of the UniFFI checksum: keep them. A
+        // settings read that fails keeps the default instead of panicking
+        // across the FFI boundary at overlay attach.
+        let stored = match Config::load_runtime_snapshot_without_keychain() {
+            Ok(snapshot) => snapshot.user_settings().overlay_auto_fold_seconds,
+            Err(error) => {
+                tracing::warn!(%error, "overlay auto-fold preference could not be loaded; folding after 10 s");
+                None
+            }
+        };
         match stored {
             Some(seconds) if matches!(seconds, 0 | 5 | 10 | 30 | 60) => seconds,
             _ => 10,
