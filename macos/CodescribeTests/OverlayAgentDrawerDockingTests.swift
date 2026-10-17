@@ -501,7 +501,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "the visible docked column is exactly when the pill evacuates")
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
-      of: conversation, from: ".overlay(alignment: .top)", to: ".onAppear { scrollToLatest")
+      of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
     XCTAssertTrue(
       anchor.contains("if hidesNavigation"),
       "the navigation row is conditional, not just transparent")
