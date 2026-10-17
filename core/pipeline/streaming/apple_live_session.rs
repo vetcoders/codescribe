@@ -69,7 +69,7 @@ use crate::asr_session::recorder::{
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
-    CapturePathMeta, emit_capture_level_receipt,
+    CapturePathMeta, DIGITAL_ZERO_ABS, emit_capture_level_receipt,
 };
 use crate::audio::speech_input::{
     SpeechInputArchive, SpeechInputFrame, SpeechInputPlan, SpeechInputStream,
@@ -87,7 +87,7 @@ use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
-    RefuseReason, SealCoverageReceipt, SealRefusal,
+    RefuseReason, SealCoverageReceipt, SealRefusal, SilenceUnderSpan,
 };
 use crate::pipeline::contracts::{
     ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin,
@@ -95,15 +95,15 @@ use crate::pipeline::contracts::{
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use crate::pipeline::whisper_word_speech::{
-    WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech, WhisperWordSpeechDecision,
-    WhisperWordSpeechVerdict, judge_whisper_words, repeat_key, separation_window,
-    window_has_energy_valley, window_has_silero_dip,
+    SileroSpeechDistance, WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech,
+    WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words, repeat_key,
+    separation_window, window_has_energy_valley, window_has_silero_dip,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailProviderPayload, TailProviderRequest, TailRequestIdentity,
-    TailSampleRange, TimedTailSegment,
+    TailSampleRange, TailSegmentGrain, TimedTailSegment,
 };
 
 use super::layer1_window::CaptureWindowPlan;
@@ -1972,6 +1972,9 @@ struct AppleSealState {
     /// Direct publications suppressed by owned Silero non-speech evidence
     /// over a valid capture range. A diagnostic count, never a receipt.
     direct_suppressed_no_measured_speech: u64,
+    /// Direct-lane Whisper words dropped because Silero heard no speech within
+    /// the near radius of their span. A diagnostic count; each drop is logged.
+    direct_words_over_silence: u64,
     preview_rev: u64,
     speech_progress: SpeechProgress,
     last_integrity: Option<SpeechIntegrity>,
@@ -2623,6 +2626,7 @@ impl AppleSealState {
             direct_sample_end: 0,
             direct_apple_epoch_has_final: false,
             direct_suppressed_no_measured_speech: 0,
+            direct_words_over_silence: 0,
             preview_rev: 0,
             speech_progress,
             last_integrity: None,
@@ -4379,6 +4383,9 @@ impl AppleSealState {
                         == crate::stt::tail_provider::TailEvidenceStability::Final
             }) {
                 self.window_plan_receipt(&job.request_identity.range, "returned");
+                let text = direct_text_heard_by_silero(self, &payload);
+                let every_word_over_silence =
+                    text.trim().is_empty() && !payload.text.trim().is_empty();
                 let range = payload.identity.range;
                 let observation = LedgerObservationIdentity::new(
                     LedgerObservationProducer::Whisper,
@@ -4391,7 +4398,16 @@ impl AppleSealState {
                         range.sample_end,
                     ),
                 );
-                self.publish_direct_transcript(ev_tx, observation, payload.text, true)
+                if every_word_over_silence
+                    && !self.direct_range_measured_quiet(&observation.occurrence)
+                {
+                    // Speech exists in the window, but Silero heard none near
+                    // any word: nothing to publish. A window with no speech at
+                    // all stays with the whole-range suppression and its count.
+                    false
+                } else {
+                    self.publish_direct_transcript(ev_tx, observation, text, true)
+                }
             } else {
                 self.window_plan_receipt(&job.request_identity.range, "failed");
                 let _ = ev_tx.send(EngineEvent::Warning {
@@ -7043,6 +7059,16 @@ fn measure_whisper_window_speech(
                 segment.range.sample_end,
             ),
             separated_from_previous: separated,
+            silero_speech_distance: silero_speech_distance(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            silence_under_span: silence_under_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
         });
         previous_key = key;
         previous_span = Some((segment.range.sample_start, segment.range.sample_end));
@@ -7058,6 +7084,49 @@ fn measure_whisper_window_speech(
         );
     }
     WhisperWindowSpeech { facts, decisions }
+}
+
+/// Direct-lane text without the Whisper words Silero heard no speech near.
+///
+/// The direct lane has no ledger to receipt a refusal, so each dropped word is
+/// logged with its range, silence class and distance. Only the over-silence
+/// rule applies here; the repeat rules stay with the ledger. The window text
+/// is rejoined from the kept word pins only when a word was dropped.
+fn direct_text_heard_by_silero(
+    state: &mut AppleSealState,
+    payload: &TailProviderPayload,
+) -> String {
+    if payload.evidence.segment_grain != TailSegmentGrain::Word {
+        return payload.text.clone();
+    }
+    let window = measure_whisper_window_speech(state, &payload.segments);
+    let mut kept = Vec::with_capacity(payload.segments.len());
+    let mut dropped = 0u64;
+    for (segment, decision) in payload.segments.iter().zip(&window.decisions) {
+        if let WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+            silence,
+            distance_ms,
+        }) = decision.verdict
+        {
+            dropped += 1;
+            info!(
+                session = %state.session_id,
+                sample_start = segment.range.sample_start,
+                sample_end = segment.range.sample_end,
+                silence = silence.as_str(),
+                distance_ms = ?distance_ms,
+                "direct_word_over_silence"
+            );
+            continue;
+        }
+        kept.push(segment.text.trim());
+    }
+    if dropped == 0 {
+        return payload.text.clone();
+    }
+    state.direct_words_over_silence = state.direct_words_over_silence.saturating_add(dropped);
+    kept.retain(|word| !word.is_empty());
+    kept.join(" ")
 }
 
 fn retain_whisper_words_with_own_speech(
@@ -7190,6 +7259,71 @@ fn speech_near_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool
         (Some(true), _) | (_, Some(true)) => Some(true),
         (None, None) => None,
         _ => Some(false),
+    }
+}
+
+/// Silero alone: how far the nearest speech it heard lies from this span.
+///
+/// Speech already heard within the radius proves nearness at once. A larger
+/// distance, or none, is a measurement only once Silero has observed the
+/// whole radius after the span: speech may still start right after it.
+fn silero_speech_distance(state: &AppleSealState, start: u64, end: u64) -> SileroSpeechDistance {
+    let Some(evidence) = observed_silero(state) else {
+        return SileroSpeechDistance::Unmeasured;
+    };
+    if span_inside_observed(&evidence, end).is_none() {
+        return SileroSpeechDistance::Unmeasured;
+    }
+    let rate = u64::from(state.sample_rate.max(1));
+    let nearest = evidence
+        .ranges()
+        .iter()
+        // Zero when the range overlaps the span; otherwise the gap on either side.
+        .map(|range| {
+            start
+                .saturating_sub(range.sample_end)
+                .max(range.sample_start.saturating_sub(end))
+        })
+        .min()
+        .map(|samples| samples.saturating_mul(1_000) / rate);
+    if let Some(distance) = nearest
+        && distance <= WHISPER_WORD_SPEECH_NEAR_MS
+    {
+        return SileroSpeechDistance::Ms(distance);
+    }
+    let mut radius_end = end.saturating_add(rate * WHISPER_WORD_SPEECH_NEAR_MS / 1_000);
+    if state.capture_stopping {
+        // No audio follows a stopped capture, so its end closes the radius.
+        radius_end = radius_end.min(state.audio.session_sample_end().max(end));
+    }
+    if span_inside_observed(&evidence, radius_end).is_none() {
+        return SileroSpeechDistance::Unmeasured;
+    }
+    nearest.map_or(
+        SileroSpeechDistance::NoSpeechHeard,
+        SileroSpeechDistance::Ms,
+    )
+}
+
+/// What the span holds on the energy clock: exact digital zero, sound under
+/// the calibrated existence floor, or sound reaching it.
+fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUnderSpan {
+    let Some(audible) = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        start,
+        end,
+        DIGITAL_ZERO_ABS,
+    ) else {
+        return SilenceUnderSpan::EnergyUnmeasured;
+    };
+    if audible.is_empty() {
+        return SilenceUnderSpan::DigitalZero;
+    }
+    match energy_above_existence_floor(state, start, end) {
+        Some(true) => SilenceUnderSpan::SoundWithoutSpeech,
+        Some(false) => SilenceUnderSpan::BelowFloor,
+        None => SilenceUnderSpan::EnergyUnmeasured,
     }
 }
 
