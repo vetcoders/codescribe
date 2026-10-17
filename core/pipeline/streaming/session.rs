@@ -581,6 +581,7 @@ pub(crate) async fn transcription_session(
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
+    crate::pipeline::replay_card::record(&config);
     super::apple_live_session::apple_stream_transcription_session(
         chunk_receiver,
         event_sink,

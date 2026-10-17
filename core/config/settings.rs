@@ -843,7 +843,7 @@ impl RuntimeLlmLanes {
 ///
 /// Runtime execution records this typed evidence rather than carrying an
 /// absolute path or raw I/O error text into the selected generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSource {
     /// A non-empty operator override on disk.
     CustomFile,
@@ -1282,6 +1282,12 @@ impl RuntimeSettingsSnapshot {
     /// Frozen transport selection. Invalid configuration disarms the local lane.
     pub fn tail_provider(&self) -> Option<crate::stt::tail_provider::TailProviderId> {
         self.tail_provider
+    }
+
+    /// The resolver inputs this snapshot sealed. Crate-only: they carry
+    /// credentials, which only a redacting record may read.
+    pub(crate) fn captured_inputs(&self) -> &super::loader::CapturedRuntimeInputs {
+        &self.captured_inputs
     }
 
     /// Borrow the frozen runtime values.
