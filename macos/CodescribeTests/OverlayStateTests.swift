@@ -1800,6 +1800,43 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.channelToggleError)
   }
 
+  /// Maciej (2026-10-17): a microphone click in the open agent list keeps the
+  /// list; the same channel opened from elsewhere still follows its chat.
+  func testAgentListMicrophoneClickKeepsTheListOpen() async throws {
+    for keepsAgentList in [true, false] {
+      let engine = OverlayStateTestEngine()
+      engine.rosterSnapshot = [
+        .init(
+          channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
+          open: true, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      ]
+      let state = OverlayState()
+      state.engine = engine
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "miron-session",
+          "lease_id": String(repeating: "cd", count: 16), "name": "miron", "channel": "2",
+        ]))
+      let agent = OverlayConversation(
+        id: owner.id, channel: "2", name: "miron", owner: owner, messages: [])
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [agent]))
+      state.showAgentMonitor()
+      XCTAssertTrue(state.showsAgentMonitor)
+
+      await state.toggleAgentChannel(2, keepsAgentList: keepsAgentList)
+
+      XCTAssertTrue(state.channelHudStates["2"]?.open == true)
+      if keepsAgentList {
+        XCTAssertTrue(state.showsAgentMonitor, "the list stays for the next click")
+        XCTAssertNotEqual(state.selectedConversationID, agent.id)
+      } else {
+        XCTAssertFalse(state.showsAgentMonitor, "a toggle from elsewhere follows the chat")
+        XCTAssertEqual(state.selectedConversationID, agent.id)
+      }
+    }
+  }
+
   func testFailedRosterToggleRetainsStateAndReportsError() async {
     let engine = OverlayStateTestEngine()
     engine.toggleFailure = NSError(
