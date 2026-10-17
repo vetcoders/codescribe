@@ -135,17 +135,19 @@ final class OverlayMenuCursorTests: XCTestCase {
     text.isEditable = false
     text.string = String(repeating: "Transkrypcja pod stosem pigułek agentów. ", count: 14)
     content.addSubview(text)
-    // Rows without audio controls: the transcription entry and a listener
-    // whose controls stayed home. Any region found belongs to the row itself.
-    let entries = [
+    // Rows without audio controls: two listeners whose controls stayed home.
+    // Any region found belongs to the row itself.
+    func entry(_ channel: String, _ name: String, unread: Int) -> OverlayAgentPillEntry {
       OverlayAgentPillEntry(
-        id: "transcription", conversationID: nil, title: "Transkrypcja",
-        descriptor: "Na żywo z mikrofonu", unread: 0, dot: .idle, quietSymbol: nil,
-        isBroadcast: false),
-      OverlayAgentPillEntry(
-        id: "channel-2", conversationID: "codex:stasiu", title: "2 · stasiu",
-        descriptor: nil, unread: 5, dot: .listening, quietSymbol: nil, isBroadcast: false),
-    ]
+        id: "channel-\(channel)", conversationID: "codex:\(name)", title: "\(channel) · \(name)",
+        descriptor: nil, unread: unread, dot: .listening, quietSymbol: nil, isBroadcast: false,
+        disconnected: false,
+        controls: .init(
+          channel: channel, open: false, muted: nil, microphoneEnabled: false,
+          playbackEnabled: false, broadcast: false, speaking: false,
+          onMicrophone: {}, onPlayback: {}))
+    }
+    let entries = [entry("2", "stasiu", unread: 5), entry("3", "lena", unread: 0)]
     let stack = NSHostingView(
       rootView: OverlayAgentPillStack(
         palette: .dark, entries: entries, broadcastMembers: [], broadcastEnabled: true,
@@ -160,8 +162,9 @@ final class OverlayMenuCursorTests: XCTestCase {
     let rows = panel.menuCursorRegions.allObjects.filter {
       $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
     }
-    let frames = rows.map { $0.convert($0.bounds, to: nil) }
-    XCTAssertEqual(rows.count, entries.count, "one region per pill row, got \(frames)")
+    // The audio pair registers its own small regions; only the row-wide ones count.
+    let frames = rows.map { $0.convert($0.bounds, to: nil) }.filter { $0.width > 120 }
+    XCTAssertEqual(frames.count, entries.count, "one region per pill row, got \(frames)")
     let saved = NSCursor.current
     defer { saved.set() }
     for frame in frames {
