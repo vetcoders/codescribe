@@ -39,6 +39,10 @@ protocol HotkeysEngine {
   func middleMouseActsAsFn() -> Bool
   /// Persist the middle-mouse Fn option and live-reload the detector.
   func setMiddleMouseActsAsFn(_ enabled: Bool) throws
+  /// Whether a middle click opens the overlay's agent chooser. Default off.
+  func middleMouseAgentGesture() -> Bool
+  /// Persist the agent-chooser gesture and live-reload the detector.
+  func setMiddleMouseAgentGesture(_ enabled: Bool) throws
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -88,6 +92,12 @@ final class RealHotkeysEngine: HotkeysEngine {
   func setMiddleMouseActsAsFn(_ enabled: Bool) throws {
     try config.updateConfig(key: "MIDDLE_MOUSE_ACTS_AS_FN", value: enabled ? "1" : "0")
   }
+
+  func middleMouseAgentGesture() -> Bool { config.loadSettings().middleMouseAgentGesture }
+
+  func setMiddleMouseAgentGesture(_ enabled: Bool) throws {
+    try config.updateConfig(key: "MIDDLE_MOUSE_AGENT_GESTURE", value: enabled ? "1" : "0")
+  }
 }
 
 /// `"fn"` stays Fn. Every other token, including Command, is Ctrl.
@@ -113,6 +123,8 @@ struct MockHotkeysEngine: HotkeysEngine {
   func setFnTapTogglesDictation(_ enabled: Bool) throws {}
   func middleMouseActsAsFn() -> Bool { false }
   func setMiddleMouseActsAsFn(_ enabled: Bool) throws {}
+  func middleMouseAgentGesture() -> Bool { false }
+  func setMiddleMouseAgentGesture(_ enabled: Bool) throws {}
   func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
     // Surface a representative blocking conflict when dictation double-taps Ctrl
     // while a toggle mode is also active — matches the core reachability rule.
