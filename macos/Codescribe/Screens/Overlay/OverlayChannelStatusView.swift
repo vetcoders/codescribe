@@ -1562,6 +1562,11 @@ struct OverlayAgentPillStack: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
+    // Maciej, 2026-10-17 01:15Z: the stack floats above the transcript, whose
+    // tracking set the I-beam, and the panel resets the cursor only above its
+    // registered regions. The row, its audio pair and the gap between claim
+    // the arrow the way the docked drawer column does.
+    .background { OverlayMenuCursorRegion() }
     .modifier(
       OverlayBroadcastPolicyMenu(
         members: policyMembers(for: entry), palette: palette,

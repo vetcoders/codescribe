@@ -72,6 +72,11 @@ struct OverlayConversationComposer: View {
         }
         .frame(maxHeight: 30)
         .accessibilityIdentifier("overlay-conversation-attachments")
+        // Maciej, 2026-10-17 01:15Z: the chips sit above the editor whose
+        // tracking set the I-beam. The row claims the arrow; the editable
+        // field keeps its text cursor, since editable text never inherits
+        // menu ownership.
+        .background { OverlayMenuCursorRegion() }
       }
       editorRow
     }
