@@ -123,9 +123,45 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     XCTAssertEqual(try receipt(fixture(messages: previous.messages + [pending, reply])), "Queued")
   }
 
-  func testABroadcastToAnAgentOffChannelZeroReadsSkippedNotAddressed() throws {
-    // bus-demux `queue_delivery` skips a channel-0 delivery for an agent off
-    // channel 0; "Addressed" would wait for a receipt that never comes.
+  func testSkippedComesOnlyFromTheFollowersReceiptForThatDeliveryAndOwner() throws {
+    // Olek (2026-10-17): the current policy must not rewrite an old message's
+    // fate. Skipped needs the follower's broadcast_skipped receipt
+    // (bus-demux `record_broadcast_skipped`) for exactly this delivery and owner.
+    var bus = OverlayChannelDelivery.Bus()
+    let session = "agent-channel-0-drawer"
+    bus.consume([
+      "schema": "codescribe.transcript-evidence.v1", "session_id": session,
+      "occurrence_session_id": session, "capture_epoch": 1,
+      "sample_start": 0, "sample_end": 1600, "document_index": 0,
+      "reducer_revision": 1, "sequence": 1,
+      "reducer_action": "record_ledger_terminal_seal", "audience": "Lena",
+      "rendered_text": "Everyone, stop", "recipients": [ownerRow()],
+    ])
+    bus.consume([
+      "schema": "codescribe.transcript.v1", "session_id": session, "status": "session_ended",
+    ])
+    func conversation() throws -> OverlayConversation {
+      try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first { $0.owner?.leaseID == lease })
+    }
+    let owner = try XCTUnwrap(conversation().owner)
+    let coordinate = try XCTUnwrap(bus.receiptCoordinates().first)
+    XCTAssertTrue(coordinate.broadcast, "a channel-0 seal is the kind a follower may skip")
+    func skip(_ row: [String: Any]) -> [String: Any] {
+      row.merging([
+        "schema": "codescribe.broadcast-policy.v1", "kind": "broadcast_skipped",
+        "delivery_id": coordinate.delivery, "origin_channel": "0", "policy": "off",
+      ]) { _, new in new }
+    }
+    bus.observeBroadcastSkip(
+      skip(ownerRow(String(repeating: "b", count: 32), session: "foreign")), owner: owner,
+      delivery: coordinate.delivery)
+    XCTAssertEqual(try receipt(conversation()), "Addressed", "a foreign lease's skip marks nothing")
+    bus.observeBroadcastSkip(skip(ownerRow()), owner: owner, delivery: coordinate.delivery)
+    XCTAssertEqual(try receipt(conversation()), "Skipped: off channel 0")
+    XCTAssertTrue(bus.receiptCoordinates().isEmpty, "a recorded skip is never polled again")
+  }
+
+  func testWithoutASkipReceiptAnOffAgentShowsThePresentPolicyNotAFate() throws {
     var broadcast = try XCTUnwrap(fixture().messages.first)
     broadcast.sourceChannel = "0"
     let conversation = try fixture(messages: [broadcast])
@@ -135,28 +171,42 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       row.broadcastPolicy = policy
       return drawer.deliveryReceiptText(for: row, conversation: conversation)
     }
-    XCTAssertEqual(policyReceipt(.off), "Skipped: off channel 0")
+    XCTAssertEqual(policyReceipt(.off), "Addressed · now off channel 0")
     XCTAssertEqual(policyReceipt(.quiet), "Addressed", "quiet queues; only off skips")
     XCTAssertEqual(policyReceipt(.on), "Addressed")
+
+    broadcast.recipients[0].broadcastSkipped = true
+    let skipped = try fixture(messages: [broadcast])
+    XCTAssertEqual(
+      view(skipped).deliveryReceiptText(for: channel, conversation: skipped),
+      "Skipped: off channel 0", "the receipt stands after the agent rejoins channel 0")
+
+    broadcast.recipients[0].broadcastSkipped = nil
     broadcast.recipients[0].queued = true
     let queued = try fixture(messages: [broadcast])
     var offRow = channel
     offRow.broadcastPolicy = .off
     XCTAssertEqual(
       view(queued).deliveryReceiptText(for: offRow, conversation: queued), "Queued",
-      "a queued copy was delivered before the agent left channel 0")
+      "a copy queued before the agent left channel 0 keeps its receipt")
 
-    // The seal-derived fallback (no typed message for this owner) says the same.
+    // The seal-derived fallback (no message for this owner) follows the same rule.
     var sealed = OverlayChannelDelivery(
       channel: "2", agent: "Lena", deliveryID: "delivery", stage: .sent, isOpen: false)
     sealed.broadcastPolicy = .off
     sealed.addressedByBroadcast = true
-    XCTAssertTrue(sealed.skippedBroadcast)
+    XCTAssertEqual(
+      drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed · now off channel 0")
+    sealed.broadcastSkipped = true
+    sealed.broadcastPolicy = .on
     XCTAssertEqual(
       drawer.deliveryReceiptText(for: sealed, conversation: nil), "Skipped: off channel 0")
-    sealed.addressedByBroadcast = false
-    XCTAssertFalse(sealed.skippedBroadcast, "a direct to an agent off channel 0 still arrives")
-    XCTAssertEqual(drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed")
+    sealed = OverlayChannelDelivery(
+      channel: "2", agent: "Lena", deliveryID: "delivery", stage: .sent, isOpen: false)
+    sealed.broadcastPolicy = .off
+    XCTAssertEqual(
+      drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed",
+      "a direct to an agent off channel 0 still arrives")
   }
 
   func testWithdrawnMessageCannotAdvertiseAReceipt() throws {
