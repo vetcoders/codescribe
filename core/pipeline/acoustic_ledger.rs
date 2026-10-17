@@ -366,6 +366,35 @@ impl NoAuthorityReason {
     }
 }
 
+/// What a word's own span holds when Silero heard no speech near it.
+///
+/// Measured on the capture clock, never a named sound: noise, breath and a
+/// cough are all `SoundWithoutSpeech`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SilenceUnderSpan {
+    /// Every hop is exact digital zero.
+    DigitalZero,
+    /// Sound is present, all of it under the calibrated existence floor.
+    BelowFloor,
+    /// A hop reaches the existence floor and Silero still heard no speech.
+    SoundWithoutSpeech,
+    /// The energy of the span was not measured, or no floor is calibrated.
+    EnergyUnmeasured,
+}
+
+impl SilenceUnderSpan {
+    /// Stable label for receipts and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DigitalZero => "digital_zero",
+            Self::BelowFloor => "below_floor",
+            Self::SoundWithoutSpeech => "sound_without_speech",
+            Self::EnergyUnmeasured => "energy_unmeasured",
+        }
+    }
+}
+
 /// Why an observation was refused outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefuseReason {
@@ -405,6 +434,13 @@ pub enum RefuseReason {
     IdenticalRepeatWithoutOwnVoicedSegment,
     /// A previous positive no-speech receipt covers the entire candidate pin.
     ConfirmedNoSpeech,
+    /// Silero observed the word's span and its surroundings and heard no
+    /// speech within the near radius. `distance_ms` is the distance to the
+    /// nearest speech it did hear; `None` when it heard none in the epoch.
+    NoSpeechNearSpan {
+        silence: SilenceUnderSpan,
+        distance_ms: Option<u32>,
+    },
 }
 
 impl RefuseReason {
@@ -427,6 +463,7 @@ impl RefuseReason {
                 "identical_repeat_without_own_voiced_segment"
             }
             Self::ConfirmedNoSpeech => "confirmed_no_speech",
+            Self::NoSpeechNearSpan { .. } => "no_speech_near_span",
         }
     }
 }
