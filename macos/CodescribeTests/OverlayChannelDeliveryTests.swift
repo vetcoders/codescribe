@@ -271,7 +271,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     var projection = OverlayChannelDelivery.Bus()
-    let path = "/Users/founder/.codescribe/assets/inline_0549d6ff.png"
+    let path = "/Users/tester/.codescribe/assets/inline_0549d6ff.png"
     let text =
       "Dodaj do listy\n[attachment] w prozie zostaje, to tekst Foundera\n"
       + "[attachment] inline_0549d6ff.png (image/png, 31113 bytes): \(path)"
