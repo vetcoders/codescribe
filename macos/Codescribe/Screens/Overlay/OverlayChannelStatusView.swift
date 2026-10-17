@@ -196,6 +196,21 @@ struct OverlayMicrophoneGlyph: View {
   }
 }
 
+/// A bound channel whose reader process is gone keeps its row, greyed and
+/// faded, so the roster shows at a glance who cannot hear (Maciej,
+/// 2026-10-17: "takie sesje na starcie dawać od razu wyszarzonymi"). The
+/// microphone sleeps; the cross still archives it; recorded replies still play.
+struct OverlayDisconnectedRowDim: ViewModifier {
+  static let opacity: Double = 0.45
+  let disconnected: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .opacity(disconnected ? Self.opacity : 1)
+      .grayscale(disconnected ? 1 : 0)
+  }
+}
+
 /// The drawer's clickable rows answer the pointer the way the tray's plain
 /// rows do: the whole row is the hover target, a raised wash appears on
 /// enter, and leave clears it. The wash does not hit-test, so the row's own
@@ -780,7 +795,8 @@ struct OverlayChannelStatusView: View {
           open: open, muted: mutedChannels[channel.channel],
           microphoneEnabled: !unavailable && onToggleChannel != nil
             && !pendingToggleChannels.contains(channel.channel)
-            && Self.toggleDigit(for: channel.channel) != nil,
+            && Self.toggleDigit(for: channel.channel) != nil
+            && !hasDeadFollower(channel),
           playbackEnabled: onTogglePlayback != nil
             && !pendingMuteChannels.contains(channel.channel),
           palette: palette, onMicrophone: { toggle(channel) },
@@ -824,6 +840,7 @@ struct OverlayChannelStatusView: View {
         enabled: conversation != nil && onSelectConversation != nil)
     )
     .help(tooltip)
+    .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
     .modifier(
@@ -1307,6 +1324,7 @@ struct OverlayChannelStatusView: View {
       dot: channel.map { statusDotKind(for: $0) } ?? .received,
       quietSymbol: channel?.broadcastPolicy.statusSymbol,
       isBroadcast: conversation.channel == "0",
+      disconnected: channel.map(hasDeadFollower) ?? false,
       controls: pillControls(for: conversation, channel: channel))
   }
 
@@ -1320,12 +1338,15 @@ struct OverlayChannelStatusView: View {
     let id = conversation.channel
     let digit = Self.toggleDigit(for: id)
     let broadcast = id == "0"
+    // A dead reader cannot be spoken to; its recorded replies still play.
+    let disconnected = channel.map(hasDeadFollower) ?? false
     return OverlayAgentPillEntry.Controls(
       channel: id,
       open: channel.map { isOpen($0) } ?? (hudStates[id]?.open == true),
       muted: mutedChannels[id],
       microphoneEnabled: !unavailable && onToggleChannel != nil && digit != nil
-        && !pendingToggleChannels.contains(id) && (!broadcast || hudStates[id] != nil),
+        && !pendingToggleChannels.contains(id) && (!broadcast || hudStates[id] != nil)
+        && !disconnected,
       playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(id),
       broadcast: broadcast,
       speaking: conversation.replySpeaking,
@@ -1378,6 +1399,9 @@ struct OverlayAgentPillEntry: Identifiable {
   /// Slashed-antenna symbol when broadcasts do not wake this agent.
   let quietSymbol: String?
   let isBroadcast: Bool
+  /// The roster keeps this channel's binding but its reader process is gone
+  /// (the shape a restarted host leaves): the row dims and its microphone sleeps.
+  var disconnected: Bool = false
   /// The row's microphone and speaker; nil only for the transcription entry.
   var controls: Controls? = nil
 
@@ -1544,6 +1568,11 @@ struct OverlayAgentPillStack: View {
     .buttonStyle(.plain)
     .csFocusOutline()
     .modifier(OverlayNamePillGlass(interactive: true))
+    .help(
+      entry.disconnected
+        ? String(localized: "Disconnected")
+        : String(localized: "View conversation without changing the microphone")
+    )
     .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
     HStack(spacing: 6) {
       if let controls = entry.controls {
@@ -1560,6 +1589,7 @@ struct OverlayAgentPillStack: View {
       }
       pill
     }
+    .modifier(OverlayDisconnectedRowDim(disconnected: entry.disconnected))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
     .modifier(
