@@ -337,6 +337,51 @@ This mechanism has demonstrated delivery during an active turn. It does not
 establish wakeup after a final answer. Report that distinction and keep an
 active listening turn open when post-final wakeup is unavailable.
 
+### Codex: the one form that works
+
+The Founder's tests in Codex (Maciej, 2026-10-18) found exactly one working
+form: start the reader with `tty: true`, and start it and read its terminal
+inside **one** `functions.exec` cell that then calls `yield_control()`.
+
+```js
+// @exec: {"yield_time_ms": 2000, "max_output_tokens": 2000}
+const start = await tools.exec_command({
+  cmd: "exec cs-bus --watch --until-event --provider codex --session THREAD_ID",
+  tty: true, yield_time_ms: 1000, max_output_tokens: 5000
+});
+if (!start.session_id) {
+  notify({kind: "codescribe_until_event_completion", ...start});
+} else {
+  const sid = start.session_id;
+  text({mode: "monitor-until-event", session_id: sid, read_pending_polling: false});
+  await yield_control();
+  while (true) {
+    const r = await tools.write_stdin({
+      session_id: sid, chars: "", yield_time_ms: 25000, max_output_tokens: 5000
+    });
+    if (r.output || !r.session_id) {
+      notify({kind: "codescribe_until_event_completion", tool_session_id: sid,
+              output: r.output, exit_code: r.exit_code, still_running: Boolean(r.session_id)});
+    }
+    if (!r.session_id) break;
+  }
+}
+```
+
+- Only this cell consumes that terminal session. Keep the exec cell ID and
+  the `exec_command` session ID apart.
+- No `--max-wait`. The 25 s `write_stdin` is a blocking read of the tool's
+  output, not a model turn and not a `--read-pending` poll.
+- If the start already returns `mailbox_ready`, handle the pending message,
+  then rearm.
+- On `mailbox_ready`: read the owned mailbox, ACK the exact IDs at once,
+  drain, consume the finished cell with `functions.wait`, and arm exactly one
+  new cell.
+
+Those tests ran with `codex-queue` still on for the same lease, so it is not
+yet isolated which mechanism woke an idle Codex after a final answer.
+Reattaching with `--wakeup off` for one test isolates it.
+
 ## Acknowledge conversation receipt
 
 The session-scoped helper retains emitted envelopes until explicit receipt.
