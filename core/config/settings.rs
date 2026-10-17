@@ -290,6 +290,10 @@ pub struct UserSettings {
     /// Keep a completed Dictation take visible until explicitly closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_keep_visible_between_takes: Option<bool>,
+    /// Seconds before an expanded overlay folds. `Some(0)` means never.
+    /// Absence is the 10 s default. The bridge accepts only 0, 5, 10, 30 and 60.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_auto_fold_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -1654,6 +1658,8 @@ struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_keep_visible_between_takes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_auto_fold_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_indicator: Option<bool>,
@@ -1986,6 +1992,7 @@ impl UserSettings {
                 overlay_expanded_by_default: self.overlay_expanded_by_default,
                 show_transcript_at_take_start: self.show_transcript_at_take_start,
                 overlay_keep_visible_between_takes: self.overlay_keep_visible_between_takes,
+                overlay_auto_fold_seconds: self.overlay_auto_fold_seconds,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -2105,6 +2112,7 @@ impl UserSettings {
             overlay_expanded_by_default: copy!(v2.ui, overlay_expanded_by_default),
             show_transcript_at_take_start: copy!(v2.ui, show_transcript_at_take_start),
             overlay_keep_visible_between_takes: copy!(v2.ui, overlay_keep_visible_between_takes),
+            overlay_auto_fold_seconds: copy!(v2.ui, overlay_auto_fold_seconds),
             hold_indicator: copy!(v2.ui, hold_indicator),
             hold_badge_size: copy!(v2.ui, hold_badge_size),
             deferred_insert_shortcut: cloned!(v2.interaction, deferred_insert_shortcut),
@@ -4792,6 +4800,44 @@ mod tests {
             fs::metadata(&path).expect("reloaded pin metadata").ino(),
             saved_inode
         );
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_auto_fold_seconds_roundtrips_in_v2_ui_section() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().overlay_auto_fold_seconds, None);
+        for seconds in [10_u32, 0] {
+            let settings = UserSettings {
+                overlay_auto_fold_seconds: Some(seconds),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist auto-fold");
+            let path = UserSettings::settings_path();
+            let first = fs::read(&path).expect("read saved auto-fold");
+            let saved_inode = fs::metadata(&path).expect("saved auto-fold metadata").ino();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&first).expect("parse saved auto-fold");
+            assert_eq!(saved["ui"]["overlay_auto_fold_seconds"], seconds);
+            assert!(saved.get("overlay_auto_fold_seconds").is_none());
+            assert_eq!(
+                UserSettings::load().overlay_auto_fold_seconds,
+                Some(seconds)
+            );
+            assert_eq!(
+                UserSettings::load().overlay_auto_fold_seconds,
+                Some(seconds)
+            );
+            assert_eq!(fs::read(&path).expect("read after second load"), first);
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("reloaded auto-fold metadata")
+                    .ino(),
+                saved_inode
+            );
+        }
     }
 
     /// Same section contract for the tray's starting lane.

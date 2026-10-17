@@ -18,6 +18,7 @@
 # Unit symbols — the same in every language.
 %@ Hz
 %@ s
+%lld s
 %lld ms
 %@ · %@ MB
 %@ · %@ / %@ MB
