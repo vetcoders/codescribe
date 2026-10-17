@@ -36,13 +36,15 @@ pub use config::{
     HotkeyRuntimeConfig, ModeHotkeyBindings, apply_hotkey_config, apply_hotkey_runtime_config,
     get_deferred_insert_shortcut, get_double_tap_interval_ms, get_exclusive_mode,
     get_hold_arm_modifier, get_hold_start_delay_ms, get_hotkey_runtime_config,
-    get_mode_hotkey_bindings, set_deferred_insert_shortcut, set_double_tap_interval_ms,
-    set_exclusive_mode, set_hold_arm_modifier, set_hold_start_delay_ms, set_mode_hotkey_bindings,
+    get_mode_hotkey_bindings, set_agent_gesture_capture, set_deferred_insert_shortcut,
+    set_double_tap_interval_ms, set_exclusive_mode, set_hold_arm_modifier, set_hold_start_delay_ms,
+    set_mode_hotkey_bindings,
 };
 pub use detector::{
-    DoubleTapBlockReason, DoubleTapGesture, HoldAction, HoldMode, HotkeyDetector,
-    HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey, ModifierFlags,
-    arm_ignored_diagnostic_line, blocked_double_tap_diagnostic_line, mode_binding_reachable,
+    AgentGestureInput, DoubleTapBlockReason, DoubleTapGesture, HoldAction, HoldMode,
+    HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey,
+    ModifierFlags, arm_ignored_diagnostic_line, blocked_double_tap_diagnostic_line,
+    mode_binding_reachable,
 };
 pub use manager::{
     HotkeyManager, are_hotkeys_enabled, disable_hotkeys, enable_hotkeys,
