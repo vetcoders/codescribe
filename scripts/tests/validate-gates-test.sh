@@ -49,7 +49,8 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     # A whitelist prevents accidental tool escalation even if the validator drifts.
     bin_dir = base / 'bin'
     bin_dir.mkdir()
-    for name in ('sed', 'sort', 'grep', 'find', 'cat', 'bash', 'mktemp', 'rm', 'wc', 'tr', 'dirname'):
+    for name in ('sed', 'sort', 'grep', 'find', 'cat', 'bash', 'mktemp', 'mkdir', 'rm', 'wc', 'tr',
+                 'dirname'):
         os.symlink('/bin/bash' if name == 'bash' else shutil.which(name), bin_dir / name)
     os.symlink(sys.executable, bin_dir / 'python3')
     env = dict(PATH=str(bin_dir), LC_ALL='C', TMPDIR=str(base))
@@ -238,8 +239,13 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
             make_bin = str(native)
     wiring = base / 'wiring'
     wiring.mkdir()
+    # The real Makefile always exports CARGO_TARGET_DIR, and verify materializes
+    # it first (the structural verifier resolves an explicit target strictly).
+    wiring_target = base / 'wiring-target'
     setup = make_source.split('define TEST_DATA_DIR_SETUP\n', 1)[1].split('\nendef', 1)[0]
-    (wiring / 'Makefile').write_text('SHELL := /bin/bash\ndefine TEST_DATA_DIR_SETUP\n' + setup
+    (wiring / 'Makefile').write_text('SHELL := /bin/bash\n'
+                                  + f'export CARGO_TARGET_DIR := {wiring_target}\n'
+                                  + 'define TEST_DATA_DIR_SETUP\n' + setup
                                   + '\nendef\n' + target(make_source, 'verify'))
     fake = base / 'fake'
     fake.mkdir()
@@ -259,6 +265,7 @@ sys.exit(0)
     for harness_exit in (0, 47):
         calls_path = evidence / f'verify-{harness_exit}.calls'
         calls_path.write_text('')
+        shutil.rmtree(wiring_target, ignore_errors=True)
         result = subprocess.run([make_bin, '-f', str(wiring / 'Makefile'), 'verify'], cwd=wiring,
                                 env=dict(env, PATH=str(fake) + ':' + str(bin_dir),
                                          CALLS=str(calls_path), HARNESS_EXIT=str(harness_exit)),
@@ -267,6 +274,7 @@ sys.exit(0)
         (evidence / f'verify-{harness_exit}.stderr').write_text(result.stderr)
         (evidence / f'verify-{harness_exit}.exit').write_text(str(result.returncode) + '\n')
         calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+        assert wiring_target.is_dir(), result
         assert calls.count(['bash', 'scripts/tests/validate-gates-test.sh']) == 1, calls
         assert (result.returncode == 0) == (harness_exit == 0), result
         assert ('verify: hermetic gate passed.' in result.stdout) == (harness_exit == 0), result
