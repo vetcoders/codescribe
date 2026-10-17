@@ -1114,9 +1114,16 @@ check:
 # passed" and returned 0 over `error: test failed, to rerun pass -p
 # codescribe-ffi --lib` — the first run of this gate produced exactly the lie it
 # was written to remove. Any line added below must stay in the `-e` chain.
+#
+# The structural verifier refuses an explicit CARGO_TARGET_DIR that does not
+# exist yet (a typo or a redirect must never be created on its behalf), and this
+# Makefile always exports one. A fresh clone has no target directory, so the
+# gate materializes the target it exports before the verifier reads it;
+# otherwise every live NeutralAstTests case fails on a clean runner.
 verify:
 	@set -eo pipefail; \
 	$(TEST_DATA_DIR_SETUP); \
+	mkdir -p "$(CARGO_TARGET_DIR)"; \
 	echo "=== Verify (structural verifier instrument) ==="; \
 	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
 	echo "=== Verify (live Loctree acoustic throne receipt) ==="; \
@@ -1190,7 +1197,9 @@ verify:
 	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
 	echo "verify: (parity bars, Swift front-end suite, host smoke, real-API e2e)."
 
+# Same exported target as `verify`, same reason to materialize it first.
 test-structural-verifier:
+	@mkdir -p "$(CARGO_TARGET_DIR)"
 	@python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py
 
 test-transcript-bus-path:
