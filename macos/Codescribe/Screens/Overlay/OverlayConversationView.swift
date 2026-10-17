@@ -444,7 +444,16 @@ struct OverlayConversationView: View {
     if recipient.acknowledged { return String(localized: "Read") }
     if recipient.accepted { return String(localized: "Queue accepted") }
     if recipient.queued { return String(localized: "Queued") }
+    if recipient.broadcastSkipped == true { return skippedBroadcastText }
     return String(localized: "Addressed")
+  }
+
+  /// The follower's receipt for a broadcast it skipped: the agent was off
+  /// channel 0 when this delivery reached it.
+  static var skippedBroadcastText: String {
+    String(
+      localized: "Skipped: off channel 0",
+      comment: "Agent row receipt: a broadcast skipped because the agent is off channel 0")
   }
 
   private func submit() {
