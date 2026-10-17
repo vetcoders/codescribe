@@ -157,7 +157,9 @@ nothing: it starts no server, creates no directory, reads no mailbox, opens no
 key backend and contacts no network. Only a starting connection creates an
 absent `state_dir`. The namespace is a hash, not a secret. Use it to compare an
 old and a new configuration before switching one over, and to confirm that the
-key namespace is unchanged and the existing directory is found.
+key namespace is unchanged and the existing directory is found. The output
+names a real lease and local paths: keep it on the machine, out of repositories
+and shared reports.
 
 `--check-scope` is exclusive with the callback modes below and with a native key
 binding.
