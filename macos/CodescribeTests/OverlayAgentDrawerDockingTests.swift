@@ -120,14 +120,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
       conversations: [broadcast, lena, astra], selectedConversationID: lena.id,
       unreadCounts: [astra.id: 4], onSelectConversation: { _ in })
-    // Production wires the transcription target; the pill exists only with it.
-    var stackView = view
-    stackView.onShowTranscription = {}
-
-    let entries = stackView.pillEntries
+    let entries = view.pillEntries
     XCTAssertEqual(
-      entries.map(\.id), ["transcription", broadcast.id, astra.id],
-      "transcription first, then the roster order, never the selected conversation")
+      entries.map(\.id), [broadcast.id, astra.id],
+      "0 · All first, then the roster order; never the selected one, never a transcription row")
 
     let zero = try XCTUnwrap(entries.first { $0.id == broadcast.id })
     XCTAssertEqual(zero.title, String(localized: "0 · All"))
@@ -137,8 +133,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(agent.descriptor, "codex", "the pill shows the provider descriptor")
     XCTAssertEqual(agent.unread, 4)
     XCTAssertNotNil(agent.quietSymbol, "a quiet broadcast policy marks the pill")
-    let transcription = try XCTUnwrap(entries.first { $0.id == "transcription" })
-    XCTAssertNil(transcription.conversationID, "the transcription pill selects nil")
+    XCTAssertEqual(zero.dot, .broadcast, "the shared channel wears the antenna, not a delivery dot")
   }
 
   func testPillSelectionChangesTheConversationAndClosesTheStack() throws {

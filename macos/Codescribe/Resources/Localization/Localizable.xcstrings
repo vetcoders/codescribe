@@ -8854,16 +8854,6 @@
         }
       }
     },
-    "Live from the microphone" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Na żywo z mikrofonu"
-          }
-        }
-      }
-    },
     "Live preview" : {
       "localizations" : {
         "pl" : {

@@ -60,9 +60,9 @@ final class OverlayAgentPillRowsTests: XCTestCase {
       id: owner.id, channel: channel, name: name, owner: owner, messages: [reply])
   }
 
-  private func hud(session: String, open: Bool) -> OverlayChannelHudProjection {
+  private func hud(session: String, open: Bool, alive: Bool = true) -> OverlayChannelHudProjection {
     OverlayChannelHudProjection(
-      open: open, loud: false, autosealDeadline: nil, followerAlive: true,
+      open: open, loud: false, autosealDeadline: nil, followerAlive: alive,
       provider: "codex", providerSessionID: session)
   }
 
@@ -106,16 +106,15 @@ final class OverlayAgentPillRowsTests: XCTestCase {
       pendingToggleChannels: ["3"],
       conversations: [roster.broadcast, roster.lena, roster.astra],
       selectedConversationID: nil, unreadCounts: [:], onSelectConversation: { _ in })
-    view.onShowTranscription = {}
     view.mutedChannels = ["0": false, "2": true]
     view.pendingMuteChannels = ["0"]
     view.onTogglePlayback = { playbackToggles.append($0) }
 
     let entries = view.pillEntries
     XCTAssertEqual(
-      entries.map(\.id), ["transcription", roster.broadcast.id, roster.lena.id, roster.astra.id])
-    let transcription = try XCTUnwrap(entries.first { $0.id == "transcription" })
-    XCTAssertNil(transcription.controls, "the transcription row has no microphone or speaker")
+      entries.map(\.id), [roster.broadcast.id, roster.lena.id, roster.astra.id],
+      "0 · All leads the agents; transcription is the header's, not a row")
+    XCTAssertEqual(entries.first?.dot, .broadcast, "the shared channel wears the antenna")
 
     let lena = try XCTUnwrap(entries.first { $0.id == roster.lena.id }?.controls)
     XCTAssertEqual(lena.channel, "2")
@@ -148,6 +147,61 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     all.onPlayback()
     XCTAssertEqual(microphoneToggles, [2, 0])
     XCTAssertEqual(playbackToggles, ["2", "0"])
+  }
+
+  // MARK: - Disconnected readers: greyed from the first frame, microphone asleep
+
+  func testDisconnectedReaderDimsItsPillAndSleepsItsMicrophone() throws {
+    let roster = try roster()
+    var view = OverlayChannelStatusView(
+      channels: roster.channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "0": hud(session: "all", open: false),
+        "2": hud(session: "lena-session", open: false, alive: false),
+        "3": hud(session: "astra-session", open: false),
+      ],
+      onToggleChannel: { _ in },
+      pendingToggleChannels: [],
+      conversations: [roster.broadcast, roster.lena, roster.astra],
+      selectedConversationID: nil, unreadCounts: [:], onSelectConversation: { _ in })
+    view.onTogglePlayback = { _ in }
+
+    let entries = view.pillEntries
+    let lena = try XCTUnwrap(entries.first { $0.id == roster.lena.id })
+    XCTAssertTrue(lena.disconnected, "a binding whose reader died is greyed from the first frame")
+    XCTAssertEqual(lena.dot, .sleeping)
+    let lenaControls = lena.controls
+    XCTAssertFalse(lenaControls.microphoneEnabled, "nobody reads a dead reader's channel")
+    XCTAssertTrue(lenaControls.playbackEnabled, "its recorded replies still play")
+
+    let astra = try XCTUnwrap(entries.first { $0.id == roster.astra.id })
+    XCTAssertFalse(astra.disconnected, "a live reader keeps its colour")
+    XCTAssertTrue(astra.controls.microphoneEnabled)
+    let all = try XCTUnwrap(entries.first { $0.id == roster.broadcast.id })
+    XCTAssertFalse(all.disconnected, "0 · All has no reader of its own")
+  }
+
+  func testBothRosterShapesDimTheDisconnectedRowAndSleepItsMicrophone() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let modifier = try section(
+      of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
+    XCTAssertTrue(modifier.contains(".opacity(disconnected ? Self.opacity : 1)"))
+    XCTAssertTrue(modifier.contains(".grayscale(disconnected ? 1 : 0)"))
+
+    let docked = try section(
+      of: source, from: "private func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertTrue(
+      docked.contains("&& !hasDeadFollower(channel),"),
+      "the docked row's microphone sleeps for a dead reader")
+    XCTAssertTrue(
+      docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
+      "the docked row dims as one unit")
+
+    let pills = try section(
+      of: source, from: "private func pillEntryView(", to: "private func policyMembers(")
+    XCTAssertTrue(
+      pills.contains("OverlayDisconnectedRowDim(disconnected: entry.disconnected)"),
+      "the pill row dims its controls and pill together")
   }
 
   func testPillRowControlsFollowTheMonitorRowsAvailabilityRules() throws {
@@ -184,7 +238,8 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     for entry in silent.pillEntries {
       let controls = try XCTUnwrap(entry.controls, entry.id)
       XCTAssertFalse(controls.playbackEnabled, "\(entry.id): no playback handler, no speaker")
-      XCTAssertTrue(controls.microphoneEnabled, "\(entry.id): the microphone does not depend on playback")
+      XCTAssertTrue(
+        controls.microphoneEnabled, "\(entry.id): the microphone does not depend on playback")
     }
 
     // The bridge is unavailable: no microphone anywhere, like the docked rows.
@@ -231,8 +286,11 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     XCTAssertTrue(
       stack.contains(".accessibilityIdentifier(\"overlay-agent-pill-row-\\(entry.id)\")"),
       "each row is one accessibility element")
-    XCTAssertTrue(stack.contains("if let controls = entry.controls {"))
-    XCTAssertTrue(stack.contains("OverlayAgentAudioControls("), "the row reuses the card's controls")
+    XCTAssertTrue(
+      stack.contains("let controls = entry.controls"),
+      "every row has controls: the stack holds only conversations")
+    XCTAssertTrue(
+      stack.contains("OverlayAgentAudioControls("), "the row reuses the card's controls")
     for wiring in [
       "open: controls.open", "muted: controls.muted",
       "microphoneEnabled: controls.microphoneEnabled",
@@ -244,7 +302,8 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     }
     XCTAssertTrue(stack.contains(".fixedSize()"), "the controls keep their intrinsic width")
     XCTAssertTrue(
-      stack.contains(".accessibilityIdentifier(\"overlay-agent-pill-controls-\\(controls.channel)\")"),
+      stack.contains(
+        ".accessibilityIdentifier(\"overlay-agent-pill-controls-\\(controls.channel)\")"),
       "the controls group is addressed by channel digit")
     XCTAssertFalse(
       stack.contains("overlay-channel-toggle-"),
@@ -259,8 +318,10 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     let entry = try section(
       of: roster, from: "struct OverlayAgentPillEntry: Identifiable", to: "struct Controls {")
     XCTAssertTrue(
-      entry.contains("var controls: Controls? = nil"),
-      "controls are the entry's last, optional field: the transcription entry omits them")
+      entry.contains("let controls: Controls"),
+      "controls are a required field: transcription left the list (Maciej, 2026-10-17)")
+    XCTAssertFalse(
+      roster.contains("\"transcription\""), "no transcription row survives in the roster view")
   }
 
   func testExpandedRowMirrorsTheHeaderWithControlsBeforeThePill() throws {
@@ -273,7 +334,8 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     // pill and the controls under the controls. No pixel assertions.
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let stack = try tail(of: roster, from: "struct OverlayAgentPillStack: View")
-    let body = try section(of: stack, from: "var body: some View {", to: "private func pillEntryView")
+    let body = try section(
+      of: stack, from: "var body: some View {", to: "private func pillEntryView")
     XCTAssertTrue(
       body.contains("VStack(alignment: .trailing, spacing: 6)"),
       "the stack aligns its rows to the trailing edge, under the name pill")
@@ -297,7 +359,8 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     let mentions = conversation.components(separatedBy: "agentPillStack").count - 1
     XCTAssertEqual(
       mentions, 2,
-      "the stack is declared once and mounted once; a modifier keyed on it (dim, disable, catcher) is a regression")
+      "the stack is declared once and mounted once; a modifier keyed on it (dim, disable, catcher) is a regression"
+    )
     XCTAssertNil(
       conversation.range(
         of: #"(opacity|scrollDisabled|allowsHitTesting|disabled)\([^)]*agentPillStack"#,

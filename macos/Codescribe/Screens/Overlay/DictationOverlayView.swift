@@ -980,7 +980,6 @@ struct DictationOverlayView: View {
       && (state.showsAgentMonitor || state.selectedConversationID != nil)
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
-    view.onShowTranscription = state.showTranscription
     view.playbackError = state.playbackPreferenceError
     view.archiveCandidates = Dictionary(
       uniqueKeysWithValues: state.visibleChannelRows.compactMap {
