@@ -700,6 +700,15 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .bottom)
     }
+    // The canvas is pinned to the offered window width and anchored leading.
+    // Mid-morph a sibling can be wider than the window (the bottom chrome's
+    // fixed actions capsule, ~320 pt in a 236 pt frame); a centred ZStack then
+    // grew to that width and the parent centred it, pushing the header, body
+    // and chrome left of the window by half the excess (dragon gate
+    // 2026-10-17, OverlayHeaderMorphTests mini→midi @25 %, x -26). Same
+    // contract as the header row: overflow only to the trailing side, where
+    // the window clips it.
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
         // The container claims this entire bar and its vertical margin before
