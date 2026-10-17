@@ -254,7 +254,6 @@ class RemoteQueuePolicyTests(unittest.TestCase):
         self.assertEqual(self.watch([old]), [])
 
     def test_draft_and_revision_ids_never_enter_periodic_ack_checks(self):
-        from unittest import mock
         drafts = [self.payload(kind=kind) for kind in D.DRAFT_KINDS]
         terminal = self.payload(1)
         self.state(drafts + [terminal])
