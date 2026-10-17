@@ -19,11 +19,12 @@ until zero plus one extra read. Then return to the event-driven listener.
 ## Channel 0 reception
 
 Change reception during a session with `cs-bus --broadcast on|quiet|off --provider PROVIDER --session SESSION [--bus BUS]`; omission of `--bus` uses the
-validated lease's bus. `on` is the default. `quiet` retains broadcasts in the
+validated lease's bus. `on` is the default. `quiet` (Steer) retains all messages in the
 mailbox without waking the agent: on the next natural turn, explicitly read
 `--read-pending` and ACK only complete returned messages, even if no bell rang.
-`off` records a skip instead of queueing new broadcasts. Direct messages still
-wake normally. The policy file is reread without restarting or reattaching.
+`off` records a skip instead of queueing new broadcasts; direct and peer messages
+still wake in this mode. `quiet` also suppresses direct and peer wakeups. The
+policy file is reread without restarting or reattaching.
 
 ## Codex native queue
 
