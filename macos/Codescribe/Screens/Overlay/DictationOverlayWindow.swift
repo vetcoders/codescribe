@@ -255,9 +255,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     if isKeyWindow, event.type == .keyDown,
       event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
       event.charactersIgnoringModifiers?.lowercased() == "c",
-      firstResponder?.responds(to: #selector(NSText.copy(_:))) != true
+      firstResponder?.responds(to: #selector(NSText.copy(_:))) != true,
+      NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
     {
-      return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+      return true
     }
     return super.performKeyEquivalent(with: event)
   }
