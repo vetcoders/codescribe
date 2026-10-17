@@ -207,6 +207,9 @@ pub struct UserSettings {
     /// Middle mouse button follows Fn. `None` keeps the default off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub middle_mouse_acts_as_fn: Option<bool>,
+    /// A middle click opens the agent chooser. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_mouse_agent_gesture: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1491,6 +1494,8 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     middle_mouse_acts_as_fn: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    middle_mouse_agent_gesture: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard_delay_ms: Option<u64>,
@@ -1760,6 +1765,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AGENT_CHANNEL_MODIFIER",
     "FN_TAP_TOGGLES_DICTATION",
     "MIDDLE_MOUSE_ACTS_AS_FN",
+    "MIDDLE_MOUSE_AGENT_GESTURE",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "PASTE_MODE",
@@ -1876,6 +1882,7 @@ typed_setting_writes! {
         "HOLD_EXCLUSIVE" => hold_exclusive,
         "FN_TAP_TOGGLES_DICTATION" => fn_tap_toggles_dictation,
         "MIDDLE_MOUSE_ACTS_AS_FN" => middle_mouse_acts_as_fn,
+        "MIDDLE_MOUSE_AGENT_GESTURE" => middle_mouse_agent_gesture,
         "USE_LOCAL_STT" => use_local_stt,
         "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
         "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
@@ -1936,6 +1943,7 @@ impl UserSettings {
                 channel_modifier: self.channel_modifier.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
+                middle_mouse_agent_gesture: self.middle_mouse_agent_gesture,
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
@@ -2095,6 +2103,7 @@ impl UserSettings {
             channel_modifier: cloned!(v2.interaction, channel_modifier),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
+            middle_mouse_agent_gesture: copy!(v2.interaction, middle_mouse_agent_gesture),
             mode_bindings: cloned!(v2.interaction, mode_bindings),
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),

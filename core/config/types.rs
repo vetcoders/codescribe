@@ -637,6 +637,11 @@ pub struct Config {
     #[serde(default)]
     pub middle_mouse_acts_as_fn: bool,
 
+    /// A short middle click opens the agent chooser in the overlay; a hold
+    /// still dictates when [`Self::middle_mouse_acts_as_fn`] is on. Off until chosen.
+    #[serde(default)]
+    pub middle_mouse_agent_gesture: bool,
+
     // ===== Language =====
     /// Whisper language preference
     #[serde(default)]
@@ -843,6 +848,10 @@ impl std::fmt::Debug for Config {
             .field("channel_modifier", &self.channel_modifier)
             .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
             .field("middle_mouse_acts_as_fn", &self.middle_mouse_acts_as_fn)
+            .field(
+                "middle_mouse_agent_gesture",
+                &self.middle_mouse_agent_gesture,
+            )
             .field("whisper_language", &self.whisper_language)
             .field("ai_formatting_enabled", &self.ai_formatting_enabled)
             .field("paste_mode", &self.paste_mode)
@@ -918,6 +927,7 @@ impl Default for Config {
             channel_modifier: ChannelModifier::default(),
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
+            middle_mouse_agent_gesture: false,
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             paste_mode: PasteMode::default(),
