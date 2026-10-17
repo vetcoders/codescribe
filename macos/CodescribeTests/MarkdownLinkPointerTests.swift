@@ -61,7 +61,7 @@ final class MarkdownLinkPointerTests: XCTestCase {
   /// without a sound or a sign. A missing file is refused, never handed on.
   func testMissingLocalFileIsRefusedAndWorkspaceRefusalIsReported() {
     var handed: [URL] = []
-    let missing = URL(fileURLWithPath: "/Users/someone-else/.vibecrafted/reports/handoff.md")
+    let missing = URL(fileURLWithPath: "/Users/tester/.vibecrafted/reports/handoff.md")
     XCTAssertEqual(
       ConversationLocalFileLinks.open(
         missing, fileExists: { _ in false },
