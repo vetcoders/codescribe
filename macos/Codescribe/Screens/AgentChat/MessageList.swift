@@ -908,6 +908,11 @@ struct AttachmentChip: View {
 /// fallback when the source path is gone (restored threads), plus Reveal in
 /// Finder / Copy path / Open with default app.
 struct AttachmentPreviewSheet: View {
+  /// Margin between the image and the card's rounded edge. At least the card
+  /// radius, so an image's own corners (overlay screenshots carry 22 pt ones)
+  /// never meet the card's corner arc and show a wedge of card under them.
+  static let imageInset: CGFloat = 14
+
   let attachment: MessageAttachment
   var onRemove: (() -> Void)? = nil
   @Environment(\.dismiss) private var dismiss
@@ -951,6 +956,7 @@ struct AttachmentPreviewSheet: View {
                 width: max(240, image.size.width * zoom),
                 height: max(160, image.size.height * zoom)
               )
+              .padding(Self.imageInset)
               .frame(maxWidth: .infinity, maxHeight: .infinity)
           }
           .frame(minHeight: 280, maxHeight: 480)
