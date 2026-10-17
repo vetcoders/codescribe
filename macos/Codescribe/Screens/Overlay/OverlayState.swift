@@ -479,9 +479,9 @@ final class OverlayState {
   /// One Undo/Redo/version pick in flight; a second is refused until the
   /// projection that answers it arrives.
   private(set) var pendingNavigation: OverlayPendingNavigation?
-  /// The live Retranscribe pass running for the projected take, if any. A
-  /// new take drops it; a finishing pass clears only its own ticket.
-  private var retranscribeTicket: UInt64?
+  /// One live pass owns its ticket until both the commit ACK and its
+  /// authenticated projection arrive. A new take drops the whole ticket.
+  private var retranscribeTicket: OverlayRetranscribeTicket?
   @ObservationIgnored private var retranscribeTickets: UInt64 = 0
   var retranscribePending: Bool { retranscribeTicket != nil }
   /// A transcript reopened from history. While set it owns the canvas and
@@ -2881,6 +2881,17 @@ final class OverlayState {
     relayRetranscribeIntent(pass: pass)
   }
 
+  private struct OverlayRetranscribeTicket {
+    let id: UInt64
+    let generation: UInt64
+    let sessionId: String
+    let sourceRevision: UInt64
+    let captureEpoch: UInt64
+    let engineLabel: String
+    var acknowledgment: CsUserRevisionResult?
+    var projectedReceipt: CsManualDocumentRevisionReceipt?
+  }
+
   private func relayRetranscribeIntent(pass: OverlayRetranscribePass) {
     if archivedTranscript != nil {
       retranscribeArchivedTranscript(pass: pass)
@@ -2924,63 +2935,59 @@ final class OverlayState {
     showFooterNotice(running, persists: true)
     retranscribeTickets &+= 1
     let ticket = retranscribeTickets
-    retranscribeTicket = ticket
+    retranscribeTicket = OverlayRetranscribeTicket(
+      id: ticket, generation: generation, sessionId: projection.sessionId,
+      sourceRevision: projection.reducerRevision, captureEpoch: projection.captureEpoch,
+      engineLabel: passEngine)
     Task { @MainActor [weak self] in
       defer {
-        if self?.retranscribeTicket == ticket { self?.retranscribeTicket = nil }
+        if let self, let pending = self.retranscribeTicket,
+          pending.id == ticket, pending.acknowledgment == nil
+        {
+          self.retranscribeTicket = nil
+        }
       }
-      guard let self, generation == self.captureGeneration else { return }
+      guard let self, self.ownsRetranscription(ticket) else { return }
       do {
         let result = try await engine.transcribeTake(
           sessionId: projection.sessionId, path: prefixedPath)
-        guard generation == self.captureGeneration,
-          self.latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
+        guard self.ownsRetranscription(ticket) else { return }
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+          self.retranscribeTicket = nil
           self.engineChip = previousChip
           self.presentActionFailure(
             String(
               localized: "The \(passEngine) pass returned no text",
               comment: "The placeholder is the name of the engine that ran the pass"),
             notice: String(localized: "retranscribe returned no text"))
+          self.restartAutoHideCountdown()
           return
         }
-        if !text.isEmpty {
-          if self.latestTranscriptProjection?.sessionId == projection.sessionId {
-            // Rust records the pass as a new step of the take's linear
-            // history, so Undo returns to the version it replaced. The CAS
-            // is the revision this pass started from: an Undo or another
-            // change in between refuses the result instead of stacking it.
-            let receipt = try await engine.commitRetranscribeRevision(
-              sessionId: projection.sessionId,
-              sourceRevision: projection.reducerRevision,
-              renderedText: text
-            )
-            guard generation == self.captureGeneration,
-              self.latestTranscriptProjection?.sessionId == projection.sessionId
-            else { return }
-            self.noteArchiveRefusal(receipt.archiveRefusal)
-          } else {
-            self.engineChip = previousChip
-            self.presentActionFailure(
-              String(localized: "A newer take replaced this overlay"),
-              notice: String(localized: "take changed"))
-            return
-          }
-          if self.mode == .noSpeech {
-            self.mode = .formatted
-          }
+        let receipt = try await engine.commitRetranscribeRevision(
+          sessionId: projection.sessionId,
+          sourceRevision: projection.reducerRevision,
+          renderedText: text)
+        guard self.ownsRetranscription(ticket) else { return }
+        guard receipt.sessionId == projection.sessionId,
+          receipt.sourceRevision == projection.reducerRevision,
+          receipt.sourceRevision < UInt64.max,
+          receipt.revision == receipt.sourceRevision + 1,
+          !receipt.provenanceReceipt.isEmpty
+        else {
+          self.retranscribeTicket = nil
+          self.engineChip = previousChip
+          self.presentActionFailure(
+            String(localized: "Retranscription revision receipt was inconsistent"),
+            notice: String(localized: "Retranscription failed"))
+          self.restartAutoHideCountdown()
+          return
         }
-        self.engineChip = passEngine
-        self.errorMessage = nil
-        self.errorDiagnosticDetail = nil
-        self.showFooterNotice(String(localized: "retranscribed"))
-        self.restartAutoHideCountdown()
+        self.retranscribeTicket?.acknowledgment = receipt
+        self.finishProjectedRetranscription()
       } catch {
-        guard generation == self.captureGeneration,
-          self.latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
+        guard self.ownsRetranscription(ticket) else { return }
+        self.retranscribeTicket = nil
         self.engineChip = previousChip
         let described = error.userFacingMessage
         self.presentActionFailure(
@@ -2996,6 +3003,71 @@ final class OverlayState {
         self.restartAutoHideCountdown()
       }
     }
+  }
+
+  private func ownsRetranscription(_ ticket: UInt64) -> Bool {
+    guard let pending = retranscribeTicket, pending.id == ticket else { return false }
+    return pending.generation == captureGeneration
+      && latestTranscriptProjection?.sessionId == pending.sessionId
+      && latestTranscriptProjection?.captureEpoch == pending.captureEpoch
+  }
+
+  /// The listener queues projections independently of the FFI continuation.
+  /// Remember the real receipt even when it reaches the canvas before its ACK.
+  private func observeRetranscriptionProjection(_ projection: CsTranscriptProjectionEvent) {
+    guard let pending = retranscribeTicket else { return }
+    guard ownsRetranscription(pending.id) else {
+      // This callback runs only after the projection was admitted as the
+      // current canvas. Its replacement cannot inherit an obsolete request.
+      retranscribeTicket = nil
+      return
+    }
+    guard projection.terminal,
+      projection.sessionId == pending.sessionId,
+      projection.captureEpoch == pending.captureEpoch,
+      let receipt = projection.documentRevisionReceipt,
+      receipt.provenance == .retranscribe,
+      receipt.sessionId == pending.sessionId,
+      receipt.sourceRevision == pending.sourceRevision,
+      receipt.sourceRevision < UInt64.max,
+      receipt.revision == receipt.sourceRevision + 1,
+      receipt.revision == projection.reducerRevision,
+      !receipt.receiptId.isEmpty,
+      receipt.renderedText.utf8.elementsEqual(projection.renderedText.utf8)
+    else { return }
+    if let epoch = receipt.captureEpoch {
+      guard epoch > 0, epoch == pending.captureEpoch,
+        receipt.captureReceiptId?.isEmpty == false
+      else { return }
+    } else {
+      guard !projection.acousticReceipts.isEmpty else { return }
+    }
+    retranscribeTicket?.projectedReceipt = receipt
+    finishProjectedRetranscription()
+  }
+
+  private func finishProjectedRetranscription() {
+    guard let pending = retranscribeTicket, ownsRetranscription(pending.id),
+      let acknowledgment = pending.acknowledgment,
+      let receipt = pending.projectedReceipt,
+      acknowledgment.sessionId == receipt.sessionId,
+      acknowledgment.sourceRevision == receipt.sourceRevision,
+      acknowledgment.revision == receipt.revision,
+      acknowledgment.provenanceReceipt == receipt.receiptId,
+      acknowledgment.renderedText.utf8.elementsEqual(receipt.renderedText.utf8)
+    else { return }
+    retranscribeTicket = nil
+    // A later accepted revision or an archive owns its own chrome. Completing
+    // this attempt must not overwrite that successor with an old success.
+    guard archivedTranscript == nil,
+      latestTranscriptProjection?.reducerRevision == acknowledgment.revision
+    else { return }
+    noteArchiveRefusal(acknowledgment.archiveRefusal)
+    engineChip = pending.engineLabel
+    errorMessage = nil
+    errorDiagnosticDetail = nil
+    showFooterNotice(String(localized: "retranscribed"))
+    restartAutoHideCountdown()
   }
 
   /// Undo/Redo or a version pick waiting for the projection that answers it.
@@ -4398,6 +4470,7 @@ final class OverlayState {
         captureQualityIfEdited(action: "revision")
       }
     }
+    observeRetranscriptionProjection(projection)
   }
 
   /// Offer one terminal document to the composer and record only what the
