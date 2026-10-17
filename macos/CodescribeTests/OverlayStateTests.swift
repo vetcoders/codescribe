@@ -3017,6 +3017,29 @@ final class OverlayStateTests: XCTestCase {
       OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false),
       .rest
     )
+    // Maciej (2026-10-17): pinned stays on top, unpinned slips under other
+    // windows; alerts and screenshots still win over either.
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: true)
+        .windowLevel,
+      .floating
+    )
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: false),
+      .unpinned
+    )
+    XCTAssertEqual(OverlayPresencePolicy.unpinned.windowLevel, .normal)
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: true, pinned: true),
+      .yield
+    )
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: true, shouldYield: false, pinned: false),
+      .capture
+    )
+    // One word across the app: the agent chat's pin maps to the same levels.
+    XCTAssertEqual(AgentWindowLevelPolicy.level(isPinned: true), .floating)
+    XCTAssertEqual(AgentWindowLevelPolicy.level(isPinned: false), .normal)
     XCTAssertTrue(
       OverlayPresencePolicy.shouldYield(
         frontmostBundleId: "com.apple.SecurityAgent",

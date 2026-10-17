@@ -882,7 +882,7 @@ final class OverlayResizeHitTests: XCTestCase {
       state: OverlayState(),
       textScale: TextScaleController(key: "OverlayResizeHitTests.missionControl"))
     defer { panel.orderOut(nil) }
-    for policy in [OverlayPresencePolicy.rest, .yield, .capture] {
+    for policy in [OverlayPresencePolicy.rest, .unpinned, .yield, .capture] {
       panel.level = policy.windowLevel
       XCTAssertTrue(panel.collectionBehavior.contains(.transient))
       XCTAssertFalse(panel.collectionBehavior.contains(.stationary))
