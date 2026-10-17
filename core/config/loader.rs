@@ -1186,6 +1186,10 @@ impl Config {
         env_parse!("AGENT_CHANNEL_MODIFIER", self.channel_modifier);
         env_flag!("FN_TAP_TOGGLES_DICTATION", self.fn_tap_toggles_dictation);
         env_flag!("MIDDLE_MOUSE_ACTS_AS_FN", self.middle_mouse_acts_as_fn);
+        env_flag!(
+            "MIDDLE_MOUSE_AGENT_GESTURE",
+            self.middle_mouse_agent_gesture
+        );
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
@@ -1453,6 +1457,11 @@ impl Config {
             "MIDDLE_MOUSE_ACTS_AS_FN",
             self.middle_mouse_acts_as_fn,
             settings.middle_mouse_acts_as_fn
+        );
+        apply_copy!(
+            "MIDDLE_MOUSE_AGENT_GESTURE",
+            self.middle_mouse_agent_gesture,
+            settings.middle_mouse_agent_gesture
         );
         // AI
         apply_copy!(
