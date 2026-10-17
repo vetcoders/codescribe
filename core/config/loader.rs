@@ -23,12 +23,12 @@ use tracing::{info, warn};
 
 use super::energy_calibration::{SealedEnergyCalibration, energy_calibration_path};
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution,
-    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
-    SILERO_FUSION_ENV, SettingsSnapshotDigest, SettingsSnapshotProvenance,
-    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
-    parse_agent_workspace_roots,
+    AGENT_SEND_HOLD_ENV, DEFAULT_AGENT_SEND_HOLD_SEC, DEFAULT_AGENT_WORKSPACE_ROOT,
+    DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
+    RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
+    RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SILERO_FUSION_ENV,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
+    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
 use super::types::{Config, DeferredInsertShortcut, PasteMode};
 use crate::llm::account_auth;
@@ -319,9 +319,24 @@ impl Config {
             overrides.insert(key.to_string(), Self::config_runtime_env_var(key));
         }
         // These documented power-user keys also honor the seeded .env value.
-        for key in [SILERO_FUSION_ENV, FORMAT_ON_DEVICE_ENV] {
+        for key in [
+            SILERO_FUSION_ENV,
+            FORMAT_ON_DEVICE_ENV,
+            crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
+        ] {
             overrides.insert(key.to_string(), std::env::var(key));
         }
+        let send_hold_override =
+            Self::config_runtime_env_var(AGENT_SEND_HOLD_ENV).or_else(|error| {
+                if !matches!(error, VarError::NotPresent) {
+                    return Err(error);
+                }
+                Self::parse_env_file(&Self::env_path())
+                    .ok()
+                    .and_then(|vars| vars.get(AGENT_SEND_HOLD_ENV).cloned())
+                    .ok_or(VarError::NotPresent)
+            });
+        overrides.insert(AGENT_SEND_HOLD_ENV.to_string(), send_hold_override);
         let mut input = CapturedRuntimeInputs {
             values,
             user_settings,
@@ -348,8 +363,7 @@ impl Config {
                 .or_else(|| registry.resolve(&ProviderRef::default()))
                 .expect("the default vendor is always registered");
             let api_key = Self::runtime_lane_api_key(&provider.key_account);
-            let signed_in = lane == RuntimeLlmLaneKind::Assistive
-                && provider.wire == WireFamily::OpenAiResponses
+            let signed_in = provider.wire == WireFamily::OpenAiResponses
                 && provider.oauth_vendor.is_some_and(|vendor| {
                     account_auth::provider_oauth_config(vendor)
                         .is_ok_and(|row| Self::signed_in_provider_account(row.tokens_account))
@@ -378,12 +392,29 @@ impl Config {
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
         }
+        let (dictation_witness_armed, dictation_witness_env_override) =
+            Self::resolve_dictation_witness_armed(&input);
+        if dictation_witness_env_override {
+            input
+                .env_overlay_keys
+                .push(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER.to_string());
+        }
         if let Some(enabled) = Self::format_on_device_env_override(&input) {
             input.values.format_on_device = enabled;
             input
                 .env_overlay_keys
                 .push(FORMAT_ON_DEVICE_ENV.to_string());
         }
+        let agent_send_hold_sec = input
+            .env(AGENT_SEND_HOLD_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok());
+        if agent_send_hold_sec.is_some() {
+            input.env_overlay_keys.push(AGENT_SEND_HOLD_ENV.to_string());
+        }
+        let agent_send_hold_sec = agent_send_hold_sec
+            .or(input.user_settings.agent_send_hold_sec)
+            .unwrap_or(DEFAULT_AGENT_SEND_HOLD_SEC);
         input.env_overlay_keys.sort_unstable();
         input.env_overlay_keys.dedup();
         let provenance = SettingsSnapshotProvenance {
@@ -464,7 +495,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\ndictation_witness_armed={dictation_witness_armed}\nagent_send_hold_sec={agent_send_hold_sec}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -483,6 +514,8 @@ impl Config {
             digest,
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override: phase_override,
             tail_provider,
@@ -500,6 +533,8 @@ impl Config {
             digest: parts.digest,
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
+            dictation_witness_armed: parts.dictation_witness_armed,
+            agent_send_hold_sec: parts.agent_send_hold_sec,
             local_tail_patch: parts.local_tail_patch,
             layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
@@ -521,6 +556,24 @@ impl Config {
             .seal_lane_armed
             .unwrap_or(DEFAULT_SEAL_LANE_ARMED);
         match input.env(SILERO_FUSION_ENV) {
+            Ok(raw) => (
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ),
+                true,
+            ),
+            Err(_) => (configured, false),
+        }
+    }
+
+    /// Resolve the Voice Lab witness arming for this immutable generation. The
+    /// durable field is `audio.dictation_witness_armed`; the
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` process value is the documented
+    /// power-user override and wins when present.
+    fn resolve_dictation_witness_armed(input: &CapturedRuntimeInputs) -> (bool, bool) {
+        let configured = input.user_settings.dictation_witness_armed.unwrap_or(false);
+        match input.env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER) {
             Ok(raw) => (
                 matches!(
                     raw.trim().to_ascii_lowercase().as_str(),
@@ -666,10 +719,14 @@ impl Config {
             .cloned()
             .unwrap_or_default();
         let api_key = captured.api_key;
-        let account_auth = lane == RuntimeLlmLaneKind::Assistive
-            && provider.wire == WireFamily::OpenAiResponses
+        // Account auth belongs to the provider, not to a lane: a formatter and
+        // the Agent pointed at the same signed-in vendor both ride its account.
+        // Only Responses vendors with an OAuth row qualify; an account token is
+        // never assumed to work on another protocol.
+        let account_auth = provider.wire == WireFamily::OpenAiResponses
             && provider.oauth_vendor.is_some()
             && captured.signed_in;
+        let configuration_fault = unavailable_reason.clone();
         let credentialed = api_key.is_some() || account_auth || !provider.key_required;
         if !credentialed && unavailable_reason.is_none() {
             unavailable_reason = Some(format!(
@@ -680,7 +737,6 @@ impl Config {
                 provider.key_account,
             ));
         }
-        let available = unavailable_reason.is_none();
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
         RuntimeLlmLane::seal(
@@ -688,7 +744,7 @@ impl Config {
             provider,
             model,
             credential,
-            available,
+            configuration_fault,
             unavailable_reason,
         )
     }
@@ -1002,6 +1058,21 @@ impl Config {
         Ok(Self::load_runtime_snapshot()?.formatting_policy())
     }
 
+    /// The input device a recording opens now, read fresh at every call so a
+    /// Settings choice applies to the next take without a restart. An explicit
+    /// `AUDIO_INPUT_DEVICE` from the launching environment outranks Settings
+    /// (a blank one selects the system default); a value config seeded itself
+    /// does not. `None` follows the live system default.
+    pub fn audio_input_preference() -> Option<String> {
+        let selected = match Self::config_runtime_env_var("AUDIO_INPUT_DEVICE") {
+            Ok(value) => Some(value),
+            Err(_) => super::settings::UserSettings::load().audio_input_device,
+        };
+        selected
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    }
+
     /// Resolve the roots selected in Settings from fresh persisted truth.
     ///
     /// `settings.json` is authoritative. A legacy `.env`/process value is used
@@ -1048,14 +1119,15 @@ impl Config {
 
     /// Inject optional .env values into the process environment without allowing
     /// legacy file overrides to shadow promoted settings.json-backed keys.
-    /// `CODESCRIBE_SILERO_FUSION` and `CODESCRIBE_FORMAT_ON_DEVICE` are the
-    /// deliberate exceptions: each remains a documented power-user override of
+    /// `CODESCRIBE_SILERO_FUSION`, `CODESCRIBE_FORMAT_ON_DEVICE`, and
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` remain power-user overrides of
     /// a product-owned settings field.
     fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
         for (key, value) in file_env {
             if super::settings::is_promoted_key(key)
                 && key != SILERO_FUSION_ENV
                 && key != FORMAT_ON_DEVICE_ENV
+                && key != crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER
             {
                 debug_assert!(
                     !super::settings::is_promoted_key(key) || !key.is_empty(),
@@ -2432,7 +2504,7 @@ mod tests {
     /// read env and sealed `account_auth=false` for every signed-in operator.
     #[test]
     #[serial]
-    fn assistive_lane_seals_account_auth_from_bundle_tokens_without_env() {
+    fn both_llm_lanes_seal_account_auth_from_bundle_tokens_without_env() {
         let _tmp = setup_isolated_data_dir();
         let _env = clear_llm_lane_env();
         let tokens = account_auth::AccountTokens::new(
@@ -2449,20 +2521,24 @@ mod tests {
         )]);
 
         let snapshot = seal_lanes();
-        let lane = snapshot.llm_lanes().assistive();
-        assert_eq!(lane.vendor(), Some(ProviderKind::OpenAiResponses));
-        assert_eq!(lane.endpoint(), "https://api.openai.com/v1/responses");
-        assert!(
-            lane.credential().api_key().is_none(),
-            "no API key may take part in this witness"
-        );
-        assert!(
-            lane.credential().account_auth(),
-            "bundle-only sign-in must seal as account auth"
-        );
-        assert!(lane.available(), "signed-in lane must be available");
-        assert!(lane.request_available());
-        assert_eq!(lane.unavailable_reason(), None);
+        for lane in [
+            snapshot.llm_lanes().assistive(),
+            snapshot.llm_lanes().formatting(),
+        ] {
+            assert_eq!(lane.vendor(), Some(ProviderKind::OpenAiResponses));
+            assert_eq!(lane.endpoint(), "https://api.openai.com/v1/responses");
+            assert!(
+                lane.credential().api_key().is_none(),
+                "no API key may take part in this witness"
+            );
+            assert!(
+                lane.credential().account_auth(),
+                "bundle-only sign-in must seal as account auth"
+            );
+            assert!(lane.available(), "signed-in lane must be available");
+            assert!(lane.request_available());
+            assert_eq!(lane.unavailable_reason(), None);
+        }
     }
 
     /// Negative control for the witness above: same env, a bundle without a
@@ -2827,6 +2903,61 @@ mod tests {
         assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
     }
 
+    #[test]
+    #[serial]
+    fn dictation_witness_lab_write_survives_other_settings_and_binds_next_take() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER);
+        let current = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!current.dictation_witness_armed());
+        Config::default()
+            .save_to_env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "1")
+            .unwrap();
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(UserSettings::settings_path()).unwrap())
+                .unwrap();
+        assert_eq!(json["audio"]["dictation_witness_armed"], true);
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+        let next = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(next.dictation_witness_armed());
+        assert!(!current.dictation_witness_armed());
+        assert_ne!(next.digest(), current.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn dictation_witness_environment_override_does_not_erase_the_lab_choice() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER);
+        Config::default()
+            .save_to_env(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "1")
+            .unwrap();
+        set_env_for_test(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER, "0");
+        let overridden = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!overridden.dictation_witness_armed());
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+    }
+
+    #[test]
+    #[serial]
+    fn dictation_witness_env_file_override_survives_canonical_settings_write() {
+        let _tmp = setup_isolated_data_dir();
+        let key = crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER;
+        let _override = TestEnvGuard::unset(key);
+        fs::write(Config::env_path(), format!("{key}=0\n")).unwrap();
+        Config::default().save_to_env(key, "1").unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!snapshot.dictation_witness_armed());
+        assert_eq!(UserSettings::load().dictation_witness_armed, Some(true));
+        assert_eq!(
+            fs::read_to_string(Config::env_path()).unwrap(),
+            format!("{key}=0\n")
+        );
+    }
+
     /// A take binds one snapshot at its start (`bind_session_authority`) and
     /// `apple_stream_worker` reads `whisper_adaptive_buffer` from it once. A
     /// Lab write during the take cannot reach that snapshot; the next take's can.
@@ -2930,6 +3061,69 @@ mod tests {
         assert!(forced_on.values().format_on_device);
         assert!(format_on_device_overlay(&forced_on));
         assert_ne!(forced_off.digest(), forced_on.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn div0_admission_capture_metadata_follows_saved_input_without_restart() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("AUDIO_INPUT_DEVICE");
+        let mut settings = UserSettings {
+            audio_input_device: Some("USB admission microphone".to_owned()),
+            ..Default::default()
+        };
+        settings.save().expect("save first input");
+        let path = crate::audio::capture_receipt::CapturePathMeta::from_open_path(48_000, 1, None);
+        assert_eq!(path.device_name, "USB admission microphone");
+        settings.audio_input_device = Some("Second admission microphone".to_owned());
+        settings.save().expect("save next input");
+        let next = crate::audio::capture_receipt::CapturePathMeta::from_open_path(48_000, 1, None);
+        assert_eq!(next.device_name, "Second admission microphone");
+        let opened = crate::audio::capture_receipt::CapturePathMeta::from_open_path(
+            48_000,
+            1,
+            Some("Actual already-open microphone"),
+        );
+        assert_eq!(opened.device_name, "Actual already-open microphone");
+    }
+
+    /// Founder, 2026-10-15: a microphone chosen in Settings applied only after a
+    /// restart, because the recorder read a process copy seeded once at launch.
+    /// The selection is read fresh; only an explicit launch override outranks it.
+    #[test]
+    #[serial]
+    fn audio_input_preference_follows_settings_without_restart() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("AUDIO_INPUT_DEVICE");
+        assert_eq!(Config::audio_input_preference(), None, "system default");
+
+        let mut settings = UserSettings {
+            audio_input_device: Some("AirPods Pro - Find My".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("pin AirPods");
+        assert_eq!(
+            Config::audio_input_preference().as_deref(),
+            Some("AirPods Pro - Find My")
+        );
+        settings.audio_input_device = None;
+        settings.save().expect("back to the system default");
+        assert_eq!(Config::audio_input_preference(), None);
+
+        set_env_for_test("AUDIO_INPUT_DEVICE", " BlackHole 2ch ");
+        assert_eq!(
+            Config::audio_input_preference().as_deref(),
+            Some("BlackHole 2ch"),
+            "an explicit launch override outranks Settings"
+        );
+        set_env_for_test("AUDIO_INPUT_DEVICE", " ");
+        settings.audio_input_device = Some("AirPods Pro - Find My".to_string());
+        settings.save().expect("pin AirPods under a blank override");
+        assert_eq!(
+            Config::audio_input_preference(),
+            None,
+            "a blank override is the default"
+        );
     }
 
     /// Production hides `.env`-seeded keys from the loader's own env layer once
@@ -3625,6 +3819,74 @@ mod tests {
         assert!(!Config::load().agent_auto_send);
         restore_env_for_test("AGENT_AUTO_SEND", previous);
         restore_env_for_test("CODESCRIBE_ENV_PATH", previous_env_path);
+    }
+
+    #[test]
+    fn agent_send_hold_snapshot_defaults_overrides_and_rejects_invalid_numbers() {
+        let input = CapturedRuntimeInputs::defaults_at(PathBuf::from("/synthetic/send-hold"), 1);
+        assert_eq!(
+            Config::runtime_snapshot_from_captured(input.clone()).agent_send_hold_sec(),
+            10
+        );
+        let mut input = input;
+        input.user_settings.agent_send_hold_sec = Some(7);
+        let persisted = Config::runtime_snapshot_from_captured(input.clone());
+        assert_eq!(persisted.agent_send_hold_sec(), 7);
+        for raw in ["0", "12", "60"] {
+            input
+                .overrides
+                .insert(AGENT_SEND_HOLD_ENV.into(), Ok(raw.into()));
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(snapshot.agent_send_hold_sec(), raw.parse::<u32>().unwrap());
+            assert_eq!(snapshot.user_settings().agent_send_hold_sec, Some(7));
+            assert!(
+                snapshot
+                    .provenance()
+                    .env_overlay_keys
+                    .contains(&AGENT_SEND_HOLD_ENV.into())
+            );
+            assert_ne!(snapshot.digest(), persisted.digest());
+        }
+        for raw in ["-1", "1.5", "invalid", "4294967296"] {
+            input
+                .overrides
+                .insert(AGENT_SEND_HOLD_ENV.into(), Ok(raw.into()));
+            assert_eq!(
+                Config::runtime_snapshot_from_captured(input.clone()).agent_send_hold_sec(),
+                7
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn agent_send_hold_settings_round_trip_and_file_and_process_env_win() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env_path = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _hold = TestEnvGuard::unset(AGENT_SEND_HOLD_ENV);
+        let dir = setup_isolated_data_dir();
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 10);
+        Config::default()
+            .save_to_env(AGENT_SEND_HOLD_ENV, "7")
+            .unwrap();
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(7));
+        let saved = seal_lanes();
+        assert_eq!(saved.agent_send_hold_sec(), 7);
+        assert!(!Config::env_path().exists());
+        fs::write(
+            dir.path().join(".env"),
+            "CODESCRIBE_AGENT_SEND_HOLD_SEC=12\n",
+        )
+        .unwrap();
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 12);
+        set_env_for_test(AGENT_SEND_HOLD_ENV, "0");
+        assert_eq!(seal_lanes().agent_send_hold_sec(), 0);
+        assert_eq!(
+            saved.agent_send_hold_sec(),
+            7,
+            "the previous snapshot remains frozen"
+        );
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(7));
     }
 
     #[test]

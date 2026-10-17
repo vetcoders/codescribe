@@ -19,8 +19,6 @@ struct EnginePanel: View {
         DictationPreviewTimingTab(model: model)
       case .dictationPrivacy:
         DictationCloudPrivacyTab(model: model)
-      case .dictationPermissions:
-        DictationPermissionsTab(model: model)
       default:
         // `.dictationEngine`; other sections' tabs cannot reach this panel.
         DictationEngineTab(model: model)

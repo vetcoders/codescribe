@@ -3,6 +3,83 @@ import SwiftUI
 
 // Reusable glass primitives shared by every screen. Build once, consume everywhere.
 
+/// One continuous native window bar. A line above and below the information
+/// row gives Agent and Settings the same rhythm without individual title pills.
+struct CSWindowHeaderItem<Content: View>: View {
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    content
+      .frame(height: 18)
+      .padding(.vertical, 17)
+      .padding(.horizontal, 12)
+  }
+}
+
+/// One header plane per column: the window toolbar paints no background of its
+/// own, so the sidebar material and the detail canvas each run from the bottom
+/// edge up through the titlebar.
+///
+/// A forced `.bar` background here is honoured only by SwiftUI-managed scenes.
+/// In the Settings `Window` scene it painted a flat strip across the whole
+/// titlebar width, and the sidebar material started beneath it; the Agent window
+/// is an AppKit `NSWindow` hosting the same split view, where the same modifier
+/// is ignored, which is why Agent looked right and Settings did not
+/// (measured 2026-10-14 with a scene/AppKit probe over a gradient backdrop).
+struct CSWindowHeaderChrome: ViewModifier {
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if #available(macOS 15.0, *) {
+      content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+    } else {
+      content.toolbarBackground(.hidden, for: .windowToolbar)
+    }
+  }
+}
+
+/// The window header is one glass plane over the detail column only, the glass
+/// of the overlay header: rows that scroll up stop at its hard lower edge, the
+/// way Finder's list stops under its toolbar, instead of running through the
+/// title, and the sidebar material runs up through the titlebar beside it
+/// (Maciej, 2026-10-14: the title bar only above the messages, never over the
+/// sidebar; the same in Settings).
+///
+/// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
+/// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
+/// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
+/// tall as the column's top safe-area inset, which is the toolbar, and lifted
+/// into it. Toolbar items stay in the titlebar above it and keep their clicks.
+struct CSDetailHeaderGlass: ViewModifier {
+  @State private var height: CGFloat = 0
+
+  func body(content: Content) -> some View {
+    content
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.safeAreaInsets.top
+      } action: { top in
+        height = top
+      }
+      .overlay(alignment: .top) {
+        CSHeaderGlassPlane()
+          .frame(height: height)
+          .frame(maxWidth: .infinity)
+          .offset(y: -height)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+  }
+}
+
+private struct CSHeaderGlassPlane: View {
+  var body: some View {
+    if #available(macOS 26.0, *) {
+      Color.clear.glassEffect(.regular, in: Rectangle())
+    } else {
+      Rectangle().fill(.regularMaterial)
+    }
+  }
+}
+
 /// App-wide focus policy: pointer interaction releases keyboard focus after the
 /// clicked control handles its event, while keyboard navigation and text entry
 /// keep AppKit's native focus behavior and visible accessibility affordances.

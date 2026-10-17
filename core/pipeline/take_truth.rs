@@ -257,6 +257,8 @@ pub struct LedgerSealFact {
 /// Coverage measurement copied from the matching receipt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LedgerCoverageFact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<crate::pipeline::acoustic_ledger::CoverageDiagnostics>,
     pub session_id: String,
     pub capture_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -560,7 +562,11 @@ impl TakeTruth {
                 _ => None,
             });
         let vad_speech_pct = coverage.and_then(measured_speech_pct);
-        let coverage = coverage.map(coverage_fact);
+        let coverage = coverage.map(|receipt| {
+            let mut fact = coverage_fact(receipt);
+            fact.diagnostics = Some(ledger.coverage_diagnostics(receipt));
+            fact
+        });
 
         let shapings = ledger
             .incremental_shapings()
@@ -1219,6 +1225,7 @@ fn coverage_fact(
         SealCoverageStatus::Complete | SealCoverageStatus::Incomplete => None,
     };
     LedgerCoverageFact {
+        diagnostics: None,
         session_id: coverage.session_id.clone(),
         capture_epoch: coverage.capture_epoch,
         sample_rate_hz: coverage.sample_rate_hz,

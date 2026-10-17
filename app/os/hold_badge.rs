@@ -37,11 +37,28 @@ fn token_is_current(token: u64, generation: u64) -> bool {
     token == generation
 }
 
+/// Bound only the pointer paint; repetition and the source document stay intact.
+#[cfg(any(target_os = "macos", test))]
+fn preview_tail(text: &str) -> String {
+    let mut words = text.split_whitespace().rev().take(3).collect::<Vec<_>>();
+    words.reverse();
+    let tail = words.join(" ");
+    let mut characters = tail.chars().rev().take(120).collect::<Vec<_>>();
+    characters.reverse();
+    characters.into_iter().collect()
+}
+
+/// UI freshness, not an acoustic speech/coverage verdict.
+#[cfg(any(target_os = "macos", test))]
+fn preview_expired(updated_at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    updated_at.is_some_and(|updated| now.saturating_duration_since(updated).as_millis() >= 1200)
+}
+
 /// Text-input shape of the focused UI element, as the delivery throne's paste
 /// gate needs it (`focused_input_field`). An observation, never a destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedInputField {
-    /// An editable text role (field, area, combo box, text view, web area).
+    /// An enabled text input with a writable value or selected-text attribute.
     Text,
     /// A password field, or secure event input is on system-wide (a password
     /// prompt owns the keyboard, e.g. a terminal `sudo` prompt).
@@ -69,6 +86,33 @@ fn classify_input_role(role: &str, subrole: Option<&str>) -> FocusedInputField {
     }
 }
 
+/// An AX role is only a candidate. A whole web page or a read-only transcript
+/// must never become a paste recipient merely by reporting a text role.
+#[cfg(any(target_os = "macos", test))]
+fn classify_input_capability(
+    role: &str,
+    subrole: Option<&str>,
+    enabled: bool,
+    writable: bool,
+) -> FocusedInputField {
+    match classify_input_role(role, subrole) {
+        FocusedInputField::Secure => FocusedInputField::Secure,
+        FocusedInputField::Text if enabled && writable && role != "AXWebArea" => {
+            FocusedInputField::Text
+        }
+        _ => FocusedInputField::NotText,
+    }
+}
+
+pub use crate::presentation::emitter::CursorVoice;
+
+/// Amber of a voice whose words are owed, in every mode.
+const LAGGING_COLOR: (f64, f64, f64, f64) = (1.0, 0.62, 0.0, 1.0);
+/// Agent mode between phrases.
+const AGENT_QUIET_COLOR: (f64, f64, f64, f64) = (0.97, 0.97, 0.97, 0.95);
+/// A refused chord: slate, so the flash never reads as a recording dot.
+const REFUSED_COLOR: (f64, f64, f64, f64) = (0.45, 0.45, 0.5, 0.92);
+
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
@@ -80,6 +124,9 @@ pub enum BadgeMode {
     Processing,
     /// AI mode (Chat/Selection): Purple with glow - "AI słucha"
     Assistive,
+    /// Refused chord (a vacant channel digit): slate, solid, one flash with a
+    /// label beside it. Nothing is capturing while this dot shows.
+    Refused,
 }
 
 impl BadgeMode {
@@ -90,6 +137,7 @@ impl BadgeMode {
             BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),      // Red (will pulse)
             BadgeMode::Processing => (1.0, 0.5, 0.0, 0.85), // Orange
             BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85),  // Purple
+            BadgeMode::Refused => REFUSED_COLOR,
         }
     }
 
@@ -109,6 +157,35 @@ impl BadgeMode {
             BadgeMode::Assistive => 1.2, // Slightly larger for AI mode
             _ => 1.0,
         }
+    }
+
+    /// The dot's fill for the voice under the cursor. Agent mode is purple
+    /// whatever the voice does: speaking, and pulsing while words are owed; it
+    /// turns white only between phrases (Maciej, 2026-10-14, 2026-10-17: orange
+    /// means processing, so owed Agent words must not borrow it). Dictation's
+    /// owed words stay amber.
+    pub fn voice_color(
+        &self,
+        base: (f64, f64, f64, f64),
+        voice: CursorVoice,
+    ) -> (f64, f64, f64, f64) {
+        match (self, voice) {
+            (BadgeMode::Assistive, CursorVoice::Quiet) => AGENT_QUIET_COLOR,
+            (BadgeMode::Assistive, _) => base,
+            (_, CursorVoice::Lagging) => LAGGING_COLOR,
+            _ => base,
+        }
+    }
+
+    /// Agent mode pulses while its words are owed; the others keep their own beat.
+    pub fn voice_pulses(&self, voice: CursorVoice) -> bool {
+        self.should_pulse() || (*self == BadgeMode::Assistive && voice == CursorVoice::Lagging)
+    }
+
+    /// A white dot vanishes over a white page; the quiet Agent dot keeps a
+    /// purple rim so it still reads as Agent mode.
+    pub fn voice_ring(&self, voice: CursorVoice) -> Option<(f64, f64, f64, f64)> {
+        (*self == BadgeMode::Assistive && voice == CursorVoice::Quiet).then(|| self.color())
     }
 }
 
@@ -161,7 +238,96 @@ impl HoldBadgeConfig {
 /// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
-    use super::{BadgeMode, FocusedInputField, HoldBadgeConfig, classify_input_role};
+    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, classify_input_role};
+
+    #[test]
+    fn refused_flash_is_a_still_slate_dot_unlike_any_recording_mode() {
+        let refused = BadgeMode::Refused;
+        for recording in [
+            BadgeMode::Hold,
+            BadgeMode::Toggle,
+            BadgeMode::Processing,
+            BadgeMode::Assistive,
+        ] {
+            assert_ne!(refused.color(), recording.color(), "{recording:?}");
+        }
+        assert!(!refused.should_pulse());
+        assert!(!refused.has_glow());
+        assert!(!refused.voice_pulses(CursorVoice::Quiet));
+        assert_eq!(refused.voice_ring(CursorVoice::Quiet), None);
+        assert_eq!(refused.diameter_multiplier(), 1.0);
+        let config = HoldBadgeConfig::from_mode(refused);
+        assert_eq!(config.mode, BadgeMode::Refused);
+        assert_eq!(config.color, super::REFUSED_COLOR);
+    }
+
+    #[test]
+    fn live_cue_pointer_keeps_three_latest_words_and_repetitions() {
+        assert_eq!(super::preview_tail("Iwo Iwo Iwo Iwo Iwo"), "Iwo Iwo Iwo");
+        assert_eq!(
+            super::preview_tail("Dobra to jest nagranie testowe teraz mówię dalej"),
+            "teraz mówię dalej"
+        );
+        assert_eq!(
+            super::preview_tail("\tzażółć\n gęślą\u{a0}jaźń!  "),
+            "zażółć gęślą jaźń!"
+        );
+        assert_eq!(super::preview_tail("  \n\t"), "");
+    }
+
+    #[test]
+    fn live_cue_pointer_bounds_unicode_without_breaking_the_last_word() {
+        let word = "ź".repeat(160);
+        let tail = super::preview_tail(&format!("dawny początek {word}"));
+        assert_eq!(tail, "ź".repeat(120));
+        assert_eq!(tail.chars().count(), 120);
+    }
+
+    #[test]
+    fn live_cue_freshness_expires_and_a_new_partial_renews_it() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        assert!(!super::preview_expired(
+            None,
+            start + Duration::from_secs(4)
+        ));
+        assert!(!super::preview_expired(
+            Some(start),
+            start + Duration::from_millis(1199)
+        ));
+        assert!(super::preview_expired(
+            Some(start),
+            start + Duration::from_millis(1200)
+        ));
+        assert!(!super::preview_expired(
+            Some(start + Duration::from_millis(800)),
+            start + Duration::from_millis(1200)
+        ));
+    }
+
+    #[test]
+    fn paste_capability_refuses_pages_disabled_and_read_only_text() {
+        use super::classify_input_capability as classify;
+        assert_eq!(
+            classify("AXTextArea", None, true, true),
+            FocusedInputField::Text
+        );
+        for (role, enabled, writable) in [
+            ("AXWebArea", true, true),
+            ("AXTextArea", false, true),
+            ("AXTextArea", true, false),
+            ("AXButton", true, true),
+        ] {
+            assert_eq!(
+                classify(role, None, enabled, writable),
+                FocusedInputField::NotText
+            );
+        }
+        assert_eq!(
+            classify("AXTextField", Some("AXSecureTextField"), true, true),
+            FocusedInputField::Secure
+        );
+    }
 
     #[test]
     fn password_subrole_is_secure_and_text_roles_are_text() {
@@ -239,6 +405,47 @@ mod tests {
         assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
     }
 
+    /// Maciej, 2026-10-14 and 2026-10-17: Agent mode's dot is purple while the
+    /// voice speaks, white between phrases and pulsing purple while its words
+    /// are owed — orange belongs to processing.
+    /// Dictation keeps its red at rest and its amber, unpulsed, for owed words.
+    #[test]
+    fn agent_dot_tells_speaking_from_quiet_and_owed_words() {
+        let purple = BadgeMode::Assistive.color();
+        let agent = |voice| BadgeMode::Assistive.voice_color(purple, voice);
+        assert_eq!(agent(CursorVoice::Speaking), purple);
+        assert_eq!(
+            agent(CursorVoice::Unobserved),
+            purple,
+            "no observer keeps the mode"
+        );
+        assert_eq!(agent(CursorVoice::Quiet), super::AGENT_QUIET_COLOR);
+        assert_eq!(
+            agent(CursorVoice::Lagging),
+            purple,
+            "owed Agent words stay purple"
+        );
+        assert!(BadgeMode::Assistive.voice_pulses(CursorVoice::Lagging));
+        assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Quiet));
+        assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Speaking));
+        assert_eq!(
+            BadgeMode::Assistive.voice_ring(CursorVoice::Quiet),
+            Some(purple),
+            "the white dot keeps a purple rim over a white page"
+        );
+        assert_eq!(BadgeMode::Assistive.voice_ring(CursorVoice::Speaking), None);
+
+        let red = BadgeMode::Hold.color();
+        assert_eq!(BadgeMode::Hold.voice_color(red, CursorVoice::Quiet), red);
+        assert_eq!(
+            BadgeMode::Hold.voice_color(red, CursorVoice::Lagging),
+            super::LAGGING_COLOR
+        );
+        assert!(!BadgeMode::Hold.voice_pulses(CursorVoice::Lagging));
+        assert!(BadgeMode::Toggle.voice_pulses(CursorVoice::Quiet));
+        assert_eq!(BadgeMode::Hold.voice_ring(CursorVoice::Quiet), None);
+    }
+
     /// from_mode keeps layout fields while swapping color/diameter for the mode.
     #[test]
     fn hold_badge_config_from_mode_preserves_layout_and_applies_mode_visuals() {
@@ -290,9 +497,10 @@ mod tests {
 /// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{FocusedInputField, HoldBadgeConfig};
+    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig};
 
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::boolean::CFBoolean;
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use dispatch::Queue;
@@ -305,11 +513,11 @@ mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tracing::{debug, warn};
 
     use crate::os::Id;
-    use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
+    use crate::os::ax_ffi::{AXUIElementCopyAttributeValue, AXUIElementIsAttributeSettable};
 
     // Accessibility API bindings (use raw pointers compatible with C FFI)
     /// Opaque `AXUIElementRef` / `AXValueRef` handle.
@@ -419,7 +627,8 @@ mod imp {
         timer_running: bool,
         config: HoldBadgeConfig,
         last_position: (f64, f64),
-        degraded: bool,
+        voice: CursorVoice,
+        preview_updated_at: Option<Instant>,
     }
 
     lazy_static::lazy_static! {
@@ -435,7 +644,8 @@ mod imp {
             timer_running: false,
             config: HoldBadgeConfig::default(),
             last_position: (f64::NAN, f64::NAN),
-            degraded: false,
+            voice: CursorVoice::Unobserved,
+            preview_updated_at: None,
         }));
     }
 
@@ -452,23 +662,79 @@ mod imp {
     }
 
     /// Paint a supplied projection in-place; never show or resurrect a panel.
-    pub fn update_transcript(token: u64, text: &str, degraded: bool) {
-        let text = text.chars().take(120).collect::<String>();
+    pub fn update_transcript(token: u64, text: &str) {
+        let text = super::preview_tail(text);
+        let received_at = Instant::now();
         Queue::main().exec_async(move || {
             if !super::token_is_current(token, take_token()) {
                 return;
             }
-            let (panel, diameter, base_color) = {
+            let (panel, diameter, mode, base_color, voice) = {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(panel) = state.window else {
                     return;
                 };
-                state.degraded = degraded;
-                (panel as Id, state.config.diameter, state.config.color)
+                state.preview_updated_at = (!text.is_empty()).then_some(received_at);
+                (
+                    panel as Id,
+                    state.config.diameter,
+                    state.config.mode,
+                    state.config.color,
+                    state.voice,
+                )
             };
             unsafe {
-                paint_preview(panel, diameter, base_color, &text, degraded);
+                let fresh = if super::preview_expired(Some(received_at), Instant::now()) {
+                    ""
+                } else {
+                    &text
+                };
+                paint_preview(panel, diameter, mode, base_color, fresh, voice);
             }
+        });
+    }
+
+    /// Voice changes repaint only the dot, without refreshing the Apple label.
+    pub fn update_voice_state(token: u64, voice: CursorVoice) {
+        Queue::main().exec_async(move || {
+            if !super::token_is_current(token, take_token()) {
+                return;
+            }
+            let (panel, mode, base_color) = {
+                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(panel) = state.window else {
+                    return;
+                };
+                if state.voice == voice {
+                    return;
+                }
+                state.voice = voice;
+                (panel as Id, state.config.mode, state.config.color)
+            };
+            unsafe { paint_voice_state(panel, mode, base_color, voice) };
+        });
+    }
+
+    /// A stale label can expire even when the mouse is stationary and the dot does not pulse.
+    fn expire_transcript(token: u64, window_ptr: usize) {
+        Queue::main().exec_async(move || {
+            let paint = {
+                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                if !super::token_is_current(token, take_token())
+                    || state.window != Some(window_ptr)
+                    || !super::preview_expired(state.preview_updated_at, Instant::now())
+                {
+                    return;
+                }
+                state.preview_updated_at = None;
+                (
+                    state.config.diameter,
+                    state.config.mode,
+                    state.config.color,
+                    state.voice,
+                )
+            };
+            unsafe { paint_preview(window_ptr as Id, paint.0, paint.1, paint.2, "", paint.3) };
         });
     }
 
@@ -476,9 +742,10 @@ mod imp {
     unsafe fn paint_preview(
         panel: Id,
         diameter: f64,
+        mode: BadgeMode,
         base_color: (f64, f64, f64, f64),
         text: &str,
-        degraded: bool,
+        voice: CursorVoice,
     ) {
         unsafe {
             let content: Id = msg_send![panel, contentView];
@@ -487,7 +754,6 @@ mod imp {
             if count < 2 {
                 return;
             }
-            let dot: Id = msg_send![children, objectAtIndex: 0usize];
             let label: Id = msg_send![children, objectAtIndex: 1usize];
             let value = CFString::new(text);
             let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
@@ -516,15 +782,41 @@ mod imp {
             let panel_frame: CGRect = msg_send![panel, frame];
             let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
             let _: () = msg_send![panel, setFrameOrigin: origin];
-            let color = if degraded {
-                (1.0, 0.62, 0.0, 1.0)
-            } else {
-                base_color
-            };
+            paint_voice_state(panel, mode, base_color, voice);
+        }
+    }
+
+    /// A steady state ends the pulse at full opacity; the updater resumes it.
+    unsafe fn paint_voice_state(
+        panel: Id,
+        mode: BadgeMode,
+        base_color: (f64, f64, f64, f64),
+        voice: CursorVoice,
+    ) {
+        unsafe {
+            let content: Id = msg_send![panel, contentView];
+            let children: Id = msg_send![content, subviews];
+            let count: usize = msg_send![children, count];
+            if count == 0 {
+                return;
+            }
+            let dot: Id = msg_send![children, objectAtIndex: 0usize];
+            let color = mode.voice_color(base_color, voice);
             let cg = create_cg_color(color.0, color.1, color.2, color.3);
             let layer: Id = msg_send![dot, layer];
             let _: () = msg_send![layer, setBackgroundColor: cg];
             CGColorRelease(cg);
+            if let Some(ring) = mode.voice_ring(voice) {
+                let cg = create_cg_color(ring.0, ring.1, ring.2, 1.0);
+                let _: () = msg_send![layer, setBorderColor: cg];
+                CGColorRelease(cg);
+                let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            } else {
+                let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+            }
+            if !mode.voice_pulses(voice) {
+                let _: () = msg_send![layer, setOpacity: 1.0f32];
+            }
         }
     }
 
@@ -549,6 +841,50 @@ mod imp {
             CFType::wrap_under_create_rule(value as CFTypeRef)
                 .downcast::<CFString>()
                 .map(|text| text.to_string())
+        }
+    }
+
+    /// Classify capability on the same retained AX identity used by transport.
+    ///
+    /// # Safety
+    /// `element` must be a live retained AXUIElement owned by the caller.
+    pub(crate) unsafe fn input_field_for_element(element: AXId) -> FocusedInputField {
+        unsafe {
+            if IsSecureEventInputEnabled() != 0 {
+                return FocusedInputField::Secure;
+            }
+            let role = copy_string_attribute(element, AX_ROLE_ATTRIBUTE);
+            let subrole = copy_string_attribute(element, AX_SUBROLE_ATTRIBUTE);
+            let mut enabled_value: AXId = ptr::null_mut();
+            let enabled_attribute = CFString::new("AXEnabled");
+            let enabled_result = AXUIElementCopyAttributeValue(
+                element,
+                enabled_attribute.as_concrete_TypeRef() as AXId,
+                &mut enabled_value,
+            );
+            let enabled = if enabled_result == AX_ERROR_SUCCESS && !enabled_value.is_null() {
+                CFType::wrap_under_create_rule(enabled_value as CFTypeRef)
+                    .downcast::<CFBoolean>()
+                    .is_some_and(|value| value.into())
+            } else {
+                false
+            };
+            let writable = ["AXValue", "AXSelectedText"].iter().any(|name| {
+                let attribute = CFString::new(name);
+                let mut settable = 0;
+                AXUIElementIsAttributeSettable(
+                    element,
+                    attribute.as_concrete_TypeRef() as AXId,
+                    &mut settable,
+                ) == AX_ERROR_SUCCESS
+                    && settable != 0
+            });
+            match role {
+                Some(role) => {
+                    super::classify_input_capability(&role, subrole.as_deref(), enabled, writable)
+                }
+                None => FocusedInputField::Unobserved,
+            }
         }
     }
 
@@ -581,13 +917,9 @@ mod imp {
             // A stalled host must not hold the stop path for the default AX
             // timeout while the role and subrole are read.
             AXUIElementSetMessagingTimeout(focused, 0.1);
-            let role = copy_string_attribute(focused, AX_ROLE_ATTRIBUTE);
-            let subrole = copy_string_attribute(focused, AX_SUBROLE_ATTRIBUTE);
+            let field = input_field_for_element(focused);
             CFRelease(focused);
-            match role {
-                Some(role) => super::classify_input_role(&role, subrole.as_deref()),
-                None => FocusedInputField::Unobserved,
-            }
+            field
         }
     }
 
@@ -874,10 +1206,10 @@ mod imp {
             state.window.map(|panel| {
                 state.config = config.clone();
                 state.last_position = (f64::NAN, f64::NAN);
-                (panel as Id, state.degraded)
+                (panel as Id, state.voice)
             })
         };
-        if let Some((panel, degraded)) = existing {
+        if let Some((panel, voice)) = existing {
             unsafe {
                 let content: Id = msg_send![panel, contentView];
                 let children: Id = msg_send![content, subviews];
@@ -893,7 +1225,14 @@ mod imp {
                 let layer: Id = msg_send![dot, layer];
                 let _: () = msg_send![layer, setCornerRadius: config.diameter / 2.0];
                 let _: () = msg_send![layer, setOpacity: 1.0f32];
-                paint_preview(panel, config.diameter, config.color, &text, degraded);
+                paint_preview(
+                    panel,
+                    config.diameter,
+                    config.mode,
+                    config.color,
+                    &text,
+                    voice,
+                );
             }
             return;
         }
@@ -928,7 +1267,8 @@ mod imp {
                 state.config = config.clone();
                 state.timer_running = true;
                 state.last_position = (f64::NAN, f64::NAN);
-                state.degraded = false;
+                state.voice = CursorVoice::Unobserved;
+                state.preview_updated_at = None;
                 start_updater = !was_running;
             }
 
@@ -943,7 +1283,7 @@ mod imp {
 
                         // Snapshot state without blocking the main thread. Never hold the lock
                         // during AX queries (get_badge_position), which can be slow or stall.
-                        let (window_ptr, config, should_pulse, last_position) = {
+                        let (window_ptr, config, should_pulse, last_position, preview_due) = {
                             use std::sync::TryLockError;
                             let state = match BADGE_STATE.try_lock() {
                                 Ok(state) => state,
@@ -961,14 +1301,19 @@ mod imp {
                             (
                                 state.window,
                                 state.config.clone(),
-                                state.config.mode.should_pulse(),
+                                state.config.mode.voice_pulses(state.voice),
                                 state.last_position,
+                                super::preview_expired(state.preview_updated_at, Instant::now()),
                             )
                         };
 
                         let Some(window_ptr) = window_ptr else {
                             continue;
                         };
+
+                        if preview_due {
+                            expire_transcript(generation, window_ptr);
+                        }
 
                         // Calculate pulse opacity (sine wave from 0.4 to 1.0)
                         let pulse_opacity = if should_pulse {
@@ -996,6 +1341,7 @@ mod imp {
 
                         // Position and opacity updates need main thread
                         Queue::main().exec_async(move || {
+                            let still_pulsing;
                             // Ensure state is still valid; do not block UI if busy.
                             {
                                 use std::sync::TryLockError;
@@ -1012,6 +1358,8 @@ mod imp {
                                     return;
                                 }
                                 state.last_position = (new_x, new_y);
+                                // A steady voice painted since the snapshot owns opacity.
+                                still_pulsing = state.config.mode.voice_pulses(state.voice);
                             }
 
                             let window = window_ptr as Id;
@@ -1020,7 +1368,7 @@ mod imp {
                                 let _: () = msg_send![window, setFrameOrigin: new_origin];
                             }
 
-                            if should_pulse {
+                            if should_pulse && still_pulsing {
                                 let content_view: Id = msg_send![window, contentView];
                                 if !content_view.is_null() {
                                     let subviews: Id = msg_send![content_view, subviews];
@@ -1071,7 +1419,7 @@ mod imp {
         let panel_ptr = {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.timer_running = false;
-            state.degraded = false;
+            state.voice = CursorVoice::Unobserved;
             state.window.take()
         };
 
@@ -1084,12 +1432,52 @@ mod imp {
             }
         });
     }
+
+    /// One timed flash of the dot with `label` beside it, for a refused
+    /// gesture (Maciej, 2026-10-17: a chord on a vacant channel was silent).
+    ///
+    /// A take's dot outranks a refusal: while any panel exists the flash is
+    /// skipped, and the delayed hide tears down only a panel that still shows
+    /// this flash. A take that opened meanwhile repainted the same panel in
+    /// its own mode and keeps it; a hide that raced the show bumped the
+    /// generation, so the show was dropped and there is nothing to hide.
+    pub fn flash_hold_badge(config: HoldBadgeConfig, label: &str, duration: Duration) {
+        {
+            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if state.window.is_some() || state.timer_running {
+                debug!("Skipping refusal flash: a live badge owns the pointer");
+                return;
+            }
+        }
+        let mode = config.mode;
+        show_hold_badge_with_config(config);
+        update_transcript(take_token(), label);
+        let spawned = thread::Builder::new()
+            .name("hold-badge-flash".into())
+            .spawn(move || {
+                thread::sleep(duration);
+                let still_flashing = {
+                    let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.window.is_some() && state.config.mode == mode
+                };
+                if still_flashing {
+                    hide_hold_badge();
+                }
+            });
+        if let Err(error) = spawned {
+            // No thread to end the flash: bump the generation now so the
+            // queued show is dropped instead of leaving a dot forever.
+            debug!("hold-badge flash thread unavailable: {error}");
+            hide_hold_badge();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript,
+    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
+    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    update_voice_state,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1110,7 +1498,10 @@ mod stubs {
         0
     }
     /// Inert cursor projection outside macOS.
-    pub fn update_transcript(_token: u64, _text: &str, _degraded: bool) {}
+    pub fn update_transcript(_token: u64, _text: &str) {}
+
+    /// Inert voice paint outside macOS.
+    pub fn update_voice_state(_token: u64, _voice: super::CursorVoice) {}
 
     /// Focused-element text detection is macOS-only.
     pub fn focused_input_field() -> FocusedInputField {
@@ -1137,10 +1528,22 @@ mod stubs {
 
     /// No-op on non-macOS platforms.
     pub fn hide_hold_badge() {}
+
+    /// No-op on non-macOS platforms.
+    pub fn flash_hold_badge(
+        _config: HoldBadgeConfig,
+        _label: &str,
+        _duration: std::time::Duration,
+    ) {
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
-    focused_input_field, get_caret_position, get_cursor_position, hide_hold_badge, show_hold_badge,
-    show_hold_badge_with_config, take_token, update_transcript,
+    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
+    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
+    update_voice_state,
 };
+
+#[cfg(target_os = "macos")]
+pub(crate) use imp::input_field_for_element;

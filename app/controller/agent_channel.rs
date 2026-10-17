@@ -108,6 +108,10 @@ pub struct AgentArchiveRequest {
     pub bus: PathBuf,
     pub executable: PathBuf,
     pub bridge_home: PathBuf,
+    /// Stop the owner's own live follower before archiving (the drawer's
+    /// click on an agent that is alive but no longer reads). Off = the
+    /// helper refuses a live reader, as it always did.
+    pub release_reader: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +257,11 @@ pub struct ChannelHudState {
     /// Whether the bound provider session has a live bridge follower
     /// (fresh lease heartbeat). `None` = the snapshot made no liveness claim.
     pub follower_alive: Option<bool>,
+    /// When the live follower's oldest unacknowledged delivery was emitted.
+    /// A heartbeat proves the reader process, not the conversation behind
+    /// it; a backlog that only grows is the overlay's "alive but not
+    /// reading" signal. `None` = no backlog, no follower, or no claim.
+    pub unread_since: Option<SystemTime>,
 }
 
 fn utterance_silence_ms(seconds: f32) -> u32 {
@@ -276,6 +285,62 @@ pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
 
 pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
+}
+
+/// Pointer label flashed for a chord on a vacant digit. Three words on
+/// purpose: the pointer preview keeps only the tail of what it is given.
+pub fn channel_refusal_label(digit: u8) -> String {
+    format!("channel {digit} empty")
+}
+
+/// macOS's own refusal sound, played at the Settings volume.
+pub(crate) const CHANNEL_REFUSAL_SOUND: &str = "Basso";
+
+/// How long the refusal dot and its label stay beside the pointer; matches
+/// the pointer preview's own freshness window.
+pub(crate) const CHANNEL_REFUSAL_FLASH: Duration = Duration::from_millis(1200);
+
+/// What the user gets back for a chord the controller refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelRefusalFeedback {
+    /// System sound to play at the Settings volume; `None` stays quiet.
+    pub cue: Option<&'static str>,
+    /// Text flashed beside the pointer dot; `None` leaves the pointer alone.
+    pub cursor_label: Option<String>,
+}
+
+impl ChannelRefusalFeedback {
+    const NONE: Self = Self {
+        cue: None,
+        cursor_label: None,
+    };
+}
+
+/// Maciej, 2026-10-17 01:41Z: Ctrl+digit on a vacant channel answered with
+/// nothing — the only signal was a system notification the app never checks
+/// it may post. A vacant slot is a refused user action, so it answers like
+/// one: the refusal sound and one flash of a labelled pointer dot. A missing
+/// binding file means no agent has attached yet, so it is vacant too. Only a
+/// user chord (`Live`) is answered; an attached open is programmatic. A
+/// malformed binding or any other failure is a broken runtime and stays with
+/// the bridge's error path (tray + notification).
+pub(crate) fn channel_refusal_feedback(
+    digit: u8,
+    error: &anyhow::Error,
+    mode: ChannelOpenMode,
+    hold_indicator: bool,
+) -> ChannelRefusalFeedback {
+    let vacant = matches!(
+        error.downcast_ref::<ChannelOpenRefusal>(),
+        Some(ChannelOpenRefusal::DigitUnbound { .. } | ChannelOpenRefusal::BindingMissing { .. })
+    );
+    if !vacant || !matches!(mode, ChannelOpenMode::Live) {
+        return ChannelRefusalFeedback::NONE;
+    }
+    ChannelRefusalFeedback {
+        cue: Some(CHANNEL_REFUSAL_SOUND),
+        cursor_label: hold_indicator.then(|| channel_refusal_label(digit)),
+    }
 }
 
 /// Silence threshold that seals and delivers the current channel utterance.
@@ -317,6 +382,8 @@ pub(crate) enum ChannelSealReason {
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
+    /// Capture is handed to dictation, without extending each channel's feed.
+    DictationHandoff,
     /// The process that opened the session ended without closing it (quit,
     /// crash, or a build that wrote no hang-up row). The next controller
     /// start seals it; no microphone of this process ever belonged to it.
@@ -327,7 +394,7 @@ impl ChannelSealReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::Silence => "silence",
-            Self::Hangup => "hangup",
+            Self::Hangup | Self::DictationHandoff => "hangup",
             Self::Orphan => "orphan",
         }
     }
@@ -593,7 +660,7 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
 }
 
 fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
-    anyhow!("{error}")
+    anyhow::Error::new(error)
 }
 
 fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
@@ -622,9 +689,12 @@ fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
             "--bridge-home",
         ])
         .arg(&request.bridge_home)
+        .args(request.release_reader.then_some("--release-reader"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // The helper names its refusal on stderr ("agent reader is alive;
+        // channel retained"); the drawer shows that sentence, not a code.
+        .stderr(Stdio::piped())
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
@@ -649,7 +719,18 @@ fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
         }
     };
     if !status.success() {
-        return Err(anyhow!("agent archive helper failed: {status}"));
+        let mut stderr = String::new();
+        if let Some(pipe) = child.stderr.take() {
+            let _ = pipe.take(RECEIPT_LIMIT as u64).read_to_string(&mut stderr);
+        }
+        let reason = stderr
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.trim_start_matches("cs-bus: ").to_string())
+            .unwrap_or_else(|| format!("agent archive helper failed: {status}"));
+        return Err(anyhow!("{reason}"));
     }
     let output = child
         .stdout
@@ -733,9 +814,16 @@ impl RecordingController {
         if self.current_state().await == super::State::Idle {
             self.cancel_pending_hold_start().await;
         }
-        let opened = self
+        let opened = match self
             .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
-            .await?;
+            .await
+        {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.answer_channel_refusal(digit, &error, mode).await;
+                return Err(error);
+            }
+        };
         if opened && matches!(mode, ChannelOpenMode::Live) {
             let settings = self.runtime_settings_arc().await;
             if settings.values().beep_on_start {
@@ -743,6 +831,32 @@ impl RecordingController {
             }
         }
         Ok(opened)
+    }
+
+    /// Play and flash what a refused chord earns (see
+    /// [`channel_refusal_feedback`]). The error still travels to the bridge,
+    /// which logs it and leaves the tray alone for a vacant slot.
+    async fn answer_channel_refusal(
+        &self,
+        digit: u8,
+        error: &anyhow::Error,
+        mode: ChannelOpenMode,
+    ) {
+        let config = self.get_config().await;
+        let feedback = channel_refusal_feedback(digit, error, mode, config.hold_indicator);
+        if let Some(cue) = feedback.cue {
+            crate::audio::play_sound_with_volume(cue, config.sound_volume);
+        }
+        if let Some(label) = feedback.cursor_label {
+            hold_badge::flash_hold_badge(
+                hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
+                    BadgeMode::Refused,
+                    f64::from(config.hold_badge_size),
+                ),
+                &label,
+                CHANNEL_REFUSAL_FLASH,
+            );
+        }
     }
 
     /// `shared_bus` carries the rows and receipts of a channel whose binding
@@ -766,6 +880,10 @@ impl RecordingController {
             )
             .await?;
             return Ok(false);
+        }
+
+        if self.shutdown_requested.load(Ordering::SeqCst) {
+            return Err(anyhow!("capture admission closed for shutdown"));
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
@@ -860,7 +978,7 @@ impl RecordingController {
                 }
                 let cursor_token = hold_badge::take_token();
                 let open_label = channel_open_label(digit);
-                hold_badge::update_transcript(cursor_token, &open_label, false);
+                hold_badge::update_transcript(cursor_token, &open_label);
                 let voice_clock = Arc::clone(&last_voice_at);
                 let heard_text = Arc::clone(&last_text);
                 let emitter = Arc::new(
@@ -872,9 +990,16 @@ impl RecordingController {
                         Some(Arc::clone(&ledger)),
                         None,
                     )
+                    .with_apple_preview_observer(Arc::new(move |text| {
+                        hold_badge::update_transcript(cursor_token, text);
+                    }))
                     .with_cursor_observer(Arc::new(move |projection| {
+                        hold_badge::update_voice_state(cursor_token, projection.voice);
+                        crate::os::tray_status::set_tray_voice_for_take(
+                            cursor_token,
+                            projection.voice,
+                        );
                         if projection.text.trim().is_empty() {
-                            hold_badge::update_transcript(cursor_token, &open_label, false);
                             return;
                         }
                         *voice_clock
@@ -882,11 +1007,6 @@ impl RecordingController {
                             .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
                         projection.text.clone_into(
                             &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
-                        );
-                        hold_badge::update_transcript(
-                            cursor_token,
-                            &projection.text,
-                            projection.degraded,
                         );
                     }))
                     .with_sentence_pause_sec(sentence_pause)
@@ -951,6 +1071,18 @@ impl RecordingController {
         );
         drop(recorder_guard);
         drop(channels);
+        // The tray glyph mirrors the pointer badge: any open channel listens in
+        // the Assistive lane even though the controller state stays Idle. The
+        // flag goes up regardless of state so a take ending mid-channel cannot
+        // blacken the dot (tray_status's Idle guard); the dot itself is only
+        // repainted here when no foreign take owns the lifecycle.
+        crate::os::tray_status::set_agent_channels_listening(true);
+        if self.current_state().await == super::State::Idle {
+            crate::os::tray_status::set_tray_indicator_mode(BadgeMode::Assistive);
+            crate::os::tray_status::update_tray_status(
+                crate::os::tray_status::TrayStatus::Listening,
+            );
+        }
         if matches!(mode, ChannelOpenMode::Live) {
             let line = crate::presentation::agent_ack::channel_session_line(
                 &crate::presentation::agent_ack::ChannelSessionLine {
@@ -1002,16 +1134,9 @@ impl RecordingController {
         TakeTruth::observe_ledger(&ledger, &session_id, Self::CHANNEL_CAPTURE_EPOCH)
     }
 
-    /// The one closing throne of a live channel session, for silence and
-    /// hang-up alike (a session no live process owns is sealed by
-    /// [`Self::seal_orphaned_channel_sessions`]). It consumes the open record,
-    /// which its caller removed from `agent_channels` exactly once, so a
-    /// session gets at most one `sealed` receipt. The receipt follows the
-    /// capture close: `end_channel_session` joins the transcription task, so
-    /// every evidence row of the session is already on the bus when a
-    /// follower reads the boundary. It does not wait for a ledger terminal
-    /// seal: a take whose coverage was refused has no other row that
-    /// releases its words.
+    /// Release the channel's capture interest before recognition/archive drain.
+    /// The original open record and lease remain owned by its tracked tail;
+    /// only that tail publishes its seal, after its producer has joined.
     async fn close_open_channel(
         &self,
         digit: u8,
@@ -1020,39 +1145,176 @@ impl RecordingController {
         shared_bus: &Path,
         autoseal_secs: u64,
     ) -> Result<()> {
-        let retained_audio = {
-            let mut recorder_guard = self.recorder.lock().await;
-            match recorder_guard.as_mut() {
-                Some(recorder) => {
-                    // Retire the stored sender before the last channel closes
-                    // the stream. Its captured Arc drops with CoreAudio, so the
-                    // bounded worker rejects queued blocks before the next
-                    // physical capture. Shared dictation/other channels keep it.
-                    if recorder.capture_subscriber_count() == 1 && !recorder.has_take_subscriber() {
-                        recorder.set_level_callback(None);
+        let stopped_at = Instant::now();
+        let retained_capture =
+            super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
+                codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+            });
+        let shared_bus = shared_bus.to_path_buf();
+        let live = matches!(open.mode, ChannelOpenMode::Live);
+        let recorder = Arc::clone(&self.recorder);
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let settlement = async move {
+            let closed = {
+                let mut recorder_guard = recorder.lock().await;
+                match recorder_guard.as_mut() {
+                    Some(recorder) => {
+                        if live && reason == ChannelSealReason::Hangup {
+                            recorder
+                                .await_stop_pause(Some(open.subscriber), stopped_at)
+                                .await;
+                        }
+                        if recorder.capture_subscriber_count() == 1
+                            && !recorder.has_take_subscriber()
+                        {
+                            recorder.set_level_callback(None);
+                        }
+                        Some(recorder.close_channel_session(open.subscriber).await)
                     }
-                    let (_last, audio_path) = recorder.end_channel_session(open.subscriber).await?;
-                    audio_path
+                    None => None,
                 }
-                None => None,
+            };
+            let _ = closed_tx.send(());
+            Self::settle_closed_channel(
+                digit,
+                open,
+                reason,
+                shared_bus,
+                autoseal_secs,
+                closed,
+                retained_capture,
+            )
+            .await
+        };
+        if live {
+            // Own the physical close before the first wait, including grace.
+            // Dropping the foreign caller must not orphan an open PCM feed.
+            let task = tokio::spawn(async move {
+                if let Err(error) = settlement.await {
+                    tracing::warn!(%error, digit, "released channel terminal tail failed");
+                }
+            });
+            {
+                let mut tails = self
+                    .closed_capture_tails
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                tails.retain(|task| !task.is_finished());
+                tails.push(task);
+            }
+        } else {
+            settlement.await?;
+        }
+        closed_rx
+            .await
+            .map_err(|_| anyhow!("channel capture close task ended before its fence"))?;
+        // Only this foreground may hide the old badge. A cancelled caller's
+        // retained tail never changes a replacement channel's UI.
+        let state = self.current_state().await;
+        let channels = self.agent_channels.lock().await;
+        if channels.is_empty() {
+            // The glyph's Idle guard stands down with the last channel; during
+            // a dictation handoff the take's own lifecycle repaints the tray.
+            crate::os::tray_status::set_agent_channels_listening(false);
+        }
+        if channels.is_empty() && state == super::State::Idle {
+            hold_badge::hide_hold_badge();
+            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Idle);
+        }
+        Ok(())
+    }
+
+    async fn settle_closed_channel(
+        digit: u8,
+        open: OpenAgentChannel,
+        reason: ChannelSealReason,
+        shared_bus: PathBuf,
+        autoseal_secs: u64,
+        closed: Option<crate::audio::streaming_recorder::ClosedChannel>,
+        retained_capture: Option<
+            Arc<codescribe_core::state::history::audio_retention::CaptureLease>,
+        >,
+    ) -> Result<()> {
+        let stopped = match closed {
+            Some(closed) => closed.finish().await.map(|(_, path)| path),
+            None => Ok(None),
+        };
+        let (retained_audio, failure_detail) = match stopped {
+            Ok(path) => (path, None),
+            Err(error) => {
+                tracing::warn!(%error, digit, "channel producer/archive failed after capture release");
+                if let Some(lease) = retained_capture.as_ref() {
+                    lease.protect_retry();
+                }
+                let failure =
+                    error.downcast_ref::<crate::audio::streaming_recorder::CaptureStopFailure>();
+                let mut path = failure.and_then(|failure| failure.audio_path.clone());
+                let archive = failure
+                    .and_then(|failure| {
+                        failure
+                            .cause
+                            .downcast_ref::<codescribe_core::audio::recorder::CaptureArchiveError>()
+                    })
+                    .cloned();
+                if let Some(archive) = archive {
+                    if let Some(lease) = retained_capture.as_ref()
+                        && let Some(source) = archive.source_path.as_ref()
+                    {
+                        let _ = lease.record(std::slice::from_ref(source), false);
+                    }
+                    match tokio::task::spawn_blocking(move || {
+                        let recovered = archive.recover_complete_archive()?;
+                        archive.acknowledge_recovery(&recovered)?;
+                        Ok::<_, anyhow::Error>(recovered.path().to_path_buf())
+                    })
+                    .await
+                    {
+                        Ok(Ok(recovered)) => path = Some(recovered),
+                        other => tracing::warn!(
+                            ?other,
+                            digit,
+                            "closed channel complete archive recovery failed"
+                        ),
+                    }
+                }
+                (
+                    path,
+                    Some(format!("channel terminal processing failed: {error:#}")),
+                )
             }
         };
+        // The producer joined above. Publish its final held snapshot before
+        // retention can yield and before any non-open channel receipt flushes it.
+        if let Some(bus) = open.transcript_bus.as_ref() {
+            let settings = Config::load_startup_runtime_snapshot(false);
+            if let Err(error) = bus.publish_channel_sealed(settings.agent_send_hold_sec()) {
+                tracing::warn!(%error, digit, "channel seal snapshot persistence failed");
+            }
+        }
         // The channel task has joined. Freeze its ledger before `open` drops
         // that handle. This is not the dictation recorder's ledger.
         let observer = Self::channel_take_observer(&open);
         if let Some(path) = retained_audio.as_deref() {
             // W5 retention parity: a capture the channel owned joins the same
-            // take store and retention rules as dictation. The slug carries
+            // take store and retention rules as dictation. The path is the
+            // channel's own subscriber-scoped archive; the device spill spans
+            // other sessions and never enters this retention. The slug carries
             // the heard words; a voiceless close archives as no-speech.
             let heard = open
                 .last_text
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
-            super::retain_session_audio(
+            super::retain_session_audio_with_lease(
                 open.session_id.as_deref(),
                 path,
-                codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+                match failure_detail.as_deref() {
+                    Some(detail) => {
+                        codescribe_core::state::SessionTranscriptArchive::Unavailable(detail)
+                    }
+                    None => codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+                },
+                retained_capture.clone(),
                 &observer,
             )
             .await;
@@ -1074,23 +1336,24 @@ impl RecordingController {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        if let Some(bus) = open.transcript_bus.as_ref() {
+        let mut refinement_warnings = refinement_warnings;
+        if let Some(detail) = failure_detail {
+            refinement_warnings.push(detail);
+        }
+        let receipt = if let Some(bus) = open.transcript_bus.as_ref() {
             bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
+            Ok(())
         } else {
             append_seal_receipt(
-                open.bus.as_deref().unwrap_or(shared_bus),
+                open.bus.as_deref().unwrap_or(&shared_bus),
                 reason,
                 &opened,
                 &refinement_warnings,
-            )?;
-        }
+            )
+        };
         super::finish_audio_capture(open.session_id.as_deref());
-        let state = self.current_state().await;
-        let channels = self.agent_channels.lock().await;
-        if channels.is_empty() && state == super::State::Idle {
-            hold_badge::hide_hold_badge();
-        }
-        Ok(())
+        drop(retained_capture);
+        Ok(receipt?)
     }
 
     /// Startup reconciliation of the channel-session ledger. A session whose
@@ -1188,8 +1451,9 @@ impl RecordingController {
             .await
     }
 
-    /// Ordinary capture admission holds the controller's serial lock. Join
-    /// each channel and publish its existing close receipt before that admission.
+    /// Ordinary capture admission holds the controller's serial lock. Release
+    /// each channel feed before admission; tracked tails join and publish its
+    /// existing close receipt independently of the next capture.
     pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
         let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
         open.sort_by_key(|(digit, _)| *digit);
@@ -1201,7 +1465,7 @@ impl RecordingController {
                 .close_open_channel(
                     digit,
                     channel,
-                    ChannelSealReason::Hangup,
+                    ChannelSealReason::DictationHandoff,
                     &bus,
                     channel_autoseal_secs(),
                 )
@@ -1302,6 +1566,7 @@ impl RecordingController {
                     provider: open.provider.clone(),
                     provider_session_id: open.provider_session_id.clone(),
                     follower_alive: None,
+                    unread_since: None,
                 })
             })
             .collect()
@@ -1333,6 +1598,11 @@ impl RecordingController {
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
         );
+        let unread = codescribe_core::stt::active_names::unread_backlog_since_at(
+            bridge_home,
+            now,
+            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
+        );
         let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
             match (provider.as_deref(), session.as_deref()) {
                 (Some(provider), Some(session)) => {
@@ -1341,9 +1611,20 @@ impl RecordingController {
                 _ => None,
             }
         };
+        let unread_since = |provider: &Option<String>,
+                            session: &Option<String>|
+         -> Option<SystemTime> {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return None;
+            };
+            unread
+                .get(&(provider.to_lowercase(), session.to_string()))
+                .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)))
+        };
         let mut states = self.channel_hud_states().await;
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
+            state.unread_since = unread_since(&state.provider, &state.provider_session_id);
         }
         if !states.iter().any(|state| state.channel == "0") {
             states.push(ChannelHudState {
@@ -1360,6 +1641,7 @@ impl RecordingController {
                 provider: None,
                 provider_session_id: None,
                 follower_alive: None,
+                unread_since: None,
             });
         }
         let Ok(file) = load_binding(binding) else {
@@ -1388,6 +1670,7 @@ impl RecordingController {
                 opened_at: SystemTime::UNIX_EPOCH,
                 utterance_silence_ms: 0,
                 follower_alive: alive(&provider, &session),
+                unread_since: unread_since(&provider, &session),
                 provider,
                 provider_session_id: session,
             });
@@ -1447,6 +1730,81 @@ mod tests {
         let path = dir.join(BINDING_FILENAME);
         std::fs::write(&path, body).expect("write binding");
         path
+    }
+
+    fn chord_error(refusal: ChannelOpenRefusal) -> anyhow::Error {
+        super::refusal(refusal)
+    }
+
+    #[test]
+    fn a_chord_on_a_vacant_digit_earns_the_refusal_sound_and_a_pointer_flash() {
+        for vacant in [
+            ChannelOpenRefusal::DigitUnbound { digit: 7 },
+            ChannelOpenRefusal::BindingMissing {
+                path: "fixture.json".into(),
+            },
+        ] {
+            let feedback = channel_refusal_feedback(
+                7,
+                &chord_error(vacant.clone()),
+                ChannelOpenMode::Live,
+                true,
+            );
+            assert_eq!(feedback.cue, Some("Basso"), "{vacant:?}");
+            assert_eq!(
+                feedback.cursor_label.as_deref(),
+                Some("channel 7 empty"),
+                "{vacant:?}"
+            );
+        }
+        // The pointer preview keeps only the last three words of a label.
+        assert_eq!(channel_refusal_label(7).split_whitespace().count(), 3);
+    }
+
+    #[test]
+    fn pointer_indicator_off_keeps_the_sound_and_drops_the_flash() {
+        let feedback = channel_refusal_feedback(
+            4,
+            &chord_error(ChannelOpenRefusal::DigitUnbound { digit: 4 }),
+            ChannelOpenMode::Live,
+            false,
+        );
+        assert_eq!(feedback.cue, Some("Basso"));
+        assert_eq!(feedback.cursor_label, None);
+    }
+
+    #[test]
+    fn broken_bindings_other_failures_and_attached_opens_get_no_feedback() {
+        let silent = ChannelRefusalFeedback {
+            cue: None,
+            cursor_label: None,
+        };
+        for error in [
+            chord_error(ChannelOpenRefusal::BindingMalformed {
+                path: "fixture.json".into(),
+                detail: "invalid JSON".into(),
+            }),
+            chord_error(ChannelOpenRefusal::InvalidDigit),
+            anyhow::anyhow!("capture admission closed for shutdown"),
+            // The refusal's text without its type is not the refusal.
+            anyhow::anyhow!(ChannelOpenRefusal::DigitUnbound { digit: 2 }.to_string()),
+        ] {
+            assert_eq!(
+                channel_refusal_feedback(2, &error, ChannelOpenMode::Live, true),
+                silent,
+                "{error}"
+            );
+        }
+        assert_eq!(
+            channel_refusal_feedback(
+                2,
+                &chord_error(ChannelOpenRefusal::DigitUnbound { digit: 2 }),
+                ChannelOpenMode::AttachedOnly,
+                true,
+            ),
+            silent,
+            "an attached open is programmatic, not a user chord"
+        );
     }
 
     fn bus_rows(bus: &Path) -> Vec<serde_json::Value> {
@@ -1510,6 +1868,67 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn cancelled_hangup_caller_retains_owned_capture_close_and_one_seal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        open_stamped(&controller, &binding, &shared_bus, "cancelled-stop").await;
+        let mut open = controller
+            .agent_channels
+            .lock()
+            .await
+            .remove(&3)
+            .expect("open");
+        // Exercise the owned Live close transport without opening a device or ASR.
+        open.mode = ChannelOpenMode::Live;
+        let recorder_guard = controller.recorder.lock().await;
+        let closing_controller = Arc::clone(&controller);
+        let closing_bus = shared_bus.clone();
+        let caller = tokio::spawn(async move {
+            closing_controller
+                .close_open_channel(3, open, ChannelSealReason::Hangup, &closing_bus, 4)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !controller
+                    .closed_capture_tails
+                    .lock()
+                    .expect("tails")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close owner retained before first wait");
+        caller.abort();
+        assert!(caller.await.expect_err("cancelled caller").is_cancelled());
+        drop(recorder_guard);
+        let tail = controller
+            .closed_capture_tails
+            .lock()
+            .expect("tails")
+            .pop()
+            .expect("retained close");
+        tokio::time::timeout(Duration::from_secs(2), tail)
+            .await
+            .expect("tail closes")
+            .expect("tail joined");
+        assert_eq!(controller.capture_subscriber_view().await.0, 0);
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![("cancelled-stop".to_string(), "hangup".to_string())]
+        );
+        assert_eq!(ChannelSealReason::DictationHandoff.as_str(), "hangup");
+        assert_eq!(ChannelSealReason::Silence.as_str(), "silence");
+    }
+
     #[test]
     fn digit_zero_is_broadcast_without_a_binding_file() {
         let missing = Path::new("/tmp/codescribe-fn1-missing-binding.json");
@@ -1570,6 +1989,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unbound_channel_refusal_retains_its_type_without_opening_capture() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let path = write_binding(
+            dir.path(),
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{}}"#,
+        );
+        let bus = dir.path().join("shared-bus.jsonl");
+        let error = controller
+            .dispatch_agent_channel(2, &path, &bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect_err("unbound channel must refuse")
+            .context("dispatching agent shortcut");
+        assert_eq!(
+            error.downcast_ref::<ChannelOpenRefusal>(),
+            Some(&ChannelOpenRefusal::DigitUnbound { digit: 2 })
+        );
+        assert!(controller.agent_channel_snapshot(2).await.is_none());
+        assert_eq!(
+            controller.capture_subscriber_view().await,
+            (0, false, false)
+        );
+        assert_eq!(controller.current_state().await, super::super::State::Idle);
+        assert!(
+            !bus.exists(),
+            "a refused shortcut must not publish a session"
+        );
+    }
+
+    #[tokio::test]
     async fn missing_binding_does_not_open_capture() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1593,7 +2042,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn second_press_closes_the_channel_and_leaves_dictation_idle() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1640,6 +2089,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn conversation_refuses_while_a_channel_is_open() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1664,7 +2114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1731,7 +2181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1780,7 +2230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
         let controller = Arc::new(RecordingController::new_without_keychain());
         let dir = tempfile::tempdir().expect("temp");
@@ -1829,7 +2279,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
@@ -1892,7 +2342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn hold_release_while_scheduling_waits_preserves_channel_and_cancels_take() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
@@ -1961,7 +2411,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn raw_hold_arm_preserves_channel_until_an_ordinary_take_is_admitted() {
         use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
         let controller = Arc::new(RecordingController::new_without_keychain());
@@ -2005,7 +2455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn detector_fn_prefix_then_channel_digit_never_admits_a_phantom_hold() {
         use super::super::{HotkeyAction, HotkeyInput, HotkeyType, State};
         use crate::os::hotkeys::{
@@ -2142,7 +2592,7 @@ mod tests {
     }
 
     #[test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {
         struct Restore;
         impl Drop for Restore {
@@ -2181,7 +2631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn silence_past_the_cap_seals_the_channel_and_clears_the_open_state() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2312,7 +2762,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn a_binding_bus_routes_the_channel_receipts_to_the_dedicated_file() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2358,7 +2808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn silence_seal_reopens_the_channel_on_the_same_binding() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2414,7 +2864,7 @@ mod tests {
     /// finality, and the Founder hung up before the silence boundary. The
     /// hang-up itself must put the closing row on the channel's own bus.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn hang_up_before_any_seal_writes_one_hangup_receipt_on_the_channel_bus() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -2506,7 +2956,7 @@ mod tests {
         std::fs::write(
             bridge.join("leases/ada.json"),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session"}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
             ),
         )
         .expect("lease");
@@ -2523,6 +2973,18 @@ mod tests {
         assert_eq!(roster[1].audience, "Ada");
         assert!(!roster[1].open);
         assert_eq!(roster[1].follower_alive, Some(true));
+        assert_eq!(
+            roster[1].unread_since,
+            Some(
+                SystemTime::UNIX_EPOCH
+                    + Duration::from_secs(
+                        chrono::DateTime::parse_from_rfc3339("2026-10-14T11:00:00Z")
+                            .expect("stamp")
+                            .timestamp() as u64
+                    )
+            ),
+            "the oldest unacknowledged delivery dates the backlog of a live follower"
+        );
         assert_eq!(roster[2].channel, "3");
         assert_eq!(roster[2].audience, "Leon");
         assert!(!roster[2].open);
@@ -2530,6 +2992,10 @@ mod tests {
             roster[2].follower_alive,
             Some(false),
             "no lease means nobody is listening"
+        );
+        assert_eq!(
+            roster[2].unread_since, None,
+            "a dead follower has no live backlog"
         );
     }
 
@@ -2748,7 +3214,7 @@ mod tests {
     /// by a hang-up. The hang-up closes the session the quiet contract
     /// reopened, and a digit press after a seal without reopen opens.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn a_silence_sealed_session_is_never_sealed_again_by_a_hang_up() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -2808,7 +3274,7 @@ mod tests {
     /// A hang-up ends one session, not the channel: the next press reopens
     /// on the same binding and the quiet contract runs as before.
     #[tokio::test]
-    #[serial(agent_ack_duck)]
+    #[serial]
     async fn reopen_after_a_hang_up_keeps_the_quiet_contract() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
@@ -3092,6 +3558,7 @@ mod tests {
     /// A session this controller opened is live, not an orphan, even when its
     /// `open` row is its channel's newest.
     #[tokio::test]
+    #[serial_test::serial]
     async fn a_session_this_process_owns_is_never_sealed_as_an_orphan() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -3200,7 +3667,7 @@ mod capture_observer_channel_ownership_tests {
         ledger
     }
     #[tokio::test]
-    #[serial_test::serial(agent_ack_duck)]
+    #[serial_test::serial]
     async fn live_channel_observer_uses_its_own_ledger_and_keeps_receipt_identity() {
         let (_controller, _dir, mut open) = fixture().await;
         open.mode = ChannelOpenMode::Live;
@@ -3233,7 +3700,7 @@ mod capture_observer_channel_ownership_tests {
         assert_eq!(ledger.lock().unwrap().layer_trail().len(), 2);
     }
     #[tokio::test]
-    #[serial_test::serial(agent_ack_duck)]
+    #[serial_test::serial]
     async fn attached_channel_cannot_claim_live_evidence_even_if_a_handle_is_present() {
         let (_controller, _dir, mut open) = fixture().await;
         open.session_id = Some("owned-channel".into());
@@ -3337,6 +3804,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
                 bus: self.bus.clone(),
                 executable: self.executable.clone(),
                 bridge_home: self.dir.path().to_owned(),
+                release_reader: false,
             }
         }
 
@@ -3356,6 +3824,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn an_open_controller_channel_refuses_archive_before_helper_spawn() {
         let fixture = ArchiveFixture::new();
         let controller = RecordingController::new_without_keychain();
@@ -3381,6 +3850,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn archive_completion_precedes_a_queued_channel_open() {
         let fixture = ArchiveFixture::new();
         let controller = Arc::new(RecordingController::new_without_keychain());
@@ -3428,6 +3898,7 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn cancelled_archive_keeps_serial_ownership_until_the_helper_exits() {
         let fixture = ArchiveFixture::new();
         let controller = Arc::new(RecordingController::new_without_keychain());

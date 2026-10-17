@@ -1,7 +1,7 @@
 ---
 import { asset, page } from '../lib/asset';
 // Footer (WEBSITE_SPEC §3). Brand line corrected to "Vetcoders" (capital V only).
-// Trust links (Privacy / Terms / Refunds / Support) are MoR + buyer requirements.
+// Guide, license key and trust links stay reachable from every page.
 ---
 
 <footer class="footer" data-screen-label="Footer">
@@ -11,6 +11,8 @@ import { asset, page } from '../lib/asset';
       <span class="wordmark">codescribe</span>
     </div>
     <nav class="links" aria-label="Footer">
+      <a href={page('guide')}>guide</a>
+      <a href={page('license')}>license key</a>
       <a href={page('voice/lab')}>voice lab</a>
       <a href={page('privacy')}>privacy</a>
       <a href={page('terms')}>terms</a>

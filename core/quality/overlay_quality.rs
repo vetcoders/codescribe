@@ -312,6 +312,10 @@ fn assert_test_data_dir_isolated(caller: &str) {
 pub struct QualityListing {
     pub corrections: Vec<QualityRecord>,
     pub unchanged_takes: u64,
+    /// Every correction in the store, including the ones past `limit`:
+    /// Learn replays the whole store, so the UI must not quote the capped
+    /// page as the corpus size.
+    pub total_corrections: u64,
 }
 
 /// Filtered read for product surfaces. Writes are untouched: no-op records
@@ -319,9 +323,11 @@ pub struct QualityListing {
 /// lives here so every client shares one truth.
 pub fn recent_quality_listing(limit: usize) -> Result<QualityListing> {
     let mut unchanged_takes = 0u64;
+    let mut total_corrections = 0u64;
     let mut corrections = Vec::new();
     for (_, record) in read_collapsed_quality_records()? {
         if record.is_correction() {
+            total_corrections += 1;
             if corrections.len() < limit {
                 corrections.push(record);
             }
@@ -332,6 +338,7 @@ pub fn recent_quality_listing(limit: usize) -> Result<QualityListing> {
     Ok(QualityListing {
         corrections,
         unchanged_takes,
+        total_corrections,
     })
 }
 
@@ -1651,7 +1658,10 @@ pub struct ReplayCandidate {
 pub struct DictionaryTeachResult {
     /// Pairs upserted from quality corrections.jsonl (Correction level).
     pub from_corrections: u32,
-    /// Pairs upserted from lexicon.custom.proposed.jsonl.
+    /// Rules newly added from lexicon.custom.proposed.jsonl: the growth of the
+    /// flattened rules list across the proposed upsert. A suggestion learned by
+    /// an earlier run is upserted again (idempotently) but is not counted, so
+    /// the Learn result never credits suggestions that added nothing.
     pub from_proposed: u32,
     /// Flattened custom-lexicon rows after teach (variant→canonical).
     pub total_rules: u32,
@@ -1725,8 +1735,12 @@ pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
             .iter()
             .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
             .collect();
+        let rules_before = custom_lexicon_entries()?.len();
         match upsert_corrections_in_custom_lexicon(&pairs) {
-            Ok(()) => from_proposed = pairs.len() as u32,
+            Ok(()) => {
+                let rules_after = custom_lexicon_entries()?.len();
+                from_proposed = rules_after.saturating_sub(rules_before) as u32;
+            }
             Err(e) => tracing::warn!("teach: failed to apply proposed rules: {:#}", e),
         }
     }
@@ -2360,6 +2374,28 @@ mod tests {
             custom_lexicon_entries().unwrap().is_empty(),
             "two X teaches plus one Y teach must not promote X"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn teach_counts_only_newly_added_proposed_rules() {
+        let _fixture = QualityFixture::new("temp");
+        let proposed = Config::config_dir().join("lexicon.custom.proposed.jsonl");
+        std::fs::create_dir_all(proposed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &proposed,
+            "{\"term\":\"Kubernetes\",\"mispronunciations\":[\"kubernetis\"]}\n",
+        )
+        .unwrap();
+
+        let first = teach_dictionary_from_store().expect("first teach");
+        assert_eq!(first.from_proposed, 1, "a new suggestion is credited once");
+        let second = teach_dictionary_from_store().expect("second teach");
+        assert_eq!(
+            second.from_proposed, 0,
+            "a suggestion learned by an earlier run adds nothing and is not credited"
+        );
+        assert_eq!(second.total_rules, first.total_rules);
     }
 
     /// The per-utterance Dictionary teach action uses the same three-correction
@@ -3353,6 +3389,7 @@ mod tests {
         let listing = recent_quality_listing(10).expect("listing");
         assert_eq!(listing.unchanged_takes, 1);
         assert_eq!(listing.corrections.len(), 2);
+        assert_eq!(listing.total_corrections, 2);
         assert_eq!(
             listing.corrections[0].confidence_flags,
             vec!["speech_gap".to_string()],
@@ -3381,6 +3418,7 @@ mod tests {
     fn recent_quality_records_limit_counts_only_real_corrections() {
         let _fixture = QualityFixture::new("temp quality root");
 
+        seed_voice_lab_record("wajprawter", "Vibecrafted");
         seed_voice_lab_record("uni agentka", "Junie");
         save_quality_record(&QualityRecord {
             correction_id: String::new(),
@@ -3406,6 +3444,10 @@ mod tests {
         let listing = recent_quality_listing(1).expect("limited listing");
         assert_eq!(listing.corrections.len(), 1);
         assert_eq!(listing.unchanged_takes, 1);
+        assert_eq!(
+            listing.total_corrections, 2,
+            "the cap bounds the page, not the corpus count"
+        );
     }
 
     /// One committed record inside an isolated data dir; returns its logical ID.

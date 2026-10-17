@@ -102,22 +102,49 @@ struct BlinkCaret: View {
 /// the single growing turn, never the whole history.
 struct MarkdownText: View {
   let raw: String
+  // SwiftUI's String equality is canonical, while capture revisions own their
+  // exact bytes. Include byte identity at this parent, before its native child.
+  private let utf8Identity: [UInt8]
   var size: CGFloat = 14
   var bodyColor: Color = Color.primary
   var showsCaret: Bool = false
+  var showsUnderlineCaret: Bool = false
+
+  init(
+    raw: String, size: CGFloat = 14, bodyColor: Color = .primary,
+    showsCaret: Bool = false, showsUnderlineCaret: Bool = false
+  ) {
+    self.raw = raw
+    self.utf8Identity = Array(raw.utf8)
+    self.size = size
+    self.bodyColor = bodyColor
+    self.showsCaret = showsCaret
+    self.showsUnderlineCaret = showsUnderlineCaret
+  }
 
   /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
   /// block's base `size` drives EVERY element (headings, lists, code, tables,
   /// inline runs), which are all derived from `s` — so the whole markdown body
   /// scales together instead of per-style hand-tuning.
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.markdownLinkOpener) private var linkOpener
   private var s: CGFloat { size * textScale }
 
   var body: some View {
-    let blocks = MDBlock.parse(raw)
-    VStack(alignment: .leading, spacing: 7) {
-      ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-        blockView(block, isLast: index == blocks.count - 1)
+    Group {
+      if showsUnderlineCaret {
+        // During capture these are the spoken bytes, including an open tail.
+        // The native canvas owns selection and pins activity to its insertion
+        // geometry. Settled turns keep the rich markdown rendering below.
+        TranscriptActivityText(text: raw, fontSize: s, color: bodyColor)
+          .textSelection(.disabled)
+      } else {
+        let blocks = MDBlock.parse(raw)
+        VStack(alignment: .leading, spacing: 7) {
+          ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+            blockView(block, isLast: index == blocks.count - 1)
+          }
+        }
       }
     }
     // Rich rendering must not trade away the platform's basic copy
@@ -127,7 +154,7 @@ struct MarkdownText: View {
     .environment(
       \.openURL,
       OpenURLAction { url in
-        NSWorkspace.shared.open(url)
+        linkOpener(url)
         return .handled
       })
   }
@@ -207,7 +234,7 @@ struct MarkdownText: View {
     let attr = Self.inlineAttributed(
       text, fontSize: fontSize,
       baseFont: baseFont, baseColor: baseColor)
-    let content = Text(attr).lineSpacing(5)
+    let content = inlineRuns(attr, lineSpacing: 5)
     if isLast, showsCaret {
       HStack(alignment: .bottom, spacing: 2) {
         content.fixedSize(horizontal: false, vertical: true)
@@ -217,6 +244,16 @@ struct MarkdownText: View {
       content
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  /// Plain `Text` unless the runs carry links; links answer the pointer.
+  @ViewBuilder
+  private func inlineRuns(_ attr: AttributedString, lineSpacing: CGFloat) -> some View {
+    if MarkdownLinkText.hasLinks(attr) {
+      MarkdownLinkText(attributed: attr, lineSpacing: lineSpacing)
+    } else {
+      Text(attr).lineSpacing(lineSpacing)
     }
   }
 
@@ -370,8 +407,7 @@ struct MarkdownText: View {
     let attr = Self.inlineAttributed(
       text, fontSize: cellSize,
       baseFont: font, baseColor: color)
-    Text(attr)
-      .lineSpacing(3)
+    inlineRuns(attr, lineSpacing: 3)
       .multilineTextAlignment(.leading)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -430,6 +466,7 @@ struct MarkdownText: View {
     }
     attr.font = baseFont
     attr.foregroundColor = baseColor
+    ConversationLocalFileLinks.annotate(&attr)
 
     var codeRanges: [Range<AttributedString.Index>] = []
     var linkRanges: [Range<AttributedString.Index>] = []
@@ -684,10 +721,15 @@ private struct CodeBlockView: View {
 
   private var copyButton: some View {
     Button {
-      NSPasteboard.general.clearContents()
-      NSPasteboard.general.setString(content, forType: .string)
-      copied = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      Task { @MainActor in
+        do {
+          try await UserTextClipboard.copy(content)
+          copied = true
+          DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        } catch {
+          NSSound.beep()
+        }
+      }
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)

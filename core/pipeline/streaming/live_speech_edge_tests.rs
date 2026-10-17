@@ -7,6 +7,98 @@ use super::{EpochDecision, EpochGate, SileroIngress};
 const RATE: u32 = 16_000;
 const FRAME: usize = 512;
 
+#[test]
+fn continuous_speech_coverage_survives_maximum_duration_splits() {
+    let mut driver = Driver::new();
+    for _ in 0..1000 {
+        driver.feed(0.9);
+    }
+    let evidence = driver.ingress.acoustic_speech_evidence();
+    let ranges = evidence.ranges();
+    let speech_samples: u64 = ranges.iter().map(|r| r.sample_end - r.sample_start).sum();
+    assert_eq!(
+        speech_samples, driver.seen,
+        "a duration split must not end the acoustic speech set: {ranges:?}"
+    );
+    let voiced_end = driver.seen;
+    for _ in 0..200 {
+        driver.feed(0.01);
+    }
+    let evidence = driver.ingress.acoustic_speech_evidence();
+    let pad = (crate::pipeline::streaming::silero_fusion::ACOUSTIC_SPEECH_PAD_SECS * RATE as f32)
+        .round() as u64;
+    assert!(
+        evidence.ranges().last().unwrap().sample_end <= voiced_end + FRAME as u64 + pad,
+        "real silence must close the speech set instead of swallowing the quiet tail"
+    );
+}
+
+/// Explicit local corpus acceptance; recordings stay outside Git.
+#[test]
+#[ignore = "Requires .vibecrafted/fixtures/silero-regression/{quiet,long,silence}.wav"]
+fn preserved_capture_silero_ingress_keeps_long_speech() {
+    use crate::vad::AccumulatingVad;
+    use codescribe_core::audio::{load_audio_file, resample_to_16k};
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join(".vibecrafted/fixtures/silero-regression");
+    for (name, minimum) in [("quiet", 2.0), ("long", 80.0), ("silence", 0.0)] {
+        let (raw, rate) = load_audio_file(&fixtures.join(format!("{name}.wav"))).unwrap();
+        assert_eq!(rate, 48_000);
+        let projection = crate::audio::speech_input::replay_projection_for_test(&raw, 7.943_282);
+        assert_eq!(projection.len(), raw.len());
+        let mono = resample_to_16k(&projection, rate).unwrap();
+        let mut reference = AccumulatingVad::new(RATE).unwrap();
+        let positives = mono
+            .as_chunks::<FRAME>()
+            .0
+            .iter()
+            .filter(|frame| reference.feed(frame.as_slice()) >= 0.5)
+            .count();
+        let reference_seconds = positives as f64 * FRAME as f64 / RATE as f64;
+        let mut previous = None;
+        for partition in [480, 1024] {
+            let mut ingress = SileroIngress::new(rate, name, 1);
+            let mut seen = 0;
+            for (capture, model) in raw.chunks(partition).zip(projection.chunks(partition)) {
+                seen += capture.len() as u64;
+                ingress.ingest(capture, model, seen);
+            }
+            let evidence = ingress.acoustic_speech_evidence();
+            assert_eq!(ingress.observed_samples(), raw.len() as u64);
+            let ranges: Vec<_> = evidence
+                .ranges()
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect();
+            let seconds =
+                ranges.iter().map(|(start, end)| end - start).sum::<u64>() as f64 / rate as f64;
+            assert!(
+                seconds >= minimum,
+                "{name}: only {seconds}s of speech survived"
+            );
+            if name == "silence" {
+                assert!(ranges.is_empty());
+                assert_eq!(reference_seconds, 0.0);
+            }
+            if let Some(previous) = previous.as_ref() {
+                assert_eq!(
+                    &ranges, previous,
+                    "{name}: capture partition changed speech evidence"
+                );
+            }
+            println!(
+                "SILERO_REPLAY {}",
+                serde_json::json!({"fixture":name,"partition":partition,
+                "samples":raw.len(),"speech_extent_seconds":seconds,"reference_threshold_seconds":reference_seconds,
+                "ranges":ranges,"availability":format!("{:?}",evidence.availability())})
+            );
+            previous = Some(ranges);
+        }
+    }
+}
+
 struct Driver {
     ingress: SileroIngress,
     gate: EpochGate,
@@ -32,7 +124,7 @@ impl Driver {
         self.ingress.push_scripted_speech_prob_for_test(prob);
         let pcm = vec![0.2_f32; FRAME];
         self.seen += FRAME as u64;
-        let ingest = self.ingress.ingest(&pcm, self.seen);
+        let ingest = self.ingress.ingest(&pcm, &pcm, self.seen);
         if ingest.speech_live {
             self.false_run = 0;
         } else {
@@ -108,7 +200,7 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
     for prob in probabilities {
         ingress.push_scripted_speech_prob_for_test(prob);
         seen += FRAME as u64;
-        let observed = ingress.ingest(&[0.2; FRAME], seen);
+        let observed = ingress.ingest(&[0.2; FRAME], &[0.2; FRAME], seen);
         if !observed.closed.is_empty() {
             split_cursor = Some(seen);
             break;
@@ -117,7 +209,7 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
     let split_cursor = split_cursor.expect("script must force a retroactive split");
     ingress.push_scripted_speech_prob_for_test(0.90);
     seen += FRAME as u64;
-    ingress.ingest(&[0.2; FRAME], seen);
+    ingress.ingest(&[0.2; FRAME], &[0.2; FRAME], seen);
     let utterances = ingress.ledger().utterances();
     assert_eq!(utterances.len(), 2, "reopen must mint another occurrence");
     let closed_end = utterances[0].range.sample_end;
@@ -135,4 +227,35 @@ fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
             .windows(2)
             .all(|pair| pair[0].range.sample_end <= pair[1].range.sample_start)
     );
+}
+
+#[test]
+fn witness_attempts_preserve_the_budget_of_a_distant_target() {
+    let mut attempts = Vec::new();
+    let targets = [(0, 1), (60, 61)];
+    for _ in 0..2 {
+        super::record_dictation_witness_attempts(&mut attempts, &targets, 0, 30, 30);
+    }
+    assert_eq!(attempts, vec![((0, 1), 2)]);
+    super::record_dictation_witness_attempts(&mut attempts, &targets[1..], 58, 61, 30);
+    assert_eq!(attempts, vec![((0, 1), 2), ((60, 61), 1)]);
+}
+
+#[test]
+fn witness_attempts_do_not_charge_a_sliver_of_a_later_oversized_target() {
+    let mut attempts = Vec::new();
+    let targets = [(0, 1), (29, 61)];
+    super::record_dictation_witness_attempts(&mut attempts, &targets, 0, 30, 30);
+    assert_eq!(attempts, vec![((0, 1), 1)]);
+    super::record_dictation_witness_attempts(&mut attempts, &targets[1..], 27, 57, 30);
+    assert_eq!(attempts, vec![((0, 1), 1), ((29, 61), 1)]);
+}
+
+#[test]
+fn witness_attempts_charge_full_targets_and_only_the_leading_oversized_one() {
+    let mut attempts = Vec::new();
+    super::record_dictation_witness_attempts(&mut attempts, &[(0, 90), (10, 100)], 0, 30, 30);
+    assert_eq!(attempts, vec![((0, 90), 1)]);
+    super::record_dictation_witness_attempts(&mut attempts, &[(100, 110)], 98, 110, 30);
+    assert_eq!(attempts, vec![((0, 90), 1), ((100, 110), 1)]);
 }

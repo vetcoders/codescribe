@@ -334,7 +334,7 @@ impl From<std::io::Error> for AccountAuthError {
 /// Expiry is persisted as an absolute Unix timestamp rather than the
 /// `expires_in` the provider returns: a relative lifetime is meaningless once
 /// it has been sitting in storage across an app restart.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountTokens {
     /// Provider tag, from `ProviderKind::as_str`.
     pub provider: String,
@@ -349,6 +349,19 @@ pub struct AccountTokens {
     /// Absolute expiry. `None` ⇒ the provider declared no lifetime, so the
     /// token is never proactively refreshed.
     pub expires_at_unix: Option<i64>,
+}
+
+impl fmt::Debug for AccountTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountTokens")
+            .field("provider", &self.provider)
+            .field("access_token_present", &!self.access_token.is_empty())
+            .field("refresh_token_present", &self.refresh_token.is_some())
+            .field("id_token_present", &self.id_token.is_some())
+            .field("token_type", &self.token_type)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
 }
 
 impl AccountTokens {
@@ -572,6 +585,52 @@ pub fn account_id(provider: ProviderKind) -> Option<String> {
         .and_then(|tokens| account_id_from_tokens(&tokens))
 }
 
+/// The ChatGPT account's own Responses backend (codex-rs
+/// `model_provider_info.rs`: `https://chatgpt.com/backend-api/codex` under
+/// `AuthMode::Chatgpt`). Account tokens are refused by `api.openai.com`, so a
+/// signed-in OpenAI lane streams here. Env override for tests / proxies.
+pub const CODEX_BACKEND_RESPONSES_ENDPOINT: &str =
+    "https://chatgpt.com/backend-api/codex/responses";
+/// Process env override for [`CODEX_BACKEND_RESPONSES_ENDPOINT`].
+pub const CODEX_BACKEND_ENDPOINT_ENV: &str = "CODESCRIBE_CODEX_BACKEND_ENDPOINT";
+/// `originator` header the Codex backend expects from every client.
+pub const CODEX_ORIGINATOR: &str = "codescribe";
+
+/// Where a signed-in account request must go when the vendor does not accept
+/// its account token at the lane's public endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountResponsesRoute {
+    /// Full Responses endpoint URL for the account backend.
+    pub endpoint: String,
+    /// Headers that backend requires on every request.
+    pub headers: Vec<(String, String)>,
+}
+
+/// The account backend for one Responses vendor, or `None` when the vendor's
+/// own lane endpoint serves its account bearer token. The Codex backend keeps
+/// no server-side chain: callers send `store: false`, no
+/// `previous_response_id`, no temperature or output ceiling, and stream.
+/// Shared by the Agent provider and the formatter so both lanes reach the same
+/// backend with the same headers.
+pub fn account_responses_route(provider: ProviderKind) -> Option<AccountResponsesRoute> {
+    if provider != ProviderKind::OpenAiResponses {
+        return None;
+    }
+    let mut headers = vec![("originator".to_string(), CODEX_ORIGINATOR.to_string())];
+    match account_id(provider) {
+        Some(account_id) => headers.push(("ChatGPT-Account-ID".to_string(), account_id)),
+        None => tracing::warn!(
+            "Codex backend route without a ChatGPT-Account-ID: the stored tokens carry no workspace claim"
+        ),
+    }
+    let endpoint = std::env::var(CODEX_BACKEND_ENDPOINT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| CODEX_BACKEND_RESPONSES_ENDPOINT.to_string());
+    Some(AccountResponsesRoute { endpoint, headers })
+}
+
 /// Issuer base URL for `provider`: env override, else the provider default.
 pub fn issuer_for(provider: ProviderKind) -> String {
     let Ok(config) = provider_oauth_config(provider) else {
@@ -582,6 +641,38 @@ pub fn issuer_for(provider: ProviderKind) -> String {
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| config.default_issuer.to_string())
+}
+
+/// All credential-bearing OAuth requests require TLS and never follow redirects.
+/// Loopback callback listeners are a separate, inbound HTTP surface.
+fn oauth_http_client(issuer: &str) -> Result<reqwest::Client, AccountAuthError> {
+    let builder = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30));
+    // Unit fixtures use numeric loopback HTTP servers. This exception is absent
+    // from shipped builds, including builds with the test-isolation feature.
+    #[cfg(test)]
+    let builder = {
+        let local_fixture = reqwest::Url::parse(issuer).ok().is_some_and(|url| {
+            url.scheme() == "http"
+                && url.host_str().is_some_and(|host| {
+                    host.trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+                })
+        });
+        if local_fixture {
+            builder.https_only(false)
+        } else {
+            builder
+        }
+    };
+    #[cfg(not(test))]
+    let _ = issuer;
+    builder
+        .build()
+        .map_err(|error| AccountAuthError::Http(error.to_string()))
 }
 
 /// Persist a provider's tokens into its own Keychain slot.
@@ -817,7 +908,7 @@ async fn refresh_provider_tokens(
     }
 
     let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let client = reqwest::Client::new();
+    let client = oauth_http_client(issuer)?;
     let request = client.post(endpoint);
     let request = match config.encoding {
         TokenRequestEncoding::Form => request.form(&[
@@ -1232,11 +1323,7 @@ mod tests {
             sorted.sort_unstable();
             let before = sorted.len();
             sorted.dedup();
-            assert_eq!(
-                before,
-                sorted.len(),
-                "duplicate OAuth row value in {list:?}"
-            );
+            assert_eq!(before, sorted.len(), "duplicate OAuth registry identifier");
         }
     }
 

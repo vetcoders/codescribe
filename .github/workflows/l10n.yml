@@ -1,0 +1,115 @@
+# Localization gate
+# Created by Vetcoders (c)2026
+#
+# Why this exists separately from rust.yml. That workflow runs `on: push` and
+# `on: pull_request` for `[main, develop]` only, so a push to an integration
+# branch — the branch several cuts land on before anybody opens a pull request —
+# ran no localization check at all. English prose could cross the bridge, a
+# Polish unit could carry the English words back, and the first gate to see it
+# was the pull request into main, by which time the branch was the shape people
+# were reviewing. A gate that a branch can route around is a convention.
+#
+# This workflow runs on every branch, on every pull request whatever its base,
+# and on merge queue entries (merge_group, compared against the queue's
+# immutable base_sha). It duplicates rust.yml's localization steps on a pull request into main,
+# which is deliberate: the existing required status keeps its teeth and its job
+# name, and nothing here is load-bearing for it.
+#
+# The steps are rust.yml's, one for one, with one addition — the prose ratchet
+# needs the base branch in the clone to compare against, and actions/checkout
+# fetches one ref. If the shallow fetch fails (a base branch deleted mid-review),
+# the job refuses to continue without its comparison evidence.
+#
+# `make verify-l10n-sync` and `make test-l10n-sync` need a real Debug build of
+# the Swift target, which is why they live here and not in .pre-commit-config.yaml.
+
+name: Localization gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+# Event and ref isolate the group; queue (merge_group) runs are never cancelled
+# by a newer run, because a cancelled queue check removes the entry.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+jobs:
+  l10n:
+    name: Localization
+    # Preview image with Xcode 27 on macOS 27 (actions/runner-images#14404);
+    # the Swift localization build below does not compile on Xcode 26.
+    # This is a public repository: it never runs on a self-hosted runner
+    # (decision 2026-10-13).
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Show the Xcode this image selected
+        run: xcodebuild -version
+
+      # The ref reaches the shell through `env:`, never through `${{ }}` inside
+      # `run:`: a branch name is attacker-controlled input on a public repo.
+      - name: Fetch the base the prose ratchet measures against
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [[ "$EVENT_NAME" == merge_group ]]; then
+            # The queue's base is the immutable tip the entry was built on;
+            # never fall back to a moving branch name.
+            if [[ ! "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ || "$MERGE_GROUP_BASE_SHA" == "$zero" ]]; then
+              echo "::error::merge_group event has no immutable base_sha"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
+            printf 'L10N_BASE=%s\n' "$MERGE_GROUP_BASE_SHA" >> "$GITHUB_ENV"
+          elif [[ "$EVENT_NAME" == push && "$REF_NAME" == main ]]; then
+            if [[ ! "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ || "$BEFORE_SHA" == "$zero" ]]; then
+              echo "::error::main push has no immutable comparison baseline"
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "$BEFORE_SHA"
+            printf 'L10N_BASE=%s\n' "$BEFORE_SHA" >> "$GITHUB_ENV"
+          else
+            git fetch --no-tags --depth=1 origin \
+              "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            printf 'L10N_BASE=origin/%s\n' "$BASE_REF" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify catalog localization contracts
+        run: make verify-l10n-catalog
+
+      - name: Verify every bridge String is classified and the prose list has not grown
+        run: make verify-l10n-bridge
+
+      - name: Prepare compiler localization extraction
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          # Fresh per run; never read cached extraction.
+          echo "L10N_DERIVED=$(mktemp -d "$RUNNER_TEMP/codescribe-l10n.XXXXXX")" >> "$GITHUB_ENV"
+          echo "L10N_CONFIG=Debug" >> "$GITHUB_ENV"
+
+      - name: Build Debug Swift localization data (no Rust build or executable link)
+        run: |
+          make l10n-build
+          # A future Xcode sync-on-build must not let CI check a repaired catalog.
+          git diff --exit-code -- macos/Codescribe/Resources/Localization
+
+      - name: Verify Swift strings match the committed catalog
+        run: make verify-l10n-sync
+
+      - name: Test localization gate positive and negative controls
+        run: make test-l10n-sync

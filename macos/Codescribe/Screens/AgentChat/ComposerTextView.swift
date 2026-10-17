@@ -64,7 +64,7 @@ struct ComposerDraftHistoryState: Equatable {
 struct ComposerTextLayout: Equatable {
   static let minimumLines = 1
   static let maximumLines = 8
-  static let verticalPadding: CGFloat = 6
+  static let verticalPadding: CGFloat = ComposerControlMetrics.textVerticalInset * 2
 
   let height: CGFloat
   let isVerticallyScrollable: Bool
@@ -107,7 +107,7 @@ struct ComposerTextLayout: Equatable {
         height: CGFloat.greatestFiniteMagnitude
       )
     )
-    container.lineFragmentPadding = 5
+    container.lineFragmentPadding = 0
     container.widthTracksTextView = false
     storage.addAttribute(
       .font,
@@ -169,8 +169,8 @@ struct ComposerTextView: NSViewRepresentable {
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true
     textView.autoresizingMask = [.width]
-    textView.textContainerInset = NSSize(width: 0, height: 3)
-    textView.textContainer?.lineFragmentPadding = 5
+    textView.textContainerInset = NSSize(width: 0, height: ComposerControlMetrics.textVerticalInset)
+    textView.textContainer?.lineFragmentPadding = 0
     textView.textContainer?.widthTracksTextView = true
     textView.textContainer?.containerSize = NSSize(
       width: 0,
@@ -178,7 +178,8 @@ struct ComposerTextView: NSViewRepresentable {
     )
     textView.string = text
     textView.placeholder = String(localized: "Type a message…", comment: "Composer placeholder")
-    textView.font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
+    textView.font = ComposerTextLayout.composerFont(
+      size: ComposerControlMetrics.textSize * textScale)
     textView.textColor = .labelColor
     textView.insertionPointColor = NSColor(CSColor.terracotta)
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
@@ -187,6 +188,9 @@ struct ComposerTextView: NSViewRepresentable {
     textView.onKeyDown = { [weak coordinator = context.coordinator, weak textView] event in
       guard let coordinator, let textView else { return false }
       return coordinator.handleKeyDown(event, in: textView)
+    }
+    textView.onFocusChange = { [weak coordinator = context.coordinator] active in
+      coordinator?.handleFocusChange(active)
     }
 
     scrollView.documentView = textView
@@ -203,7 +207,11 @@ struct ComposerTextView: NSViewRepresentable {
     context.coordinator.updateParent(self)
     guard let textView = scrollView.documentView as? ComposerNativeTextView else { return }
 
-    let font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
+    textView.onFocusChange = { [weak coordinator = context.coordinator] active in
+      coordinator?.handleFocusChange(active)
+    }
+
+    let font = ComposerTextLayout.composerFont(size: ComposerControlMetrics.textSize * textScale)
     if textView.font != font {
       textView.font = font
       textView.typingAttributes[.font] = font
@@ -225,8 +233,6 @@ struct ComposerTextView: NSViewRepresentable {
       guard let textView, let window = textView.window else { return }
       if isFocused, window.firstResponder !== textView {
         window.makeFirstResponder(textView)
-      } else if !isFocused, window.firstResponder === textView {
-        window.makeFirstResponder(nil)
       }
     }
   }
@@ -256,12 +262,20 @@ struct ComposerTextView: NSViewRepresentable {
       refreshLayout(textView, in: scrollView)
     }
 
+    func handleFocusChange(_ active: Bool) {
+      if parent.isFocused != active {
+        parent.isFocused = active
+      }
+    }
+
     func textDidBeginEditing(_ notification: Notification) {
-      parent.isFocused = true
+      guard let textView = notification.object as? ComposerNativeTextView else { return }
+      textView.notifyFocusChange()
     }
 
     func textDidEndEditing(_ notification: Notification) {
-      parent.isFocused = false
+      guard let textView = notification.object as? ComposerNativeTextView else { return }
+      textView.notifyFocusChange()
     }
 
     fileprivate func handleKeyDown(
@@ -361,6 +375,108 @@ private final class ComposerScrollView: NSScrollView {
 private final class ComposerNativeTextView: NSTextView {
   var placeholder = ""
   var onKeyDown: ((NSEvent) -> Bool)?
+  var onFocusChange: ((Bool) -> Void)?
+  private var isFirstResponderActive = false
+  private var isWindowKey = false
+  private var windowObservers: [NSObjectProtocol] = []
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    rebuildWindowObservers()
+    notifyFocusChange()
+  }
+
+  override func viewWillMove(toWindow newWindow: NSWindow?) {
+    super.viewWillMove(toWindow: newWindow)
+    if newWindow == nil {
+      isFirstResponderActive = false
+      isWindowKey = false
+      clearWindowObservers()
+      onFocusChange?(false)
+    }
+  }
+
+  isolated deinit {
+    clearWindowObservers()
+  }
+
+  private func clearWindowObservers() {
+    for observer in windowObservers {
+      NotificationCenter.default.removeObserver(observer)
+    }
+    windowObservers.removeAll()
+  }
+
+  private func rebuildWindowObservers() {
+    clearWindowObservers()
+    guard let window else {
+      isWindowKey = false
+      return
+    }
+    isWindowKey = window.isKeyWindow
+    let center = NotificationCenter.default
+    let becomeKey = center.addObserver(
+      forName: NSWindow.didBecomeKeyNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.isWindowKey = true
+        self.notifyFocusChange()
+      }
+    }
+    let resignKey = center.addObserver(
+      forName: NSWindow.didResignKeyNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.isWindowKey = false
+        self.notifyFocusChange()
+      }
+    }
+    let willClose = center.addObserver(
+      forName: NSWindow.willCloseNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.isWindowKey = false
+        self.notifyFocusChange()
+      }
+    }
+    windowObservers = [becomeKey, resignKey, willClose]
+  }
+
+  func notifyFocusChange() {
+    onFocusChange?(isFocusedInKeyWindow)
+  }
+
+  var isFocusedInKeyWindow: Bool {
+    guard isWindowKey, window != nil else { return false }
+    return isFirstResponderActive
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    let accepted = super.becomeFirstResponder()
+    if accepted {
+      isFirstResponderActive = true
+      notifyFocusChange()
+    }
+    return accepted
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let resigned = super.resignFirstResponder()
+    if resigned {
+      isFirstResponderActive = false
+      notifyFocusChange()
+    }
+    return resigned
+  }
 
   override func keyDown(with event: NSEvent) {
     if onKeyDown?(event) == true { return }

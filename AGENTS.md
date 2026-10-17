@@ -72,19 +72,25 @@ Po zmianach w API Rust bridge regeneruj bindingi Swift przez `make app-bindings`
 
 ## Daily app and release cadence
 
-- Po spójnym cucie zmieniającym aplikację uruchom `make install-if-idle`. Odmawia
-  tylko podczas trwającego nagrywania (Transcript Bus) lub aktywnej tury agenta
-  (`~/.codescribe/agent-turn.lock`); samo działanie aplikacji nie blokuje (Founder, 2026-09-08).
+- Po spójnym cucie zmieniającym aplikację uruchom `make install-app` - to specjalny target, który
+podmienia /Applications/Codescribe.app BEZ ingerowania w działający proces aplikacji (możliwe dzięki
+architekturze aplikacji).
 - Traktuj instalację jako wymagany odbiór dla Foundera przy każdym większym cucie.
-  Zweryfikuj wersję, build, commit, podpis i pomyślny start `/Applications/Codescribe.app`;
-  dopiero wtedy odtwórz `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`.
-- Odmów instalacji, gdy trwa nagranie: aktywna sesja nie ma `session_ended`
-  (historyczny unpaired `transcript_sealed` nadal się liczy), trwa sesja `cli_file_verdict`
-  lub aplikacja trzyma blokadę runtime. Nigdy nie ubijaj aplikacji w trakcie take'a.
-- Co najwyżej jeden `make release-standard` (notaryzowany slim DMG) dziennie,
-  gdy bus jest idle. Wypuszczaj tylko na wyraźne polecenie Foundera.
-- Ad-hoc build `/Applications` to nie jest dystrybucyjny DMG. Produkcyjny DMG
-  wymaga podpisu, notaryzacji, sumy kontrolnej, staplingu i `verify-dmg`.
+- Po pomyślnej instalacji poinformuj o jej ukończeniu - odtwórz `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`
+lub przekaż słownie przez `cs-say`.
+- Nie restartuj aplikacji samodzielnie, chyba że
+zostaniesz o to poproszony w wątku lub na kanale `cs-bus`.
+- Po otrzymaniu zgody restart aplikacji wykonuj wyłącznie przez
+  `make restart-if-idle` (skrypt `scripts/restart-if-idle`). Sprawdzenie busa
+  i osobne `Quit` nie są atomowe. Skrypt wymaga zgody żywego kontrolera,
+  który pod blokadą startu odmawia przy aktywnym lub domykanym take'u i
+  zamyka przyszły start przed wyjściem. Odmowa ma kod 75; nie obchodź jej
+  AppleScriptem, `kill`, resetem kanałów ani kasowaniem historii.
+  Starszy proces bez protokołu także odmawia. Szczegóły: `docs/RESTART_IF_IDLE.md`.
+- Targetem dmg jest `make release-standard` (notaryzowany slim DMG). Buduj go na każdą prośbę
+Foundera, po sprawdzeniu, czy wszystkie istotne cuty są zintegrowane. Traktuj integrację przed buildem
+relase bundla jako automatyczną powinność.
+- Ad-hoc build `/Applications` to nie jest dystrybucyjny DMG.
 
 ## Verification
 

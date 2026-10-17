@@ -1,6 +1,60 @@
-# STT contract — front → backend (no lottery)
+# STT contract — capture, recognition, admission and formatting
 
-> Status: operator truth map · 2026-07-24 · branch `feat/operator-feedback-wave9`
+> Current source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
+> Engine sources match build 798; later UI and closed Junie changes are retained.
+> Start with [ENGINE_MAP.md](ENGINE_MAP.md) for the stage map,
+> source owners, mode differences, Stop sequence and dated acceptance limits.
+> [THE_ENGINE_CONTRACT.md](THE_ENGINE_CONTRACT.md) owns the product invariants;
+> this file describes runtime wiring. A source checkpoint is not native quality acceptance.
+
+## Current runtime summary (2026-10-11)
+
+- `RecordingController` owns capture; `StreamingRecorder` fans one physical
+  stream out to registered subscribers. Dictation and Agent channels do not
+  allocate independent microphones. Their transcription sessions, ledgers and
+  lifecycle are nevertheless distinct.
+- Apple supplies fast observations. Rust retains the open phrase; Swift partial
+  revisions do not manufacture finals. Timed Apple phrase ends may qualify an
+  existing owner at a measured, calibrated Silero valley. Neither string
+  changes nor an empty partial prove a new physical phrase.
+- Cloud's live transport follows the capture owner's silence commits from the
+  first PCM frame; elapsed wall time and event polling never flush an open
+  utterance. Stop commits the remaining audio with `end`. This preserves the
+  first utterance's acoustic context instead of cutting it every 2.5 seconds
+  before the first silence decision. Provider completion and ledger admission
+  remain separate requirements; removing those cuts is not a quality verdict.
+- `CaptureWindowPlan` schedules **9-second windows every 3 seconds** on the
+  original capture clock, with a clipped last window at EOF. That is 6 seconds
+  of overlap between full windows, not the earlier 4-second/1-second design.
+  Bounded lexical trials use the same provider and accounting corridor.
+- The first Whisper word boundary uses a predictive-attention onset estimate
+  instead of forced frame zero. This is not a measured Silero speech edge.
+  Missing or rejected alignment remains phrase-grain evidence, never uniformly
+  divided synthetic word timing.
+- The ledger owns PCM occurrence identity and mutation authority; the reducer
+  owns the document; Bus and Swift observe its committed projection. The
+  `d64804be` coarse-prefix guard was withdrawn by `d983b328` after native
+  quality feedback: it is not current admission policy. Its prefix and suffix
+  loss probes remain documented evidence, not solved quality claims.
+- Explicit Stop retains the selected subscriber's **real PCM for 1.5 seconds**
+  before EOF. Recognizer-final waiting and useful-refinement drain have separate
+  budgets. This is not a fixed 1.5-second bound on complete delivery, nor proof
+  that the last word will be admitted.
+- `AgentChannel` has no LLM formatter. `HandsFree` may format sealed fragments
+  live; `SingleTurn` composer capture formats once at terminal processing.
+  Smart/Correction use the text formatter; Max uses grouped Agent consultation.
+- Formatter lexical and structural choices are governed by the selected sealed
+  prompt. There is no word-count/order veto or pre-provider repetition cleanup.
+  Source/revision checks still prevent applying a result to the wrong document.
+- `format_on_device` tries the host formatter first; failure or missing host
+  registration can route to the configured cloud lane. It is **not** a
+  local-only privacy guarantee. No available engine means original text plus a
+  failure disposition, not a fabricated successful result.
+
+The dated sections below retain narrower implementation and historical evidence.
+An old machine diagnosis or UNRUN worker checkpoint is not current runtime status.
+
+> Historical origin: operator truth map · 2026-07-24 · branch `feat/operator-feedback-wave9`
 > Goal: every UI/hotkey entry is one line to one handler; settings truth is one place.
 > **Operator lock: Apple STT is MUST-HAVE for live.** Whisper is never the primary live engine.
 > **Superseded on Whisper's role (2026-07-26, `AGENTS.md` — THE ONE RULE):** the target shape is
@@ -25,6 +79,113 @@
 > 250 ms edge tolerance; measured silence qualifies, missing, foreign, invalid
 > or partial measurement does not (§3.z).
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
+
+### Bounded lexical trials and Stop authority (2026-10-10)
+
+`CaptureWindowPlan` owns both the regular 9-second / 3-second grid and an
+additional live lexical witness. A conflict normally needs two distinct complete
+Whisper frames, retained source PCM, and an unsealed owner behind the admission
+horizon. An incomplete Apple label may instead request that witness after one
+complete Whisper frame in the publication band, with the same negation context.
+This only requests new evidence: the returned trial must still independently
+corroborate a retained label through ordinary admission. It grants no mutation
+from context quality alone. One trial per nine seconds of capture may use at most
+nine seconds of PCM, with up to three seconds of context on either side of its
+source lineage.
+
+It uses the existing provider queue and submission/completion identity. It does
+not advance the grid or count a retained decode as fresh corroboration. Failed,
+unavailable, or budget-refused work leaves an explicit unresolved disposition.
+No new lexical trial is launched after Stop; existing accepted work drains under
+the same deadline. Context quality ranks acoustic context, not lexical certainty.
+
+A direct Whisper correction of a disagreeing CloudLive word is outside the
+Apple/Whisper adjudication pair, so it must independently meet the same measured
+decode-context floor before Whisper's higher producer rank may replace the
+label. The direct word-grain check runs before resegmentation as well as
+ordinary admission, including incomplete incumbents; coarse phrase partitions
+retain their own existing authority. Context quality uses the decoder's original
+word span before owner clipping; a smaller projected slot cannot improve it.
+Resolved components containing a CloudLive word enforce the same floor for every
+original output when labels or word multiplicity change, including overlap-only
+jitter and mixed-producer partitions. Wholly coarse components retain their own
+refinement authority; source authority remains a prerequisite to this context
+check.
+The component refuses the entire proposed partition if any output lacks context.
+Missing decode bounds grant no direct word
+correction authority. Same-label evidence, first placement, and ManualHuman
+protection retain their existing admission paths; this rule creates no replay,
+sweep, or additional recovery debt.
+
+Independent measured word pins cannot be contracted by repeated ASR agreement.
+Their identities and source ranges survive rejected many-to-one candidates;
+legal one-to-one corrections and coarse phrase refinement remain available.
+
+### Partial Cloud answers and coarse source accounting (2026-10-16 source cut)
+
+A partial Cloud word answer cannot retire an entire unsealed coarse source
+when neither measured speech coverage nor the returned decoder scope accounts
+for that source. The ledger keeps the source and the returned alternative,
+and requires text recovery for the uncovered range. A later complete answer
+still enters the existing refinement path; retaining a partial answer does not
+make the held label permanent. Existing Whisper partial-word admission remains
+unchanged. This policy governs source accounting, not whether a Cloud label is
+linguistically correct, and does not authorize rewriting sealed or human text.
+
+### DictationTranscriber witness (2026-10-14 source cut; per-utterance trigger 2026-10-15)
+
+Arming has one owner: `audio.dictation_witness_armed` in `settings.json`
+(Voice Lab), with `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` kept as the
+documented power-user override that wins when present. Both are resolved once
+by the immutable settings snapshot; the session never re-reads either source
+mid-take. The bridge child verifies its own lane env, which the Rust side sets
+explicitly on the spawned command for a DT request.
+
+The witness runs in the background after each committed utterance seal: for
+unsealed recovery-pending owners and material uncovered speech gaps on already
+closed PCM, one DT decode over the retained capture window plus up to 3 s of
+context per side, at most 30 s of PCM and 30 s wall clock per request, at most
+one request in flight per session, and at most two asks per target range per
+session. At Stop, the same targeting runs once more over whatever debt
+remains, bounded by 4 requests and 90 s per take; live returns that already
+landed are drained first. The bridge request pins
+`backend = dictation_transcriber`; a return from any other backend is refused,
+and an unarmed lane, missing archive, error or timeout leaves the debt
+unresolved with an explicit warning. Witness PCM is sliced from the retained
+capture archive; returned segment times are translated back onto the capture
+clock by the exact window offset, never a fresh origin.
+
+Witness evidence is a new ledger producer, `AppleDictation`, ranked below
+Whisper and above CloudLive: it inserts words into ranges no complete source
+holds and never overrides a held Whisper word. A candidate pin whose PCM
+intersects any committed word slot of the same capture is retained as refused
+evidence (`replayed_range_identity`), never minted as a new occurrence — the
+witness speaks only for PCM no admitted word already owns. Single-word
+segments enter as measured word pins; multi-word segments stay phrase-grain.
+Segments wholly contained in a material gap qualify their PCM through the same
+`QualifyFinalPassGap` corridor a retained Whisper final pass uses, with the
+frontier scheduled for the producer that actually returned. DT omission of a
+word is not acoustic absence: an empty witness return accounts no scope and
+confirms no silence. DT evidence accounts returned decode scope like Whisper
+and CloudLive, so a witness return can settle `live_edge_cut_pending` debt and
+clear `TextRecoveryPending`; the recomputed coverage receipt, never the
+witness text itself, decides the terminal seal. The whole-take DT text is not
+admitted as a document and settled history is not reopened.
+
+Live capture keeps one recorder and one PCM axis: witness decodes read only
+the retained archive of already sealed ranges, the live lexical-trial lane
+keeps its existing Whisper provider, and the trial
+budgets in this section do not fund the terminal witness.
+
+Stop's automatic Light+ pass may append terminal punctuation only. Earlier
+casing, commas and whitespace keep their existing bytes, including when the last
+owner spans a long take or its live shaping cache is incomplete. Explicit human
+formatting remains a separate action. The main overlay field projects the
+committed document throughout capture and terminal review; unresolved recognizer
+words remain visibly labelled “Also heard · not committed” in a separate,
+scrollable review area. This projection change neither admits those words nor
+certifies delivery coverage or restored recognition quality. Untimed Apple
+partial revisions never inherit PCM identity from word indexes or token counts.
 
 ### File observations and Apple backend identity (2026-10-02)
 
@@ -325,9 +486,22 @@ button.
 ## 2. One engine control
 
 Settings writes `CODESCRIBE_ASR_MODE` to `settings.json`; Cloud additionally
-requires explicit `CODESCRIBE_CLOUD_CONSENT`. Apple only has no Layer 1 refiner.
+requires explicit `CODESCRIBE_CLOUD_CONSENT`. Consent is granted only by an
+explicit confirmation that names the effect (CS160-F013): the Engine tab's
+Cloud selection opens a `confirmationDialog` stating that dictation audio
+will leave the Mac and be sent to the configured cloud speech provider, and
+only its Confirm handler (`SettingsViewModel.confirmCloudConsent`) writes
+`granted`. Cancel leaves the previous mode and consent untouched. Leaving
+Cloud for Local power or Apple only writes `denied` when a grant was
+standing, so selecting Cloud again always asks again. The Rust core stays
+fail-closed on consent independently of this Swift UI path (`core/config/cloud_asr.rs`).
+Apple only has no Layer 1 refiner.
 Local Power arms local refinement by default. Cloud uses the live provider
 factory and reports `live_endpoint_missing` or `live_key_missing` when unconfigured.
+Launch seals the controller before Swift restores provider access, so every
+completed `provider_access_snapshot` re-seals the live controller through the one
+settings-refresh path: a Keychain-only `STT_LIVE_API_KEY` arms the next idle take
+without a settings write or a restart, and an active take keeps its generation.
 
 The router probes Apple runtime and bridge availability directly. The retired
 `CODESCRIBE_STT_ENGINE`, `FINAL_PASS_MODE`, and `CODESCRIBE_FINAL_PASS_MODE`
@@ -360,15 +534,20 @@ frozen in the recording snapshot; explicit file actions remain separate.
 | Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
 | Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
 
-**Stop** settles live observers, admits qualified source-mapped gap occurrences
-from the owned archive, drains formatter slots they created, then recomputes
-occurrence-union coverage. A gap over 250 ms blocks terminal truth, and so does
-coverage the acoustic observers cannot authenticate (§3.z). Only after a
-terminal ledger seal may the projection and delivery owners publish the **final**
-transcript, and only there may a paid formatter or a user edit rewrite the whole
-document. The deterministic Light+ presentation floor is not gated that way — it
-runs per occurrence seal during capture (§3.y). The WAV is never uploaded for
-this decision.
+**Explicit Stop** first retains real PCM for the fixed 1.5-second capture grace,
+then closes that subscriber's feed. Automatic silence, handoff and cleanup do
+not acquire that grace. Stop settles live observers, admits qualified source-mapped
+gap occurrences from the owned archive, then recomputes occurrence-union coverage.
+A gap over 250 ms blocks terminal truth, and so does coverage the acoustic
+observers cannot authenticate (§3.z). Only an authenticated terminal ledger seal
+certifies acoustic completeness. A refused seal still closes capture lifecycle
+and preserves committed text and owned audio; delivery routing decides its
+degraded disposition. A paid formatter does not certify missing speech. Its
+scheduling depends on capture intent, and its result is a source-bound
+presentation revision, not a new acoustic witness. The deterministic Light+
+presentation floor runs during capture (§3.y); Stop's automatic Light+ adds
+terminal punctuation without reshaping earlier bytes. The WAV is never uploaded
+for this coverage decision.
 
 ### 3.z Acoustic evidence availability
 
@@ -444,6 +623,11 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 | Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`           |
 | AI execution generation         | next selected runtime snapshot                      | sealed prompts + retry/delay + shared Agent/formatter request timing |
 
+The Whisper download listener also answers `is_cancelled`, polled between body
+chunks: a stopped transfer deletes its `.partial` file and fails with the core
+cancellation marker, so the model stays not installed. Reading the status
+drops a `.partial` stranded beside a bundle that is already complete.
+
 ### 3.3 Dictation overlay / tray
 
 | Front                         | UniFFI                                     | Handler                                                         |
@@ -457,13 +641,12 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When               | Function / transport                                             | Engine rule                                                           |
-| --------------------- | ------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Live Layer 0          | during recording   | Apple progressive                                                | first PCM-pinned observation; text is revisable by same-span evidence |
-| Live Layer 1 typed    | during recording   | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final              |
-| Live Layer 1 unbound  | after recording    | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation                  |
-| Live capture epoch    | device open/reopen | `StreamingRecorder` checked session-local counter                | issued only after successful open; engines only observe it            |
-| Explicit Retranscribe | operator action    | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
+| Call site             | When                               | Function / transport                                                                | Engine rule                                                           |
+| --------------------- | ---------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Live Layer 0          | during recording                   | Apple progressive                                                                   | first PCM-pinned observation; text is revisable by same-span evidence |
+| Live Layer 1 typed    | during recording and bounded drain | `CaptureWindowPlan`: 9 s windows / 3 s step, in-process / sidecar / remote provider | exact-PCM evidence enters ledger admission; no direct document writer |
+| Live capture epoch    | device open/reopen                 | `StreamingRecorder` checked session-local counter                                   | issued only after successful open; engines only observe it            |
+| Explicit Retranscribe | operator action                    | local completed-file decode or cloud multipart                                      | may replace the selected artifact, never the live canvas              |
 
 Physical occurrence identity is exactly
 `(session, capture_epoch, sample_start, sample_end)`. Observation identity adds
@@ -478,16 +661,33 @@ projection. Replayed observation identity, invalid ranges, missing identities,
 and late automatic completions are refused structurally. Identical words in
 disjoint PCM ranges remain distinct occurrences and survive.
 
-Automatic formatting is one occurrence-bound observer on the Apple live path,
-not a second transcript pass. It is scheduled only after a bounded execution
-permit owns the exact existing `(session, capture_epoch, sample_start, sample_end)` and every earlier scheduled automatic observer for that occurrence
-has returned. Its sole product route is `OccurrenceLabelProposal` ->
-`EngineEvent::OccurrenceLabelProposal` -> `PresentationEmitter` /
-`TranscriptReducer` -> `AcousticLedger::admit(Formatter)`. Applied rewrites
-propose a label; healthy no-ops and intentional skips preserve; provider or
-structural failures refuse. Every accepted job returns its exact frontier slot
-before occurrence and terminal sealing; settings or lane availability alone do
-not schedule Formatter.
+Automatic formatting is text processing on the Apple live path, not an
+acoustic observer and not a second transcript pass. It never joins an
+occurrence frontier: the occurrence seals when its acoustic producers return,
+and only then, once a bounded execution permit is held, is its committed label
+handed to the formatter, at most once per occurrence. Its sole product route is
+`OccurrenceLabelProposal` -> `EngineEvent::OccurrenceLabelProposal` ->
+`PresentationEmitter` / `TranscriptReducer`, which records a source-bound
+derived version. The compare-and-swap is the source itself: the last
+mutation-granting observation, the ledger label and the document entry must
+still match, otherwise the version is kept as `stale_source` and never
+delivered. A formatter result never admits a ledger observation, relabels Raw,
+issues a seal or extends Stop; a slow, failed or absent formatter leaves PCM
+finality, terminal coverage and microphone release unchanged. Text jobs the
+take accepted outlive its acoustic session: when the session ends, the bounded
+queue and in-flight jobs move to one retained owner per take, bounded by two
+attempt timeouts, that delivers only to that take's own emitter and is never
+awaited by Stop. Settings or lane availability alone do not schedule
+formatting. Smart/Correction run on the host formatter first when
+`format_on_device` is selected, with configured cloud-lane execution after a
+failed or absent host attempt. Max is the Agent and runs through grouped
+consultation. These live routes require `HandsFree`; `SingleTurn` suppresses
+fragment jobs and formats once at terminal processing, while `AgentChannel` has
+no LLM formatting. All formatting engines receive the actual source text and
+the selected sealed policy prompt. Lexical editing, repetition handling and
+restructuring belong to that prompt, not to post-generation word-count or
+word-order guards. Transport, execution budgets and stale-source
+compare-and-swap checks remain independent.
 
 `UtteranceFinal` is raw observation/telemetry only. Committed phrase identity
 travels through `LedgerMutation` / `LedgerSeal` receipts and the occurrence-
@@ -520,13 +720,12 @@ running Teach is operator authorization, not passive learning.
 **Runtime proof:** Settings may show configured readiness, but a take counts as
 exercised only when its typed receipt says `armed=true` and `submitted>0`.
 
-```text
-selected_engine()
-  ├── Apple  → LIVE: run_apple_live_only  |  ADAPTER: run_apple_or_whisper
-  └── Candle → whisper singleton (label: local_whisper)
-```
-
-`auto` = Apple if `apple_stt::is_runtime_available() && is_bridge_resolvable()` else Candle.
+The live entry is `transcription_session` with the immutable session snapshot
+and `asr_session::layer1_decision`. `apple_only`, `local_power` and `cloud`
+select Layer 1 capability; they do not authorize silently replacing failed
+live Apple capture with a different primary engine. Explicit file actions have
+their own selection. The old `selected_engine()/auto` routing diagram is not
+current guidance.
 
 ---
 
@@ -686,16 +885,13 @@ and other explicit file actions retain their own routes.
 
 ---
 
-## 7. Falsification premises
+## 7. Historical failure premises — not current configuration guidance
 
-1. **Lie:** “settings.json alone sets the engine.”
-   **Truth:** process env / `.env` wins when set.
-2. **Lie:** “footer local whisper means live is Whisper.”
-   **Truth:** last verdict or preference can diverge from live Apple.
-3. **Lie:** “Apple fails so Whisper should catch it live.”
-   **Truth:** live Apple path explicitly disables Candle fallback (`22305e26`).
-4. **Lie:** empty `speech.engine` is fine.
-   **Truth:** empty = no durable preference; `auto` decides every boot.
+The original July investigation used retired engine and final-pass settings.
+Do not recreate them to repair a current take. Current selection is the resolved
+ASR mode in one immutable runtime snapshot (§2), and the serving verdict is
+evidence about an actual take (§4), not the saved preference. Empty settings
+resolve through the mode loader; they do not resurrect the old `auto` selector.
 
 ---
 
@@ -749,10 +945,10 @@ thread termination or claim that a timed-out result means released resources.
 Native microphone/VAD/archive settlement, Apple-worker lifetime, cloud transport
 and formatter acknowledgements remain separate RC obligations.
 
-This is source-level wiring with authored, UNRUN barrier, contention, decoder,
-terminal repair and WAV preservation tests. BUILD/TEST/RUNTIME=NOT_ASSESSED
-under the Grade B W2 compile embargo. Admission, returning compiler/test gates
-and installed real-audio evidence belong to the integrator.
+At the original W2 handoff, barrier, contention, decoder, terminal repair and
+WAV preservation tests were authored but UNRUN under the compile embargo.
+That historical handoff is not the current gate result. See the dated source,
+installation and test limits in [ENGINE_MAP.md](ENGINE_MAP.md#dated-evidence-and-open-work).
 
 ## Take truth sidecar is an observer (2026-09-16)
 

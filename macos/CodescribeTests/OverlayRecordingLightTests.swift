@@ -186,7 +186,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     state.applyChannelRoster([
       .init(
         channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ])
     XCTAssertTrue(state.audioCaptureActive)
     XCTAssertTrue(state.usesAgentAccent)
@@ -219,7 +220,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .init(
           channel: channel, audience: channel == "0" ? "*" : "bruno", provider: "codex",
           providerSessionId: "bus-agent", open: true, loud: false,
-          autosealDeadlineUnixMs: nil, followerAlive: true)
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
       ])
       XCTAssertTrue(state.channelAudioCaptureActive)
       XCTAssertTrue(state.usesAgentAccent)
@@ -242,7 +243,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     state.applyChannelRoster([
       .init(
         channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true)
+        open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
     ])
     XCTAssertFalse(state.channelAudioCaptureActive)
     XCTAssertFalse(state.usesAgentAccent)
@@ -436,17 +438,21 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(copy.sentence.contains("or prove that a recovery pass is running"))
   }
 
-  /// The header icon's tooltip and VoiceOver label are the same sentence.
-  func testHeaderWarningIconCarriesTheSentenceAsTooltip() throws {
+  /// Header hints name the action; detailed diagnostics stay in VoiceOver value.
+  func testHeaderHintStaysAnActionWhileVoiceOverRetainsDiagnostics() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains(".help(transcriptPreviewHelp)"))
+    XCTAssertTrue(source.contains("title: transcriptPreviewHelp, accent: .transcription"))
     XCTAssertTrue(
-      source.contains(".accessibilityValue(transcriptPreviewHelp)"))
+      source.contains(".accessibilityValue(transcriptPreviewAccessibilityValue)"))
+    let help = source.components(separatedBy: "private var transcriptPreviewHelp: String {")[1]
+      .components(separatedBy: "private var transcriptPreviewAccessibilityValue")[0]
+    XCTAssertTrue(help.contains("String(localized: \"Show transcription\")"))
+    XCTAssertFalse(help.contains("sentence"), "Action tooltip must not append diagnostic prose")
     XCTAssertTrue(source.contains("OverlayWarningCopy.liveTranscriptBehind.sentence"))
     XCTAssertFalse(source.contains("OverlayRecordingLightView("))
     XCTAssertTrue(source.contains("recordingLight: state.recordingLight"))

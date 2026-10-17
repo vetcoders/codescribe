@@ -73,7 +73,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: []
+      command: nil, cwd: nil, paths: [], arguments: nil
     )
     var reads = 0
     var model: SettingsViewModel!
@@ -96,7 +96,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: ["/workspace/a"]
+      command: nil, cwd: nil, paths: ["/workspace/a"], arguments: nil
     )
     var pending = [request]
     var resolutions = 0
@@ -127,7 +127,7 @@ final class SettingsTruthTests: XCTestCase {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
       tool: "write_file", server: "native", risk: "mutating", summary: "write",
-      command: nil, cwd: nil, paths: []
+      command: nil, cwd: nil, paths: [], arguments: nil
     )
     var failRead = false
     var resolutions = 0
@@ -163,11 +163,16 @@ final class SettingsTruthTests: XCTestCase {
     settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
     var calls = 0
+    var recoveries = 0
+    let overlay = OverlayState()
+    overlay.setMaxPreparationError("startup failed")
+    overlay.setTranscriptStorageError("storage needs attention")
     var model: SettingsViewModel!
     let engine = MockSettingsEngine(
       settings: settings,
       beginNewMaxConsultationObserver: {
         calls += 1
+        XCTAssertEqual(recoveries, 0, "opening Settings or starting a request is not recovery")
         XCTAssertTrue(model.newMaxConsultationPending)
         XCTAssertNil(model.maxConsultationNotice)
         await model.beginNewMaxConsultation()
@@ -176,11 +181,18 @@ final class SettingsTruthTests: XCTestCase {
       }
     )
     model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.onNewMaxConsultation = {
+      recoveries += 1
+      overlay.setMaxPreparationError(nil)
+    }
     model.refresh()
 
     await model.beginNewMaxConsultation()
 
     XCTAssertEqual(calls, 1)
+    XCTAssertEqual(recoveries, 1)
+    XCTAssertNil(overlay.maxPreparationError)
+    XCTAssertNotNil(overlay.transcriptStorageError, "Max recovery cannot clear a storage failure")
     XCTAssertFalse(model.newMaxConsultationPending)
     XCTAssertEqual(
       model.maxConsultationNotice,
@@ -193,6 +205,7 @@ final class SettingsTruthTests: XCTestCase {
     var settings = CsSettings.sample
     settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
+    var recoveries = 0
     let model = SettingsViewModel(
       engine: MockSettingsEngine(
         settings: settings,
@@ -203,10 +216,12 @@ final class SettingsTruthTests: XCTestCase {
           )
         }
       ), permissionProbe: MockPermissionProbe())
+    model.onNewMaxConsultation = { recoveries += 1 }
     model.refresh()
     await model.beginNewMaxConsultation()
 
     XCTAssertFalse(model.newMaxConsultationPending)
+    XCTAssertEqual(recoveries, 0, "backend refusal must retain the startup warning")
     XCTAssertEqual(
       model.maxConsultationNotice,
       "Could not start a new consultation: A turn is still active."
@@ -299,7 +314,6 @@ final class SettingsTruthTests: XCTestCase {
       SettingsTab.tabs(in: .engine),
       [
         .dictationEngine, .dictationWhisper, .dictationPreview, .dictationPrivacy,
-        .dictationPermissions,
       ],
       "every Dictation concern is a tab; the raw recognition timings live in Lab"
     )
@@ -356,7 +370,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "mcp"), .agentMcp)
     XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "permission"), .agentTools)
     XCTAssertEqual(
-      SettingsTab.searchLanding(in: .engine, query: "permission"), .dictationPermissions)
+      SettingsTab.searchLanding(in: .engine, query: "permission"), nil,
+      "the duplicated Permissions tab is gone; Creator owns the checklist")
+    XCTAssertTrue(SettingsSection.revealed(by: "permission").contains(.creator))
+    XCTAssertTrue(SettingsSection.revealed(by: "tcc").contains(.creator))
     XCTAssertNil(SettingsTab.searchLanding(in: .agent, query: "  "))
     XCTAssertNil(
       SettingsTab.searchLanding(in: .agent, query: "agent"),
@@ -383,14 +400,14 @@ final class SettingsTruthTests: XCTestCase {
   /// The prompt picker moved; prompt identity did not. Each segment still maps
   /// to the same storage level; the file name lives under File details only.
   func testPromptFilesKeepTheirStorageIdentity() {
-    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, .max, nil])
+    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, nil])
     XCTAssertEqual(
       PromptFile.allCases.compactMap(\.formattingLevel),
       FormattingPolicyOption.editablePrompts
     )
     XCTAssertEqual(
       PromptFile.allCases.map(\.editorTitle),
-      ["Correction prompt", "Smart prompt", "Max prompt", "Agent prompt"]
+      ["Correction prompt", "Smart prompt", "Agent prompt"]
     )
     for file in PromptFile.allCases {
       XCTAssertFalse(
@@ -413,7 +430,9 @@ final class SettingsTruthTests: XCTestCase {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
     model.reloadToolPermissions()
+    XCTAssertTrue(model.toolCatalogLoading, "discovery is in flight until the surface lands")
     for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+    XCTAssertFalse(model.toolCatalogLoading)
 
     XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
     XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
@@ -462,7 +481,7 @@ final class SettingsTruthTests: XCTestCase {
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
-      (.user, "user", "User", .user),
+      (.user, "user", "About", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -542,6 +561,47 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "mcp__dc__write_file"), "Write file")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: "ls"), "Ls")
     XCTAssertEqual(ToolPermissionLabels.displayName(for: ""), "")
+    // Always `aicx`, never `Aicx`, in display names (Founder brief, round 12);
+    // the identity string stays verbatim.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx-http__aicx_index_status"),
+      "aicx index status")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "mcp__aicx__aicx_continuity"), "aicx continuity")
+
+    // Our own tools are named in the interface language; an MCP server's tools
+    // keep the vendor's wording, spelled out of the registry name.
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "get_selected_text", identity: "native:get_selected_text"),
+      "Read selected text")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(
+        for: "fetch_github_file", identity: "native:fetch_github_file"),
+      "Fetch GitHub file", "a proper name is not mangled by the speller")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "write_file", identity: "desktop-commander:write_file"),
+      "Write file", "an MCP tool is not renamed by our own table")
+    XCTAssertEqual(
+      ToolPermissionLabels.displayName(for: "future_native", identity: "native:future_native"),
+      "Future native", "a tool the table does not name yet falls back to the speller")
+    XCTAssertNil(ToolPermissionLabels.nativeDisplayName(for: "write_file_v2"))
+
+    // Every tool the native registry installs has interface copy. The list is
+    // `app/agent/tools/mod.rs::register_native_tools`.
+    let nativeTools = [
+      "apply_patch", "fetch_github_file", "get_frontmost_app", "get_selected_text", "git_commit",
+      "git_diff", "git_log", "git_status", "list_directory", "list_projects", "monitor_run",
+      "move_path", "observe_process", "project_build", "project_test", "read_clipboard",
+      "read_file", "run_process", "search_files", "search_threads", "stop_process",
+      "take_screenshot", "transcribe_audio", "type_text", "write_clipboard", "write_file",
+    ]
+    XCTAssertEqual(nativeTools.count, 26)
+    for tool in nativeTools {
+      let name = ToolPermissionLabels.nativeDisplayName(for: tool)
+      XCTAssertNotNil(name, tool)
+      XCTAssertFalse(name?.contains("_") ?? true, "\(tool) still reads as an identifier")
+    }
 
     XCTAssertEqual(ToolPermissionLabels.source("native"), "Native")
     XCTAssertEqual(ToolPermissionLabels.source("Desktop-Commander"), "Desktop-Commander")
@@ -559,7 +619,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(inherited.identity, "native:apply_patch")
     XCTAssertFalse(inherited.hasIndividualRule)
     XCTAssertEqual(
-      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Inherited from the category default")
+      ToolPermissionLabels.ruleCaption(inherited.ruleSource), "Category default")
     let individual = ToolPermissionItem(
       capability: CsToolCapability(
         name: "search", identity: "loctree-mcp:search", origin: "mcp:loctree-mcp",
@@ -567,7 +627,7 @@ final class SettingsTruthTests: XCTestCase {
         requiresApprovalFlag: false))
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
-    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Inherited from the server rule")
+    XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -631,19 +691,20 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(ToolPermissionGrouping.matches(items[1], query: "zzz"))
   }
 
-  func testCreatorQuickStartCardsRouteOrStartDictation() {
+  func testCreatorQuickStartCardsNavigateOrOpenWidget() {
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
-    var dictationStarts = 0
-    model.onQuickStartDictation = { dictationStarts += 1 }
+    var widgetOpens = 0
+    model.onQuickStartOpenWidget = { widgetOpens += 1 }
 
     model.performQuickStart(.testMic)
     XCTAssertEqual(model.section, .audio)
     model.performQuickStart(.tuneShortcuts)
     XCTAssertEqual(model.section, .shortcuts)
-    model.performQuickStart(.openOverlay)
-    XCTAssertEqual(dictationStarts, 1)
-    XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
+    XCTAssertEqual(widgetOpens, 0)
+    model.performQuickStart(.openWidget)
+    XCTAssertEqual(widgetOpens, 1)
+    XCTAssertEqual(model.section, .shortcuts, "openWidget must not touch rail routing")
   }
 
   func testDeepLinkNotificationsReachOnlyTheirOwner() {
@@ -692,6 +753,30 @@ final class SettingsTruthTests: XCTestCase {
     model.select(SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness))
     XCTAssertEqual(model.section, .audio)
     XCTAssertNil(model.currentTab)
+  }
+
+  func testMaxRepairDeepLinkTargetsTheConsultationWithoutStartingOne() throws {
+    let links = SettingsDeepLink()
+    var settings = CsSettings.sample
+    settings.aiFormattingEnabled = true
+    settings.formattingLevel = "max"
+    var resets = 0
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settings: settings,
+        beginNewMaxConsultationObserver: {
+          resets += 1
+          return "new-consultation"
+        }), permissionProbe: MockPermissionProbe())
+    model.refresh()
+    links.present(.creator, anchor: .maxConsultation)
+    let target = try XCTUnwrap(links.consume())
+    XCTAssertEqual(target.anchor, .maxConsultation)
+    model.select(target)
+    XCTAssertEqual(model.section, .creator)
+    XCTAssertTrue(model.maxConsultationEnabled, "the anchored control must be available")
+    XCTAssertEqual(resets, 0, "navigation must not start or reset a conversation")
+    XCTAssertNil(links.consume(), "the repair route must remain one-shot")
   }
 
   /// The Rust core decides "am I a test?" partly from this process's environment
@@ -823,6 +908,59 @@ final class SettingsTruthTests: XCTestCase {
       [
         "3.5", "4.5", "0.9", "1038", "10.6", "5", "8.0",
       ])
+  }
+
+  func testBusSpeechPauseSliderPersistsAcrossReloadWithoutEnablingAgentAutoSend() {
+    var stored = CsSettings.sample
+    stored.agentAutoSend = false
+    var writes: [(String, String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TOGGLE_SILENCE_SEC", let seconds = Float(value) {
+          stored.toggleSilenceSec = seconds
+        }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    for pause in [0.5, 10.0, 30.0] {
+      model.toggleSilenceSlider = pause
+      model.refresh()
+      XCTAssertEqual(model.toggleSilenceSlider, pause, accuracy: 0.001)
+      XCTAssertFalse(model.settings.agentAutoSend)
+    }
+    XCTAssertEqual(writes.map(\.0), Array(repeating: "TOGGLE_SILENCE_SEC", count: 3))
+    XCTAssertEqual(writes.map(\.1), ["0.5", "10.0", "30.0"])
+  }
+
+  /// A drag across the seconds slider persists once, at release — not once per
+  /// tick (463 settings writes in one sampled drag, each rebuilding the Whisper
+  /// catalog on the main thread). Writes outside a gesture pass through.
+  func testSliderCommitGatePersistsOncePerDragAndPassesDirectWritesThrough() {
+    var gate = SliderCommitGate()
+    var persisted: [Double] = []
+
+    // Keyboard / accessibility: no editing envelope, every change persists.
+    if let direct = gate.valueChanged(4.5) { persisted.append(direct) }
+    XCTAssertEqual(persisted, [4.5])
+
+    // A drag: 463 ticks are absorbed, the label follows the draft.
+    XCTAssertNil(gate.editingChanged(true))
+    for tick in 1...463 {
+      if let direct = gate.valueChanged(Double(tick) * 0.05) { persisted.append(direct) }
+    }
+    XCTAssertEqual(persisted, [4.5], "mid-drag ticks must not persist")
+    XCTAssertEqual(gate.displayed(persisted: 4.5), 463 * 0.05, accuracy: 0.001)
+
+    // Release: exactly one commit, the last tick's value.
+    if let committed = gate.editingChanged(false) { persisted.append(committed) }
+    XCTAssertEqual(persisted, [4.5, 463 * 0.05])
+    XCTAssertNil(gate.draft)
+
+    // A gesture with no movement commits nothing.
+    XCTAssertNil(gate.editingChanged(true))
+    XCTAssertNil(gate.editingChanged(false))
+    XCTAssertEqual(persisted.count, 2)
   }
 
   /// The Lab pickers write their exact promoted keys on a developer build and
@@ -1236,6 +1374,49 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  func testLicenseVerificationFailureCannotProjectHealthySettings() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .unavailable)
+    XCTAssertEqual(health.level, .degraded)
+    XCTAssertEqual(health.message, "License verification unavailable")
+    XCTAssertEqual(health.targetSection, .license)
+  }
+
+  func testPendingLicenseCheckDoesNotClaimReadiness() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .loading)
+    XCTAssertEqual(health.level, .unknown)
+    XCTAssertEqual(health.message, "Checking license…")
+    XCTAssertEqual(health.targetSection, .license)
+  }
+
+  func testAvailableLicenseReadDoesNotRequirePaidEntitlementForBasicReadiness() {
+    let health = healthState(
+      stt: true, recording: true, keys: .available, agent: true, formatting: true,
+      licenseReadState: .available)
+    XCTAssertEqual(health.level, .healthy)
+    XCTAssertNil(health.targetSection)
+  }
+
+  func testKnownCaptureFailuresKeepPriorityOverLicenseReadState() {
+    for licenseState in [
+      LicenseService.ReadState.available, .loading, .unavailable,
+    ] {
+      let speechFailure = healthState(
+        stt: false, recording: true, keys: .available, agent: true, formatting: true,
+        licenseReadState: licenseState)
+      XCTAssertEqual(speechFailure.level, .offline)
+      XCTAssertEqual(speechFailure.targetSection, .engine)
+      let recordingFailure = healthState(
+        stt: true, recording: false, keys: .available, agent: true, formatting: true,
+        licenseReadState: licenseState)
+      XCTAssertEqual(recordingFailure.level, .offline)
+      XCTAssertEqual(recordingFailure.targetSection, .audio)
+    }
+  }
+
   func testReadinessRequiresEnabledFormattingButDoesNotRequireDisabledLane() {
     XCTAssertEqual(
       healthState(stt: true, recording: true, keys: .available, agent: true, formatting: false)
@@ -1255,27 +1436,21 @@ final class SettingsTruthTests: XCTestCase {
       .offline, "the known speech failure must remain visible")
   }
 
-  func testCreatorLanguagePresentationKeepsTruthfulIdentityAndAccessibility() {
+  func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
     XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
-    XCTAssertEqual(
-      choices.map(\.accessibilityLabel),
-      ["Multilingual", "Polish, Fine-tuned", "English, Fine-tuned"]
-    )
-    XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
-    XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
-    // The footnote names the rail section literally: Polish needs the
-    // locative, so the title cannot be interpolated. A rail rename must fail
-    // here until the sentence is reworded with it.
+    // The row sentence explains only the one non-obvious choice; the
+    // fine-tuned-models detail left the base view (Founder brief, round 4,
+    // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Domain vocabulary and Dictionary entries improve speech recognition."
+      "Multilingual detects the language automatically."
     )
-    XCTAssertTrue(
-      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
+    XCTAssertFalse(
+      LanguageIdentityPresentation.supportingCopy.contains(SettingsSection.voiceLab.title))
   }
 
   func testCreatorLanguageSelectionWritesStableRuntimeCodes() {
@@ -1466,7 +1641,8 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
       "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-        + "Your assistive.txt and three formatting prompt files will be preserved. "
+        + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
+        + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -1488,7 +1664,11 @@ final class SettingsTruthTests: XCTestCase {
       promptFileStatus(source: "custom_file", fileExists: true), "Custom prompt file in use.")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: false),
-      "No custom prompt file yet. Saving creates one at this path.")
+      "The custom file is created on save.")
+    // The quiet header tag; the spelled-out source stays as its VoiceOver value.
+    XCTAssertEqual(promptSourceTag("custom_file"), "Custom")
+    XCTAssertEqual(promptSourceTag("built_in_fallback"), "Built-in")
+    XCTAssertNil(promptSourceTag(nil), "no empty capsule for an unknown source")
     XCTAssertEqual(
       promptFileStatus(source: "built_in_fallback", fileExists: true),
       "The file exists but is empty, so the built-in prompt is in use.")
@@ -1519,7 +1699,15 @@ final class SettingsTruthTests: XCTestCase {
       facet: .readiness, state: .ready, count: 26, subject: "xAI (Grok)", detail: "")
     XCTAssertEqual(ready.localizedLabel, "Overall status")
     XCTAssertEqual(
-      ready.localizedValue, "Ready — xAI (Grok) configured, access available, 26 native tools")
+      ready.localizedValue,
+      "Ready — xAI (Grok) configured, can send requests, 26 native tools",
+      "the verdict reports request readiness, never a successful provider request")
+
+    let available = CsMcpStatusRow(
+      label: "Provider:", value: "raw english", tone: .good,
+      facet: .provider, state: .accessAvailable, count: nil, subject: "xAI (Grok)",
+      detail: "XAI_API_KEY")
+    XCTAssertEqual(available.localizedValue, "xAI (Grok) — can send requests")
 
     let provider = CsMcpStatusRow(
       label: "Provider:", value: "", tone: .bad,
@@ -1559,7 +1747,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(summary.native, 1)
     XCTAssertEqual(summary.enhanced, 1)
     XCTAssertEqual(summary.unavailable, 1)
-    XCTAssertEqual(summary.line, "Native: 1 · Enhanced: 1 · Unavailable: 1")
+    XCTAssertEqual(summary.line, "Capabilities: 1 native · 1 enhanced · 1 unavailable")
 
     let rows = CsCapabilityRow.sampleMatrix
     XCTAssertEqual(rows[0].localizedTier, "Native")
@@ -1676,11 +1864,11 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(
       snapshots.map { URL(fileURLWithPath: $0.path).lastPathComponent },
-      ["formatting.txt", "formatting-smart.txt", "formatting-max.txt"]
+      ["formatting.txt", "formatting-smart.txt"]
     )
     XCTAssertEqual(
       snapshots.map(\.source),
-      ["custom_file", "built_in_fallback", "built_in_fallback"]
+      ["custom_file", "built_in_fallback"]
     )
   }
 
@@ -1713,8 +1901,35 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(calls.map(\.prompts), [false, true])
     XCTAssertTrue(
       model.resetImpactDescription(includeKeys: false, includePrompts: true)
-        .contains("assistive.txt and three formatting prompt files will also move to Trash")
+        .contains(
+          "assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt prompts will also move to Trash"
+        )
     )
+  }
+
+  /// The chips under the template are real editing controls: each appends its
+  /// field through the persisted write, and an unknown field is refused.
+  func testTemplateFieldChipAppendsThroughThePersistedWrite() {
+    // Like settings.json, the mock serves back the template it was handed.
+    var stored = CsSettings.sample
+    stored.transcriptTagTemplate = "<codescribe lang=\""
+    var writes: [(key: String, value: String)] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if key == "TRANSCRIPT_TAG_TEMPLATE" { stored.transcriptTagTemplate = value }
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"")
+
+    model.insertTranscriptTagPlaceholder("{lang}")
+    model.insertTranscriptTagPlaceholder("{bogus}")
+
+    XCTAssertEqual(
+      writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"], "the unknown field writes nothing")
+    XCTAssertEqual(writes.last?.value, "<codescribe lang=\"{lang}")
+    XCTAssertEqual(model.settings.transcriptTagTemplate, "<codescribe lang=\"{lang}")
   }
 
   func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
@@ -1738,6 +1953,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
     XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+    // The deleted vendor accounts are the ones Formatting reads on that
+    // vendor; the confirmation must say so while secrets are present.
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("shared with Formatting"))
 
     try engine.resetAgentData()
     XCTAssertEqual(calls, 1)
@@ -1857,6 +2075,27 @@ final class SettingsTruthTests: XCTestCase {
     let unknown = MCPAddFailure(storeMessage: "Failed to read MCP config /tmp/mcp.json")
     XCTAssertNil(unknown.field)
     XCTAssertEqual(unknown.message, unknown.detail)
+  }
+
+  func testMcpEmptyRemoteURLRefusalStaysVisibleAcrossTransportChanges() {
+    let command = MCPAddFailure(storeMessage: "MCP server command is empty")
+    for endpoint in ["", "  ", "\n\t"] {
+      let remote = command.forTransport(remote: true, endpoint: endpoint)
+      XCTAssertEqual(remote.field, .endpoint)
+      XCTAssertEqual(remote.visibleField(remote: true), .endpoint)
+      XCTAssertTrue(remote.message.contains("server URL"))
+      XCTAssertEqual(remote.detail, command.detail)
+      XCTAssertNil(
+        remote.visibleField(remote: false), "hidden URL refusal renders under local form")
+    }
+    XCTAssertEqual(command.forTransport(remote: false, endpoint: ""), command)
+    XCTAssertEqual(command.visibleField(remote: false), .command)
+    XCTAssertNil(
+      command.visibleField(remote: true), "hidden command refusal renders under remote form")
+    let name = MCPAddFailure(storeMessage: "MCP server name is empty")
+    XCTAssertEqual(name.forTransport(remote: true, endpoint: ""), name)
+    XCTAssertEqual(name.visibleField(remote: true), .name)
+    XCTAssertEqual(name.visibleField(remote: false), .name)
   }
 
   /// Remove only asks. The request sets the candidate and deletes nothing;
@@ -2063,7 +2302,9 @@ final class SettingsTruthTests: XCTestCase {
     let applyWrite: (String, String) -> Void = { key, value in
       writes.append((key, value))
       switch key {
-      case "CODESCRIBE_ASR_MODE": persisted.asrMode = value
+      case "CODESCRIBE_ASR_MODE":
+        persisted.asrMode = value
+        persisted.resolvedAsrMode = value
       case "CODESCRIBE_CLOUD_CONSENT": persisted.cloudConsent = value
       case "CODESCRIBE_LAYERED_TRANSCRIPTION": persisted.layeredTranscription = value
       case "CODESCRIBE_ASR_GATEWAY_URL": persisted.asrGatewayUrl = value
@@ -2093,6 +2334,11 @@ final class SettingsTruthTests: XCTestCase {
 
     writes.removeAll()
     model.setAsrMode("cloud")
+    XCTAssertTrue(writes.isEmpty, "a bare Cloud selection only asks; it writes nothing")
+    XCTAssertEqual(model.asrModeId, "local_power")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.confirmCloudConsent()
     XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
     XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
@@ -2100,9 +2346,10 @@ final class SettingsTruthTests: XCTestCase {
 
     writes.removeAll()
     model.setAsrMode("apple_only")
-    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_ASR_MODE"])
-    XCTAssertEqual(writes.map(\.1), ["apple_only"])
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "apple_only"])
     XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted, "leaving Cloud revokes the grant")
 
     try model.setSttLaneEndpoint("live", "wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.0, "STT_LIVE_ENDPOINT")
@@ -2117,6 +2364,7 @@ final class SettingsTruthTests: XCTestCase {
   func testModeSelectionPreservesDiagnosticEnvOverrideWithoutWritingIt() {
     var persisted = CsSettings.sample
     persisted.asrMode = "local_power"
+    persisted.resolvedAsrMode = "local_power"
     persisted.layeredTranscription = "off"
     var writes: [String] = []
     let model = SettingsViewModel(
@@ -2229,10 +2477,6 @@ private final class RecordingPermissionAdmin: MCPAdminEngine {
 /// MCP admin double with a scripted add failure and a recorded update log.
 @MainActor
 private final class ScriptedMcpAdmin: MCPAdminEngine {
-  struct StoreFailure: Error, CustomStringConvertible {
-    let description: String
-  }
-
   private var servers: [CsMcpServer]
   private let serverRules: [String]
   var addFailure: String?
@@ -2247,7 +2491,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   func listServers() throws -> [CsMcpServer] { servers }
 
   func addServer(_ input: CsMcpServerInput) throws {
-    if let addFailure { throw StoreFailure(description: addFailure) }
+    if let addFailure { throw CsError.Config(msg: addFailure) }
     servers.append(
       CsMcpServer(
         name: input.name, command: input.command, args: input.args, envKeys: [],
@@ -2285,6 +2529,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   func testSttModelRowShowsLocalSelectionOnlyInLocalPower() {
     var persisted = CsSettings.sample
     persisted.asrMode = "local_power"
+    persisted.resolvedAsrMode = "local_power"
     let engine = MockSettingsEngine(settingsLoader: { persisted })
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     XCTAssertEqual(model.asrModeId, "local_power")
@@ -2296,9 +2541,11 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       model.sttModelRow?.value, CsWhisperModelCatalog.sample.configured,
       "once the catalog is loaded the effective selection wins")
 
+    persisted.resolvedAsrMode = "apple_only"
     model.setAsrMode("apple_only")
     XCTAssertNil(model.sttModelRow)
-    model.setAsrMode("cloud")
+    persisted.resolvedAsrMode = "cloud"
+    model.confirmCloudConsent()
     XCTAssertNil(model.sttModelRow, "Cloud has no runtime model preference to promise")
   }
 

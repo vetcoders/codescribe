@@ -79,7 +79,8 @@ fn test_resampling_to_16k() {
     let path = test_audio_path();
     let (samples, sample_rate) = audio::load_audio_file(&path).expect("load audio");
 
-    let resampled = audio::resample_to_16k(&samples, sample_rate);
+    let resampled =
+        audio::resample_to_16k(&samples, sample_rate).expect("resample within the output budget");
 
     // Verify resampled length is proportional
     let expected_len = (samples.len() as f32 * 16000.0 / sample_rate as f32).ceil() as usize;
@@ -111,7 +112,7 @@ fn test_resampling_to_16k() {
 fn test_16k_passthrough() {
     let samples: Vec<f32> = (0..16000).map(|i| (i as f32 * 0.001).sin()).collect();
 
-    let resampled = audio::resample_to_16k(&samples, 16000);
+    let resampled = audio::resample_to_16k(&samples, 16000).expect("16 kHz passthrough");
 
     assert_eq!(
         samples.len(),

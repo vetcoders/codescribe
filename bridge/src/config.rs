@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{self, KEYCHAIN_ACCOUNTS, delete_key, save_key};
@@ -100,6 +100,10 @@ pub struct CsSettings {
     pub whisper_adaptive_buffer: bool,
     /// `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
     pub format_on_device: bool,
+    /// Voice Lab: the DictationTranscriber witness re-checks unresolved
+    /// recovery debt after each sealed utterance. Effective value after the
+    /// settings key plus the power-user env override.
+    pub dictation_witness_armed: bool,
     pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
@@ -161,6 +165,8 @@ pub struct CsSettings {
     pub start_at_login: bool,
     pub agent_enter_sends: bool,
     pub agent_auto_send: bool,
+    /// Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
+    pub agent_send_hold_sec: u32,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -188,6 +194,11 @@ pub struct CsSettings {
     /// Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
     /// `"local_power"` | `"cloud"`. Written back via `update_config`.
     pub asr_mode: Option<String>,
+    /// Lane this snapshot actually runs, `AsrProductMode::as_str()`:
+    /// `UserSettings::resolved_asr_mode()` over the persisted mode, the consent
+    /// record and the saved `use_local_stt` choice of the same seal. Read-only;
+    /// Swift shows and gates on it and never re-derives it from `asr_mode`.
+    pub resolved_asr_mode: String,
     /// Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
     /// `"denied"`. Cloud without `granted` resolves to Apple-only.
     pub cloud_consent: Option<String>,
@@ -222,6 +233,7 @@ impl CsSettings {
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
             format_on_device: config.format_on_device,
+            dictation_witness_armed: runtime.dictation_witness_armed(),
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
@@ -264,6 +276,7 @@ impl CsSettings {
             start_at_login: config.start_at_login,
             agent_enter_sends: config.agent_enter_sends,
             agent_auto_send: config.agent_auto_send,
+            agent_send_hold_sec: runtime.agent_send_hold_sec(),
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -286,6 +299,8 @@ impl CsSettings {
             buffered_interim_sec: settings.buffered_interim_sec,
             backend_max_upload_mb: settings.backend_max_upload_mb,
             asr_mode: setting_string(settings.asr_mode.clone()),
+            // The session factory reads the same resolver on the same seal.
+            resolved_asr_mode: settings.resolved_asr_mode().mode.as_str().to_string(),
             cloud_consent: setting_string(settings.cloud_consent.clone()),
             asr_gateway_url: setting_string(settings.asr_gateway_url.clone()),
         }
@@ -729,43 +744,16 @@ pub struct CsTrayToggles {
 #[derive(uniffi::Object)]
 pub struct CodescribeConfig {}
 
-/// Seed the recorder's legacy process-env input selector exactly once, while
-/// the macOS app is still constructing its bridge handles and before hotkey or
-/// recording worker threads start. Persisted settings remain the source of
-/// truth; an explicit launch-time process override keeps precedence.
-fn bootstrap_audio_input_runtime() {
-    /// Once-only seed of `AUDIO_INPUT_DEVICE` from persisted config at boot.
-    static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
-    AUDIO_INPUT_BOOTSTRAP.call_once(|| {
-        if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
-            return;
-        }
-        let Some(device) = Config::load_without_keychain()
-            .audio_input_device
-            .filter(|device| !device.trim().is_empty())
-        else {
-            return;
-        };
-
-        // SAFETY: `CodescribeConfig` is an AppDelegate-owned bridge property,
-        // constructed before `CodescribeHotkeys.start()` spawns runtime workers.
-        // The Once guard prevents later Settings-scene handles from mutating it.
-        unsafe { std::env::set_var("AUDIO_INPUT_DEVICE", device) };
-    });
-}
-
 #[uniffi::export]
 impl CodescribeConfig {
     /// Construct the bridge handle. Not a pure allocation: this is the app's
-    /// first-touch entry point, so it also initializes logging, seeds the
-    /// recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
-    /// and resumes run monitors persisted by a previous process. Later handles
+    /// first-touch entry point, so it also initializes logging and resumes run
+    /// monitors persisted by a previous process. Later handles
     /// are cheap — the side effects are guarded to run only once, and are
     /// skipped entirely under `cfg!(test)`.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
-        bootstrap_audio_input_runtime();
         // Resume any run monitors persisted by a previous app process so a
         // watched Vibecrafted run keeps heartbeating after restart.
         if !cfg!(test) {
@@ -841,6 +829,44 @@ impl CodescribeConfig {
         settings.overlay_keep_visible_between_takes = Some(enabled);
         if let Err(error) = settings.save() {
             tracing::warn!(%error, "overlay pin preference could not be saved");
+            return false;
+        }
+        true
+    }
+
+    /// Read the auto-fold interval. `0` means never. Unset, or a stored value
+    /// outside {0, 5, 10, 30, 60}, reads as 10 seconds.
+    pub fn overlay_auto_fold_seconds(&self) -> u32 {
+        // The doc lines above are part of the UniFFI checksum: keep them. A
+        // settings read that fails keeps the default instead of panicking
+        // across the FFI boundary at overlay attach.
+        let stored = match Config::load_runtime_snapshot_without_keychain() {
+            Ok(snapshot) => snapshot.user_settings().overlay_auto_fold_seconds,
+            Err(error) => {
+                tracing::warn!(%error, "overlay auto-fold preference could not be loaded; folding after 10 s");
+                None
+            }
+        };
+        match stored {
+            Some(seconds) if matches!(seconds, 0 | 5 | 10 | 30 | 60) => seconds,
+            _ => 10,
+        }
+    }
+
+    /// Persist the auto-fold interval. `0` means never. A value outside
+    /// {0, 5, 10, 30, 60} is refused and nothing is written. An unchanged
+    /// value does not rewrite settings.
+    pub fn set_overlay_auto_fold_seconds(&self, seconds: u32) -> bool {
+        if !matches!(seconds, 0 | 5 | 10 | 30 | 60) {
+            return false;
+        }
+        let mut settings = UserSettings::load();
+        if settings.overlay_auto_fold_seconds == Some(seconds) {
+            return true;
+        }
+        settings.overlay_auto_fold_seconds = Some(seconds);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "overlay auto-fold preference could not be saved");
             return false;
         }
         true
@@ -1015,6 +1041,14 @@ impl CodescribeConfig {
     }
 
     /// Explicit credential acquisition. Swift executes this off MainActor.
+    ///
+    /// This is the only authorized path that fills the process credential
+    /// cache, so it also re-seals the live controller through the one
+    /// settings-refresh path. Launch creates the controller before Swift
+    /// restores provider access, and a Keychain-only secret is therefore absent
+    /// from that first sealed generation: without this re-seal the Cloud lane
+    /// reports `live_key_missing` on every take until an unrelated settings
+    /// write happens to re-seal it.
     pub fn provider_access_snapshot(&self) -> Result<CsProviderAccessSnapshot, CsError> {
         let previous_revision = keychain::bundle_revision();
         keychain::refresh_bundle().map_err(provider_error)?;
@@ -1025,6 +1059,12 @@ impl CodescribeConfig {
         if revision != previous_revision {
             invalidate_runtime_snapshot_cache();
         }
+        // Unconditional, not gated on `revision`: a coalesced bundle read keeps
+        // the revision while still being the moment the controller's sealed
+        // generation is known to be credential-complete. The refresh is a no-op
+        // before the controller exists and defers to the next take while one is
+        // active, so it can never interrupt capture.
+        crate::hotkeys::refresh_live_controller_config();
         let registry = ProviderRegistry::from_settings(&UserSettings::load());
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();
@@ -1974,6 +2014,7 @@ fn agent_env_keys() -> &'static [&'static str] {
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",
+        "CODESCRIBE_AGENT_SEND_HOLD_SEC",
     ]
 }
 
@@ -2806,6 +2847,44 @@ mod reset_tests {
 
     use codescribe_core::test_isolation::EnvGuard;
 
+    #[test]
+    fn resolved_asr_projection_uses_the_same_seal_as_the_session_factory() {
+        use super::CsSettings;
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let cases = [
+            (None, None, None, "apple_only"),
+            (None, None, Some(true), "local_power"),
+            (None, None, Some(false), "cloud"),
+            (Some("apple_only"), None, Some(true), "apple_only"),
+            (Some("local_power"), None, None, "local_power"),
+            (Some("cloud"), None, None, "apple_only"),
+            (Some("cloud"), Some("denied"), None, "apple_only"),
+            (Some("cloud"), Some("granted"), None, "cloud"),
+        ];
+        for (mode, consent, local, expected) in cases {
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                std::path::PathBuf::from("/fixture/asr-projection"),
+                1_700_000_000_000,
+            );
+            input.user_settings.asr_mode = mode.map(str::to_owned);
+            input.user_settings.cloud_consent = consent.map(str::to_owned);
+            input.user_settings.use_local_stt = local;
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            let projected = CsSettings::from_runtime_snapshot(&snapshot);
+            assert_eq!(projected.resolved_asr_mode, expected);
+            assert_eq!(
+                projected.resolved_asr_mode,
+                snapshot.user_settings().resolved_asr_mode().mode.as_str()
+            );
+            assert_eq!(
+                projected.asr_mode.as_deref(),
+                mode,
+                "retain editable intent"
+            );
+        }
+    }
+
     /// Write a fixture file, creating its parents. Panics on failure: a fixture
     /// that did not materialize would make the assertions below meaningless.
     fn write(path: &Path, bytes: &[u8]) {
@@ -3361,6 +3440,34 @@ mod settings_snapshot_tests {
 
     #[test]
     #[serial]
+    fn agent_send_hold_bridge_round_trip_preserves_zero_and_env_precedence() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let _hold = EnvGuard::remove("CODESCRIBE_AGENT_SEND_HOLD_SEC");
+        let config = CodescribeConfig::new();
+        assert_eq!(config.load_settings().agent_send_hold_sec, 10);
+        for seconds in [0, 7, 30] {
+            config
+                .update_config("CODESCRIBE_AGENT_SEND_HOLD_SEC".into(), seconds.to_string())
+                .unwrap();
+            assert_eq!(
+                CodescribeConfig::new().load_settings().agent_send_hold_sec,
+                seconds
+            );
+            let mut settings = UserSettings::load();
+            settings.show_dock_icon = Some(true);
+            settings.save().unwrap();
+            assert_eq!(config.load_settings().agent_send_hold_sec, seconds);
+        }
+        assert!(!Config::env_path().exists());
+        let _override = EnvGuard::set("CODESCRIBE_AGENT_SEND_HOLD_SEC", "0");
+        assert_eq!(config.load_settings().agent_send_hold_sec, 0);
+        assert_eq!(UserSettings::load().agent_send_hold_sec, Some(30));
+    }
+
+    #[test]
+    #[serial]
     fn explicit_key_actions_cancel_pending_imports_and_stale_settings_cannot_reissue_them() {
         for replacement in [Some("synthetic-new-key"), None] {
             let root = tempfile::tempdir().unwrap();
@@ -3864,6 +3971,36 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    #[test]
+    #[serial]
+    fn overlay_auto_fold_seconds_defaults_to_ten_refuses_seven_and_survives_new_handle() {
+        let root = scratch("overlay_auto_fold");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let config = CodescribeConfig::new();
+        assert_eq!(config.overlay_auto_fold_seconds(), 10);
+        assert!(!config.set_overlay_auto_fold_seconds(7));
+        assert_eq!(config.overlay_auto_fold_seconds(), 10);
+        assert_eq!(UserSettings::load().overlay_auto_fold_seconds, None);
+        assert!(config.set_overlay_auto_fold_seconds(30));
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 30);
+        let path = UserSettings::settings_path();
+        let written = fs::read(&path).expect("read auto-fold");
+        assert!(config.set_overlay_auto_fold_seconds(30));
+        assert_eq!(fs::read(&path).expect("unchanged auto-fold"), written);
+        assert!(config.set_overlay_auto_fold_seconds(0));
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 0);
+        UserSettings {
+            overlay_auto_fold_seconds: Some(7),
+            ..UserSettings::default()
+        }
+        .save()
+        .unwrap();
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 10);
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
     /// Clearing the input device must persist a real absence, not `Some("")`.
     /// An empty override would read as a configured device named "" and pin the
     /// recorder away from the live system default forever.
@@ -3875,8 +4012,8 @@ mod settings_snapshot_tests {
 
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
         let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
-        // Mirror the already-running recorder: its process selector remains
-        // pinned until restart even after the saved preference is unset.
+        // An explicit launch override stays in the process; resetting the
+        // saved preference must not depend on it.
         let _device = EnvGuard::set("AUDIO_INPUT_DEVICE", "USB Studio Mic");
 
         let mut settings = UserSettings {

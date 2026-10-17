@@ -80,7 +80,7 @@ pub use cloud_asr::{
 pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
     EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
-    SealedEnergyCalibration, energy_calibration_path,
+    GuidedCalibrationRefused, SealedEnergyCalibration, energy_calibration_path,
 };
 pub use install_interlock::{
     AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,
@@ -249,7 +249,10 @@ mod tests {
         }
 
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
-            assert_eq!(dir, std::path::PathBuf::from(custom));
+            // config_dir() canonicalizes an existing override (macOS mounts
+            // the temp root under /private/var), so compare the same shape.
+            let custom = std::path::PathBuf::from(custom);
+            assert_eq!(dir, custom.canonicalize().unwrap_or(custom));
         } else {
             assert_eq!(dir, crate::test_isolation::test_process_config_root());
             let home = crate::test_isolation::account_home().expect("account home");

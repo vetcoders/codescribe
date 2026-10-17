@@ -4,3 +4,5 @@
 /// Per-fd SIGPIPE suppression — required because the core runs inside a Swift host.
 pub mod pipes;
 pub mod safe_path;
+/// Writer's quotes outside code for pasted dictation and bus replies.
+pub mod typographic_quotes;

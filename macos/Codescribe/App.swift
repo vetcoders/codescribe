@@ -157,9 +157,28 @@ struct CodescribeApp: App {
   @Environment(\.openWindow) private var openWindow
 
   init() {
-    if CommandLine.arguments.contains("--install-agent-bridge") {
+    // Before any engine: a test host must not see the live runtime.
+    QualityCaptureHost.isolateFromLiveRuntime()
+    switch AgentBridgeCommandLine.request(arguments: CommandLine.arguments) {
+    case .notRequested:
+      break
+    case .usage(let message):
+      print(message)
+      Darwin.exit(2)
+    case .runtime:
       do {
         print(try RealAgentBridgeInstaller().installRuntime())
+        Darwin.exit(0)
+      } catch {
+        print("Agent bridge installation failed: " + error.localizedDescription)
+        Darwin.exit(1)
+      }
+    case .clients(let selected):
+      // The same explicit selection act Settings performs, on a host with no window.
+      do {
+        print(
+          AgentBridgeCommandLine.summary(
+            try RealAgentBridgeInstaller().install(selectedClients: selected)))
         Darwin.exit(0)
       } catch {
         print("Agent bridge installation failed: " + error.localizedDescription)
@@ -182,12 +201,16 @@ struct CodescribeApp: App {
       agentStatus: RealAgentStatusEngine(),
       mcpAdmin: RealMCPAdminEngine(),
       hotkeys: RealHotkeysEngine(),
-      licenseService: LicenseService.shared
+      licenseService: LicenseService.shared,
+      configurationInvalidation: AppModel.shared.configurationInvalidation
     )
     let delegate = appDelegate
     model.onApplyInterfaceLanguage = { beforeTermination in
       try await delegate.restartForInterfaceLanguage(
         relaunch: .plain, beforeTermination: beforeTermination)
+    }
+    model.onNewMaxConsultation = {
+      AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
     return model
   }
@@ -204,6 +227,10 @@ struct CodescribeApp: App {
     }
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
+    // One unified header plane, as the Agent window has. The scene owns this
+    // value: SwiftUI's toolbar bridging rewrites `NSWindow.toolbarStyle` after
+    // `SettingsView.adoptHostWindow` runs, so only the scene modifier holds.
+    .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .appSettings) {
         Button("Settings…") { openWindow.presentSettings() }
@@ -287,6 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // `applicationDidFinishLaunching` (line ~179), already behind the guard.
   private lazy var model = AppModel.shared
   private lazy var trayStatus = TrayStatusStore()
+  private let dockMenu = DockMenu()
   private lazy var hotkeys = CodescribeHotkeys()
   // Stateless bridge handles backing the tray's app-level actions (notes,
   // config paths, transcript history). Each call reads/writes live on-disk truth.
@@ -306,6 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     showAgent: { [weak self] in self?.showAgent() }
   )
   private var statusItem: NSStatusItem!
+  private var statusItemPulse: Task<Void, Never>?
   private var hasUnreadAgentUpdate = false
   // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
   // surface (overlay panel vs agent window). Held so it can be removed on quit.
@@ -317,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var shouldExitForDuplicate = false
   private var credentialServicesStarted = false
   private let terminationCoordinator = AppTerminationCoordinator()
+  private var idleRestartCoordinator: IdleRestartCoordinator?
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
   private lazy var onboarding = OnboardingWindowController(
@@ -357,6 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func application(_ application: NSApplication, open urls: [URL]) {
     guard !Self.isRunningTests, !shouldExitForDuplicate else { return }
     for url in urls {
+      if url.scheme == "codescribe", url.host == "restart-if-idle" {
+        Task { @MainActor [weak self] in await self?.idleRestartCoordinator?.handle(url) }
+        continue
+      }
       vocabularyAB.receive(url, labEnabled: DictationOverlayGate.isLabModeOn())
     }
   }
@@ -376,13 +410,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     false
   }
 
+  /// The Dock menu offers the tray panel's four primary actions above the
+  /// Show All Windows / Hide / Quit items AppKit appends (Founder, 2026-10-14:
+  /// Agent, the widget, the microphone and Settings straight from the Dock).
+  /// AppKit asks on every Dock click, so the dictation wording follows the
+  /// state at that moment.
+  func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+    guard !Self.isRunningTests else { return nil }
+    let tray = model.tray
+    let state = DockMenuState(
+      agentAvailable: tray.agentAvailable,
+      isStartingDictation: tray.isStartingDictation,
+      isRecording: tray.isRecording,
+      assistiveRecording: trayStatus.status.assistive,
+      startInAssistive: tray.startInAssistive)
+    return dockMenu.menu(
+      for: state,
+      handlers: [
+        .agent: { [weak self] in self?.showAgent() },
+        .widget: { [weak self] in self?.model.overlay.showWidget() },
+        .dictation: { [weak self] in self?.model.tray.toggleDictation() },
+        .settings: { [weak self] in self?.presentSettingsFromDock() },
+      ])
+  }
+
+  /// Settings is a SwiftUI `Window` scene that opens only through
+  /// `OpenWindowAction.presentSettings`, an environment action the Dock menu
+  /// cannot reach. The ⌘, command in the main menu performs exactly that
+  /// action, so the Dock entry performs the command item instead of growing a
+  /// second opening path.
+  private func presentSettingsFromDock() {
+    let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
+    guard
+      let item = items.first(where: {
+        $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == [.command]
+      }),
+      let menu = item.menu
+    else {
+      appLogger.error("dock_settings: the ⌘, Settings command is not in the main menu")
+      return
+    }
+    menu.performActionForItem(at: menu.index(of: item))
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
     let trayToggles = config.trayToggles()
-    NSApp.setActivationPolicy(trayToggles.showDockIcon ? .regular : .accessory)
+    DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
+
+    // Diagnostic log beside codescribe.log: the presentation ledger persists
+    // here because unified-log debug entries do not survive.
+    let diagnostic = DiagnosticLog.install(dataDirectory: config.configDir())
+    let launchInfo = Bundle.main.infoDictionary ?? [:]
+    let launchCommit = launchInfo["CSBuildCommit"] as? String ?? "dev"
+    let launchVersion = launchInfo["CFBundleShortVersionString"] as? String ?? "unknown"
+    diagnostic.append(
+      category: "launch",
+      "build=\(launchCommit) pid=\(ProcessInfo.processInfo.processIdentifier) version=\(launchVersion)"
+    )
+    OverlayPresentationTrace.shared.diagnosticSink = diagnostic
 
     do {
       let runtime = try startApplicationRuntime()
@@ -423,6 +512,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.model.overlay.showWidget()
       case .revealChat:
         self.revealAgentForDelivery()
+      case .closeTray:
+        self.trayPanel.dismiss()
       }
     }
     model.tray.onDictationStartRequested = { [model] in
@@ -438,7 +529,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     startHotkeys()
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
+    prepareTranscriptHistoryStorage()
+    prepareMaxConsultation()
     prewarmRecordingController()
+    do {
+      idleRestartCoordinator = try IdleRestartCoordinator(
+        root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
+        acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
+        reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        terminate: {
+          RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+        })
+    } catch {
+      appLogger.error("Idle restart capability unavailable: \(error.localizedDescription)")
+    }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(onboardingWindowWillClose),
@@ -506,7 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let priorPolicy = NSApp.activationPolicy()
     if priorPolicy == .accessory {
-      NSApp.setActivationPolicy(.regular)
+      DockPresence.apply(showDockIcon: true)
     }
     NSApp.activate(ignoringOtherApps: true)
     Task { @MainActor [weak self] in
@@ -515,7 +619,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
         if !self.config.trayToggles().showDockIcon {
-          NSApp.setActivationPolicy(.accessory)
+          DockPresence.apply(showDockIcon: false)
         }
       }
       appLogger.info(
@@ -565,7 +669,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       credits.append(privacy)
       credits.append(NSAttributedString(string: "\n", attributes: mono))
       credits.append(terms)
-      NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+      NSApp.orderFrontStandardAboutPanel(options: [
+        .credits: credits,
+        .version: info["CSBuildNumber"] as? String ?? "unknown",
+      ])
     }
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)
@@ -647,6 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           settingsFile: config.settingsFilePath(), dataDirectory: config.configDir(),
           notesDirectory: notes.notesDir()
         )
+        // Diagnostic metadata, not user content: copy the report verbatim.
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
@@ -809,6 +917,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The launch guards in applicationShouldTerminate keep the XCTest host
     // from constructing a bridge here solely to stop it at teardown.
     let voiceStop = Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
+    idleRestartCoordinator?.invalidate()
     trayPanel.dismiss()
     model.chat.invalidate()
     appActionListener?.invalidate()
@@ -920,25 +1029,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func applyStatusItemStatus() {
     guard let button = statusItem?.button else { return }
-    // The glyph never changes with status — it is always the brand mark.
-    // Mode is conveyed by the status dot composited into the glyph's
-    // bottom-right corner, 1:1 with the tray status feed: green ready /
-    // red recording / orange processing / purple assistive.
+    // The glyph never changes with status. Idle and settled states stay a
+    // template image, including the corner indicator. Listening and processing
+    // color that indicator.
+    // Unread replies stay in the tooltip.
     button.imagePosition = .imageOnly
     button.title = ""
-    if let dot = trayStatus.menuBarDotColor, let base = statusItemImage() {
-      // The composite is a flattened, non-template image, so the
-      // unread-agent tint rides the glyph tint, not contentTintColor.
-      button.image = TrayStatusDotIcon.composite(
+    if let base = statusItemImage() {
+      button.image = MenuBarStatusImage.make(
         base: base,
-        dot: NSColor(dot),
-        glyphTint: hasUnreadAgentUpdate ? .systemYellow : nil
+        dot: trayStatus.menuBarDotColor.map(NSColor.init),
+        rim: trayStatus.menuBarDotRim.map(NSColor.init)
       )
-      button.contentTintColor = nil
     } else {
-      button.image = statusItemImage()
-      button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+      button.image = nil
     }
+    syncStatusItemPulse()
+    button.contentTintColor = nil
     let tooltip = trayStatus.tooltip
     button.toolTip =
       hasUnreadAgentUpdate
@@ -946,6 +1053,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         localized: "\(tooltip) - Agent reply ready",
         comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
       : tooltip
+  }
+
+  /// Owed Agent words pulse the glyph's dot like the pointer dot: opacity
+  /// 0.4–1.0 on a ~1.3 s sine, repainted only while the pulse is due.
+  private func syncStatusItemPulse() {
+    guard trayStatus.menuBarDotPulses else {
+      statusItemPulse?.cancel()
+      statusItemPulse = nil
+      return
+    }
+    guard statusItemPulse == nil else { return }
+    statusItemPulse = Task { @MainActor [weak self] in
+      var phase = 0.0
+      while !Task.isCancelled {
+        do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        guard let self, self.trayStatus.menuBarDotPulses,
+          let button = self.statusItem?.button,
+          let base = self.statusItemImage(),
+          let dot = self.trayStatus.menuBarDotColor
+        else { return }
+        phase += 0.5
+        button.image = MenuBarStatusImage.make(
+          base: base,
+          dot: NSColor(dot).withAlphaComponent(0.7 + 0.3 * sin(phase))
+        )
+      }
+    }
   }
 
   private func statusItemImage() -> NSImage? {
@@ -966,16 +1100,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
     let hosting = NSHostingController(rootView: root)
-    let window = NSWindow(contentViewController: hosting)
-    window.title = String(localized: "Agent", comment: "Title of the agent chat window")
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(contentViewController: hosting)
     window.setContentSize(NSSize(width: 1120, height: 720))
-    window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-    window.titlebarAppearsTransparent = true
+    window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
     window.isReleasedWhenClosed = false
     // LSUIElement accessory: join the active Space so a passive
     // `orderFrontRegardless` is actually visible during voice delivery.
     window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     window.center()
+    DockPresence.adopt(window)
+    // After adopt: style-mask repair must not leave a second painted "Agent" row.
+    AgentWindowChrome.apply(window)
     agentWindow = window
     return window
   }
@@ -1087,6 +1225,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } catch {
         appLogger.error(
           "Codescribe hotkeys unavailable: \(String(describing: error), privacy: .public)")
+      }
+    }
+  }
+
+  private func prepareMaxConsultation() {
+    // Independent of STT warmup: local consultation recovery must not wait for
+    // model loading or for the first formatting request. The Rust owner treats
+    // retained instructions only as reference data and offers no tools.
+    Task { [hotkeys, model] in
+      do {
+        let readiness = try await hotkeys.prepareMaxConsultation()
+        model.overlay.state.setMaxPreparationError(nil)
+        switch readiness {
+        case .disabled: break
+        case .storedChain: appLogger.info("Codescribe Max startup Responses chain ready")
+        case .replayOnly:
+          appLogger.info("Codescribe Max provider ready; protocol uses full-history replay")
+        }
+      } catch {
+        model.overlay.state.setMaxPreparationError(error.userFacingMessage)
+        appLogger.error(
+          "Codescribe Max preparation requires attention: \(String(describing: error), privacy: .public)"
+        )
+      }
+    }
+  }
+
+  private func prepareTranscriptHistoryStorage() {
+    Task { [model] in
+      do {
+        let recovered = try await prepareTranscriptStorage()
+        model.overlay.state.setTranscriptStorageError(nil)
+        appLogger.info("Codescribe transcript storage ready; device recovery: \(recovered)")
+      } catch {
+        model.overlay.state.setTranscriptStorageError(error.userFacingMessage)
+        appLogger.error(
+          "Codescribe transcript storage preparation failed: \(String(describing: error), privacy: .public)"
+        )
       }
     }
   }

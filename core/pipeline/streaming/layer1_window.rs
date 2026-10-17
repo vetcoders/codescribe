@@ -21,6 +21,8 @@ pub(crate) struct CaptureWindowPlan {
     last_full_end: u64,
     offered: Option<TailSampleRange>,
     finished: bool,
+    trial_offer: bool,
+    last_trial_bucket: Option<u64>,
 }
 
 impl CaptureWindowPlan {
@@ -36,6 +38,8 @@ impl CaptureWindowPlan {
             last_full_end: 0,
             offered: None,
             finished: sample_rate == 0,
+            trial_offer: false,
+            last_trial_bucket: None,
         }
     }
 
@@ -43,6 +47,9 @@ impl CaptureWindowPlan {
     /// The first Stop observation freezes the head. A later, larger sample
     /// count neither hides that offer nor opens another grid past the freeze.
     pub(crate) fn next_due(&mut self, capture_end: u64, stopping: bool) -> Option<TailSampleRange> {
+        if self.trial_offer {
+            return self.offered.clone();
+        }
         if self.finished {
             return None;
         }
@@ -86,6 +93,40 @@ impl CaptureWindowPlan {
         Some(range)
     }
 
+    /// One additional lexical witness per nine seconds of capture, through the
+    /// same offer/account corridor as grid work. Never advances the grid. Stop
+    /// may only offer work wholly inside its final nine seconds.
+    pub(crate) fn offer_trial(
+        &mut self,
+        start: u64,
+        end: u64,
+        capture_end: u64,
+        stopping: bool,
+    ) -> Option<TailSampleRange> {
+        self.observe_head(capture_end, stopping);
+        let head = self.eof.unwrap_or(self.capture_end);
+        let bucket = head.checked_div(self.window_samples)?;
+        if self.offered.is_some()
+            || start >= end
+            || end > head
+            || end - start > self.window_samples
+            || self.last_trial_bucket == Some(bucket)
+            || (self.eof.is_some() && start < head.saturating_sub(self.window_samples))
+        {
+            return None;
+        }
+        let range = TailSampleRange {
+            session: self.session.clone(),
+            capture_epoch: self.capture_epoch,
+            sample_start: start,
+            sample_end: end,
+        };
+        self.last_trial_bucket = Some(bucket);
+        self.trial_offer = true;
+        self.offered = Some(range.clone());
+        Some(range)
+    }
+
     fn observe_head(&mut self, capture_end: u64, stopping: bool) {
         if self.eof.is_some() {
             return;
@@ -105,6 +146,10 @@ impl CaptureWindowPlan {
             return false;
         }
         self.offered = None;
+        if self.trial_offer {
+            self.trial_offer = false;
+            return true;
+        }
         if range.sample_end - range.sample_start == self.window_samples {
             self.last_full_end = range.sample_end;
             self.next_start = self.next_start.saturating_add(self.step_samples);
@@ -126,6 +171,6 @@ impl CaptureWindowPlan {
     }
 
     pub(crate) fn is_finished(&self) -> bool {
-        self.finished
+        self.finished && self.offered.is_none()
     }
 }

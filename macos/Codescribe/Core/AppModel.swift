@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -29,6 +30,11 @@ final class AppModel: ObservableObject {
   let chat: AgentChatStore
   let overlay: OverlayController
   let tray: TrayViewModel
+  /// The one invalidation scope for already-open configuration projections
+  /// (Settings window, tray Quick Settings). Carries edges, never values.
+  let configurationInvalidation: ConfigurationInvalidation
+  private var recordingEdgeSink: AnyCancellable?
+  private var overlayPolicySink: AnyCancellable?
   /// Independent text scale for the agent chat surface (⌘+/-/0 while the chat
   /// window is key). The overlay's scale lives on `OverlayController`.
   let chatTextScale = TextScaleController(key: "AgentChat.textScale.v1")
@@ -51,12 +57,30 @@ final class AppModel: ObservableObject {
     )
     self.chat = chat
     self.overlay = OverlayController(engine: ControllerDictationEngine(), composer: chat)
-    self.tray = TrayViewModel(engine: RealTrayEngine())
+    let configurationInvalidation = ConfigurationInvalidation()
+    self.configurationInvalidation = configurationInvalidation
+    self.tray = TrayViewModel(
+      engine: RealTrayEngine(), configurationInvalidation: configurationInvalidation)
     // The composer is a gesture-only adapter over RecordingController. Right
     // Option, composer mic, Dictation, and Formatting share one recorder/STT.
     chat.dictation = RealComposerDictation(store: chat)
     // The tray toggle only persists the preference; the panel's owner applies it.
     tray.onOverlayPreferenceChanged = { [overlay] in overlay.overlayPreferenceChanged() }
+    // The recorder lifecycle hooks already project start/stop onto the tray;
+    // the same edge tells open Settings that resident Whisper may have moved.
+    recordingEdgeSink = tray.$isRecording
+      .removeDuplicates()
+      .dropFirst()
+      .sink { [configurationInvalidation] _ in
+        configurationInvalidation.recordingLifecycleChanged()
+      }
+    // The idle overlay projects the same canonical policy; it re-reads it
+    // through its own engine when Settings or Quick Settings writes.
+    overlayPolicySink = configurationInvalidation.edges(excluding: self)
+      .sink { [overlay] edge in
+        guard edge == .settingsWritten else { return }
+        overlay.state.canonicalConfigurationDidChange()
+      }
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
@@ -77,9 +101,10 @@ final class OverlayController: ObservableObject {
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
   private let orderPanelFront: @MainActor (NSPanel) -> Void
   private let orderPanelOut: @MainActor (NSPanel) -> Void
-  /// Runs the agent-handoff fade and calls back when it finishes. Injected so a
+  /// Runs a panel fade of the given length and calls back when it finishes
+  /// (agent handoff 0.18 s, pin release `pinReleaseFadeSeconds`). Injected so a
   /// test can fire the completion at an exact moment in the lifecycle instead of
-  /// racing a wall-clock animation; the default keeps the real 0.18 s fade.
+  /// racing a wall-clock animation; the default runs the real fade.
   ///
   /// The completion is `@escaping` because that is the lifetime BOTH consumers
   /// actually take, not a precaution:
@@ -95,8 +120,10 @@ final class OverlayController: ObservableObject {
   /// consumer may keep the callback past the call — which is the whole point of
   /// a fade completion. `@MainActor @Sendable` stays: the completion runs on the
   /// main actor and its captures are main-actor isolated.
-  private let runHandoffFade:
-    @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+  private let runFade:
+    @MainActor (NSPanel, TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
+  /// The pin's release is a visible goodbye, slower than the handoff blink.
+  static let pinReleaseFadeSeconds: TimeInterval = 0.6
   /// A direct edge resize is the user's size decision for the current session.
   /// The next recording may breathe again from that persisted starting point.
   private var automaticContentSizingEnabled = true
@@ -105,6 +132,15 @@ final class OverlayController: ObservableObject {
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
   /// flip the tray status while recording, so every lifecycle hook re-polls.
   private var sessionWasAssistive = false
+  /// The Agent composer's own mic (or a `composerPending` route) owns the take:
+  /// its words stream into the composer field, so the floating panel has no
+  /// job. Every other Agent take keeps the panel up — the words and the send
+  /// countdown must stay visible until the turn opens (Maciej, 2026-10-14).
+  private let composerOwnsCapture: () -> Bool
+  /// Ordered front by `show`, out by `orderOut` or a completed handoff fade.
+  /// A hidden panel holds the automatic collapse; its wake cannot act.
+  private var panelPresented = false
+  private let transientInteractions = OverlayTransientInteractionMonitor()
 
   init(
     state: OverlayState? = nil,
@@ -118,27 +154,32 @@ final class OverlayController: ObservableObject {
     assistiveStatusProvider: @escaping () -> Bool = {
       CodescribeTrayStatus().currentStatus().assistive
     },
+    composerOwnsCaptureProvider: (() -> Bool)? = nil,
     panelFactory: (@MainActor (OverlayState, TextScaleController) -> NSPanel)? = nil,
     orderPanelFront: (@MainActor (NSPanel) -> Void)? = nil,
     orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil,
-    runHandoffFade: (
-      @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+    runFade: (
+      @MainActor (NSPanel, TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
     )? = nil
   ) {
     let state = state ?? OverlayState()
     self.state = state
     self.overlayEnabledProvider = overlayEnabledProvider
     self.assistiveStatusProvider = assistiveStatusProvider
+    self.composerOwnsCapture =
+      composerOwnsCaptureProvider ?? { [weak composer] in
+        composer?.hasComposerCaptureRequest ?? false
+      }
     self.panelFactory =
       panelFactory ?? {
         DictationOverlayWindow.make(state: $0, textScale: $1)
       }
     self.orderPanelFront = orderPanelFront ?? { $0.orderFrontRegardless() }
     self.orderPanelOut = orderPanelOut ?? { $0.orderOut(nil) }
-    self.runHandoffFade =
-      runHandoffFade ?? { panel, completed in
+    self.runFade =
+      runFade ?? { panel, duration, completed in
         NSAnimationContext.runAnimationGroup { context in
-          context.duration = 0.18
+          context.duration = duration
           panel.animator().alphaValue = 0
         } completionHandler: {
           MainActor.assumeIsolated { completed() }
@@ -242,6 +283,7 @@ final class OverlayController: ObservableObject {
       }
     }
     state.onClose = { [weak self] in self?.hide() }
+    state.onPinReleased = { [weak self] in self?.hideAfterPinRelease() }
     state.onCloseIntent = { [weak self] in self?.dismiss() }
     state.onSendToAgent = { [weak self] text in
       guard !text.isEmpty else { return }
@@ -252,8 +294,26 @@ final class OverlayController: ObservableObject {
       AppModel.shared.tray.onIntent(.revealChat)
       self?.hide()
     }
+    state.onContinueMaxConsultation = { [weak self] backendID in
+      guard AppModel.shared.chat.openMaxConsultation(backendID: backendID) else { return false }
+      AppModel.shared.tray.onIntent(.openChat)
+      self?.hide()
+      return true
+    }
     state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
+    state.autoCollapseExternalHold = { [weak self] in self?.windowHoldsAutoCollapse ?? false }
+    transientInteractions.onInteractionEnded = { [weak state] in
+      state?.noteAutoCollapseActivity()
+    }
     state.attach()
+  }
+
+  /// Window-side interactions the state cannot see: a hidden panel, an edge
+  /// resize or window drag in progress, an open menu or popover.
+  private var windowHoldsAutoCollapse: Bool {
+    let floating = panel as? FloatingOverlayPanel
+    return !panelPresented || floating?.isUserResizing == true
+      || floating?.isUserDragging == true || transientInteractions.isActive
   }
 
   func prepareForRecordingStart() {
@@ -273,10 +333,21 @@ final class OverlayController: ObservableObject {
   /// dictate, and the text lands at the cursor (+ clipboard) with no window.
   /// Delivery is engine-side (LocalFinalPass), independent of this window, so
   /// hiding the overlay never suppresses the paste.
+  ///
+  /// An Agent take ignores the toggle: until its turn opens in the chat, the
+  /// panel is the only place the spoken words and the send countdown exist.
+  /// Hiding it ran that countdown in the dark and the words surfaced in the
+  /// bubble ten seconds later (Maciej, 2026-10-14). Only a take the composer
+  /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
     refreshAssistiveLatch()
-    guard !sessionWasAssistive else {
-      hide()
+    if sessionWasAssistive {
+      if composerOwnsCapture() {
+        hide()
+      } else {
+        readOverlayPreference()
+        show()
+      }
       return
     }
     guard readOverlayPreference() else {
@@ -334,6 +405,10 @@ final class OverlayController: ObservableObject {
       }
       floating.onUserResizeEnded = { [weak self] in
         guard let self else { return }
+        self.state.noteAutoCollapseActivity()
+        if self.state.freeMotion, let floating = self.panel as? FloatingOverlayPanel {
+          OverlayPlacement.persistOrigin(floating.originForPersistence)
+        }
         if self.placementAfterUserResize {
           self.placementAfterUserResize = false
           self.applyPlacement()
@@ -361,8 +436,10 @@ final class OverlayController: ObservableObject {
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
     applyPlacement()
+    panelPresented = true
     orderPanelFront(panel)
     resizeForProjectedContent()
+    state.noteAutoCollapseActivity()
   }
 
   /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
@@ -382,10 +459,14 @@ final class OverlayController: ObservableObject {
     guard let panel else { return }
     if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
       placementAfterUserResize = true
+      OverlayPresentationTrace.shared.record(
+        .placementDeferred, mode: state.presentationMode, frame: panel.frame, note: "user_resize")
       return
     }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else {
       placementAfterTransition = true
+      OverlayPresentationTrace.shared.record(
+        .placementDeferred, mode: state.presentationMode, frame: panel.frame, note: "transition")
       return
     }
     Self.isApplyingFrame = true
@@ -413,10 +494,16 @@ final class OverlayController: ObservableObject {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
     guard let origin else {
+      OverlayPresentationTrace.shared.record(
+        .placementApplied, mode: state.presentationMode, frame: panel.frame,
+        target: NSRect(origin: panel.frame.origin, size: size), note: "content_size_only")
       panel.setContentSize(size)
       return
     }
     let frame = NSRect(origin: origin, size: size)
+    OverlayPresentationTrace.shared.record(
+      .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
+      note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")
     panel.setFrame(frame, display: false)
   }
 
@@ -449,7 +536,8 @@ final class OverlayController: ObservableObject {
       !state.isRevisionDraftDirty
     else { return nil }
     let screen = panel?.screen ?? NSScreen.main
-    let restingHeight = (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
+    let restingHeight =
+      (panel as? FloatingOverlayPanel)?.sizeForPersistence.height
       ?? panel?.frame.height
       ?? DictationOverlayWindow.defaultSize.height
     return OverlayContentSizePolicy.preferredHeight(
@@ -487,7 +575,11 @@ final class OverlayController: ObservableObject {
         OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
         ?? NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight)
     }
-    panel.setFrame(NSRect(origin: origin, size: size), display: true)
+    let grown = NSRect(origin: origin, size: size)
+    OverlayPresentationTrace.shared.record(
+      .contentResize, mode: state.presentationMode, frame: panel.frame, target: grown,
+      note: String(format: "height %.0f→%.0f", panel.frame.height, targetHeight))
+    panel.setFrame(grown, display: true)
   }
 
   func markStopped() {
@@ -495,7 +587,9 @@ final class OverlayController: ObservableObject {
   }
 
   /// Called by the live TrayStatusStore listener. Assistive uses the shared
-  /// controller but keeps the Dictation overlay closed in favor of Agent UI.
+  /// controller and keeps the Dictation overlay up: a mid-hold upgrade
+  /// (Fn → Fn+Shift) flips the semantics, never the window. Only a take the
+  /// Agent composer captures itself closes the panel.
   /// Format / Retranscribe (and the post-take review they run on) own the
   /// panel: an Assistive tray tick must not hide it, steal focus, or arm
   /// Agent auto-send.
@@ -505,7 +599,7 @@ final class OverlayController: ObservableObject {
     }
     if mode == .assistive {
       sessionWasAssistive = true
-      hide()
+      if composerOwnsCapture() { hide() }
     }
     state.applyIndicatorMode(mode)
   }
@@ -536,10 +630,12 @@ final class OverlayController: ObservableObject {
   }
 
   private func orderOut() {
+    panelPresented = false
+    state.suspendAutoCollapse()
     placementAfterTransition = false
     placementAfterUserResize = false
     contentSizeAfterUserResize = false
-    state.clearWidgetHover()
+    state.clearPointerHover()
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
@@ -559,6 +655,23 @@ final class OverlayController: ObservableObject {
   /// chat window). The overlay's job is done — fade it out immediately instead
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
+    fadeOut(duration: 0.18) { true }
+  }
+
+  /// The pin let go of a resting panel (Unpin, then `pinReleaseDelaySeconds`).
+  /// It leaves with a visible fade; a Pin clicked before the fade completes
+  /// keeps it on screen.
+  func hideAfterPinRelease() {
+    fadeOut(duration: Self.pinReleaseFadeSeconds) { [weak self] in
+      self?.state.keepVisibleBetweenTakes == false
+    }
+  }
+
+  /// `stillLeaving` is asked again when the fade completes, for the live panel
+  /// of the same capture only.
+  private func fadeOut(
+    duration: TimeInterval, stillLeaving: @escaping @MainActor @Sendable () -> Bool
+  ) {
     guard !state.hasOpenChannel else { return }
     guard let panel, panel.isVisible else { return }
     DictationOverlayWindow.persist(
@@ -575,8 +688,8 @@ final class OverlayController: ObservableObject {
     // reused window at alpha 0 would trade a hidden panel for an invisible one.
     let fadedPanel = panel
     let generation = state.captureGeneration
-    runHandoffFade(
-      fadedPanel,
+    runFade(
+      fadedPanel, duration,
       { [weak self] in
         defer { fadedPanel.alphaValue = 1 }
         guard let self else { return }
@@ -586,6 +699,11 @@ final class OverlayController: ObservableObject {
         // no longer current is an orphan and is ordered out either way.
         if self.panel === fadedPanel, self.state.captureGeneration != generation {
           return
+        }
+        if self.panel === fadedPanel {
+          guard stillLeaving() else { return }
+          self.panelPresented = false
+          self.state.suspendAutoCollapse()
         }
         self.orderPanelOut(fadedPanel)
       }

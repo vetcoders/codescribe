@@ -198,6 +198,38 @@ pub fn write_wav_i16(path: &Path, samples: &[i16], sample_rate: u32) -> Result<(
         .map_err(|e| anyhow!("Failed to finalize WAV {}: {}", path.display(), e))
 }
 
+/// Largest 16 kHz buffer [`resample_to_16k`] will allocate: 2 GiB of `f32`,
+/// the same fence the capture spool keeps (about 9.3 hours of speech).
+pub const MAX_RESAMPLED_SAMPLES: usize = 2 * 1024 * 1024 * 1024 / 4;
+
+/// Why a buffer was not resampled to 16 kHz. Content-free: sizes and a rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResampleError {
+    /// The 16 kHz output would exceed [`MAX_RESAMPLED_SAMPLES`]. Refused before
+    /// any output exists.
+    OutputTooLarge {
+        input_samples: usize,
+        input_rate: u32,
+    },
+}
+
+impl std::fmt::Display for ResampleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutputTooLarge {
+                input_samples,
+                input_rate,
+            } => write!(
+                f,
+                "resampling {input_samples} samples from {input_rate} Hz to 16 kHz exceeds the \
+                 {MAX_RESAMPLED_SAMPLES} sample output budget"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResampleError {}
+
 /// Resample to 16 kHz by linear interpolation.
 ///
 /// Audio already at 16 kHz (and empty or rate-less input) is returned
@@ -205,46 +237,56 @@ pub fn write_wav_i16(path: &Path, samples: &[i16], sample_rate: u32) -> Result<(
 /// interpolation is deliberately cheap rather than band-limited: speech
 /// recognition tolerates the aliasing, and the alternative would cost more
 /// than the models gain.
-pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
+///
+/// # Errors
+///
+/// [`ResampleError::OutputTooLarge`] when the 16 kHz output would exceed
+/// [`MAX_RESAMPLED_SAMPLES`]. The rate is a file header field, so it is as
+/// hostile as the file: a decoder that accepts a 1 Hz header would otherwise
+/// turn a few hundred KiB of samples into gigabytes.
+pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Result<Vec<f32>, ResampleError> {
     if samples.is_empty() || original_rate == 0 {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
     if original_rate == 16000 {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
-    // Simple linear interpolation for now
-    let ratio = 16000.0 / original_rate as f32;
-    let new_len = (samples.len() as f32 * ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(new_len);
-
-    let max_idx = samples.len() - 1;
-
-    for i in 0..new_len {
-        let old_idx = (i as f32 / ratio).min(max_idx as f32);
-        let idx0 = old_idx.floor() as usize;
-
-        if idx0 >= max_idx {
-            // Clamp to last sample to avoid out-of-bounds due to rounding
-            output.push(samples[max_idx]);
-            continue;
-        }
-
-        let idx1 = (idx0 + 1).min(max_idx);
-        let t = old_idx - idx0 as f32;
-
-        let s0 = samples[idx0];
-        let s1 = samples[idx1];
-        output.push(s0 * (1.0 - t) + s1 * t);
+    // Admission is exact integer arithmetic (a u128 holds any `usize * 16000`,
+    // so nothing wraps or saturates) and happens before the first allocation,
+    // whatever rate the decoder was willing to report.
+    let exact_len = (samples.len() as u128 * 16_000).div_ceil(u128::from(original_rate));
+    if exact_len > MAX_RESAMPLED_SAMPLES as u128 {
+        return Err(ResampleError::OutputTooLarge {
+            input_samples: samples.len(),
+            input_rate: original_rate,
+        });
     }
 
-    output
+    // File replay and live capture use one interpolation/phase authority.
+    let mut resampler = crate::vad::Resampler::new(original_rate);
+    let mut output = resampler.resample(samples);
+    output.extend(resampler.finish());
+    debug_assert_eq!(output.len() as u128, exact_len);
+    Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_resampling_preserves_physical_samples_and_exact_duration() {
+        let input: Vec<f32> = (0..48_013).map(|i| i as f32 / 48_013.0).collect();
+        let expected: Vec<f32> = input.iter().step_by(3).copied().collect();
+        assert_eq!(resample_to_16k(&input, 48_000).unwrap(), expected);
+        for rate in [8_000, 16_000, 44_100, 48_000] {
+            let output = resample_to_16k(&input, rate).unwrap();
+            assert_eq!(output.len(), (input.len() * 16_000).div_ceil(rate as usize));
+            assert!(output.iter().all(|sample| sample.is_finite()));
+        }
+    }
 
     #[test]
     fn decodes_integer_stereo_to_mono_with_original_sample_rate() -> Result<()> {
@@ -287,6 +329,24 @@ mod tests {
         assert_eq!(rate, 16_000);
         assert_eq!(samples, expected);
         Ok(())
+    }
+
+    /// A hostile sample-rate header must be refused before it expands a small
+    /// input into gigabytes; ordinary capture rates still resample normally.
+    #[test]
+    fn resampling_refuses_hostile_rate_without_allocating_the_output() {
+        let small = vec![0.25; 40_000];
+        assert!(matches!(
+            resample_to_16k(&small, 1),
+            Err(ResampleError::OutputTooLarge {
+                input_samples: 40_000,
+                input_rate: 1
+            })
+        ));
+        assert_eq!(
+            resample_to_16k(&[0.25; 480], 48_000).unwrap(),
+            vec![0.25; 160]
+        );
     }
 
     #[test]

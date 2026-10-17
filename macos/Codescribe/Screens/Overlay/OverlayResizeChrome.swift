@@ -6,6 +6,8 @@ enum OverlayResizeChrome {
   static let gripSize = CGSize(width: 38, height: 4)
   static let gripBottomInset: CGFloat = 6
   static let actionsBottomInset = OverlayResizeHit.band + 2
+  /// The bottom bar stays clear of the bottom corner squares, which resize.
+  static let actionsSideInset = OverlayResizeHit.bottomCorner
   static let actionsHeight: CGFloat = 24
 
   static func actionsWidth(narrow: Bool) -> CGFloat { narrow ? 34 : 88 }

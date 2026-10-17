@@ -325,39 +325,54 @@ pub fn transcribe_file_verdict_observed(
 /// Sample rate of the synthetic warmup buffer.
 const WARMUP_SAMPLE_RATE: u32 = 16_000;
 
-/// Prewarm the ACTIVE STT engine end-to-end so the first real dictation pays
-/// neither model-load nor (for the Candle/Metal path) first-inference Metal
-/// kernel-compilation latency, and (for the Apple path) neither the bridge
-/// spawn nor the SpeechAnalyzer asset/probe readiness.
+/// Prewarm the engines selected by the frozen runtime settings, including the
+/// in-process Whisper refiner when the product mode actually requests it.
 ///
-/// **Apple live invariant:** when the selected engine is Apple, this path must
-/// **never** load Whisper. Gap-fill / file final-pass lazy-load Candle on first
-/// use. Touching Whisper here re-introduces the multi-GB resident floor at app
-/// start and can refuse recording when the Whisper model is absent.
+/// Apple-only capture must keep its lightweight startup. Local power, however,
+/// also schedules Whisper during live capture; warming only Apple leaves the
+/// first refinement job paying model-load and Metal compilation inside its
+/// deadline. Remote, sidecar and disarmed lanes do not request resident weights.
 ///
-/// Candle path still warms weights + kernels via the real transcribe route.
-///
-/// Best-effort: warmup transcription errors are logged, never propagated, so a
-/// cold-path hiccup can never block recording readiness.
-pub fn prewarm_active_engine() -> anyhow::Result<()> {
+/// This is preparation, not a recording admission gate. Refiner failures are
+/// logged without disabling Apple capture; the singleton retains its normal
+/// idle unload policy. ASR mode and tail transport come only from the snapshot.
+pub fn prewarm_active_engine(
+    runtime_settings: &crate::config::RuntimeSettingsSnapshot,
+) -> anyhow::Result<()> {
     let warmup = synthetic_warmup_audio();
 
     match default_engine() {
         SttEngine::Apple => {
-            // Init + warm Apple only. Do not fall through to Whisper on failure
-            // (that would load multi-GB weights at startup and block when the
-            // model is missing). Emergency Whisper recovery stays on live audio.
+            // Prepare the primary before considering the explicitly selected
+            // refiner. An Apple failure does not silently choose another engine.
             apple_stt::init().map_err(|err| {
                 anyhow::anyhow!("Apple STT prewarm init failed (Whisper not substituted): {err:#}")
             })?;
             match apple_stt::transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en"))
             {
-                Ok(_) => tracing::info!(
-                    "STT active-engine warmup inference complete (apple; whisper not loaded)"
-                ),
-                Err(error) => tracing::warn!(
-                    "STT Apple warmup inference failed (non-fatal; whisper stays lazy): {error:#}"
-                ),
+                Ok(_) => tracing::info!("STT active-engine warmup inference complete (apple)"),
+                Err(error) => {
+                    tracing::warn!("STT Apple warmup inference failed (non-fatal): {error:#}")
+                }
+            }
+            let mode = runtime_settings.user_settings().resolved_asr_mode().mode;
+            let local_refiner = matches!(
+                mode,
+                crate::config::cloud_asr::AsrProductMode::LocalPower
+                    | crate::config::cloud_asr::AsrProductMode::Cloud
+            ) && runtime_settings.local_tail_patch_decision().is_armed()
+                && runtime_settings.tail_provider()
+                    == Some(tail_provider::TailProviderId::InProcess);
+            if local_refiner {
+                match candle_transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en"))
+                {
+                    Ok(_) => tracing::info!(
+                        "STT selected in-process refiner warmup inference complete (whisper)"
+                    ),
+                    Err(error) => tracing::warn!(
+                        "STT selected in-process refiner warmup failed (non-fatal): {error:#}"
+                    ),
+                }
             }
             Ok(())
         }

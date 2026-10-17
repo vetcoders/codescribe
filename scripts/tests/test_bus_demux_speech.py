@@ -13,6 +13,7 @@ import ssl
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import ANY, MagicMock, patch
 import wave
@@ -239,7 +240,9 @@ class SayReplyTests(unittest.TestCase):
             ttl_seconds=120,
             follow_from_end=True,
         )
+        receipt = lease.attach_receipt()
         lease.close()
+        return receipt
 
     def say(self, *extra, speaker=(True, None, None)):
         argv = [
@@ -281,8 +284,10 @@ class SayReplyTests(unittest.TestCase):
             provider="claude-code", session=session, bus=bus or self.bus,
             bridge_home=self.home, mute_agent=muted,
         )
-        with contextlib.redirect_stdout(io.StringIO()):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
             self.assertEqual(DEMUX.set_agent_muted(args), 0)
+        return json.loads(out.getvalue())
 
     def test_muted_reply_keeps_text_without_synthesis_and_unmute_allows_next_reply(self):
         self.attach_lease("session-a", "filip")
@@ -350,6 +355,148 @@ class SayReplyTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 spoken.assert_not_called()
 
+    def global_mute(self, muted=True):
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(DEMUX.sys, "argv", [
+                "cs-bus", "--mute-all" if muted else "--unmute-all", "--bridge-home", str(self.home)]):
+            self.assertEqual(DEMUX.main(), 0)
+
+    def test_attach_and_playback_report_all_mute_combinations(self):
+        self.attach_lease("session-a", "filip")
+        for global_muted, agent_muted in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(global_muted=global_muted, agent_muted=agent_muted):
+                self.global_mute(global_muted)
+                self.mute("session-a", agent_muted)
+                expected = {"global_muted": global_muted, "agent_muted": agent_muted,
+                            "effective_muted": global_muted or agent_muted,
+                            "mute_scope": "global" if global_muted else "agent" if agent_muted else None}
+                receipt = self.attach_lease("session-a", "filip")
+                self.assertEqual(receipt["playback"], expected)
+                code, reply, spoken = self.say("--session", "session-a")
+                self.assertEqual(code, 0)
+                self.assertEqual(self.outcome["reply_id"], reply["reply_id"])
+                if expected["effective_muted"]:
+                    spoken.assert_not_called()
+                    self.assertEqual(self.outcome["reason"], "muted")
+                    self.assertEqual(self.outcome["mute_scope"], expected["mute_scope"])
+                    self.assertEqual(self.outcome["playback"], expected)
+                    persisted = list((self.home / "runtime/reply-playback").glob("*.json"))
+                    terminal = next(json.loads(path.read_text()) for path in persisted
+                                    if json.loads(path.read_text()).get("reply_id") == reply["reply_id"])
+                    self.assertEqual(terminal["playback"], expected)
+                else:
+                    spoken.assert_called_once()
+
+    def test_unmute_agent_receipt_reports_global_block_without_changing_global_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        self.global_mute()
+        global_path = self.home / "runtime/playback-mutes/global.json"
+        before = global_path.read_bytes()
+        receipt = self.mute("session-a", False)
+        self.assertFalse(receipt["muted"])
+        self.assertEqual(receipt["playback"], {
+            "global_muted": True, "agent_muted": False,
+            "effective_muted": True, "mute_scope": "global",
+        })
+        self.assertEqual(global_path.read_bytes(), before)
+
+    def test_playback_snapshot_preserves_missing_and_malformed_receipt_policy(self):
+        snapshot = lambda: DEMUX.playback_mute_snapshot(self.home, "claude-code", "session-a", self.bus)
+        self.assertEqual(snapshot(), {"global_muted": False, "agent_muted": False,
+                                      "effective_muted": False, "mute_scope": None})
+        global_path = self.home / "runtime/playback-mutes/global.json"
+        agent_path = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        for path, field, scope in ((global_path, "global_muted", "global"),
+                                   (agent_path, "agent_muted", "agent")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            for raw in (b"not-json", b"[]", b"\xff", json.dumps({
+                    "schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": "false",
+            }).encode()):
+                with self.subTest(scope=scope, raw=raw):
+                    path.write_bytes(raw)
+                    before = path.read_bytes()
+                    result = snapshot()
+                    self.assertTrue(result[field])
+                    self.assertTrue(result["effective_muted"])
+                    self.assertEqual(result["mute_scope"], scope)
+                    self.assertEqual(path.read_bytes(), before)
+            path.unlink()
+
+    def test_manual_replay_refusal_reports_global_scope_even_with_agent_mute(self):
+        self.attach_lease("session-a", "filip")
+        self.mute("session-a")
+        self.global_mute()
+        _, reply, _ = self.say("--session", "session-a")
+        out = io.StringIO()
+        with (patch.object(DEMUX, "_speak_xai") as spoken,
+              patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+              contextlib.redirect_stdout(out)):
+            self.assertEqual(DEMUX.speak_published_reply(
+                DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply, "c" * 24), 0)
+        spoken.assert_not_called()
+        result = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(result["reason"], "muted")
+        self.assertEqual(result["mute_scope"], "global")
+        self.assertEqual(result["playback"], {"global_muted": True, "agent_muted": True,
+                                            "effective_muted": True, "mute_scope": "global"})
+
+    def test_global_mute_covers_existing_future_and_other_bus_without_changing_individuals(self):
+        self.attach_lease("session-a", "filip")
+        self.attach_lease("session-b", "filip")
+        self.mute("session-a")
+        individual = DEMUX.playback_mute_path(self.home, "claude-code", "session-a", self.bus)
+        original = individual.read_bytes()
+        self.global_mute()
+        self.attach_lease("future-session", "filip")
+        for session in ("session-a", "session-b", "future-session"):
+            _, _, spoken = self.say("--session", session)
+            spoken.assert_not_called()
+        _, reply, _ = self.say("--session", "session-b")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        for automatic in (True, False):
+            control = DEMUX.ReplyPlaybackControl(
+                args, self.bus.with_name("other-channel.jsonl"), reply,
+                "a" * 24 if automatic else "b" * 24, automatic=automatic)
+            try:
+                self.assertTrue(control.muted())
+                self.assertTrue(control.stopped())
+            finally:
+                control.close()
+        self.global_mute(False)
+        self.assertEqual(individual.read_bytes(), original)
+        _, _, spoken = self.say("--session", "session-b")
+        spoken.assert_called_once()
+        _, _, spoken = self.say("--session", "session-a")
+        spoken.assert_not_called()
+
+    def test_global_switch_is_observed_by_an_existing_player_and_invalid_receipt_refuses(self):
+        self.attach_lease("session-a", "filip")
+        _, reply, _ = self.say("--session", "session-a")
+        control = DEMUX.ReplyPlaybackControl(
+            DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply, "f" * 24)
+        try:
+            self.assertFalse(control.stopped())
+            self.global_mute()
+            self.assertTrue(control.stopped(), "master mute must stop a running player too")
+            path = self.home / "runtime/playback-mutes/global.json"
+            for row in ({"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "all", "muted": "false"},
+                        {"schema": DEMUX.PLAYBACK_MUTE_SCHEMA, "scope": "single", "muted": False}):
+                path.write_text(json.dumps(row))
+                self.assertTrue(control.muted())
+            path.write_text("not-json")
+            self.assertTrue(control.muted())
+        finally:
+            control.close()
+
+    def test_global_mute_rejects_other_commands_before_any_write(self):
+        for flags in (["--version"], ["--provider", "codex", "--session", "s"],
+                      ["--send", "text", "--to", "0"], ["--read-pending"], ["--channel", "0"]):
+            with (self.subTest(flags=flags), self.assertRaises(SystemExit),
+                  contextlib.redirect_stderr(io.StringIO()),
+                  patch.object(DEMUX.sys, "argv", ["cs-bus", "--mute-all", "--bridge-home", str(self.home), *flags])):
+                DEMUX.main()
+        self.assertFalse((self.home / "runtime/playback-mutes/global.json").exists())
+
     def test_explicit_name_still_wins(self):
         self.attach_lease("session-a", "filip")
         code, reply, spoken = self.say("--session", "session-a", "--name", "roman")
@@ -401,6 +548,8 @@ def queued_say(
     vendor="xai",
     speech_bus=None,
     take_wait_seconds=0.15,
+    scan_delay=0.0,
+    slow_scans=None,
 ):
     """Real --say and flock in a process; only synthesis and afplay are replaced."""
     DEMUX.PLAYBACK_WAIT_SECONDS = wait_seconds
@@ -409,6 +558,17 @@ def queued_say(
     acquire = DEMUX._acquire_playback_lock
     playback_log = Path(home) / "playback.jsonl"
     sentinel = Path(home) / "playing"
+    probe = DEMUX.installation_idle
+
+    delayed = [0]
+
+    def delayed_probe(*args, **kwargs):
+        # Delay the real safety probe only after playback has started; with
+        # slow_scans set, only that many scans are slow.
+        if scan_delay and sentinel.exists() and (slow_scans is None or delayed[0] < slow_scans):
+            delayed[0] += 1
+            time.sleep(scan_delay)
+        return probe(*args, **kwargs)
 
     def synthesize(_request):
         synthesized.set()
@@ -478,6 +638,7 @@ def queued_say(
         patch.object(DEMUX, "_xai_speech_key", return_value="test-only-key"),
         patch.object(DEMUX, "_openai_speech_key", return_value="test-only-key"),
         patch.object(DEMUX, "_acquire_playback_lock", side_effect=lock),
+        patch.object(DEMUX, "installation_idle", side_effect=delayed_probe),
         patch("subprocess.Popen", side_effect=Player),
         patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
         patch.object(DEMUX, "bus_path", return_value=speech_bus or Path(bus)),
@@ -514,6 +675,8 @@ class PlaybackQueueTests(unittest.TestCase):
         vendor="xai",
         speech_bus=None,
         take_wait_seconds=0.15,
+        scan_delay=0.0,
+        slow_scans=None,
     ):
         events = [self.context.Event() for _ in range(3)]
         child = self.context.Process(
@@ -528,6 +691,8 @@ class PlaybackQueueTests(unittest.TestCase):
                 vendor,
                 speech_bus,
                 take_wait_seconds,
+                scan_delay,
+                slow_scans,
             ),
         )
         child.start()
@@ -601,6 +766,51 @@ class PlaybackQueueTests(unittest.TestCase):
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         # The timed-out waiter must not remove the shared lock inode.
         self.assertTrue((self.home / "runtime" / "playback.lock").exists())
+
+    def test_slow_scan_keeps_playback_and_lock_until_release(self):
+        release = self.context.Event()
+        first, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.03
+        )
+        self.assertTrue(playing.wait(5))
+        second, (_, waiting, second_playing) = self.start_say("astra")
+        self.assertTrue(waiting.wait(5))
+        early = second_playing.wait(0.15)
+        release.set()
+        self.join(first)
+        self.join(second)
+        log = (self.home / "playback.jsonl").read_text()
+        self.assertFalse(early, f"premature lock release: {log}; {self.outcomes()}")
+        self.assertTrue(all(row["spoken"] for row in self.outcomes()))
+
+    def test_one_scan_beyond_budget_does_not_cut_the_voice(self):
+        # CI, release/0.17.0 @ 100668a1f: a single scan that ran out of budget on
+        # a loaded runner stopped the first voice as "take_started" and let the
+        # second play. An unfinished scan is not a take; the cursor resumes.
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6, slow_scans=1
+        )
+        self.assertTrue(playing.wait(5))
+        time.sleep(0.9)
+        release.set()
+        self.join(child)
+        log = (self.home / "playback.jsonl").read_text()
+        self.assertNotIn('["filip", "terminate"]', log)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], f"{reply}; {log}")
+
+    def test_scan_beyond_budget_still_terminates_playback(self):
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertEqual(reply["reason"], "take_started")
+        self.assertFalse(reply["spoken"])
+        self.assertIn('["filip", "terminate"]', (self.home / "playback.jsonl").read_text())
 
     def test_take_started_while_waiting_is_checked_after_acquisition(self):
         lock = self.hold_lock()
@@ -971,6 +1181,65 @@ class LifecycleForensicsTests(unittest.TestCase):
     def test_unended_take_survives_bus_truncation_until_exact_terminal(self):
         forensic_unended_take_survives_bus_truncation_until_exact_terminal()
 
+
+
+class GenerationReceiptTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.bus = Path(temporary.name).resolve() / "events.jsonl"
+        self.bus.write_bytes(b"retained transcript\n")
+        metadata = self.bus.stat()
+        self.manifest = {
+            "schema": "codescribe.bus-generations.v1", "root": str(self.bus),
+            "stream_id": "stream", "stream_inode": metadata.st_ino,
+            "stream_dev": metadata.st_dev, "stream_birthtime": None,
+            "segments": [], "pending": None,
+            "active": {
+                "id": "active", "path": str(self.bus), "start": 0,
+                "length": metadata.st_size, "dev": metadata.st_dev, "ino": metadata.st_ino,
+                "day": None, "compressed": False, "sha256": None, "superseded": None,
+            },
+        }
+
+    def write_manifest(self):
+        Path(str(self.bus) + ".generations.json").write_text(json.dumps(self.manifest))
+
+    def test_volume_uuid_is_optional_and_preserves_stream_identity_and_bytes(self):
+        identity = self.bus.stat()
+        for value in [None, "41b7ff38-c1d7-48cd-bf70-373435ecf99a"]:
+            self.manifest["volume_uuid"] = value
+            self.write_manifest()
+            segments, dev, ino, _ = DEMUX.generation_sources(self.bus)
+            self.assertEqual((dev, ino), (identity.st_dev, identity.st_ino))
+            self.assertEqual(segments[-1]["length"], identity.st_size)
+            with DEMUX.GenerationFile(self.bus) as reader:
+                self.assertEqual(reader.read(256), b"retained transcript\n")
+        del self.manifest["volume_uuid"]
+        self.write_manifest()
+        self.assertEqual(DEMUX.generation_sources(self.bus)[1:3], (identity.st_dev, identity.st_ino))
+
+    def test_malformed_uuid_and_unknown_receipt_fields_are_refused(self):
+        for value in [False, 1, {}, "not-a-uuid", "41b7ff38c1d748cdbf70373435ecf99a"]:
+            with self.subTest(value=value):
+                self.manifest["volume_uuid"] = value
+                self.write_manifest()
+                with self.assertRaises(ValueError):
+                    DEMUX.generation_sources(self.bus)
+        self.manifest["volume_uuid"] = "41b7ff38-c1d7-48cd-bf70-373435ecf99a"
+        self.manifest["unrecognized"] = True
+        self.write_manifest()
+        with self.assertRaises(ValueError):
+            DEMUX.generation_sources(self.bus)
+
+    def test_volume_uuid_does_not_bypass_physical_linkage_validation(self):
+        self.manifest["volume_uuid"] = "41b7ff38-c1d7-48cd-bf70-373435ecf99a"
+        self.manifest["active"]["dev"] += 1
+        self.write_manifest()
+        before = self.bus.read_bytes()
+        with self.assertRaises(ValueError):
+            DEMUX.generation_sources(self.bus)
+        self.assertEqual(self.bus.read_bytes(), before)
 
 
 class InstallCheckpointTests(unittest.TestCase):

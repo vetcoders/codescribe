@@ -67,7 +67,335 @@ private final class CursorTrackingSurface: NSView {
   }
 }
 
+private final class PositionedOverlayCursorEvent: NSEvent {
+  let point: NSPoint
+  init(at point: NSPoint) {
+    self.point = point
+    super.init()
+  }
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+  override var type: NSEvent.EventType { .cursorUpdate }
+  override var locationInWindow: NSPoint { point }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testResizeDragBurstDefersIntermediateLayoutsAndFlushesMouseUp() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 300, y: 200, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.contentView = OverlayContentContainer(hosting: NSView())
+    defer { panel.orderOut(nil) }
+    let initial = panel.frame
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let events = (0...21).map { index -> NSEvent in
+      let type: NSEvent.EventType =
+        index == 0
+        ? .leftMouseDown
+        : index == 21 ? .leftMouseUp : .leftMouseDragged
+      let point = NSPoint(x: 2 - CGFloat(min(index, 20)) * 3, y: 200)
+      let event = mouseEvent(
+        type, at: point, in: panel, timestamp: timestamp,
+        eventNumber: 11000 + index)
+      return NSEvent(cgEvent: event.cgEvent!.copy()!)!
+    }
+    panel.sendEvent(events[0])
+    XCTAssertTrue(panel.isUserResizing)
+    for event in events.dropFirst().dropLast() { panel.sendEvent(event) }
+    XCTAssertEqual(
+      panel.frame, initial, "A pointer burst must not synchronously reflow every event")
+    panel.sendEvent(events.last!)
+    XCTAssertEqual(panel.frame.width, initial.width + 60, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, initial.maxX, accuracy: 0.5)
+    XCTAssertFalse(panel.isUserResizing)
+  }
+
+  @MainActor
+  func testQueuedResizePaintsBeforeReleaseAndCannotReviveAfterCancellation() async throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 300, y: 200, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.contentView = OverlayContentContainer(hosting: NSView())
+    defer {
+      panel.invalidatePresence()
+      panel.orderOut(nil)
+    }
+    let initial = panel.frame
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let events = [NSEvent.EventType.leftMouseDown, .leftMouseDragged].enumerated().map {
+      index, type in
+      let event = mouseEvent(
+        type, at: NSPoint(x: 2 - CGFloat(index) * 30, y: 200),
+        in: panel, timestamp: timestamp, eventNumber: 12000 + index)
+      return NSEvent(cgEvent: event.cgEvent!.copy()!)!
+    }
+    for event in events { panel.sendEvent(event) }
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(panel.isUserResizing)
+    XCTAssertEqual(panel.frame.width, initial.width + 30, accuracy: 0.5)
+    let cancelledFrame = panel.frame
+    let lateEvent = mouseEvent(
+      .leftMouseDragged, at: NSPoint(x: -28, y: 200),
+      in: panel, timestamp: timestamp, eventNumber: 12003)
+    panel.sendEvent(lateEvent)
+    panel.invalidatePresence()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertFalse(panel.isUserResizing)
+    XCTAssertEqual(panel.frame, cancelledFrame)
+  }
+
+  @MainActor
+  func testRightCornersFollowPointerAndKeepOppositeCornerFixed() throws {
+    for edge in [OverlayResizeHit.Edge.topRight, .bottomRight] {
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 600, height: 400),
+        styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+        defer: false)
+      defer { panel.orderOut(nil) }
+      let initial = panel.frame
+      XCTAssertTrue(panel.beginUserResize(edge: edge, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 80, y: 60)))
+      XCTAssertEqual(panel.frame.maxX, initial.maxX + 80, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.minX, initial.minX, accuracy: 0.5)
+      if edge == .topRight {
+        XCTAssertEqual(panel.frame.maxY, initial.maxY + 60, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.minY, initial.minY, accuracy: 0.5)
+      } else {
+        XCTAssertEqual(panel.frame.minY, initial.minY + 60, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, initial.maxY, accuracy: 0.5)
+      }
+      panel.endUserResize()
+    }
+  }
+
+  @MainActor
+  func testLiveResizeNeverCrushesTheVisiblePresentationBeforeRelease() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.presentationFloors"))
+        as? FloatingOverlayPanel)
+    defer { panel.invalidatePresence() }
+    for (mode, floor) in [
+      (OverlayPresentationMode.expanded, DictationOverlayWindow.minSize),
+      (.midi, DictationOverlayWindow.midiSize),
+    ] {
+      state.setPresentationMode(.mini)
+      panel.settleFrameTransition()
+      state.setPresentationMode(mode)
+      panel.settleFrameTransition()
+      XCTAssertEqual(panel.minSize, floor)
+      XCTAssertEqual(panel.contentMinSize, floor)
+      panel.setFrame(
+        NSRect(
+          x: panel.frame.minX - 80, y: panel.frame.minY,
+          width: panel.frame.width + 80, height: panel.frame.height), display: false)
+      let start = panel.frame
+      XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 2_000, y: 0)))
+      XCTAssertEqual(panel.frame.width, floor.width, accuracy: 0.5)
+      XCTAssertGreaterThanOrEqual(panel.frame.height, floor.height)
+      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
+      XCTAssertEqual(state.presentationMode, mode)
+      panel.endUserResize()
+      panel.settleFrameTransition()
+    }
+    state.setPresentationMode(.expanded)
+    panel.settleFrameTransition()
+    let start = panel.frame
+    XCTAssertTrue(panel.beginUserResize(edge: .bottomLeft, at: .zero))
+    for delta in [CGFloat(100), 500, 2_000] {
+      _ = panel.updateUserResize(to: NSPoint(x: delta, y: delta))
+      XCTAssertGreaterThanOrEqual(panel.frame.width, DictationOverlayWindow.minSize.width)
+      XCTAssertGreaterThanOrEqual(panel.frame.height, DictationOverlayWindow.minSize.height)
+      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxY, start.maxY, accuracy: 0.5)
+      XCTAssertEqual(state.presentationMode, .expanded)
+    }
+    panel.endUserResize()
+    panel.settleFrameTransition()
+    XCTAssertEqual(state.presentationMode, .mini, "The fold gesture commits only on release")
+    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    XCTAssertFalse(panel.beginUserResize(edge: .left, at: .zero))
+  }
+
+  @MainActor
+  func testExpandedCornersReachCompactFormsAtTheirDraggedEdges() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.threeForms"))
+        as? FloatingOverlayPanel)
+    panel.orderFrontRegardless()
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let text = state.activeText
+    let generation = state.captureGeneration
+    let sizes: [(OverlayPresentationMode, NSSize)] = [
+      (.mini, DictationOverlayWindow.collapsedSize), (.midi, DictationOverlayWindow.midiSize),
+      (.expanded, NSSize(width: 600, height: 300)),
+    ]
+    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    let pin = NSPoint(x: visible.maxX - 40, y: visible.maxY - 40)
+    // Enter expanded through the same completed transition as the live widget.
+    state.setPresentationMode(.mini)
+    panel.setPresentationMode(.mini)
+    panel.settleFrameTransition()
+    // Expanded retains its existing corner resize and form selection.
+    for (source, sourceSize) in sizes where source == .expanded {
+      for (target, targetSize) in sizes where source != target {
+        for edge in [OverlayResizeHit.Edge.topLeft, .topRight, .bottomLeft, .bottomRight] {
+          state.setPresentationMode(source)
+          panel.settleFrameTransition()
+          panel.setFrame(
+            NSRect(
+              x: pin.x - sourceSize.width, y: pin.y - sourceSize.height,
+              width: sourceSize.width, height: sourceSize.height), display: true)
+          let left = edge == .topLeft || edge == .bottomLeft
+          let bottom = edge == .bottomLeft || edge == .bottomRight
+          let start = NSPoint(
+            x: left ? 2 : sourceSize.width - 2,
+            y: bottom ? 2 : sourceSize.height - 2)
+          let delta = NSSize(
+            width: (targetSize.width - sourceSize.width) * (left ? -1 : 1),
+            height: (targetSize.height - sourceSize.height) * (bottom ? -1 : 1))
+          XCTAssertTrue(panel.styleMask.contains(.resizable))
+          sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_500)
+          panel.settleFrameTransition()
+          XCTAssertEqual(state.presentationMode, target, "\(source) → \(target) via \(edge)")
+          let paintedWidth = max(targetSize.width, DictationOverlayWindow.minSize.width)
+          let paintedHeight = max(targetSize.height, DictationOverlayWindow.minSize.height)
+          XCTAssertEqual(
+            panel.frame.maxX, left ? pin.x : pin.x - sourceSize.width + paintedWidth,
+            accuracy: 0.5)
+          XCTAssertEqual(
+            panel.frame.maxY, bottom ? pin.y : pin.y - sourceSize.height + paintedHeight,
+            accuracy: 0.5)
+          XCTAssertEqual(state.activeText, text)
+          XCTAssertEqual(state.captureGeneration, generation)
+          XCTAssertFalse(panel.isUserResizing)
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func testResizeCursorIsStableAcrossNativeCursorUpdateAndMotion() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let text = CursorTrackingTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    panel.contentView = OverlayContentContainer(hosting: text)
+    defer { panel.orderOut(nil) }
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 2, y: 150)
+    let cursor = OverlayResizeHit.cursor(for: .left)
+    for index in 0..<20 {
+      XCTAssertTrue(OverlayResizeHit.cursor(for: .left) === cursor)
+      panel.sendEvent(PositionedOverlayCursorEvent(at: point))
+      panel.sendEvent(
+        mouseEvent(
+          .mouseMoved, at: point, in: panel, timestamp: 1,
+          eventNumber: index, pressure: 0))
+      XCTAssertTrue(NSCursor.current === cursor)
+      XCTAssertFalse(panel.refreshCursor(at: point))
+    }
+    XCTAssertEqual(text.motions, 0)
+  }
+
+  @MainActor
+  func testMiniBodyClickExpandsButDragAndPointerJitterKeepTheirMeaning() throws {
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.mini)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.miniClick"))
+        as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
+    panel.setFrameOrigin(NSPoint(x: visible.minX + 100, y: visible.minY + 100))
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    root.layoutSubtreeIfNeeded()
+    let brand = try XCTUnwrap(descendant(identifier: "overlay-mini-brand-drag-region", in: root))
+    let point = brand.convert(NSPoint(x: brand.bounds.midX, y: brand.bounds.midY), to: nil)
+    XCTAssertTrue(panel.isWindowDragHit(at: point))
+    let recording = state.recording
+    let start = panel.frame
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 40, height: 20), eventNumberBase: 9500)
+    XCTAssertEqual(state.presentationMode, .mini, "Dragging must never expand the widget")
+    XCTAssertGreaterThan(panel.frame.minX, start.minX + 30)
+    let parked = panel.frame
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 1, height: 1), eventNumberBase: 9520)
+    XCTAssertEqual(
+      state.presentationMode, .midi, "A body click with normal pointer jitter expands mini")
+    XCTAssertEqual(state.recording, recording, "Expanding never starts or stops capture")
+    XCTAssertEqual(
+      panel.frame.maxX, parked.maxX, accuracy: 1,
+      "Click jitter must not move the parked widget")
+  }
+
+  @MainActor
+  func testMiniDragsAtFormerResizeBandAndMidiResizesOnlyHorizontally() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let drag = OverlayWindowDragRegionView(frame: .zero)
+    panel.contentView = OverlayContentContainer(hosting: drag)
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.mini)
+    XCTAssertFalse(panel.styleMask.contains(.resizable))
+    let start = panel.frame
+    let point = NSPoint(x: 80, y: 4)
+    XCTAssertTrue(panel.isWindowDragHit(at: point))
+    sendSyntheticDrag(
+      through: panel, from: point,
+      delta: NSSize(width: 30, height: 20), eventNumberBase: 9_600)
+    XCTAssertEqual(panel.frame.minX, start.minX + 30, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.size, start.size)
+    XCTAssertTrue(OverlayResizeHit.cursorRects(in: panel.contentView!.bounds, mode: .mini).isEmpty)
+
+    panel.setPresentationMode(.midi)
+    let initial = panel.frame
+    XCTAssertTrue(panel.isWindowDragHit(at: NSPoint(x: 100, y: 4)))
+    XCTAssertNil(
+      OverlayResizeHit.edge(
+        at: NSPoint(x: 100, y: 4),
+        in: panel.contentView!.bounds, mode: .midi))
+    XCTAssertFalse(panel.beginUserResize(edge: .top, at: .zero))
+    XCTAssertFalse(panel.beginUserResize(edge: .topLeft, at: .zero))
+    for edge in [OverlayResizeHit.Edge.left, .right] {
+      XCTAssertTrue(panel.beginUserResize(edge: edge, at: .zero))
+      XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: edge == .left ? -60 : 60, y: 200)))
+      panel.endUserResize()
+      XCTAssertEqual(panel.frame.height, initial.height)
+      XCTAssertEqual(
+        panel.frame.maxX, initial.maxX + (edge == .right ? 60 : 0), accuracy: 0.5)
+    }
+    XCTAssertEqual(panel.frame.width, initial.width + 120, accuracy: 0.5)
+    XCTAssertEqual(
+      OverlayResizeHit.cursorRects(in: panel.contentView!.bounds, mode: .midi).count, 2)
+    for point in [NSPoint(x: 2, y: 2), NSPoint(x: 2, y: 44)] {
+      XCTAssertEqual(
+        OverlayResizeHit.edge(at: point, in: panel.contentView!.bounds, mode: .midi), .left)
+    }
+  }
+
   @MainActor
   func testPanelPreservesNativeInteriorPointerAfterTracking() throws {
     let panel = FloatingOverlayPanel(
@@ -206,7 +534,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayEdgeWheelScrollsExistingTranscript() throws {
     let state = OverlayState()
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     project(
       String(repeating: "A long visible transcript line.\n", count: 100), sequence: 1, to: state)
     let panel = try XCTUnwrap(
@@ -278,7 +606,8 @@ final class OverlayResizeHitTests: XCTestCase {
       state.applyChannelRoster([
         .init(
           channel: "3", audience: "astra", provider: "codex", providerSessionId: "resize",
-          open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true)
+          open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil)
       ])
       XCTAssertEqual(panel.frame, resized, "passive roster updates must not re-anchor a drag")
     }
@@ -338,8 +667,9 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
-  func testDrawerFitsMinimumCanvasAndGrowsWithResizedCanvas() throws {
-    var measuredWidths: [CGFloat] = []
+  func testRosterSurfaceFitsNarrowCanvasAsPillsAndDocksOnWideCanvas() throws {
+    // Narrow windows: the roster is the pill stack under the name pill, fixed
+    // to the pill width at scale 1 (mockup, Founder 2026-10-16).
     for size in [
       CGSize(width: 320, height: 260), CGSize(width: 470, height: 280),
       CGSize(width: 700, height: 400),
@@ -347,6 +677,15 @@ final class OverlayResizeHitTests: XCTestCase {
       let state = OverlayState.previewFormatted()
       let text = state.activeText
       let generation = state.captureGeneration
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "resize-pills",
+          "lease_id": String(repeating: "d", count: 32), "channel": "2", "name": "lena",
+        ]))
+      let conversation = OverlayConversation(
+        id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+      state.selectConversation(conversation.id)
       let recorder = MicrophoneFrameRecorder()
       state.showAgentMonitor()
       let host = NSHostingView(
@@ -364,20 +703,53 @@ final class OverlayResizeHitTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       let drawer = recorder.drawer
-      XCTAssertGreaterThan(drawer.width, 200)
-      XCTAssertLessThan(drawer.width, size.width * 0.9, "retained canvas remains visible")
-      XCTAssertGreaterThan(drawer.height, 100)
+      XCTAssertEqual(
+        drawer.width, 224, accuracy: 1, "the pills share the name pill's width at scale 1")
       XCTAssertGreaterThanOrEqual(drawer.minX, 0)
-      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "drawer stays below header")
+      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "the stack hangs below the header pill")
       XCTAssertLessThanOrEqual(drawer.maxX, size.width + 0.5)
       XCTAssertLessThanOrEqual(drawer.maxY, size.height + 0.5)
-      measuredWidths.append(drawer.width)
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)
       XCTAssertEqual(state.captureGeneration, generation)
     }
-    XCTAssertGreaterThan(measuredWidths[1], measuredWidths[0] + 40)
-    XCTAssertGreaterThan(measuredWidths[2], measuredWidths[0] + 80)
+
+    // Wide window beside a conversation: the docked column owns the right
+    // 300 points without any open flag; the conversation keeps the remaining
+    // width. (The transcription alone keeps its full width: OverlayChromeV3Tests.)
+    let size = CGSize(width: 1200, height: 500)
+    let state = OverlayState.previewFormatted()
+    let wideOwner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "resize-docked",
+        "lease_id": String(repeating: "e", count: 32), "channel": "2", "name": "lena",
+      ]))
+    let wideConversation = OverlayConversation(
+      id: wideOwner.id, channel: "2", name: "lena", owner: wideOwner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [wideConversation]))
+    state.selectConversation(wideConversation.id)
+    let recorder = MicrophoneFrameRecorder()
+    let host = NSHostingView(
+      rootView:
+        MicrophoneFrameCapture(state: state, recorder: recorder)
+        .frame(width: size.width, height: size.height))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(origin: .zero, size: size),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    let drawer = recorder.drawer
+    XCTAssertEqual(drawer.width, 300, accuracy: 1, "the docked column is 300 × scale")
+    XCTAssertEqual(
+      drawer.minX, size.width - 300, accuracy: 1, "the column sits beside the conversation")
+    XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "full height under the header")
+    XCTAssertFalse(state.showsAgentMonitor, "docked: nothing opens")
+    XCTAssertTrue(state.agentDrawerDocked)
   }
 
   @MainActor
@@ -445,7 +817,7 @@ final class OverlayResizeHitTests: XCTestCase {
       var transitions: [Bool] = []
       state.onPresentationModeChanged = { transitions.append($0 != .expanded) }
       for folded in [false, true, false] {
-        if state.isCollapsed != folded { state.toggleCollapsed() }
+        if state.isCollapsed != folded { state.setPresentationMode(folded ? .mini : .expanded) }
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let preview = try XCTUnwrap(recorder.frames.preview)
@@ -510,7 +882,7 @@ final class OverlayResizeHitTests: XCTestCase {
       state: OverlayState(),
       textScale: TextScaleController(key: "OverlayResizeHitTests.missionControl"))
     defer { panel.orderOut(nil) }
-    for policy in [OverlayPresencePolicy.rest, .yield, .capture] {
+    for policy in [OverlayPresencePolicy.rest, .unpinned, .yield, .capture] {
       panel.level = policy.windowLevel
       XCTAssertTrue(panel.collectionBehavior.contains(.transient))
       XCTAssertFalse(panel.collectionBehavior.contains(.stationary))
@@ -599,9 +971,9 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   /// Keep representative passive header points draggable while routing the
-  /// placement menu's real hit point through its control path.
+  /// Pin button's real hit point through its control path.
   @MainActor
-  func testPassiveHeaderRegionsDragAndPlacementMenuRetainsClick() throws {
+  func testPassiveHeaderRegionsDragAndPinButtonRetainsClick() throws {
     let state = OverlayState.previewListening()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -638,22 +1010,23 @@ final class OverlayResizeHitTests: XCTestCase {
       )
     }
 
-    // The placement Menu's measured non-drag hit span at the 470 pt test width
-    // is x = 371…394.75 (third control from the right, after the preview
-    // toggle and Stop). Stop became a 22 pt circle like the chevron (Founder,
-    // 2026-09-29: "ten stop jest olbrzymi"), so the menu moved from maxX −
+    // The Pin button took the placement Menu's slot: third control from the
+    // right, after the preview toggle and Stop, x = 371…394.75 at the 470 pt
+    // test width. Stop became a 22 pt circle like the chevron (Founder,
+    // 2026-09-29: "ten stop jest olbrzymi"), so the slot moved from maxX −
     // 122.25 and the waveform kept the width the word "Stop" used to take.
     // Its focus/key view must receive a click, not window drag.
     let placementMenuPoint = NSPoint(x: root.bounds.maxX - 87.125, y: y)
     let placementMenuHit = try XCTUnwrap(root.hitTest(placementMenuPoint))
     XCTAssertTrue(
       hitChain(from: placementMenuHit).contains("NSHostingView"),
-      "Position overlay is handled inside the SwiftUI host"
+      "Pin is handled inside the SwiftUI host"
     )
     XCTAssertFalse(
       panel.isWindowDragHit(at: placementMenuPoint),
-      "Position overlay is a clickable control inside the header"
+      "Pin is a clickable control inside the header"
     )
+    XCTAssertNil(state.expansionPreferenceError)
     let panelFrameBeforeMenuClick = panel.frame
     let anchorBeforeMenuClick = state.placementAnchor
     let freeMotionBeforeMenuClick = state.freeMotion
@@ -680,6 +1053,9 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame, panelFrameBeforeMenuClick)
     XCTAssertEqual(state.placementAnchor, anchorBeforeMenuClick)
     XCTAssertEqual(state.freeMotion, freeMotionBeforeMenuClick)
+    // The preview state has no engine to persist the pin, so the click that
+    // reached the Pin action surfaces the save refusal.
+    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
 
     XCTAssertFalse(
       panel.isWindowDragHit(at: NSPoint(x: root.bounds.maxX - 27, y: y)),
@@ -889,7 +1265,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayKeepsTranscriptBetweenHeaderAndDock() throws {
     let state = OverlayState()
-    state.toggleCollapsed()  // This test measures the explicitly expanded transcript.
+    state.setPresentationMode(.expanded)  // This test measures the explicitly expanded transcript.
     project(
       "first line with uncut caps\nsecond line\nthird line\nfourth line\nfifth line\nlast line above the dock",
       sequence: 1,
@@ -967,7 +1343,7 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
     XCTAssertEqual(panel.sizeForPersistence, savedSize)
     XCTAssertEqual(state.activeText, text)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let deadline = Date().addingTimeInterval(1.5)
     while panel.isFrameTransitioning && Date() < deadline {
       RunLoop.main.run(until: Date().addingTimeInterval(0.01))
@@ -982,7 +1358,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayBreathesToSixtyPercentThenHonorsManualResize() throws {
     let state = OverlayState()
-    state.toggleCollapsed()  // Auto-sizing applies only to the expanded transcript.
+    state.setPresentationMode(.expanded)  // Auto-sizing applies only to the expanded transcript.
     var builtPanel: FloatingOverlayPanel?
     let controller = OverlayController(
       state: state,
@@ -1108,6 +1484,178 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 398, y: 298), in: bounds), .topRight)
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 2, y: 2), in: bounds), .bottomLeft)
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 398, y: 2), in: bounds), .bottomRight)
+  }
+
+  /// Maciej, 2026-10-14: the bottom corners were "practically ungrabbable".
+  /// They are whole 30 pt squares; the top corners keep the band because the
+  /// header's close dot sits 16 pt from the left.
+  func testBottomCornersAreThirtyPointSquaresAndTopCornersKeepTheBand() {
+    XCTAssertEqual(OverlayResizeHit.bottomCorner, 30)
+    for size in [bounds.size, DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let w = size.width
+      let h = size.height
+      func edge(_ x: CGFloat, _ y: CGFloat) -> OverlayResizeHit.Edge? {
+        OverlayResizeHit.edge(at: NSPoint(x: x, y: y), in: frame)
+      }
+      for (x, y) in [(CGFloat(1), CGFloat(1)), (29, 29), (29, 1), (1, 29), (22, 24)] {
+        XCTAssertEqual(edge(x, y), .bottomLeft, "\(size) (\(x), \(y))")
+        XCTAssertEqual(edge(w - x, y), .bottomRight, "\(size) (\(w - x), \(y))")
+      }
+      XCTAssertEqual(edge(31, 2), .bottom)
+      XCTAssertEqual(edge(w - 31, 2), .bottom)
+      XCTAssertEqual(edge(2, 31), .left)
+      XCTAssertEqual(edge(w - 2, 31), .right)
+      XCTAssertNil(edge(31, 31))
+      XCTAssertEqual(edge(2, h - 2), .topLeft)
+      XCTAssertEqual(edge(20, h - 2), .top)
+      XCTAssertEqual(edge(2, h - 20), .left)
+      XCTAssertNil(edge(20, h - 20), "the close dot's corner is not a resize zone")
+    }
+  }
+
+  /// Founder, 2026-10-15 (build 1050): the pointer turned into a resize cursor
+  /// over Pin. Header controls start 10 pt below the top edge (the header's
+  /// vertical padding); the top band ends above them, cursor and click alike.
+  @MainActor
+  func testTopBandEndsAboveTheHeaderControls() {
+    XCTAssertLessThan(OverlayResizeHit.topBand, 10)
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let rects = OverlayResizeHit.cursorRects(in: frame)
+      for x in stride(
+        from: OverlayResizeHit.band + 0.5, to: size.width - OverlayResizeHit.band, by: 1)
+      {
+        let control = NSPoint(x: x, y: size.height - 10.5)
+        XCTAssertNil(OverlayResizeHit.edge(at: control, in: frame), "\(size) \(control)")
+        XCTAssertFalse(rects.contains { $0.0.contains(control) }, "\(size) \(control)")
+        XCTAssertEqual(
+          OverlayResizeHit.edge(at: NSPoint(x: x, y: size.height - 1), in: frame), .top)
+      }
+    }
+  }
+
+  /// The cursor AppKit shows and the gesture the panel starts must agree at
+  /// every point: one owner per point, the cursor of the hit edge, none inside.
+  @MainActor
+  func testCursorRectsAgreeWithTheHitTestAtEveryPoint() {
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let rects = OverlayResizeHit.cursorRects(in: frame)
+      var mismatches: [String] = []
+      for x in stride(from: CGFloat(0.5), to: size.width, by: 1) {
+        for y in stride(from: CGFloat(0.5), to: size.height, by: 1) {
+          let point = NSPoint(x: x, y: y)
+          let owners = Set(rects.filter { $0.0.contains(point) }.map { ObjectIdentifier($0.1) })
+          let expected = OverlayResizeHit.edge(at: point, in: frame).map {
+            Set([ObjectIdentifier(OverlayResizeHit.cursor(for: $0))])
+          }
+          if owners != (expected ?? []) { mismatches.append("\(point)") }
+        }
+      }
+      XCTAssertTrue(
+        mismatches.isEmpty,
+        "\(size): \(mismatches.count) points disagree, first \(mismatches.prefix(5))")
+    }
+  }
+
+  /// The window server passes a click through a fully transparent pixel. The
+  /// pad keeps every pixel the rounded glass leaves transparent inside the
+  /// resize zones, and paints nothing that is not already a resize zone.
+  @MainActor
+  func testGrabPadCoversTheTransparentGlassCornersAndOnlyResizeZones() {
+    XCTAssertGreaterThanOrEqual(OverlayResizeGrabPad.fillAlpha * 255, 1, "nonzero in 8 bits")
+    XCTAssertLessThanOrEqual(OverlayResizeGrabPad.fillAlpha * 255, 2, "invisible on white")
+    for size in [DictationOverlayWindow.minSize, DictationOverlayWindow.defaultSize] {
+      let frame = NSRect(origin: .zero, size: size)
+      let pad = OverlayResizeHit.grabPadRects(in: frame, mode: .expanded)
+      let glass = RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
+        .path(in: frame)
+      var uncovered: [NSPoint] = []
+      let reach: CGFloat = 40
+      for corner in [
+        NSPoint(x: 0, y: 0), NSPoint(x: size.width - reach, y: 0),
+        NSPoint(x: 0, y: size.height - reach),
+        NSPoint(x: size.width - reach, y: size.height - reach),
+      ] {
+        for x in stride(from: corner.x + 0.25, to: corner.x + reach, by: 0.5) {
+          for y in stride(from: corner.y + 0.25, to: corner.y + reach, by: 0.5) {
+            let point = NSPoint(x: x, y: y)
+            if !glass.contains(point), !pad.contains(where: { $0.contains(point) }) {
+              uncovered.append(point)
+            }
+          }
+        }
+      }
+      XCTAssertTrue(
+        uncovered.isEmpty,
+        "\(size): \(uncovered.count) transparent corner pixels pass clicks through, "
+          + "first \(uncovered.prefix(5))")
+
+      var stray: [NSPoint] = []
+      for rect in pad {
+        for x in stride(from: rect.minX + 0.25, to: rect.maxX, by: 0.5) {
+          for y in stride(from: rect.minY + 0.25, to: rect.maxY, by: 0.5) {
+            let point = NSPoint(x: x, y: y)
+            if OverlayResizeHit.edge(at: point, in: frame) == nil { stray.append(point) }
+          }
+        }
+      }
+      XCTAssertTrue(stray.isEmpty, "\(size): the pad owns non-resize points \(stray.prefix(5))")
+    }
+
+    XCTAssertTrue(OverlayResizeHit.grabPadRects(in: bounds, mode: .mini).isEmpty)
+    let midi = NSRect(origin: .zero, size: DictationOverlayWindow.midiSize)
+    let midiPad = OverlayResizeHit.grabPadRects(in: midi, mode: .midi)
+    XCTAssertEqual(midiPad.count, 2)
+    for rect in midiPad {
+      for y in stride(from: rect.minY + 0.25, to: rect.maxY, by: 1) {
+        XCTAssertNotNil(
+          OverlayResizeHit.edge(at: NSPoint(x: rect.midX, y: y), in: midi, mode: .midi))
+      }
+    }
+  }
+
+  @MainActor
+  func testRealPanelGrabPadFollowsModeAndNeverTakesAHit() throws {
+    let state = OverlayState.previewListening()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.grabPad")
+      ) as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.setContentSize(NSSize(width: 470, height: 280))
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    XCTAssertTrue(root.subviews.first === root.grabPad, "the pad sits beneath the hosted content")
+    XCTAssertEqual(root.grabPad.frame, root.bounds)
+    XCTAssertEqual(
+      root.grabPad.rects, OverlayResizeHit.grabPadRects(in: root.bounds, mode: .expanded))
+    for point in [
+      NSPoint(x: 2, y: 2), NSPoint(x: 25, y: 25), NSPoint(x: root.bounds.maxX - 25, y: 25),
+      NSPoint(x: root.bounds.midX, y: root.bounds.midY),
+    ] {
+      XCTAssertFalse(root.hitTest(point) === root.grabPad, "\(point)")
+    }
+    // The corner square is a resize grab in the real panel, inside the glass
+    // curve as well as outside it.
+    for point in [NSPoint(x: 25, y: 25), NSPoint(x: root.bounds.maxX - 25, y: 25)] {
+      XCTAssertTrue(root.hitTest(point) === root, "\(point) is not claimed for resize")
+      XCTAssertFalse(panel.isWindowDragHit(at: point))
+    }
+
+    panel.setPresentationMode(.mini)
+    XCTAssertTrue(root.grabPad.rects.isEmpty, "a mini panel does not resize")
+    panel.setPresentationMode(.expanded)
+    XCTAssertEqual(
+      root.grabPad.rects, OverlayResizeHit.grabPadRects(in: root.bounds, mode: .expanded))
+    withExtendedLifetime(state) {}
   }
 
   @MainActor

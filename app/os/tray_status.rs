@@ -10,11 +10,37 @@
 //! because they depend on `tray_icon::Icon` and `crate::tray::icons::*`, which
 //! die with the legacy AppKit tray.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use tracing::trace;
 
-use crate::os::hold_badge::BadgeMode;
+use crate::os::hold_badge::{self, BadgeMode, CursorVoice};
+
+/// An open agent channel keeps the microphone listening without a dictation
+/// take, while the hotkey controller stays `Idle`. Every `Idle` producer —
+/// most importantly the end of a dictation take — must not blacken the glyph
+/// while a channel still listens (Maciej, 2026-10-17: the tray dot stayed
+/// black when speaking to agents; it has to read Assistive violet).
+///
+/// Tests share this flag and the tray store process-wide: every test that
+/// opens a channel or asserts a tray status runs under the bare `#[serial]`
+/// key. A named key is a separate lock in `serial_test`, so a channel test
+/// on one ran beside the thermal test and turned its `Idle` into
+/// `Listening` (dragon gate, 2026-10-17). A test controller dropped with a
+/// channel still open never lowers the flag, so tray assertions lower it
+/// first.
+static AGENT_CHANNELS_LISTENING: AtomicBool = AtomicBool::new(false);
+
+/// Record whether any agent channel currently listens. The channel's close
+/// path clears this before it publishes `Idle`, so ordering is caller-driven.
+pub fn set_agent_channels_listening(listening: bool) {
+    AGENT_CHANNELS_LISTENING.store(listening, Ordering::Release);
+}
+
+fn agent_channels_listening() -> bool {
+    AGENT_CHANNELS_LISTENING.load(Ordering::Acquire)
+}
 
 /// Process-local callback the UniFFI bridge registers to mirror status to Swift.
 type TrayStatusSink = Arc<dyn Fn(TrayStatusSnapshot) + Send + Sync + 'static>;
@@ -46,6 +72,8 @@ pub enum TrayStatus {
 pub struct TrayStatusSnapshot {
     pub status: TrayStatus,
     pub indicator_mode: BadgeMode,
+    /// The voice under the cursor while listening; the glyph's Agent dot reads it.
+    pub voice: CursorVoice,
 }
 
 impl TrayStatusSnapshot {
@@ -64,6 +92,7 @@ impl TrayStatusSnapshot {
         Self {
             status,
             indicator_mode,
+            voice: CursorVoice::Unobserved,
         }
     }
 
@@ -73,6 +102,7 @@ impl TrayStatusSnapshot {
         Self {
             status,
             indicator_mode,
+            voice: CursorVoice::Unobserved,
         }
     }
 
@@ -140,6 +170,11 @@ pub fn set_tray_assistive_session(assistive: bool) {
 /// all consume this same `BadgeMode`; status (`Listening`/`Thinking`) remains a
 /// separate lifecycle axis. Processing always wins over the session lane.
 pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
+    // A refused chord only flashes the pointer; the tray shows what is being
+    // recorded, and a refusal records nothing.
+    if indicator_mode == BadgeMode::Refused {
+        return;
+    }
     let snapshot = {
         let mut current = current_status_store()
             .write()
@@ -149,7 +184,10 @@ pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
         } else {
             indicator_mode
         };
-        let next = TrayStatusSnapshot::with_indicator_mode(current.status, effective_mode);
+        let next = TrayStatusSnapshot {
+            voice: current.voice,
+            ..TrayStatusSnapshot::with_indicator_mode(current.status, effective_mode)
+        };
         if *current == next {
             return;
         }
@@ -166,18 +204,57 @@ pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
 /// longer a stub: hotkeys, thermal throttling, and recording lifecycle changes
 /// flow through the registered bridge sink.
 pub fn update_tray_status(status: TrayStatus) {
+    // A finished take (or any other producer) publishing `Idle` while an agent
+    // channel still listens resolves to assistive listening instead; only the
+    // channel's own close path clears the flag and lets `Idle` through.
+    let channel_keeps_listening = status == TrayStatus::Idle && agent_channels_listening();
+    let status = if channel_keeps_listening {
+        TrayStatus::Listening
+    } else {
+        status
+    };
     let snapshot = {
         let mut current = current_status_store()
             .write()
             .unwrap_or_else(|error| error.into_inner());
         let indicator_mode = if status == TrayStatus::Thinking {
             BadgeMode::Processing
+        } else if channel_keeps_listening {
+            BadgeMode::Assistive
         } else {
             current.indicator_mode
         };
-        let next = TrayStatusSnapshot::with_indicator_mode(status, indicator_mode);
+        let voice = if status == TrayStatus::Listening {
+            current.voice
+        } else {
+            CursorVoice::Unobserved
+        };
+        let next = TrayStatusSnapshot {
+            voice,
+            ..TrayStatusSnapshot::with_indicator_mode(status, indicator_mode)
+        };
         *current = next;
         next
+    };
+
+    notify_tray_status(snapshot);
+}
+
+/// Mirror the cursor's voice into the glyph while that take still owns the
+/// badge; a projection from an ended take repaints nothing.
+pub fn set_tray_voice_for_take(token: u64, voice: CursorVoice) {
+    if token != hold_badge::take_token() {
+        return;
+    }
+    let snapshot = {
+        let mut current = current_status_store()
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if current.status != TrayStatus::Listening || current.voice == voice {
+            return;
+        }
+        current.voice = voice;
+        *current
     };
 
     notify_tray_status(snapshot);
@@ -220,6 +297,85 @@ mod tests {
                 "{status:?} with an active assistive lane should read as assistive"
             );
         }
+    }
+
+    /// Maciej, 2026-10-14: the glyph's voice lives only while listening.
+    #[test]
+    #[serial_test::serial]
+    fn voice_lives_only_while_listening() {
+        set_agent_channels_listening(false);
+        let token = hold_badge::take_token();
+        update_tray_status(TrayStatus::Idle);
+        set_tray_voice_for_take(token, CursorVoice::Speaking);
+        assert_eq!(
+            current_tray_status_snapshot().voice,
+            CursorVoice::Unobserved
+        );
+
+        update_tray_status(TrayStatus::Listening);
+        set_tray_voice_for_take(token, CursorVoice::Lagging);
+        assert_eq!(current_tray_status_snapshot().voice, CursorVoice::Lagging);
+        set_tray_assistive_session(true);
+        assert_eq!(
+            current_tray_status_snapshot().voice,
+            CursorVoice::Lagging,
+            "the lane change keeps the voice"
+        );
+        set_tray_voice_for_take(token.wrapping_add(1), CursorVoice::Quiet);
+        assert_eq!(
+            current_tray_status_snapshot().voice,
+            CursorVoice::Lagging,
+            "an ended take cannot repaint the glyph"
+        );
+
+        update_tray_status(TrayStatus::Thinking);
+        assert_eq!(
+            current_tray_status_snapshot().voice,
+            CursorVoice::Unobserved
+        );
+        set_tray_assistive_session(false);
+        update_tray_status(TrayStatus::Idle);
+    }
+
+    /// Maciej, 2026-10-17: speaking to agents must not leave the dot black —
+    /// an open channel turns every foreign `Idle` into assistive listening,
+    /// and only the channel's own close path (flag down) lets `Idle` through.
+    #[test]
+    #[serial_test::serial]
+    fn an_open_agent_channel_outlives_a_takes_idle() {
+        set_agent_channels_listening(true);
+        update_tray_status(TrayStatus::Idle);
+        let held = current_tray_status_snapshot();
+        assert_eq!(held.status, TrayStatus::Listening);
+        assert_eq!(held.indicator_mode, BadgeMode::Assistive);
+
+        set_agent_channels_listening(false);
+        update_tray_status(TrayStatus::Idle);
+        assert_eq!(current_tray_status(), TrayStatus::Idle);
+    }
+
+    /// Maciej, 2026-10-17: a vacant channel chord answers at the pointer only;
+    /// the tray keeps showing whatever was recording before the refusal.
+    #[test]
+    #[serial_test::serial]
+    fn a_refused_chord_never_repaints_the_tray() {
+        set_agent_channels_listening(false);
+        update_tray_status(TrayStatus::Listening);
+        set_tray_indicator_mode(BadgeMode::Assistive);
+        let before = current_tray_status_snapshot();
+        assert_eq!(before.indicator_mode, BadgeMode::Assistive);
+
+        set_tray_indicator_mode(BadgeMode::Refused);
+        assert_eq!(current_tray_status_snapshot(), before);
+
+        update_tray_status(TrayStatus::Idle);
+        set_tray_indicator_mode(BadgeMode::Refused);
+        assert_ne!(
+            current_tray_status_snapshot().indicator_mode,
+            BadgeMode::Refused,
+            "the tray store never holds the refusal mode"
+        );
+        set_tray_assistive_session(false);
     }
 
     /// Idle/Success/Thinking and non-assistive lanes stay non-assistive.

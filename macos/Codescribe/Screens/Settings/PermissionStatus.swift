@@ -65,16 +65,57 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     self == .screenRecording || self == .fullDiskAccess
   }
 
+  /// Grants setup cannot finish without. Mirrors `REQUIRED_SETUP_PERMISSIONS`
+  /// in app/os/onboarding.rs: a missing one removes `setup_done` on the next
+  /// launch, so setup reporting success without it would be undone at once.
+  var isRequiredForSetup: Bool { !isOptionalForSetup }
+
+  /// macOS can keep a running process untrusted for these scopes until it
+  /// reopens, even after the switch in System Settings is on. The probe stays
+  /// the truth; this only decides when to say so.
+  var grantMayNeedReopen: Bool {
+    self == .accessibility || self == .inputMonitoring || self == .screenRecording
+  }
+
+  /// One sentence for a missing grant the row's own button cannot fix: a
+  /// denial macOS never asks about again, or a grant requested in this process
+  /// that macOS may apply only after Codescribe reopens. `nil` otherwise.
+  func repairNote(for state: PermissionState, requested: Bool, locale: Locale) -> String? {
+    guard !state.isGranted else { return nil }
+    if state == .denied, self == .microphone || self == .speechRecognition {
+      return String(
+        localized: LocalizedStringResource(
+          "macOS will not ask again. Turn on Codescribe in System Settings.", locale: locale,
+          comment: "Denied Microphone or Speech Recognition; System Settings is the macOS app"))
+    }
+    if requested, grantMayNeedReopen {
+      return String(
+        localized: LocalizedStringResource(
+          "Already turned on? macOS may apply it only after you quit and reopen Codescribe.",
+          locale: locale,
+          comment: "Permission still missing after a request; macOS may need the app to restart"))
+    }
+    return nil
+  }
+
   /// Display name for the privacy scope. The identity (`rawValue`) is the
   /// System Settings pane name and must never reach the screen directly.
   var displayName: String {
     displayName(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
   }
 
-  func displayName(locale: Locale) -> String {
+  func displayName(
+    locale: Locale,
+    osMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+  ) -> String {
     switch self {
     case .microphone: String(localized: LocalizedStringResource("Microphone", locale: locale))
-    case .accessibility: String(localized: LocalizedStringResource("Accessibility", locale: locale))
+    case .accessibility:
+      if osMajorVersion >= 27 {
+        String(localized: LocalizedStringResource("Device Control and Data Access", locale: locale))
+      } else {
+        String(localized: LocalizedStringResource("Accessibility", locale: locale))
+      }
     case .inputMonitoring:
       String(localized: LocalizedStringResource("Input Monitoring", locale: locale))
     case .screenRecording:
@@ -104,47 +145,88 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     NSWorkspace.shared.open(url)
   }
 
-  /// Scopes that can fire a first-run system dialog from our process. Once
-  /// the user has decided (granted/denied), macOS never re-prompts — callers
-  /// must deep-link to System Settings instead.
-  var supportsInAppPermissionRequest: Bool {
+  /// The Privacy & Security pane itself, for reviewing scopes that are already
+  /// granted (the per-row deep links only appear while a scope is missing).
+  static let privacySettingsURL = URL(
+    string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!
+
+  static func openPrivacySettings() {
+    NSWorkspace.shared.open(privacySettingsURL)
+  }
+
+  /// What a click may do for this observed state.
+  ///
+  /// A local history marker cannot prove TCC state after a reset. Observed
+  /// authorization stays on the probe; eligibility does not depend on history.
+  func repair(for observed: PermissionState) -> PermissionRepair {
+    guard !observed.isGranted else {
+      return PermissionRepair(requestsNatively: false, opensSettings: false)
+    }
     switch self {
-    case .microphone, .speechRecognition, .screenRecording, .inputMonitoring:
-      return true
-    case .accessibility, .fullDiskAccess:
-      // Accessibility and Full Disk Access are only toggled in System Settings.
-      return false
+    case .microphone, .speechRecognition:
+      if observed == .notDetermined {
+        return PermissionRepair(requestsNatively: true, opensSettings: false)
+      }
+      return PermissionRepair(requestsNatively: false, opensSettings: true)
+    case .screenRecording, .inputMonitoring, .accessibility:
+      return PermissionRepair(requestsNatively: true, opensSettings: true)
+    case .fullDiskAccess:
+      return PermissionRepair(requestsNatively: false, opensSettings: true)
     }
   }
 
-  /// Fire the in-app TCC dialog when still undetermined and return the
-  /// post-request state. Async continuation ownership avoids sending a UI
-  /// callback through framework completion queues.
-  func requestInApp() async -> PermissionState {
+  /// In-app request when `repair(for:)` says one is eligible.
+  ///
+  /// Defaults keep the real native calls. Tests pass a client and a probe so
+  /// this never raises TCC. Accessibility's prompt returns before the user
+  /// answers; that return is not a grant, and the following probe is the
+  /// observed state. Screen Recording and Input Monitoring treat a `true`
+  /// request result as the grant when the following probe is still denied.
+  /// Microphone treats a granted probe or a `true` completion as granted.
+  /// Speech Recognition prefers a granted probe, otherwise the request's
+  /// `PermissionState`.
+  func requestInApp(
+    client: any PermissionRequesting = NativePermissionRequestClient(),
+    probe: any PermissionProbing = NativePermissionProbe()
+  ) async -> PermissionState {
+    let observed = probe.snapshot().state(self)
+    guard repair(for: observed).requestsNatively else { return observed }
     switch self {
     case .speechRecognition:
-      return await SpeechRecognitionPermission.request()
+      let decided = await client.requestSpeechRecognition()
+      let probed = probe.snapshot().speechRecognition
+      return probed == .granted ? .granted : decided
     case .microphone:
-      let granted = await withCheckedContinuation { continuation in
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-          continuation.resume(returning: granted)
-        }
-      }
-      return granted ? .granted : NativePermissionProbe().snapshot().microphone
+      let granted = await client.requestMicrophone()
+      let probed = probe.snapshot().microphone
+      if probed == .granted || granted { return .granted }
+      return probed
     case .screenRecording:
-      let ok = CGRequestScreenCaptureAccess()
-      return ok ? .granted : NativePermissionProbe().snapshot().screenRecording
+      let requested = client.requestScreenCapture()
+      let probed = probe.snapshot().screenRecording
+      if probed == .granted { return .granted }
+      return requested ? .granted : probed
     case .inputMonitoring:
-      let ok = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-      return ok ? .granted : NativePermissionProbe().snapshot().inputMonitoring
-    case .accessibility, .fullDiskAccess:
-      return NativePermissionProbe().snapshot().state(self)
+      let requested = client.requestInputMonitoring()
+      let probed = probe.snapshot().inputMonitoring
+      if probed == .granted { return .granted }
+      return requested ? .granted : probed
+    case .accessibility:
+      _ = client.requestAccessibilityPrompt()
+      return probe.snapshot().accessibility
+    case .fullDiskAccess:
+      return observed
     }
   }
 }
 
+struct PermissionRepair: Equatable, Sendable {
+  var requestsNatively: Bool
+  var opensSettings: Bool
+}
+
 /// Snapshot of all four scopes captured at one moment.
-struct PermissionSnapshot: Equatable {
+struct PermissionSnapshot: Equatable, Sendable {
   var microphone: PermissionState
   var accessibility: PermissionState
   var inputMonitoring: PermissionState
@@ -182,12 +264,55 @@ struct PermissionSnapshot: Equatable {
 
 /// Abstraction so #Preview / tests can inject deterministic states without
 /// touching the real system privacy database.
-protocol PermissionProbing {
+protocol PermissionProbing: Sendable {
   func snapshot() -> PermissionSnapshot
 }
 
+/// Native request calls. Production uses `NativePermissionRequestClient`.
+/// A test passes its own client so `requestInApp` never raises a TCC prompt.
+///
+/// A `true` return is a grant only for the APIs whose completion is the
+/// decision. `requestAccessibilityPrompt` is not one of them: the prompt is
+/// asynchronous and the return does not mean the process is trusted.
+protocol PermissionRequesting: Sendable {
+  func requestScreenCapture() -> Bool
+  func requestInputMonitoring() -> Bool
+  func requestAccessibilityPrompt() -> Bool
+  func requestMicrophone() async -> Bool
+  func requestSpeechRecognition() async -> PermissionState
+}
+
+struct NativePermissionRequestClient: PermissionRequesting, Sendable {
+  func requestScreenCapture() -> Bool {
+    CGRequestScreenCaptureAccess()
+  }
+
+  func requestInputMonitoring() -> Bool {
+    IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+  }
+
+  func requestAccessibilityPrompt() -> Bool {
+    // This is the public AX options dictionary key. The SDK exports the
+    // equivalent kAXTrustedCheckOptionPrompt as an unannotated mutable global.
+    let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+    return AXIsProcessTrustedWithOptions(options)
+  }
+
+  func requestMicrophone() async -> Bool {
+    await withCheckedContinuation { continuation in
+      AVCaptureDevice.requestAccess(for: .audio) { granted in
+        continuation.resume(returning: granted)
+      }
+    }
+  }
+
+  func requestSpeechRecognition() async -> PermissionState {
+    await SpeechRecognitionPermission.request()
+  }
+}
+
 /// Live system probe. Reads — never prompts.
-struct NativePermissionProbe: PermissionProbing {
+struct NativePermissionProbe: PermissionProbing, Sendable {
   func snapshot() -> PermissionSnapshot {
     PermissionSnapshot(
       microphone: microphoneState(),
@@ -252,8 +377,8 @@ struct NativePermissionProbe: PermissionProbing {
   }
 }
 
-/// Mock probe for previews.
-struct MockPermissionProbe: PermissionProbing {
+/// Mock probe for previews and tests. The production probe stays native.
+struct MockPermissionProbe: PermissionProbing, Sendable {
   let value: PermissionSnapshot
   init(_ value: PermissionSnapshot = .allGranted) { self.value = value }
   func snapshot() -> PermissionSnapshot { value }

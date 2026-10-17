@@ -24,7 +24,8 @@ struct Composer: View {
   /// icons) keeps its intrinsic size.
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openWindow) private var openWindow
-  @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
+  @State private var fieldHeight = ComposerTextLayout.minimumHeight(
+    fontSize: ComposerControlMetrics.textSize)
   @State private var previewAttachment: PendingAttachment?
 
   // ⌘V interception. The native text editor consumes `paste:` before any
@@ -63,7 +64,7 @@ struct Composer: View {
 
       liveAgentCapture
 
-      HStack(alignment: .bottom, spacing: 10) {
+      HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
         // Attach images (NSOpenPanel → staged chips → vision FFI on send).
         Button(action: pickAttachments) {
           CSIconView(
@@ -94,12 +95,9 @@ struct Composer: View {
 
         Button(action: performPrimaryAction) {
           ZStack {
-            CSIconView(
-              icon: primaryAction.icon,
-              size: ComposerControlMetrics.glyphSize,
-              weight: primaryAction.iconWeight,
-              color: CSColor.chromeAccent
-            )
+            Image(systemName: primaryAction.systemImage)
+              .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+              .foregroundStyle(primaryAction.isSend ? CSColor.terracotta : CSColor.chromeAccent)
             if primaryAction == .stopping {
               ProgressView()
                 .controlSize(.small)
@@ -113,26 +111,24 @@ struct Composer: View {
           )
         }
         .csFocusRing()
-        .disabled(!primaryAction.isEnabled)
+        .disabled(
+          !primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn)
+        )
         .opacity(primaryAction == .stopping ? 0.72 : 1)
         .help(primaryAction.accessibilityLabel)
         .accessibilityIdentifier(ComposerActionAccessibility.identifier)
         .accessibilityLabel(Text(primaryAction.accessibilityLabel))
       }
-      .padding(.leading, 13)
-      .padding(.trailing, 11)
-      .padding(.vertical, 6)
-      .background(Color.primary.opacity(isDragging ? 0.07 : 0.04))
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(
-            isDragging ? CSColor.chromeAccent : Color.primary.opacity(0.09),
-            lineWidth: isDragging ? 1.5 : 1
-          )
-      )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
+      .buttonStyle(.plain)
+      .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
+      .padding(.vertical, ComposerControlMetrics.verticalPadding)
+      .modifier(OverlayControlGlass())
       .overlay {
-        CSFocusOutline(isFocused: fieldFocused, cornerRadius: CSRadius.composer)
+        if isDragging {
+          RoundedRectangle(cornerRadius: 20)
+            .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
+            .allowsHitTesting(false)
+        }
       }
       // Sits above the NSTextField and swallows a drop that lands *on* the
       // field, so the field editor never pastes the path as text. Only
@@ -159,11 +155,11 @@ struct Composer: View {
         }
       }
     }
+    // No strip of its own: the Agent window floats this stack in a bottom
+    // bar over the conversation, and the turns scroll beneath the field's
+    // glass rather than stopping at a divider.
     .padding(.horizontal, 14)
     .padding(.vertical, 8)
-    .overlay(alignment: .top) {
-      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
-    }
     // Drag an image from Finder onto the composer to stage it (same path as
     // the 📎 picker). The whole bottom strip is the outer drop area — it
     // bootstraps the drag-over state and catches drops that miss the field;
@@ -205,9 +201,17 @@ struct Composer: View {
             .disabled(store.selectedThreadID == nil)
             .accessibilityIdentifier("composer.recovery.insert." + document.id)
             Button("Copy") {
-              store.copyComposerRecovery(document.id) { text in
-                NSPasteboard.general.clearContents()
-                return NSPasteboard.general.setString(text, forType: .string)
+              Task { @MainActor in
+                do {
+                  try await UserTextClipboard.copy(document.text, preservingWhitespace: true)
+                  // Acknowledge only the snapshot Rust successfully copied.
+                  // A newer recovery document must remain retained.
+                  store.copyComposerRecovery(document.id) { text in
+                    text.utf8.elementsEqual(document.text.utf8)
+                  }
+                } catch {
+                  NSSound.beep()
+                }
               }
             }
             .accessibilityIdentifier("composer.recovery.copy." + document.id)
@@ -635,19 +639,18 @@ struct Composer: View {
   enum PasteDisposition: Equatable {
     /// File URLs on the pasteboard (Finder copy) → stage the image ones.
     case stageFiles
-    /// A bare image with no text (screenshot ⌘⇧⌃4) → save to a temp file, stage.
+    /// An image payload → persist in the app's asset store and stage it.
     case stageImage
     /// Text present (or nothing usable) → let the field editor paste normally.
     case passthroughText
   }
 
   /// Decision table for a composer paste. File URLs win outright; a pasteboard
-  /// image only stages when there is no text alongside it (copying from a
-  /// browser puts image + text on the pasteboard, and the user expects TEXT).
+  /// image wins over its optional filename/URL text representation.
   static func pasteDisposition(hasFileURLs: Bool, hasImage: Bool, hasText: Bool) -> PasteDisposition
   {
     if hasFileURLs { return .stageFiles }
-    if hasImage, !hasText { return .stageImage }
+    if hasImage { return .stageImage }
     return .passthroughText
   }
 
@@ -731,28 +734,12 @@ struct Composer: View {
     }
   }
 
-  /// Persist a bare pasteboard image (screenshot-style TIFF/PNG) to a readable
-  /// temp file and stage it through the shared attachments path.
+  /// Persist clipboard bytes in the canonical asset store before staging.
   @MainActor
   private func stagePastedImage(_ pasteboard: NSPasteboard) {
-    let pngData: Data?
-    if let png = pasteboard.data(forType: .png) {
-      pngData = png
-    } else if let tiff = pasteboard.data(forType: .tiff),
-      let bitmap = NSBitmapImageRep(data: tiff)
-    {
-      pngData = bitmap.representation(using: .png, properties: [:])
-    } else {
-      pngData = nil
-    }
-    guard let pngData else {
-      attachLog.error("paste: pasteboard image had no decodable PNG/TIFF payload")
-      return
-    }
-    let url = FileManager.default.temporaryDirectory
-      .appendingPathComponent("pasted-\(Self.pastedNameFormatter.string(from: Date())).png")
     do {
-      try pngData.write(to: url)
+      guard let pngData = try ConversationClipboardImage.png(from: pasteboard) else { return }
+      let url = URL(fileURLWithPath: try savePastedImage(data: pngData))
       attachLog.info(
         "paste: staged clipboard image bytes=\(pngData.count, privacy: .public) file=\(url.lastPathComponent, privacy: .public)"
       )
@@ -763,13 +750,6 @@ struct Composer: View {
       )
     }
   }
-
-  /// Readable, collision-safe temp-file stamp (`pasted-20260715-140233-421.png`).
-  private static let pastedNameFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
-    return formatter
-  }()
 
   /// Invisible probe resolving the NSWindow this composer lives in, so the
   /// paste monitor can discriminate our window from Settings / the overlay.
@@ -787,8 +767,13 @@ struct Composer: View {
 }
 
 enum ComposerControlMetrics {
-  static let glyphSize: CGFloat = 15
-  static let hitTargetSize: CGFloat = 22
+  static let glyphSize: CGFloat = 16
+  static let hitTargetSize: CGFloat = 28
+  static let textSize: CGFloat = 14
+  static let textVerticalInset: CGFloat = 5
+  static let spacing: CGFloat = 8
+  static let horizontalPadding: CGFloat = 12
+  static let verticalPadding: CGFloat = 8
 }
 
 enum ComposerActionAccessibility {
@@ -825,19 +810,12 @@ enum ComposerActionVisualState: Equatable {
     }
   }
 
-  var icon: CSIcon {
-    switch self {
-    case .send: return .send
-    case .stop, .stopping: return .stop
-    }
+  var isSend: Bool {
+    if case .send = self { return true }
+    return false
   }
 
-  var iconWeight: CSIconWeight {
-    switch self {
-    case .send: return .semibold
-    case .stop, .stopping: return .fill
-    }
-  }
+  var systemImage: String { isSend ? "paperplane.fill" : "stop.fill" }
 }
 
 /// Minimal probe reporting the `NSWindow` that hosts a SwiftUI hierarchy. The

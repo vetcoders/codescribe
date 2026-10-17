@@ -1,10 +1,315 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testConversationActivityUnderlineFollowsLastWrappedLine() async throws {
+    for width in [CGFloat(220), 360] {
+      let text = String(repeating: "A short spoken phrase with several words. ", count: 4) + "tail"
+      let host = NSHostingView(
+        rootView: MarkdownText(
+          raw: text, size: 13, bodyColor: .white, showsUnderlineCaret: true
+        )
+        .background(Color.black))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: width, height: 260)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      await nextMainQueueTurn()
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let snapshot = XCTAttachment(
+        image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
+      snapshot.name = "transcript-tail-\(Int(width))"
+      snapshot.lifetime = .keepAlways
+      add(snapshot)
+      var ink: [NSPoint] = []
+      var activity: [NSPoint] = []
+      for y in 0..<bitmap.pixelsHigh {
+        for x in 0..<bitmap.pixelsWide {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+            continue
+          }
+          if color.redComponent > 0.75, color.greenComponent > 0.75,
+            color.blueComponent > 0.75
+          {
+            ink.append(NSPoint(x: CGFloat(x), y: CGFloat(y)))
+          }
+          if color.redComponent > 0.15, color.greenComponent > 0.05,
+            color.greenComponent < color.redComponent * 0.8,
+            color.blueComponent < color.greenComponent * 0.9
+          {
+            activity.append(NSPoint(x: CGFloat(x), y: CGFloat(y)))
+          }
+        }
+      }
+      let scale = CGFloat(bitmap.pixelsWide) / width
+      let lastRow = try XCTUnwrap(ink.map(\.y).max())
+      let tailX = try XCTUnwrap(ink.filter { $0.y >= lastRow - 13 * scale }.map(\.x).max())
+      let activityX = try XCTUnwrap(activity.map(\.x).max())
+      XCTAssertGreaterThanOrEqual(activityX - tailX, -4 * scale)
+      XCTAssertLessThanOrEqual(
+        activityX - tailX, 24 * scale,
+        "Activity belongs after the final spoken word, not beside the whole wrapped paragraph")
+    }
+  }
+
+  func testConversationActivityKeepsUnicodeSelectionAndCopyWhileGrowingAndResizing() async throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
+    let host = NSHostingView(rootView: MarkdownText(raw: "", showsUnderlineCaret: true))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 260)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.orderFrontRegardless()
+    defer { window.close() }
+    func nativeText(in view: NSView) -> LiveTranscriptNativeTextView? {
+      if let text = view as? LiveTranscriptNativeTextView { return text }
+      return view.subviews.lazy.compactMap { nativeText(in: $0) }.first
+    }
+    var heldSelectionLength = 0
+    for text in ["", "Żółw 🐢 é", "Żółw 🐢 é", String(repeating: "Iwo ", count: 80) + "\n"] {
+      host.rootView = MarkdownText(raw: text, showsUnderlineCaret: true)
+      for width in [CGFloat(360), 220, 480] {
+        window.setContentSize(NSSize(width: width, height: 260))
+        host.layoutSubtreeIfNeeded()
+        await nextMainQueueTurn()
+        host.layoutSubtreeIfNeeded()
+        let view = try XCTUnwrap(nativeText(in: host))
+        XCTAssertEqual(Array(view.string.utf8), Array(text.utf8))
+        XCTAssertEqual(
+          view.selectedRange(),
+          NSRange(location: 0, length: min(heldSelectionLength, (text as NSString).length)))
+        let marker = try XCTUnwrap(
+          view.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+        let selected = NSRange(location: 0, length: min(3, (text as NSString).length))
+        view.setSelectedRange(selected)
+        heldSelectionLength = selected.length
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.selectedRange(), selected)
+        let context = "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
+        XCTAssertFalse(marker.isHidden, context)
+        XCTAssertGreaterThanOrEqual(marker.frame.minX, 0)
+        XCTAssertLessThanOrEqual(marker.frame.maxX, view.bounds.maxX + 1)
+        XCTAssertLessThanOrEqual(marker.frame.maxY, view.bounds.maxY + 1, context)
+        if !text.isEmpty {
+          let tail = NSRange(location: (text as NSString).length, length: 0)
+          let caret = view.convert(
+            window.convertFromScreen(view.firstRect(forCharacterRange: tail, actualRange: nil)),
+            from: nil)
+          XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
+          XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5, context)
+          view.setSelectedRange(NSRange(location: 0, length: tail.location))
+          try await settle(view.copySelection())
+          XCTAssertEqual(
+            Array(try XCTUnwrap(board.string(forType: .string)).utf8), Array(text.utf8))
+          view.setSelectedRange(selected)
+        }
+      }
+    }
+  }
+
+  func testReadinessSurvivesEditableCapabilityButNotActualEditing() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    func update(_ text: String) {
+      LiveTranscriptTextView(
+        text: text, isEditable: true, appearance: .dark,
+        showsActivityUnderline: true
+      ).update(fixture.textView, coordinator: fixture.coordinator)
+      fixture.textView.layoutSubtreeIfNeeded()
+    }
+    update("")
+    let marker = try XCTUnwrap(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+    XCTAssertFalse(marker.isHidden)
+    XCTAssertFalse(marker.isAccessibilityElement())
+    XCTAssertNil(marker.hitTest(.zero))
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertEqual(fixture.textView.string, "Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertTrue(marker.superview === fixture.textView)
+    fixture.coordinator.isEditing = true
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertNil(marker.superview)
+    fixture.coordinator.isEditing = false
+    update("Iwo Iwo Iwo Iwo Iwo")
+    XCTAssertNotNil(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+  }
+
+  func testActivityUnderlineExistsOnEmptyCanvasAndRemovesForActualEditingOrHiddenCanvas() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    func update(active: Bool, editing: Bool = false) {
+      LiveTranscriptTextView(
+        text: "", isEditable: editing, appearance: .dark,
+        showsActivityUnderline: active
+      ).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      fixture.textView.layoutSubtreeIfNeeded()
+    }
+    update(active: true)
+    let marker = try XCTUnwrap(
+      fixture.textView.subviews.first {
+        $0 is NSHostingView<TranscriptActivityUnderline>
+      })
+    XCTAssertFalse(marker.isHidden)
+    XCTAssertEqual(marker.frame.width, 10)
+    XCTAssertGreaterThan(marker.frame.minY, fixture.textView.textContainerOrigin.y)
+    XCTAssertNil(marker.hitTest(NSPoint(x: marker.bounds.midX, y: marker.bounds.midY)))
+    XCTAssertFalse(marker.isAccessibilityElement())
+    XCTAssertEqual(fixture.textView.string, "")
+    update(active: true, editing: true)
+    XCTAssertNotNil(marker.superview, "Editable capability alone is not actual editing")
+    fixture.coordinator.isEditing = true
+    update(active: true, editing: true)
+    XCTAssertNil(marker.superview)
+    fixture.coordinator.isEditing = false
+    update(active: true)
+    XCTAssertNotNil(
+      fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+    update(active: false)
+    XCTAssertFalse(
+      fixture.textView.subviews.contains { $0 is NSHostingView<TranscriptActivityUnderline> })
+  }
+
+  func testActivityUnderlineTracksUnicodeAndNewlineTailWithoutChangingSelectionOrCopy() async throws
+  {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
+    for text in [
+      "Iwo Iwo Iwo Iwo Iwo", "Żółw 🐢 é", "One line\n", String(repeating: "word ", count: 80),
+    ] {
+      let fixture = makeScrollFixture()
+      defer {
+        fixture.coordinator.detach()
+        fixture.window.close()
+      }
+      LiveTranscriptTextView(text: text, appearance: .dark, showsActivityUnderline: true).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      await nextMainQueueTurn()
+      fixture.textView.layoutSubtreeIfNeeded()
+      fixture.textView.setSelectedRange(NSRange(location: 0, length: 3))
+      let selected = fixture.textView.selectedRange()
+      let viewport = fixture.scrollView.contentView.bounds.origin
+      let marker = try XCTUnwrap(
+        fixture.textView.subviews.first {
+          $0 is NSHostingView<TranscriptActivityUnderline>
+        })
+      let tail = NSRange(location: (text as NSString).length, length: 0)
+      let caret = fixture.textView.convert(
+        fixture.window.convertFromScreen(
+          fixture.textView.firstRect(
+            forCharacterRange: tail,
+            actualRange: nil)), from: nil)
+      XCTAssertFalse(marker.isHidden, text)
+      XCTAssertEqual(marker.frame.minX, caret.minX + 2, accuracy: 0.5)
+      XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
+      fixture.textView.needsLayout = true
+      fixture.textView.layoutSubtreeIfNeeded()
+      XCTAssertEqual(fixture.textView.selectedRange(), selected)
+      XCTAssertEqual(fixture.scrollView.contentView.bounds.origin, viewport)
+      try await settle(fixture.textView.copySelection())
+      XCTAssertEqual(board.string(forType: .string), (text as NSString).substring(with: selected))
+      XCTAssertEqual(fixture.textView.string, text)
+    }
+  }
+
+  func testReadyMarkerUsesQuietStyleWithTextAndKeepsSelection() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    for text in ["", "Żółw 🐢 é", "Iwo Iwo Iwo Iwo Iwo", ""] {
+      LiveTranscriptTextView(text: text, appearance: .dark, showsActivityUnderline: true).update(
+        fixture.textView, coordinator: fixture.coordinator)
+      let marker = try XCTUnwrap(
+        fixture.textView.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> }
+          as? NSHostingView<TranscriptActivityUnderline>)
+      XCTAssertEqual(marker.rootView.subdued, !text.isEmpty)
+      XCTAssertEqual(fixture.textView.string, text)
+      XCTAssertFalse(marker.isAccessibilityElement())
+      XCTAssertNil(marker.hitTest(.zero))
+    }
+  }
+
+  func testNativeBackdropChangesAppearanceAndHonorsOpaqueAccessibilityModes() async throws {
+    let host = NSHostingView(
+      rootView: OverlayCanvasBackdrop(palette: .dark, reduceTransparency: false))
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 240, height: 160),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func material(in view: NSView) -> NSView? {
+      if #available(macOS 26, *), view is NSGlassEffectView { return view }
+      if view is NSVisualEffectView { return view }
+      for child in view.subviews {
+        if let found = material(in: child) { return found }
+      }
+      return nil
+    }
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let dark = try XCTUnwrap(material(in: host))
+    XCTAssertEqual(dark.appearance?.name, .darkAqua)
+    if #available(macOS 26, *), let glass = dark as? NSGlassEffectView {
+      XCTAssertNil(
+        glass.tintColor,
+        "The sheet colour is a layer above the glass; a tint vanishes in a non-key window")
+    }
+    XCTAssertEqual(
+      OverlayCanvasBackdrop.glassVeil(.dark),
+      OverlayAppearancePalette.dark.desktopBackground.nsColor.withAlphaComponent(0.84))
+    host.rootView = OverlayCanvasBackdrop(palette: .light, reduceTransparency: false)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let light = try XCTUnwrap(material(in: host))
+    XCTAssertTrue(dark === light, "Palette update must preserve native material identity")
+    XCTAssertEqual(light.appearance?.name, .aqua)
+    if #available(macOS 26, *), let glass = light as? NSGlassEffectView {
+      XCTAssertNil(glass.tintColor, "Appearance changes must not tint the shared glass")
+    }
+    XCTAssertEqual(
+      OverlayCanvasBackdrop.glassVeil(.light),
+      OverlayAppearancePalette.light.desktopBackground.nsColor.withAlphaComponent(0.84),
+      "Appearance changes must update the same bounded palette veil")
+    host.rootView = OverlayCanvasBackdrop(
+      palette: .light, reduceTransparency: false, increasedContrast: true)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    XCTAssertNil(material(in: host), "Increased contrast must replace translucent native material")
+    host.rootView = OverlayCanvasBackdrop(palette: .dark, reduceTransparency: true)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    XCTAssertNil(material(in: host), "Reduce Transparency must replace translucent native material")
+  }
+
   func testNativeTranscriptDisablesWritingTools() {
     let textView = LiveTranscriptTextView.makeTextView()
     if #available(macOS 15.0, *) {
@@ -499,15 +804,17 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     )
   }
 
-  func testNativeCopyUsesOnlyTheCurrentSelection() throws {
+  func testNativeCopyUsesOnlyTheCurrentSelection() async throws {
     let pasteboard = NSPasteboard(
       name: NSPasteboard.Name("codescribe.tests.live-transcript.\(UUID().uuidString)")
     )
+    let restoreClipboard = ClipboardCapture.route(into: pasteboard)
+    defer { restoreClipboard() }
 
     let textView = LiveTranscriptTextView.makeTextView()
     textView.string = "alpha beta gamma"
     textView.setSelectedRange(NSRange(location: 6, length: 4))
-    XCTAssertTrue(textView.copySelection(to: pasteboard))
+    try await settle(textView.copySelection())
 
     XCTAssertEqual(pasteboard.string(forType: .string), "beta")
   }

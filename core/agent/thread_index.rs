@@ -21,12 +21,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::conversation_search::{normalize_search_text, query_matches, query_terms};
 use super::thread_store::{Thread, ThreadMessage};
 
 /// On-disk filename for the denormalized thread index under the threads dir.
 const INDEX_FILE_NAME: &str = "index.json";
 /// Schema version for `index.json`. Bump forces rebuild from thread files on load.
-const INDEX_VERSION: u32 = 3;
+/// Version 4 rebuilds `search_text` with Unicode lowercase so accents stay searchable.
+const INDEX_VERSION: u32 = 4;
 
 /// On-disk shape of `index.json`: a schema version plus the summary rows.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,16 +141,16 @@ impl ThreadSummary {
                 + 8,
         );
 
-        out.push_str(&self.title.to_ascii_lowercase());
+        out.push_str(&normalize_search_text(&self.title));
         out.push(' ');
-        out.push_str(&self.mode.to_ascii_lowercase());
+        out.push_str(&normalize_search_text(&self.mode));
         out.push(' ');
         for tag in &self.tags {
-            out.push_str(&tag.to_ascii_lowercase());
+            out.push_str(&normalize_search_text(tag));
             out.push(' ');
         }
         if let Some(summary) = &self.summary {
-            out.push_str(&summary.to_ascii_lowercase());
+            out.push_str(&normalize_search_text(summary));
         }
         Cow::Owned(out)
     }
@@ -287,12 +289,11 @@ impl ThreadIndex {
 
     /// Substring AND-search over each row's haystack, newest-updated first.
     ///
-    /// Every whitespace-separated term must appear somewhere in the row; order
-    /// and word boundaries are not considered. A blank query degenerates to
-    /// [`Self::list`] rather than returning nothing.
+    /// Terms are Unicode-lowercased and split on whitespace. Accents stay in
+    /// the term. Every term must appear somewhere in the row. A blank query
+    /// lists every row.
     pub fn search(&self, query: &str) -> Vec<&ThreadSummary> {
-        let terms = normalize_terms(query);
-        if terms.is_empty() {
+        if query_terms(query).is_empty() {
             return self.list(None);
         }
 
@@ -300,10 +301,7 @@ impl ThreadIndex {
             .data
             .threads
             .iter()
-            .filter(|summary| {
-                let haystack = summary.searchable_text();
-                terms.iter().all(|term| haystack.contains(term))
-            })
+            .filter(|summary| query_matches(summary.searchable_text().as_ref(), query))
             .collect::<Vec<_>>();
         entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         entries
@@ -325,19 +323,6 @@ impl ThreadIndex {
 /// Order rows newest-updated first — the invariant `index.json` is stored in.
 fn sort_by_updated_desc(entries: &mut [ThreadSummary]) {
     entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
-}
-
-/// Split a query into lowercased terms, matching how haystacks are normalized.
-///
-/// ASCII-only case folding, so it is symmetric with [`normalize_snippet`] — both
-/// sides must fold identically or nothing would match.
-fn normalize_terms(query: &str) -> Vec<String> {
-    query
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .filter(|part| !part.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 /// Flatten a thread into one normalized haystack, capped at 16 KiB.
@@ -481,16 +466,12 @@ fn append_search_chunk(out: &mut String, value: &str, max_len: usize) {
     out.push_str(&normalized[..prefix_len]);
 }
 
-/// Collapse whitespace runs to single spaces and lowercase ASCII.
+/// Collapse whitespace runs to single spaces and apply Unicode lowercase.
 ///
-/// Case folding is ASCII-only: non-ASCII letters keep their case, so a query and
-/// a haystack agree only because both sides run through this same reduction.
+/// Accents are preserved. Query terms and stored haystacks both use this
+/// reduction, so `Ł` matches `ł` and does not match a stripped `l`.
 fn normalize_snippet(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
+    normalize_search_text(value)
 }
 
 /// Longest byte prefix of `value` that fits `max_len` and ends on a grapheme
@@ -732,6 +713,31 @@ mod tests {
             .map(|summary| summary.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["t_2026-02-23_bbbbbb", "t_2026-02-22_aaaaaa"]);
+
+        Ok(())
+    }
+
+    /// Unicode lowercase matches accented letters and does not strip them.
+    #[test]
+    fn search_matches_unicode_lowercase_and_keeps_accents() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let mut index = ThreadIndex::load_or_create(tmp.path())?;
+        let thread = sample_thread(
+            "t_2026-10-12_unicode",
+            "ŁÓDŹ clinic",
+            Some("Ąkę review"),
+            "assistive",
+            1,
+        );
+        index.add(&thread)?;
+
+        let matched = index.search("łódź clinic");
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].id, "t_2026-10-12_unicode");
+        assert!(index.search("lodz clinic").is_empty());
+        assert_eq!(index.search("ĄKĘ").len(), 1);
+        assert!(index.data().threads[0].search_text.contains("łódź clinic"));
+        assert!(!index.data().threads[0].search_text.contains("lodz"));
 
         Ok(())
     }

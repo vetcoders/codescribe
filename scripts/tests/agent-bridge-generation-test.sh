@@ -57,6 +57,35 @@ struct Checks {
   static func check() throws {
     let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
     let current = try payload(root, version: "0.9.0", commit: "new-source", commands: true)
+    let sharedHome = root.appendingPathComponent("shared-agents-home")
+    let sharedInstaller = RealAgentBridgeInstaller(
+      resourceRoot: current, homeDirectory: sharedHome, environment: [:])
+    _ = try sharedInstaller.install(selectedClients: [.claudeCode])
+    let copiedSkill = sharedHome.appendingPathComponent(".agents/skills/codescribe")
+    try FileManager.default.createDirectory(
+      at: copiedSkill.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.copyItem(
+      at: sharedHome.appendingPathComponent(".claude/skills/codescribe"), to: copiedSkill)
+    try require(sharedInstaller.status().clientsNeedingRepair.contains(.agents),
+      "copied Claude marker must offer shared-agent repair")
+    _ = try sharedInstaller.installRuntime()
+    let repaired = sharedInstaller.status()
+    try require(Set(repaired.installedClients) == [.claudeCode, .agents],
+      "runtime update must retain Claude and adopt the shared target")
+    try require(!repaired.clientsNeedingRepair.contains(.agents), "shared skill repair incomplete")
+    let sharedMarkerURL = copiedSkill.appendingPathComponent(".codescribe-managed.json")
+    var sharedMarker = try JSONSerialization.jsonObject(with: Data(contentsOf: sharedMarkerURL)) as! [String: Any]
+    try require(sharedMarker["client"] as? String == "agents", "shared marker not rewritten")
+    try require(try Data(contentsOf: copiedSkill.appendingPathComponent("SKILL.md"))
+      == Data(contentsOf: current.appendingPathComponent("skills/codescribe/SKILL.md")),
+      "shared skill payload differs")
+    sharedMarker["agent_bridge_root"] = "/foreign/bridge"
+    try JSONSerialization.data(withJSONObject: sharedMarker).write(to: sharedMarkerURL)
+    do {
+      _ = try sharedInstaller.installRuntime()
+      throw CheckFailure.failed("foreign shared marker was overwritten")
+    } catch is AgentBridgeInstallationError {}
+
     let replacements: [(String?, String?, Bool)] = [
       (nil, nil, false), ("0.8.0", "old-source", true),
       ("0.9.0", "other-source", true),

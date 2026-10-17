@@ -19,12 +19,16 @@ pub mod assets;
 pub mod capabilities;
 /// Serialized Max consultation ownership over the existing Agent session.
 pub mod consultation;
+/// Shared query matching and read-only saved-conversation archive search.
+pub mod conversation_search;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
 /// Tool permission policy — the allow / ask / deny gateway.
 pub mod permissions;
 /// The [`AgentProvider`] trait and its per-request [`StreamOptions`].
 pub mod provider;
+/// The one redaction authority for cards, argument snapshots and tool summaries.
+pub mod redaction;
 /// Tool registry: definitions, execution policy, risk tiers, approval requests.
 pub mod registry;
 /// Durable run-monitor harness for external Vibecrafted runs.
@@ -55,11 +59,17 @@ pub use capabilities::{
     CapabilityStatus, CapabilityTier, ConnectorHealth, capability_matrix,
     resolve as resolve_capability,
 };
+pub use conversation_search::{
+    BusConversationSearch, BusConversationSearchHit, query_matches, search_bus_conversations,
+};
 pub use event::{AgentEvent, AgentUiEvent};
 pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
 pub use provider::{AgentProvider, StreamOptions};
+pub use redaction::{
+    CommandRedactor, contains_sensitive_key, redact_command_line, redacted_arguments,
+};
 pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
     ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
@@ -71,7 +81,8 @@ pub use run_monitor::{
 };
 pub use session::{AgentSession, ImageAttachment, ToolApprovalFuture, ToolApprovalHandler};
 pub use thread_delivery::{
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
+    MAX_CONSULTATION_MODE, ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt,
+    ThreadDeliverySource,
 };
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};

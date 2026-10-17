@@ -95,6 +95,42 @@ struct SettingsChipButton<Label: View>: View {
   }
 }
 
+// MARK: - Refresh button (the one Settings-wide standard)
+
+/// The one refresh control in Settings (Founder brief, round 8, 2026-10-10):
+/// a small secondary chip — refresh glyph, short "Refresh" label — with the
+/// same font, padding, colours and states everywhere. `busy` swaps the glyph
+/// for a spinner and disables the chip; a section with its own progress line
+/// passes `enabled` instead. The accessibility label says what exactly is
+/// refreshed, because the visible label deliberately does not.
+struct SettingsRefreshButton: View {
+  var title: LocalizedStringKey = "Refresh"
+  var busy = false
+  var enabled = true
+  /// `LocalizedStringKey`, not `String`: these reach VoiceOver and must keep
+  /// their catalog entries.
+  let axLabel: LocalizedStringKey
+  var axHint: LocalizedStringKey?
+  let action: () -> Void
+
+  var body: some View {
+    SettingsChipButton(enabled: enabled && !busy, action: action) {
+      HStack(spacing: 5) {
+        if busy {
+          ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 12, height: 12)
+        } else {
+          CSIconView(icon: .refresh, size: 10, weight: .semibold)
+        }
+        Text(title).font(CSFont.ui(11.5, .semibold))
+      }
+      .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
+      .frame(height: 14)
+    }
+    .accessibilityLabel(Text(axLabel))
+    .accessibilityHint(axHint.map { Text($0) } ?? Text(verbatim: ""))
+  }
+}
+
 extension SettingsChipButton where Label == Text {
   /// Text-only chip.
   init(
@@ -206,6 +242,11 @@ struct SettingsDetailRow: View {
 
 // MARK: - Key row (secret, write-only)
 
+enum KeyRowPresentation {
+  case standard
+  case customProvider(endpoint: String)
+}
+
 /// One Keychain account on one line: presence dot, label, state (`Set` /
 /// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
 /// paste-to-replace secure field, Save, Test, Clear. The account name is not
@@ -216,6 +257,13 @@ struct KeyRow: View {
   let label: String
   let isSet: Bool
   var optional: Bool = false
+  /// Inside a provider or lane card the row drops its own tinted card — the
+  /// presence dot and state text carry the colour — so the host card stays one
+  /// card, not a card in a card (Founder brief, round 7, 2026-10-10).
+  var embedded: Bool = false
+  /// Custom providers place their visible endpoint beside this row's existing
+  /// presence summary. The editor and all mutations remain owned here.
+  var presentation: KeyRowPresentation = .standard
   let probeResult: CsApiKeyProbeResult?
   let probePending: Bool
   var mutationPending = false
@@ -235,97 +283,202 @@ struct KeyRow: View {
     isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
   }
 
+  init(
+    account: String, label: String, isSet: Bool, optional: Bool = false,
+    embedded: Bool = false, presentation: KeyRowPresentation = .standard,
+    probeResult: CsApiKeyProbeResult?, probePending: Bool,
+    mutationPending: Bool = false, initiallyEditing: Bool = false,
+    onSave: @escaping (String) async throws -> Void,
+    onClear: @escaping () async throws -> Void, onTest: @escaping () -> Void
+  ) {
+    self.account = account
+    self.label = label
+    self.isSet = isSet
+    self.optional = optional
+    self.embedded = embedded
+    self.presentation = presentation
+    self.probeResult = probeResult
+    self.probePending = probePending
+    self.mutationPending = mutationPending
+    self.onSave = onSave
+    self.onClear = onClear
+    self.onTest = onTest
+    _editing = State(initialValue: initiallyEditing)
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text(label)
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(Color.primary)
-        Spacer(minLength: 0)
-        if let probeResult {
-          KeyProbeChip(result: probeResult)
-        }
-        Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : accent)
-        SettingsChipButton(
-          isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
-        ) {
-          editing.toggle()
-          isFocused = editing
-        }
-        .accessibilityIdentifier("key-row-edit")
-      }
-
-      if editing {
-        HStack(spacing: 8) {
-          SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
-            .settingsInputChrome(isFocused: isFocused)
-            .focused($isFocused)
-            .onSubmit(save)
-            .accessibilityLabel("\(label) secret")
-
-          SettingsSaveButton(
-            enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            action: save
-          )
-          .accessibilityLabel("Save \(label)")
-
-          SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
-            Group {
-              if probePending {
-                ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
-              } else {
-                Text("Test", comment: "Button label: run a connection test")
-                  .font(CSFont.ui(12, .semibold))
-              }
-            }
-            .frame(width: 26, height: 18)
-            .foregroundStyle(Color.secondary)
-          }
-          .help(isSet ? "Test this key" : "Save a key first to test it")
-          .accessibilityLabel("Test \(label)")
-
-          SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
-            CSIconView(
-              icon: .delete, size: 12, weight: .semibold,
-              color: isSet ? CSColor.terracotta : Color.secondary
-            )
-            .frame(width: 10, height: 18)
-          }
-          .help("Remove this key from the Keychain")
-          .accessibilityLabel("Clear \(label)")
-        }
-      }
-      if operationPending {
-        HStack {
-          ProgressView().controlSize(.small)
-          Text("Updating provider access…").font(CSFont.ui(11.5))
-        }
-      }
-      if let operationError {
-        Text(operationError)
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.danger)
-          .textSelection(.enabled)
+    Group {
+      switch presentation {
+      case .standard:
+        standardContent
+      case .customProvider(let endpoint):
+        customProviderContent(endpoint: endpoint)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional) when not.
-    .padding(.horizontal, 15)
-    .padding(.vertical, 13)
+    // Presence-tinted card: green when set, red (required) / grey (optional)
+    // when not. Embedded rows keep the tint on the dot and state text only.
+    .padding(.horizontal, embedded ? 0 : 15)
+    .padding(.vertical, embedded ? 2 : 13)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(accent.opacity(0.06))
+        .fill(accent.opacity(embedded ? 0 : 0.06))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(accent.opacity(0.18), lineWidth: 1)
+        .strokeBorder(accent.opacity(embedded ? 0 : 0.18), lineWidth: 1)
     )
   }
 
+  private var standardContent: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      standardSummary
+
+      editingAndStatus
+    }
+  }
+
+  private func customProviderContent(endpoint: String) -> some View {
+    VStack(alignment: .leading, spacing: 9) {
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .center, spacing: 12) {
+          customProviderEndpoint(endpoint)
+            .frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
+          compactSummary
+            .fixedSize(horizontal: true, vertical: false)
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+          customProviderEndpoint(endpoint)
+          compactSummary
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+      }
+
+      editingAndStatus
+    }
+  }
+
+  private var standardSummary: some View {
+    HStack(spacing: 10) {
+      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      Text(label)
+        .font(CSFont.ui(13.5, .semibold))
+        .foregroundStyle(Color.primary)
+      Spacer(minLength: 0)
+      if let probeResult {
+        KeyProbeChip(result: probeResult)
+      }
+      presenceState
+      editButton
+    }
+  }
+
+  private var compactSummary: some View {
+    HStack(spacing: 8) {
+      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      Text(label)
+        .font(CSFont.ui(11.5, .semibold))
+        .foregroundStyle(Color.primary)
+      if let probeResult {
+        KeyProbeChip(result: probeResult)
+      }
+      presenceState
+      editButton
+    }
+  }
+
+  private var presenceState: some View {
+    Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
+      .font(CSFont.mono(10, .semibold))
+      .foregroundStyle(isSet ? CSColor.oliveLight : accent)
+  }
+
+  private var editButton: some View {
+    SettingsChipButton(
+      isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
+    ) {
+      editing.toggle()
+      isFocused = editing
+    }
+    .accessibilityIdentifier("key-row-edit")
+  }
+
+  private func customProviderEndpoint(_ endpoint: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text("API address")
+        .font(CSFont.ui(11, .medium))
+        .foregroundStyle(Color.secondary)
+      Text(verbatim: endpoint)
+        .font(CSFont.mono(11, .medium))
+        .foregroundStyle(Color.primary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .layoutPriority(1)
+  }
+
+  @ViewBuilder private var editingAndStatus: some View {
+    if editing {
+      HStack(spacing: 8) {
+        SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
+          .settingsInputChrome(isFocused: isFocused)
+          .focused($isFocused)
+          .onSubmit(save)
+          .accessibilityLabel("\(label) secret")
+
+        SettingsSaveButton(
+          enabled: !isUpdating && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          action: save
+        )
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel("Save \(label)")
+
+        SettingsChipButton(enabled: isSet && !probePending && !isUpdating, action: onTest) {
+          Group {
+            if probePending {
+              ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
+            } else {
+              Text("Test", comment: "Button label: run a connection test")
+                .font(CSFont.ui(12, .semibold))
+            }
+          }
+          .frame(minWidth: 26, minHeight: 18)
+          .fixedSize(horizontal: true, vertical: false)
+          .foregroundStyle(Color.secondary)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .help(isSet ? "Test this key" : "Save a key first to test it")
+        .accessibilityLabel("Test \(label)")
+
+        SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
+          CSIconView(
+            icon: .delete, size: 12, weight: .semibold,
+            color: isSet ? CSColor.terracotta : Color.secondary
+          )
+          .frame(width: 10, height: 18)
+        }
+        .help("Remove this key from the Keychain")
+        .accessibilityLabel("Clear \(label)")
+      }
+    }
+    if operationPending {
+      HStack {
+        ProgressView().controlSize(.small)
+        Text("Updating provider access…").font(CSFont.ui(11.5))
+      }
+    }
+    if let operationError {
+      Text(operationError)
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(CSColor.danger)
+        .textSelection(.enabled)
+    }
+  }
+
   private func save() {
-    guard !isUpdating, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    guard !isUpdating, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return
+    }
     let submitted = draft
     operationPending = true
     operationError = nil
@@ -356,13 +509,17 @@ struct KeyRow: View {
 extension KeyRow {
   /// Row wired to the view-model's save / clear / test for one account.
   init(
-    model: SettingsViewModel, account: String, label: String, isSet: Bool, optional: Bool = false
+    model: SettingsViewModel, account: String, label: String, isSet: Bool,
+    optional: Bool = false, embedded: Bool = false,
+    presentation: KeyRowPresentation = .standard, initiallyEditing: Bool = false
   ) {
     self.init(
-      account: account, label: label, isSet: isSet, optional: optional,
+      account: account, label: label, isSet: isSet, optional: optional, embedded: embedded,
+      presentation: presentation,
       probeResult: model.keyProbeResults[account],
       probePending: model.keyProbePending.contains(account),
       mutationPending: model.providerMutationPending,
+      initiallyEditing: initiallyEditing,
       onSave: { try await model.saveKey(account: account, secret: $0) },
       onClear: { try await model.clearKey(account: account) },
       onTest: { model.testKey(account: account) })
@@ -549,4 +706,93 @@ struct OAuthClientIdButton: View {
         draft = updated ?? ""
       }
   }
+}
+
+/// Absorbs a slider gesture so the persisted binding is written once, at the
+/// end of the drag, instead of on every tick. Writes that arrive outside an
+/// editing envelope (keyboard, accessibility) pass through unchanged.
+struct SliderCommitGate {
+  private(set) var draft: Double?
+  private(set) var isEditing = false
+
+  /// The value the control and its label should show right now.
+  func displayed(persisted: Double) -> Double { draft ?? persisted }
+
+  /// A new control value: held as draft while a gesture is in flight,
+  /// returned for immediate persistence otherwise.
+  mutating func valueChanged(_ newValue: Double) -> Double? {
+    guard isEditing else { return newValue }
+    draft = newValue
+    return nil
+  }
+
+  /// The gesture envelope: returns the one value to persist when it closes.
+  mutating func editingChanged(_ editing: Bool) -> Double? {
+    isEditing = editing
+    guard !editing, let committed = draft else { return nil }
+    draft = nil
+    return committed
+  }
+}
+
+/// One labelled seconds slider: title, the one line that says what it changes,
+/// and the live value. Shared by Agent voice timing and Lab recognition parameters.
+/// A drag holds its ticks in `SliderCommitGate` and persists once on release —
+/// every tick used to write settings.json and rebuild the Whisper catalog on
+/// the main thread through each live SettingsViewModel.
+struct SettingsSecondsSlider: View {
+  let title: String
+  let detail: String
+  /// The persisted value, so the label shows what the core accepted.
+  let seconds: Float
+  @Binding var value: Double
+  let range: ClosedRange<Double>
+  let step: Double
+  @State private var gate = SliderCommitGate()
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(CSFont.ui(13, .semibold))
+            .foregroundStyle(Color.primary)
+          Text(detail)
+            .font(CSFont.ui(11.5))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(valueLabel)
+          .font(CSFont.mono(11, .semibold))
+          .foregroundStyle(Color.primary)
+      }
+      Slider(
+        value: Binding(
+          get: { gate.displayed(persisted: value) },
+          set: { newValue in
+            if let direct = gate.valueChanged(newValue) { value = direct }
+          }
+        ),
+        in: range, step: step,
+        onEditingChanged: { editing in
+          if let committed = gate.editingChanged(editing) { value = committed }
+        }
+      )
+      .tint(CSColor.chromeAccent)
+      .accessibilityLabel(title)
+      .accessibilityValue(valueLabel)
+    }
+  }
+
+  /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
+  /// Mid-drag the label follows the draft, not the persisted value.
+  private var valueLabel: String {
+    String(
+      localized: "\(Float(gate.displayed(persisted: Double(seconds))), format: Self.seconds) s",
+      comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
+  }
+
+  private static let seconds = FloatingPointFormatStyle<Float>.number
+    .precision(.fractionLength(0...1))
 }

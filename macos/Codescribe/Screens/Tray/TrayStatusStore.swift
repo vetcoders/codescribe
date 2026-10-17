@@ -12,6 +12,8 @@ enum TrayStatusDotIcon {
   static let dotFraction: CGFloat = 0.42
   /// Punched-out separation ring around the dot, in points.
   static let ringWidth: CGFloat = 1.5
+  /// Colored rim drawn inside the dot's edge, in points.
+  static let rimWidth: CGFloat = 1.25
 
   /// The dot's frame: flush with the glyph's bottom-right corner.
   static func dotRect(in bounds: CGRect) -> CGRect {
@@ -27,6 +29,7 @@ enum TrayStatusDotIcon {
   static func composite(
     base: NSImage,
     dot: NSColor,
+    rim: NSColor? = nil,
     glyphTint: NSColor? = nil
   ) -> NSImage {
     let image = NSImage(size: base.size, flipped: false) { rect in
@@ -45,10 +48,30 @@ enum TrayStatusDotIcon {
       }
       dot.setFill()
       NSBezierPath(ovalIn: dotRect).fill()
+      if let rim {
+        rim.setStroke()
+        let edge = NSBezierPath(ovalIn: dotRect.insetBy(dx: rimWidth / 2, dy: rimWidth / 2))
+        edge.lineWidth = rimWidth
+        edge.stroke()
+      }
       return true
     }
     image.isTemplate = false
     return image
+  }
+}
+
+/// Menu-bar image for one tray status. Idle and settled states stay the brand
+/// mark and its indicator as a real template image. Live activity colors the
+/// indicator while the mark continues to follow the menu bar appearance.
+enum MenuBarStatusImage {
+  static func make(base: NSImage, dot: NSColor?, rim: NSColor? = nil) -> NSImage {
+    guard let dot else {
+      let image = TrayStatusDotIcon.composite(base: base, dot: .black, glyphTint: .black)
+      image.isTemplate = true
+      return image
+    }
+    return TrayStatusDotIcon.composite(base: base, dot: dot, rim: rim, glyphTint: .labelColor)
   }
 }
 
@@ -219,42 +242,67 @@ final class TrayStatusStore: ObservableObject {
     }
   }
 
-  /// Colored status dot composited into the (always-static) menu bar glyph's
-  /// bottom-right corner. The glyph never changes; only this dot signals the
-  /// mode, 1:1 with the Rust tray-status feed: green = ready (idle/success,
-  /// the locked palette's ready tone), red = recording, orange = processing,
-  /// purple = assistive — recording/processing/assistive hues mirror the
-  /// caret hold-badge (`app/os/hold_badge.rs`) so the tray and the cursor
-  /// speak one language. Processing is always orange, including agent
-  /// sessions. `nil` = no dot
-  /// (starting — the app is not ready yet). Warning states (error / thermal /
-  /// hotkey conflict) fall back to a system red / yellow attention dot — the
-  /// tooltip and menu status row carry the specifics.
+  /// Nil means a monochrome template indicator, never an absent indicator.
+  /// Recording keeps its red and processing stays orange. The Agent dot follows
+  /// the voice like the pointer dot: purple while speaking, white between
+  /// phrases, pulsing purple while words are owed (Maciej, 2026-10-14; on
+  /// 2026-10-17 the owed-words amber went, because orange means processing).
+  /// Other status details live in the tooltip and menu row.
   var menuBarDotColor: Color? {
     switch status.kind {
-    case .starting:
+    case .starting, .idle, .success, .error, .thermal, .hotkeyConflict:
       return nil
-    case .idle, .success:
-      return CSColor.modeReady
     case .listening:
-      return status.indicatorMode == .assistive
-        ? CSColor.modeAgent
-        : CSColor.indicatorRecording
+      guard status.indicatorMode == .assistive else { return CSColor.indicatorRecording }
+      switch status.voice {
+      case .quiet: return CSColor.indicatorAgentQuiet
+      case .speaking, .unobserved, .lagging: return CSColor.modeAgent
+      }
     case .processing:
       return CSColor.modeProcessing
-    case .error:
-      return .red
-    case .thermal, .hotkeyConflict:
-      return .yellow
     }
   }
 
+  /// A white dot vanishes on a light menu bar; the quiet Agent dot keeps a purple rim.
+  var menuBarDotRim: Color? {
+    isAgentListening && status.voice == .quiet ? CSColor.modeAgent : nil
+  }
+
+  /// Owed Agent words pulse the glyph's dot, as they pulse the pointer dot.
+  var menuBarDotPulses: Bool {
+    isAgentListening && status.voice == .lagging
+  }
+
+  private var isAgentListening: Bool {
+    status.kind == .listening && status.indicatorMode == .assistive
+  }
+
   #if DEBUG
+    func testingApply(
+      kind: CsTrayStatusKind,
+      tone: CsTrayStatusTone,
+      indicatorMode: CsIndicatorMode = .hold,
+      assistive: Bool = false,
+      voice: CsCursorVoice = .unobserved,
+      generation: UInt64
+    ) {
+      apply(
+        CsTrayStatusPayload(
+          kind: kind,
+          tone: tone,
+          indicatorMode: indicatorMode,
+          assistive: assistive,
+          voice: voice,
+          generation: generation
+        ))
+    }
+
     static func preview(
       kind: CsTrayStatusKind = .idle,
       tone: CsTrayStatusTone = .neutral,
       indicatorMode: CsIndicatorMode = .hold,
-      assistive: Bool = false
+      assistive: Bool = false,
+      voice: CsCursorVoice = .unobserved
     ) -> TrayStatusStore {
       TrayStatusStore(
         status: CsTrayStatusPayload(
@@ -262,6 +310,7 @@ final class TrayStatusStore: ObservableObject {
           tone: tone,
           indicatorMode: indicatorMode,
           assistive: assistive,
+          voice: voice,
           generation: 0
         ))
     }

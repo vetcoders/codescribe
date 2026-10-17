@@ -21,6 +21,26 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(preferenceChanges, 0)
   }
 
+  /// Maciej, 2026-10-14: after a start from the tray the panel stayed open over
+  /// the overlay it had just raised.
+  func testTrayStartAndStopCloseThePanelThatWouldCoverTheOverlay() async {
+    let engine = MockTrayEngine()
+    let model = TrayViewModel(engine: engine)
+    var events: [String] = []
+    model.onDictationStartRequested = { events.append("overlay") }
+    model.onIntent = { intent in
+      guard case .closeTray = intent else { return events.append("other") }
+      events.append("close")
+    }
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close"], "the overlay rises before the tray steps aside")
+    for _ in 0..<100 where model.isStartingDictation { await Task.yield() }
+    XCTAssertFalse(model.isStartingDictation)
+    XCTAssertTrue(engine.recording)
+    model.toggleDictationFromTray()
+    XCTAssertEqual(events, ["overlay", "close", "close"], "a stop uncovers it too")
+  }
+
   func testHoldBadgeCyclePersistsAndUpdatesTrayState() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
@@ -196,30 +216,63 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertGreaterThan(sampled.alphaComponent, 0.95)
   }
 
-  func testTrayStatusFeedMapsReadyRecordingProcessingAndAgentColorsOneToOne() throws {
-    let cases: [(TrayStatusStore, UInt32, UInt32)] = [
-      (.preview(kind: .idle, tone: .neutral), 0x55663A, 0x9DB178),
-      (.preview(kind: .listening, tone: .active), 0xFF3B30, 0xFF3B30),
-      (.preview(kind: .processing, tone: .active), 0xB96A24, 0xF28C45),
-      (
-        .preview(kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true),
-        0x9B72F2, 0x9B72F2
-      ),
-      (
-        .preview(kind: .processing, tone: .active, indicatorMode: .processing, assistive: false),
-        0xB96A24, 0xF28C45
-      ),
-    ]
-    for (store, light, dark) in cases {
-      for (name, expected) in [(NSAppearance.Name.aqua, light), (.darkAqua, dark)] {
-        let appearance = try XCTUnwrap(NSAppearance(named: name))
-        var resolved: NSColor?
-        appearance.performAsCurrentDrawingAppearance {
-          resolved = store.menuBarDotColor.map { NSColor($0).usingColorSpace(.sRGB) } ?? nil
-        }
-        assertColor(try XCTUnwrap(resolved), equals: NSColor(hex: expected))
-      }
+  func testIdleMenuBarKeepsItsMonochromeCornerIndicator() throws {
+    let image = MenuBarStatusImage.make(base: menuBarMark(), dot: nil)
+    XCTAssertTrue(image.isTemplate)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+      let bitmap = try menuBarBitmap(menuBarArtwork(image), appearance: appearance)
+      let rect = TrayStatusDotIcon.dotRect(in: NSRect(origin: .zero, size: image.size))
+      let center = try menuBarColor(bitmap, image: image, at: CGPoint(x: rect.midX, y: rect.midY))
+      XCTAssertGreaterThan(center.alphaComponent, 0.9, "Idle indicator must stay visible")
+      XCTAssertEqual(center.redComponent, center.greenComponent, accuracy: 0.01)
+      XCTAssertEqual(center.greenComponent, center.blueComponent, accuracy: 0.01)
     }
+  }
+
+  func testMenuBarIdleAndSuccessStayTemplateWhileActivityKeepsADot() throws {
+    for kind in [
+      CsTrayStatusKind.starting, .idle, .success, .error, .thermal, .hotkeyConflict,
+    ] {
+      let store = TrayStatusStore.preview(kind: kind, tone: kind == .error ? .critical : .neutral)
+      XCTAssertNil(store.menuBarDotColor, "\(kind) should not decorate the menu bar")
+      let image = MenuBarStatusImage.make(base: menuBarMark(), dot: nil)
+      XCTAssertTrue(image.isTemplate)
+      let bitmap = try menuBarBitmap(menuBarArtwork(image), appearance: .aqua)
+      XCTAssertGreaterThan(menuBarMaxAlpha(bitmap), 0.5, "\(kind) mark has no ink")
+      XCTAssertFalse(
+        menuBarHasSaturatedPixel(bitmap), "\(kind) template mark carries a colored dot")
+    }
+
+    let plain = TrayStatusStore.preview(kind: .listening, tone: .active)
+    let assistive = TrayStatusStore.preview(
+      kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true)
+    XCTAssertNotEqual(plain.menuBarDotColor, assistive.menuBarDotColor)
+    XCTAssertEqual(assistive.menuBarDotColor, CSColor.modeAgent)
+    try assertActivityDot(plain, red: true)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+      let agent = try menuBarDotSample(assistive, appearance: appearance)
+      XCTAssertGreaterThan(agent.alphaComponent, 0.9)
+      XCTAssertGreaterThan(agent.blueComponent, agent.greenComponent)
+    }
+
+    let processing = TrayStatusStore.preview(kind: .processing, tone: .active)
+    try assertActivityDot(processing, red: false)
+    let light = try menuBarDotSample(processing, appearance: .aqua)
+    let dark = try menuBarDotSample(processing, appearance: .darkAqua)
+    XCTAssertGreaterThan(
+      abs(light.redComponent - dark.redComponent)
+        + abs(light.greenComponent - dark.greenComponent),
+      0.08,
+      "processing dot should follow the appearance")
+
+    let returning = TrayStatusStore.preview(kind: .listening, tone: .active)
+    XCTAssertNotNil(returning.menuBarDotColor)
+    returning.testingApply(kind: .idle, tone: .neutral, generation: 1)
+    XCTAssertNil(returning.menuBarDotColor)
+    let settled = MenuBarStatusImage.make(base: menuBarMark(), dot: nil)
+    XCTAssertTrue(settled.isTemplate)
+    XCTAssertFalse(
+      menuBarHasSaturatedPixel(try menuBarBitmap(menuBarArtwork(settled), appearance: .darkAqua)))
   }
 
   /// The header pill already paints idle / success / listening / processing.
@@ -417,6 +470,167 @@ final class TrayViewModelTests: XCTestCase {
       FormattingPolicyOption.allCases.map(\.visibleName),
       ["Off", "Correction", "Smart", "Max"]
     )
+  }
+
+  /// Maciej, 2026-10-14: the Agent glyph dot follows the voice like the pointer
+  /// dot. Purple while speaking, white with a purple rim between phrases,
+  /// pulsing amber while words are owed. Dictation keeps its red.
+  func testAgentGlyphDotFollowsTheVoice() throws {
+    let agent = { (voice: CsCursorVoice) in
+      TrayStatusStore.preview(
+        kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true, voice: voice)
+    }
+    XCTAssertEqual(agent(.speaking).menuBarDotColor, CSColor.modeAgent)
+    XCTAssertEqual(agent(.unobserved).menuBarDotColor, CSColor.modeAgent)
+    XCTAssertNil(agent(.speaking).menuBarDotRim)
+    XCTAssertFalse(agent(.speaking).menuBarDotPulses)
+    XCTAssertEqual(agent(.quiet).menuBarDotColor, CSColor.indicatorAgentQuiet)
+    XCTAssertEqual(agent(.quiet).menuBarDotRim, CSColor.modeAgent)
+    XCTAssertFalse(agent(.quiet).menuBarDotPulses)
+    XCTAssertEqual(agent(.lagging).menuBarDotColor, CSColor.modeAgent, "orange means processing")
+    XCTAssertTrue(agent(.lagging).menuBarDotPulses)
+
+    let dictation = TrayStatusStore.preview(kind: .listening, tone: .active, voice: .lagging)
+    XCTAssertEqual(dictation.menuBarDotColor, CSColor.indicatorRecording)
+    XCTAssertNil(dictation.menuBarDotRim)
+    XCTAssertFalse(dictation.menuBarDotPulses)
+    let thinking = TrayStatusStore.preview(
+      kind: .processing, tone: .active, indicatorMode: .processing, voice: .lagging)
+    XCTAssertFalse(thinking.menuBarDotPulses)
+
+    // The white dot keeps a purple rim, so it stays visible on a light menu bar.
+    let quiet = TrayStatusDotIcon.composite(
+      base: menuBarMark(), dot: CSPalette.indicatorAgentQuiet, rim: CSPalette.assistive)
+    let canvas = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: 72, pixelsHigh: 72, bitsPerSample: 8,
+        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0))
+    canvas.size = quiet.size
+    NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+      NSGraphicsContext.saveGraphicsState()
+      NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: canvas)
+      quiet.draw(in: NSRect(origin: .zero, size: quiet.size))
+      NSGraphicsContext.restoreGraphicsState()
+    }
+    let dot = TrayStatusDotIcon.dotRect(in: NSRect(origin: .zero, size: quiet.size))
+    let center = try menuBarColor(canvas, image: quiet, at: CGPoint(x: dot.midX, y: dot.midY))
+    let rim = try menuBarColor(
+      canvas, image: quiet,
+      at: CGPoint(x: dot.minX + TrayStatusDotIcon.rimWidth / 2, y: dot.midY))
+    XCTAssertGreaterThan(center.greenComponent, 0.85, "the quiet dot is white")
+    XCTAssertGreaterThan(rim.alphaComponent, 0.9)
+    XCTAssertGreaterThan(rim.blueComponent, rim.greenComponent + 0.2, "the rim is purple")
+  }
+
+  private func menuBarArtwork(_ image: NSImage) -> NSImage {
+    let copy = (image.copy() as? NSImage) ?? image
+    copy.isTemplate = false
+    return copy
+  }
+
+  private func menuBarMark() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+      NSColor.black.setFill()
+      NSBezierPath(ovalIn: rect.insetBy(dx: 4, dy: 4)).fill()
+      return true
+    }
+    image.isTemplate = true
+    return image
+  }
+
+  private func assertActivityDot(_ store: TrayStatusStore, red: Bool) throws {
+    let aqua = try menuBarRendered(store, appearance: .aqua)
+    let dark = try menuBarRendered(store, appearance: .darkAqua)
+    XCTAssertFalse(aqua.image.isTemplate)
+    XCTAssertFalse(dark.image.isTemplate)
+    let aquaDot = try menuBarColor(aqua.bitmap, image: aqua.image, at: aqua.dot)
+    let darkDot = try menuBarColor(dark.bitmap, image: dark.image, at: dark.dot)
+    if red {
+      XCTAssertGreaterThan(aquaDot.redComponent, 0.85)
+      XCTAssertLessThan(aquaDot.blueComponent, 0.35)
+      XCTAssertGreaterThan(darkDot.redComponent, aquaDot.blueComponent)
+    } else {
+      XCTAssertGreaterThan(max(aquaDot.redComponent, aquaDot.greenComponent), 0.45)
+      XCTAssertLessThan(aquaDot.blueComponent, 0.4)
+    }
+    let aquaMark = try menuBarColor(aqua.bitmap, image: aqua.image, at: aqua.mark)
+    let darkMark = try menuBarColor(dark.bitmap, image: dark.image, at: dark.mark)
+    XCTAssertGreaterThan(
+      abs(menuBarLuma(darkMark) - menuBarLuma(aquaMark)), 0.35,
+      "activity glyph should follow the menu bar appearance, not a fixed white")
+    XCTAssertGreaterThan(aquaDot.alphaComponent, 0.9)
+  }
+
+  private func menuBarDotSample(
+    _ store: TrayStatusStore, appearance: NSAppearance.Name
+  ) throws -> NSColor {
+    let rendered = try menuBarRendered(store, appearance: appearance)
+    return try menuBarColor(rendered.bitmap, image: rendered.image, at: rendered.dot)
+  }
+
+  private func menuBarRendered(
+    _ store: TrayStatusStore, appearance: NSAppearance.Name
+  ) throws -> (image: NSImage, bitmap: NSBitmapImageRep, dot: CGPoint, mark: CGPoint) {
+    let dot = try XCTUnwrap(store.menuBarDotColor)
+    var color: NSColor?
+    NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+      color = NSColor(dot)
+    }
+    let image = MenuBarStatusImage.make(base: menuBarMark(), dot: try XCTUnwrap(color))
+    let bitmap = try menuBarBitmap(image, appearance: appearance)
+    let dotRect = TrayStatusDotIcon.dotRect(in: NSRect(origin: .zero, size: image.size))
+    return (
+      image, bitmap,
+      CGPoint(x: dotRect.midX, y: dotRect.midY),
+      CGPoint(x: image.size.width / 2, y: image.size.height / 2)
+    )
+  }
+
+  private func menuBarBitmap(_ image: NSImage, appearance: NSAppearance.Name) throws
+    -> NSBitmapImageRep
+  {
+    var data: Data?
+    NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+      data = image.tiffRepresentation
+    }
+    return try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(data)))
+  }
+
+  private func menuBarColor(
+    _ bitmap: NSBitmapImageRep, image: NSImage, at point: CGPoint
+  ) throws -> NSColor {
+    let column = Int((point.x / image.size.width) * CGFloat(bitmap.pixelsWide - 1))
+    let row = Int((1 - point.y / image.size.height) * CGFloat(bitmap.pixelsHigh - 1))
+    return try XCTUnwrap(bitmap.colorAt(x: column, y: row)?.usingColorSpace(.sRGB))
+  }
+
+  private func menuBarMaxAlpha(_ bitmap: NSBitmapImageRep) -> CGFloat {
+    var maxAlpha: CGFloat = 0
+    for y in 0..<bitmap.pixelsHigh {
+      for x in 0..<bitmap.pixelsWide {
+        maxAlpha = max(maxAlpha, bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0)
+      }
+    }
+    return maxAlpha
+  }
+
+  private func menuBarHasSaturatedPixel(_ bitmap: NSBitmapImageRep) -> Bool {
+    for y in 0..<bitmap.pixelsHigh {
+      for x in 0..<bitmap.pixelsWide {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+          color.alphaComponent > 0.4
+        else { continue }
+        let peak = max(color.redComponent, color.greenComponent, color.blueComponent)
+        let floor = min(color.redComponent, color.greenComponent, color.blueComponent)
+        if peak > 0.2, (peak - floor) / peak > 0.35 { return true }
+      }
+    }
+    return false
+  }
+
+  private func menuBarLuma(_ color: NSColor) -> CGFloat {
+    0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
   }
 
   private func assertColor(

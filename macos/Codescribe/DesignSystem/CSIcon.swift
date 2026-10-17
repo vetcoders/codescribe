@@ -57,6 +57,7 @@ enum CSIcon: CaseIterable {
   case tip
   case caution
   case diagnostics
+  case voiceLab
   case accountVerified
 
   // Affordances / selection
@@ -106,6 +107,7 @@ enum CSIcon: CaseIterable {
     case .tip: "lightbulb"
     case .caution: "exclamationmark.octagon"
     case .diagnostics: "stethoscope"
+    case .voiceLab: "waveform.path"
     case .accountVerified: "person.crop.circle.badge.checkmark"
     case .chevronRight: "chevron.right"
     case .chevronDown: "chevron.down"

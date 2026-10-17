@@ -219,6 +219,12 @@
               "kind": "function",
               "symbol": "pump_capture_windows",
               "count": 1
+            },
+            {
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "kind": "function",
+              "symbol": "schedule_bounded_word_trial",
+              "count": 1
             }
           ]
         },
@@ -730,10 +736,21 @@
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [
                 "let next_capture_epoch = self.capture_epoch.checked_add(1)",
-                "self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx)",
                 "self.recorder.start().await",
-                "self.capture_epoch = next_capture_epoch",
                 "let actual_sample_rate = self.recorder.actual_sample_rate()",
+                "match TakeArchive::spawn(actual_sample_rate, Arc::clone(&self.captured_samples))",
+                "let archive_feed = archive.feed()?",
+                "let take_subscriber = CaptureSubscriberId(self.next_capture_subscriber)",
+                ".push((take_subscriber, CaptureSubscriberKind::Take))",
+                ".push(PcmFeed {",
+                "id: take_subscriber",
+                "kind: CaptureSubscriberKind::Take",
+                "sender: tx",
+                "archive: Some(archive_feed)",
+                "self.take_subscriber = Some(take_subscriber)",
+                "self.take_archive = Some(archive)",
+                "self.capture_epoch = next_capture_epoch",
+                "event_sink.on_capture_opened(&session_id, next_capture_epoch)",
                 "let capture_device_name = self.recorder.last_input_device().map(str::to_owned)",
                 "transcription_session(",
                 "session_id",
@@ -785,10 +802,10 @@
                 "debug_assert_eq!(settings_digest, runtime_settings.digest().as_str())",
                 "runtime_settings.energy_calibration_for_capture(device, sample_rate)",
                 "SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch)",
-                "samples_seen += samples.len() as u64",
-                "state.audio.push(&samples)",
+                "samples_seen += raw_samples.len() as u64",
+                "state.audio.push(raw_samples)",
                 "state.pump_capture_windows(&ev_tx);",
-                "fusion.ingest(&samples, samples_seen)",
+                "fusion.ingest(raw_samples, samples, samples_seen)",
                 "emit_stream_events(events, &ev_tx, &mut state, audio_secs)",
                 "state.capture_stopping = true;",
                 "state.pump_capture_windows(&ev_tx);",
@@ -871,7 +888,7 @@
               "required_code": [
                 ".window_plan",
                 ".next_due(self.audio.session_sample_end(), self.capture_stopping)",
-                ".window_by_samples(range.sample_start, range.sample_end)",
+                ".recognizer_window_by_samples(range.sample_start, range.sample_end)",
                 "window.sample_start == range.sample_start",
                 "&& window.sample_end == range.sample_end",
                 "&& window.samples.len() as u64 == range.sample_end - range.sample_start",
@@ -944,9 +961,14 @@
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "required_code": [
                 "let owners = self.unsealed_word_owners();",
+                "let envelope_start = owners.iter().map(|(_, owner)| owner.sample_start).min().unwrap_or(0);",
+                "let envelope_end = owners.iter().map(|(_, owner)| owner.sample_end).max().unwrap_or(0);",
                 "self.retained_word_decodes",
-                "range_overlaps_occurrence(&payload.identity.range, owner)",
-                "replayed_window_owners",
+                "let range = &payload.identity.range;",
+                "range.sample_start < envelope_end",
+                "envelope_start < range.sample_end",
+                "range_overlaps_occurrence(range, owner)",
+                "self.replayed_window_owners.contains(&(payload.identity.request_id, owner.clone()))",
                 "for payload in returned {",
                 "self.admit_completed_window(ev_tx, &payload, false);"
               ],
@@ -1234,9 +1256,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "window_by_samples",
+              "callee": "recognizer_window_by_samples",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "pump_capture_windows",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "window_by_samples",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "recognizer_window_by_samples",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
@@ -1698,28 +1727,114 @@
                 "if facts.latched_target_is_self",
                 "route: DeliveryRoute::DeferredInsert",
                 "reason: \"refuse_paste_into_self\"",
+                "paste_gate(",
+                "facts.paste_target",
+                "facts.executable_payload",
+                "gate.route == DeliveryRoute::ClipboardPaste",
                 "route: DeliveryRoute::ClipboardPaste",
                 "reason: \"explicit_insert\""
               ]
             },
             {
-              "symbol": "paste_and_restore",
+              "symbol": "paste_to_stop_target",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "pub fn paste_and_restore(text: &str) -> Result<()>",
-                "paste_text_smart(text, true)"
+                "let snapshot = if restore_clipboard",
+                "match ClipboardSnapshot::capture()",
+                "Ok(snapshot) => Some(snapshot)",
+                "let mut written_epoch = None",
+                "let result = write_stop_paste(",
+                "let epoch = set_clipboard_with_epoch(text)?",
+                "written_epoch = Some(epoch)",
+                "|| target.check_current(mode)",
+                "simulate_cmd_v",
+                "let (receipt, epoch) = match result",
+                "if let (Some(snapshot), Some(epoch)) = (snapshot, written_epoch)",
+                "schedule_clipboard_restore(snapshot, epoch, Duration::ZERO)",
+                "if let (Some(snapshot), Some(epoch)) = (snapshot, epoch)",
+                "let delay = if receipt.delivery == StopPasteDelivery::Pasted",
+                "Duration::from_millis(restore_clipboard_delay_ms)",
+                "Duration::ZERO",
+                "schedule_clipboard_restore(snapshot, epoch, delay)",
+                "Ok(receipt)"
               ]
             },
             {
-              "symbol": "paste_text_smart",
+              "symbol": "write_stop_paste",
               "file": "app/os/clipboard.rs",
               "required_code": [
-                "if text.is_empty()",
-                "let snapshot = if restore",
-                "set_clipboard_with_epoch(text)",
-                "simulate_cmd_v()",
-                "if let Some(snapshot) = snapshot",
-                "schedule_clipboard_restore(snapshot, paste_epoch, delay)"
+                "let before = check_target()",
+                "if before.changed",
+                "target_changed(receipt)",
+                "return Ok((receipt, None))",
+                "let epoch = write(text)?",
+                "let target = check_target()",
+                "if target.changed",
+                "target_changed(receipt)",
+                "return Ok((receipt, Some(epoch)))",
+                "post_paste()?",
+                "Ok((receipt, Some(epoch)))"
+              ]
+            },
+            {
+              "symbol": "check_current",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "fn check_current(&self, mode: PasteMode) -> StopTargetCheck",
+              "required_code": [
+                "let current = Self::capture()",
+                "compare_stop_targets(",
+                "stop_target_identity::Identity::same_element",
+                "let mode = if self",
+                "crate::os::selection::is_codescribe_app(&name)",
+                "PasteMode::Safe",
+                "check.with_input_capability(mode, self.field, current.field)"
+              ]
+            },
+            {
+              "symbol": "with_input_capability",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "fn with_input_capability(",
+              "required_code": [
+                "fn with_input_capability(\n    mut self,\n    mode: PasteMode,\n    stopped: crate::os::hold_badge::FocusedInputField,\n    current: crate::os::hold_badge::FocusedInputField,\n) -> Self {\n    use crate::os::hold_badge::FocusedInputField::{Secure, Text};\n    self.changed |= stopped == Secure\n        || current == Secure\n        || (mode != PasteMode::Comfort && (stopped != Text || current != Text));\n    self\n}"
+              ]
+            },
+            {
+              "symbol": "compare_stop_targets",
+              "file": "app/os/clipboard.rs",
+              "required_code": [
+                "!matches!((stopped_pid, current_pid), (Some(a), Some(b)) if a == b)",
+                "(Some(stopped), Some(current)) => !same_element(stopped, current)",
+                "_ => true",
+                "changed: pid_changed || element_changed"
+              ]
+            },
+            {
+              "symbol": "field",
+              "file": "app/os/clipboard.rs",
+              "signature_contains": "pub(super) fn field(&self)",
+              "required_code": [
+                "crate::os::hold_badge::input_field_for_element(self.element.as_ptr())"
+              ]
+            },
+            {
+              "symbol": "input_field_for_element",
+              "file": "app/os/hold_badge.rs",
+              "signature_contains": "pub(crate) unsafe fn input_field_for_element(element: AXId)",
+              "required_code": [
+                "if IsSecureEventInputEnabled() != 0",
+                "copy_string_attribute(element, AX_ROLE_ATTRIBUTE)",
+                "CFBoolean",
+                "AXUIElementIsAttributeSettable(",
+                "super::classify_input_capability(&role, subrole.as_deref(), enabled, writable)"
+              ]
+            },
+            {
+              "symbol": "classify_input_capability",
+              "file": "app/os/hold_badge.rs",
+              "required_code": [
+                "FocusedInputField::Secure => FocusedInputField::Secure",
+                "FocusedInputField::Text if enabled && writable && role != \"AXWebArea\"",
+                "_ => FocusedInputField::NotText"
               ]
             }
           ],
@@ -1797,14 +1912,14 @@
             {
               "callee": "overlay_insert_facts",
               "callee_file": "app/controller/delivery_route.rs",
-              "caller": "paste_text_from_overlay",
+              "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
               "minimum_count": 1
             },
             {
               "callee": "resolve_delivery_route",
               "callee_file": "app/controller/delivery_route.rs",
-              "caller": "paste_text_from_overlay",
+              "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
               "minimum_count": 1
             },
@@ -1816,17 +1931,10 @@
               "minimum_count": 1
             },
             {
-              "callee": "paste_and_restore",
+              "callee": "paste_to_stop_target",
               "callee_file": "app/os/clipboard.rs",
               "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
-              "minimum_count": 1
-            },
-            {
-              "callee": "paste_text_smart",
-              "callee_file": "app/os/clipboard.rs",
-              "caller": "paste_and_restore",
-              "caller_file": "app/os/clipboard.rs",
               "minimum_count": 1
             },
             {
@@ -1841,6 +1949,48 @@
               "callee_file": "app/presentation/emitter.rs",
               "caller": "on_event",
               "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "paste_to_stop_target",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "write_stop_paste",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "paste_to_stop_target",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "check_current",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "check_current",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "compare_stop_targets",
+              "callee_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "field",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "input_field_for_element",
+              "callee_file": "app/os/hold_badge.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "input_field_for_element",
+              "caller_file": "app/os/hold_badge.rs",
+              "callee": "classify_input_capability",
+              "callee_file": "app/os/hold_badge.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "check_current",
+              "caller_file": "app/os/clipboard.rs",
+              "callee": "with_input_capability",
+              "callee_file": "app/os/clipboard.rs",
               "minimum_count": 1
             }
           ]
@@ -1883,10 +2033,11 @@
               "file": "app/presentation/emitter.rs",
               "required_code": [
                 "apply_ledger_mutation(&ledger, observation, receipt)",
-                "apply_ledger_seal(receipt)",
-                "apply_occurrence_label_proposal(&mut ledger, proposal)",
                 "bus.publish_revision(&revision, &ledger)",
-                "self.emit_overlay_events(&events)"
+                "self.emit_overlay_events(&events)",
+                "apply_ledger_seal(receipt)",
+                "apply_occurrence_label_proposal(&ledger, proposal)",
+                "bus.record_derived_projection(&projection)"
               ]
             },
             {
@@ -2011,9 +2162,7 @@
                 "state.replay_completed_windows(ev_tx);",
                 "let speech = coverage_speech_evidence(state);",
                 "state.retained_word_decodes",
-                "let mut gaps = ledger",
-                ".assess_seal_coverage(",
-                "for owner in ledger.qualified_occurrences() {",
+                "uncovered_gap_ranges(",
                 "admit_full_pass_gap_segments(",
                 "state.close_admission_horizon(ev_tx, state.window_plan.admission_horizon());",
                 "state.publish_resolved_word_seals(ev_tx);",
@@ -2125,10 +2274,79 @@
               "ast_contract": "stop"
             },
             {
-              "symbol": "complete_stop",
+              "symbol": "close_capture",
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
-              "ast_contract": "complete_stop"
+              "ast_contract": "close_capture"
+            },
+            {
+              "symbol": "release_take_pcm_feed",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "release_take_pcm_feed"
+            },
+            {
+              "symbol": "release_capture_subscriber",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "release_capture_subscriber"
+            },
+            {
+              "symbol": "finish_closed_capture",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finish_closed_capture"
+            },
+            {
+              "symbol": "detach_closed_take",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "detach_closed_take"
+            },
+            {
+              "symbol": "detach_take_state",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "detach_take_state"
+            },
+            {
+              "symbol": "is_settled",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "is_settled"
+            },
+            {
+              "symbol": "finish",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finish",
+              "signature_contains": "pub async fn finish(&mut self)"
+            },
+            {
+              "symbol": "copy_stop_error",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "copy_stop_error"
+            },
+            {
+              "symbol": "finalize_take_archive",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finalize_take_archive"
+            },
+            {
+              "symbol": "uncovered_gap_ranges",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let mut gaps = ledger",
+                ".assess_seal_coverage(session, capture_epoch, speech, threshold_samples)",
+                "for owner in ledger.qualified_occurrences() {",
+                "if !range_overlaps_occurrence(&gap, owner)",
+                "if gap.sample_start < owner.sample_start",
+                "sample_end: owner.sample_start",
+                "if owner.sample_end < gap.sample_end",
+                "sample_start: owner.sample_end"
+              ]
             }
           ],
           "required_invocations": [
@@ -2217,7 +2435,7 @@
               "callee_file": "core/pipeline/acoustic_ledger.rs",
               "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
-              "minimum_count": 2
+              "minimum_count": 1
             },
             {
               "callee": "record_seal_coverage",
@@ -2256,16 +2474,101 @@
               "caller_file": "app/presentation/emitter.rs"
             },
             {
-              "callee": "terminal_finality",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
-              "caller": "complete_stop",
-              "caller_file": "core/audio/streaming_recorder.rs"
+              "caller": "stop",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "close_capture",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "close_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "release_take_pcm_feed",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "release_take_pcm_feed",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "release_capture_subscriber",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
             },
             {
               "caller": "stop",
               "caller_file": "core/audio/streaming_recorder.rs",
-              "callee": "complete_stop",
+              "callee": "finish_closed_capture",
               "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "detach_closed_take",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "detach_closed_take",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "detach_take_state",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "finish",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_closed_capture",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "is_settled",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "finalize_take_archive",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "copy_stop_error",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "terminal_finality",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "reconcile_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "uncovered_gap_ranges",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "uncovered_gap_ranges",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "assess_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "uncovered_gap_ranges",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "callee": "qualified_occurrences",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
               "minimum_count": 1
             }
           ],
@@ -2678,9 +2981,23 @@
             "symbol": {
               "enum": [
                 "paste_text_from_overlay",
+                "noop",
                 "execute_clipboard_paste",
                 "stop",
-                "complete_stop"
+                "close_capture",
+                "release_take_pcm_feed",
+                "release_capture_subscriber",
+                "finish_closed_capture",
+                "detach_closed_take",
+                "detach_take_state",
+                "is_settled",
+                "finish",
+                "copy_stop_error",
+                "finalize_take_archive",
+                "terminal_finality",
+                "has_no_capture_facts",
+                "matches_refused_document",
+                "process_terminal_stop_error"
               ]
             },
             "accepted": {

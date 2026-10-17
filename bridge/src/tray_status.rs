@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use codescribe::os::hold_badge::BadgeMode;
+use codescribe::os::hold_badge::{BadgeMode, CursorVoice};
 use codescribe::os::tray_status::{self, TrayStatus, TrayStatusSnapshot};
 use tracing::trace;
 
@@ -49,9 +49,34 @@ impl From<BadgeMode> for CsIndicatorMode {
     fn from(value: BadgeMode) -> Self {
         match value {
             BadgeMode::Hold => Self::Hold,
+            // `Refused` is the pointer-only flash for a vacant channel chord.
+            // The tray store drops it (`set_tray_indicator_mode`), so no tray
+            // payload ever carries it; the arm only keeps this mapping total.
+            BadgeMode::Refused => Self::Hold,
             BadgeMode::Toggle => Self::Toggle,
             BadgeMode::Processing => Self::Processing,
             BadgeMode::Assistive => Self::Assistive,
+        }
+    }
+}
+
+/// The voice under the cursor while listening, mirrored into the glyph.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsCursorVoice {
+    Unobserved,
+    Speaking,
+    Quiet,
+    Lagging,
+}
+
+impl From<CursorVoice> for CsCursorVoice {
+    /// Map the emitter's cursor voice into the UniFFI enum for tray payloads.
+    fn from(value: CursorVoice) -> Self {
+        match value {
+            CursorVoice::Unobserved => Self::Unobserved,
+            CursorVoice::Speaking => Self::Speaking,
+            CursorVoice::Quiet => Self::Quiet,
+            CursorVoice::Lagging => Self::Lagging,
         }
     }
 }
@@ -63,6 +88,7 @@ pub struct CsTrayStatusPayload {
     pub tone: CsTrayStatusTone,
     pub indicator_mode: CsIndicatorMode,
     pub assistive: bool,
+    pub voice: CsCursorVoice,
     pub generation: u64,
 }
 
@@ -174,6 +200,7 @@ fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayS
         tone,
         indicator_mode: snapshot.indicator_mode.into(),
         assistive: snapshot.is_assistive_visible(),
+        voice: snapshot.voice.into(),
         generation,
     }
 }
@@ -285,7 +312,17 @@ mod tests {
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
         assert_eq!(payload.indicator_mode, CsIndicatorMode::Assistive);
         assert!(payload.assistive);
+        assert_eq!(payload.voice, CsCursorVoice::Unobserved);
         assert_eq!(payload.generation, 43);
+
+        let speaking = TrayStatusSnapshot {
+            voice: CursorVoice::Lagging,
+            ..TrayStatusSnapshot::new(TrayStatus::Listening, true)
+        };
+        assert_eq!(
+            payload_from_status(speaking, 44).voice,
+            CsCursorVoice::Lagging
+        );
     }
 
     /// Distinct statuses fire; identical consecutive Thermal is coalesced away.

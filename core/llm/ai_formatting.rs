@@ -112,79 +112,13 @@ pub struct FormattingConsultation<'a> {
 
 /// Result of a formatting request: the text to use plus how it was obtained.
 ///
-/// `text` is always safe to deliver — on failure it carries the cleaned input
+/// `text` carries the provider's formatting — on failure it carries the input
 /// rather than an error, so the caller never has to invent a fallback.
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
     pub reasoning_text: Option<String>,
     pub status: AiFormatStatus,
-}
-
-/// Corrections changes punctuation and case, never the ordered spoken words.
-/// Repeated words are counted separately. These offsets are text evidence,
-/// not acoustic identities or permission to change a ledger slot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorrectionsWordReceipt {
-    pub raw_word_count: usize,
-    pub output_word_count: usize,
-    pub first_difference: Option<usize>,
-}
-
-impl CorrectionsWordReceipt {
-    pub fn preserves_words(&self) -> bool {
-        self.first_difference.is_none()
-    }
-}
-
-fn corrections_words(text: &str) -> Vec<String> {
-    text.split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
-pub fn corrections_word_receipt(raw: &str, output: &str) -> CorrectionsWordReceipt {
-    let raw = corrections_words(raw);
-    let output = corrections_words(output);
-    let first_difference = raw
-        .iter()
-        .zip(&output)
-        .position(|(before, after)| before != after)
-        .or_else(|| (raw.len() != output.len()).then_some(raw.len().min(output.len())));
-    CorrectionsWordReceipt {
-        raw_word_count: raw.len(),
-        output_word_count: output.len(),
-        first_difference,
-    }
-}
-
-/// Light+ is a candidate floor too: until its word-preserving API is admitted,
-/// a rejected shape retains Raw rather than dropping a hesitation or marker.
-pub fn corrections_floor(raw: &str) -> String {
-    let shaped = crate::pipeline::light_plus::apply(raw);
-    if corrections_word_receipt(raw, &shaped).preserves_words() {
-        shaped
-    } else {
-        raw.to_string()
-    }
-}
-
-fn guard_corrections_result(raw: &str, mut result: AiFormatResult) -> AiFormatResult {
-    let receipt = corrections_word_receipt(raw, &result.text);
-    if !receipt.preserves_words() {
-        warn!(
-            rule = "corrections-words-v1",
-            raw_words = receipt.raw_word_count,
-            output_words = receipt.output_word_count,
-            first_difference = receipt.first_difference,
-            "Corrections rejected: ordered Raw words changed; retaining deterministic floor"
-        );
-        result.text = corrections_floor(raw);
-        result.reasoning_text = None;
-        result.status = AiFormatStatus::Failed;
-    }
-    result
 }
 
 /// One provider reply split into its two channels.
@@ -391,11 +325,16 @@ pub async fn generate_thread_title(
 /// by the loader and fails closed before a request is attempted.
 fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitleProvider> {
     let api_key = lane.credential().request_api_key();
-    if !lane.request_available() {
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
+    }
+    // Titles are a one-shot JSON call with key headers. A signed-in account
+    // lane without a stored key is not wired for this call; say so instead
+    // of sending an unauthenticated request.
+    if api_key.is_none() && lane.credential().account_auth() {
         anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("Formatting lane is unavailable")
+            "Thread titles need a stored API key on the formatting lane; the signed-in {} account serves formatting only",
+            lane.provider_display_name()
         );
     }
 
@@ -450,6 +389,7 @@ async fn request_responses_thread_title(
         instructions: Some(THREAD_TITLE_PROMPT.to_string()),
         max_output_tokens: Some(THREAD_TITLE_MAX_TOKENS),
         temperature: None,
+        store: None,
         stream: false,
     };
 
@@ -622,6 +562,9 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// `Some(false)` only on an account backend that keeps no server chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<bool>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
@@ -685,8 +628,6 @@ struct InputItem {
 enum InputContent {
     #[serde(rename = "input_text")]
     Text { text: String },
-    #[serde(rename = "input_image")]
-    Image { image_url: String },
 }
 
 /// Anthropic Messages request format (/v1/messages)
@@ -711,148 +652,15 @@ struct AnthropicMessage {
     content: Vec<AnthropicContentBlock>,
 }
 
-/// A single content block of an Anthropic turn — text or an inline image.
+/// A single content block of an Anthropic turn.
 ///
-/// Anthropic takes base64 images as a structured `source` object rather than the
-/// data URL the Responses API accepts, which is why the two paths diverge here.
+/// Text only: the formatter transforms a transcript, and a transcript never
+/// selects a file, so no image block is built on this path.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
-    #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
-}
-
-/// Base64 image payload in the shape Anthropic expects.
-#[derive(Debug, Serialize)]
-struct AnthropicImageSource {
-    #[serde(rename = "type")]
-    source_type: &'static str,
-    media_type: String,
-    data: String,
-}
-
-/// Load an image from disk as a `data:` URL, or `None` if it cannot be used.
-///
-/// Returns `None` on anything unreadable, unsupported, or over the size cap —
-/// an attachment problem degrades the request instead of failing it.
-fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
-    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-
-    // Marker parsing, MIME mapping and the size cap are shared with the agent
-    // send path via `crate::attachment` so both routes honor one contract.
-    let (bytes, mime) =
-        crate::attachment::load_image_for_vision(path, crate::attachment::MAX_VISION_IMAGE_BYTES)?;
-    let b64 = BASE64.encode(bytes);
-    Some(format!("data:{mime};base64,{b64}"))
-}
-
-/// Split a user message into Responses API content parts, lifting any attached
-/// images out of the marker block.
-///
-/// The image filenames are appended to the text as well, so a model that drops
-/// or cannot see an attachment still knows something was sent.
-fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
-    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
-    /// Cap on image parts per Responses request; surplus paths are dropped.
-    const MAX_IMAGES: usize = 16;
-
-    let (mut cleaned, mut image_paths) =
-        crate::attachment::parse_image_attachment_block(user_message);
-    if image_paths.len() > MAX_IMAGES {
-        warn!(
-            "Too many image attachments ({}); keeping first {}",
-            image_paths.len(),
-            MAX_IMAGES
-        );
-        image_paths.truncate(MAX_IMAGES);
-    }
-
-    if !image_paths.is_empty() {
-        let names = image_paths
-            .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        cleaned.push_str("\n\n[Attached images: ");
-        cleaned.push_str(&names);
-        cleaned.push_str("]\n");
-    }
-
-    let mut content = vec![InputContent::Text { text: cleaned }];
-    for p in image_paths {
-        let Some(url) = encode_image_as_data_url(&p) else {
-            warn!("Failed to encode image attachment: {}", p.display());
-            continue;
-        };
-        content.push(InputContent::Image { image_url: url });
-    }
-    content
-}
-
-/// The Anthropic counterpart of [`build_responses_user_content`].
-///
-/// Differs in one respect: an empty text block is omitted when images are
-/// present, because Anthropic rejects a blank text block alongside content.
-fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock> {
-    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
-    /// Cap on image parts per Anthropic request; surplus paths are dropped.
-    const MAX_IMAGES: usize = 16;
-
-    let (mut cleaned, mut image_paths) =
-        crate::attachment::parse_image_attachment_block(user_message);
-    if image_paths.len() > MAX_IMAGES {
-        warn!(
-            "Too many image attachments ({}); keeping first {}",
-            image_paths.len(),
-            MAX_IMAGES
-        );
-        image_paths.truncate(MAX_IMAGES);
-    }
-
-    if !image_paths.is_empty() {
-        let names = image_paths
-            .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        cleaned.push_str("\n\n[Attached images: ");
-        cleaned.push_str(&names);
-        cleaned.push_str("]\n");
-    }
-
-    let mut content = Vec::new();
-    if !cleaned.is_empty() || image_paths.is_empty() {
-        content.push(AnthropicContentBlock::Text { text: cleaned });
-    }
-
-    for p in image_paths {
-        let Some(url) = encode_image_as_data_url(&p) else {
-            warn!("Failed to encode image attachment: {}", p.display());
-            continue;
-        };
-        let Some(source) = anthropic_image_source_from_data_url(&url) else {
-            warn!(
-                "Failed to convert image attachment for Anthropic: {}",
-                p.display()
-            );
-            continue;
-        };
-        content.push(AnthropicContentBlock::Image { source });
-    }
-    content
-}
-
-/// Re-shape a `data:<mime>;base64,<payload>` URL into Anthropic's source object.
-fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSource> {
-    let payload = url.strip_prefix("data:")?;
-    let (media_type, data) = payload.split_once(";base64,")?;
-    Some(AnthropicImageSource {
-        source_type: "base64",
-        media_type: media_type.to_string(),
-        data: data.to_string(),
-    })
 }
 
 /// Responses API response format.
@@ -1171,42 +979,16 @@ pub async fn format_text_with_status_for_policy(
 ///
 /// Order of the pipeline matters and is load-bearing:
 /// 1. bail out for `Off` policy and sub-floor text (never reaches a provider);
-/// 2. strip Whisper repetition loops locally, before spending a request;
+/// 2. send the source text under the selected policy's sealed prompt;
 /// 3. attempt the provider up to the retry budget, giving up early on errors
 ///    that are deterministic;
-/// 4. re-apply the protected lexicon to the reply, since a model can silently
-///    corrupt proper nouns while rewriting prose;
-/// 5. reject refusal text and classify an unchanged echo as `AiNoop`.
+/// 4. publish formatting as returned: lexical edits and structure belong to
+///    the prompt, not word-count or word-order vetoes;
+/// 5. classify an exact unchanged formatting echo as `AiNoop`.
 ///
-/// Never returns an error: an exhausted budget yields the cleaned input with a
+/// Never returns an error: an exhausted budget yields the original input with a
 /// `Failed` status, so the caller always has text to deliver.
 async fn format_text_with_status_channels_for_policy(
-    text: &str,
-    language: Option<&str>,
-    assistive: bool,
-    runtime_settings: &RuntimeSettingsSnapshot,
-    on_assistant_delta: Option<AiStreamCallback>,
-    on_reasoning_delta: Option<AiReasoningCallback>,
-    consultation: Option<FormattingConsultation<'_>>,
-) -> AiFormatResult {
-    let result = request_format_text_with_status_channels_for_policy(
-        text,
-        language,
-        assistive,
-        runtime_settings,
-        on_assistant_delta,
-        on_reasoning_delta,
-        consultation,
-    )
-    .await;
-    if !assistive && runtime_settings.formatting_policy() == FormattingPolicy::Correction {
-        guard_corrections_result(text, result)
-    } else {
-        result
-    }
-}
-
-async fn request_format_text_with_status_channels_for_policy(
     text: &str,
     language: Option<&str>,
     assistive: bool,
@@ -1262,13 +1044,9 @@ async fn request_format_text_with_status_channels_for_policy(
         };
     }
 
-    // Check for repetition loops - apply simple fix first
-    let cleaned = if has_repetition_loop(text) {
-        info!("Detected repetition loop in transcription");
-        remove_simple_repetitions(text)
-    } else {
-        text.to_string()
-    };
+    // Give the model the actual source. Whether speech repetition is an
+    // intentional emphasis or a false start is governed by its sealed prompt.
+    let cleaned = text.to_string();
 
     let ai_execution = runtime_settings.ai_execution();
     let formatter_execution = ai_execution.formatter();
@@ -1336,10 +1114,11 @@ async fn request_format_text_with_status_channels_for_policy(
             );
             tokio::time::sleep(formatter_execution.retry_delay()).await;
 
-            // Append critical instruction
-            system_prompt.push_str(
-                "\n\nCRITICAL: You MUST format/enhance the text. Do NOT return raw input.",
-            );
+            if assistive {
+                system_prompt.push_str(
+                    "\n\nCRITICAL: You MUST format/enhance the text. Do NOT return raw input.",
+                );
+            }
         }
 
         // Build user message with optional language hint
@@ -1413,6 +1192,14 @@ async fn request_format_text_with_status_channels_for_policy(
         } else {
             None
         };
+        if on_device_output.is_none()
+            && let Some(reason) = lane.request_unavailable_reason()
+        {
+            // No engine produced text and no cloud lane can: every further
+            // attempt would fail the same way. The caller keeps the text.
+            warn!(%reason, "no formatting engine available; preserving the source text");
+            break;
+        }
         let result_opt = if on_device_output.is_some() {
             on_device_output
         } else if should_stream {
@@ -1510,7 +1297,7 @@ async fn request_format_text_with_status_channels_for_policy(
                 || formatted_lower.contains("i'm not able")
                 || formatted_lower.contains("as an ai");
 
-            if is_refusal {
+            if assistive && is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
                 return AiFormatResult {
                     text: cleaned,
@@ -1533,9 +1320,9 @@ async fn request_format_text_with_status_channels_for_policy(
                     should_retry = true;
                 }
             } else {
-                // Formatting should preserve content but add structure
-                // If output matches input (effectively same), it's a no-op
-                if content_match {
+                // Paragraphs and spacing are formatting too. Only an exact
+                // echo has no returned change to publish.
+                if formatted == cleaned {
                     warn!("Formatting mode returned AI No-op (raw echo)");
                     return AiFormatResult {
                         text: cleaned,
@@ -1640,12 +1427,8 @@ async fn call_anthropic_messages(
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
     let api_key = lane.credential().request_api_key().unwrap_or_default();
-    if !lane.request_available() {
-        anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("Anthropic lane is unavailable")
-        );
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
     }
     call_anthropic_messages_resolved(
         user_message,
@@ -1696,7 +1479,9 @@ async fn call_anthropic_messages_resolved(
         system: Some(system_prompt.to_string()).filter(|value| !value.trim().is_empty()),
         messages: vec![AnthropicMessage {
             role: "user",
-            content: build_anthropic_user_content(user_message),
+            content: vec![AnthropicContentBlock::Text {
+                text: user_message.to_string(),
+            }],
         }],
         max_tokens,
         temperature,
@@ -1771,6 +1556,7 @@ fn responses_chain_request(
     assistive: bool,
     model: String,
     stream: bool,
+    account_backend: bool,
 ) -> (
     crate::state::conversation::AiMode,
     Option<String>,
@@ -1781,20 +1567,32 @@ fn responses_chain_request(
     } else {
         crate::state::conversation::AiMode::Formatting
     };
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-    let temperature = get_temperature(assistive);
+    // An account backend stores nothing: each request carries its own prompt
+    // and no chain id, mirroring the Agent provider's body on that route.
+    let previous_response_id = if account_backend {
+        None
+    } else {
+        crate::state::conversation::get_previous_response_id_for_mode(ai_mode)
+    };
+    let temperature = if account_backend {
+        None
+    } else {
+        get_temperature(assistive)
+    };
     let request = ResponsesRequest {
         model,
         input: build_responses_input(
             system_prompt,
             previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
+            vec![InputContent::Text {
+                text: user_message.to_string(),
+            }],
         ),
         instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
         max_output_tokens: None,
         temperature,
+        store: account_backend.then_some(false),
         stream,
     };
     (ai_mode, previous_response_id, request)
@@ -1810,9 +1608,21 @@ async fn call_llm_endpoint(
     assistive: bool,
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    let endpoint = lane.endpoint().to_string();
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
+    // The Codex backend only streams; JSON is never sent there.
+    if bearer_only
+        && lane
+            .vendor()
+            .and_then(account_auth::account_responses_route)
+            .is_some()
+    {
+        anyhow::bail!(
+            "The signed-in {} account accepts only streamed Responses requests",
+            lane.provider_display_name()
+        );
+    }
+    let endpoint = lane.endpoint().to_string();
     let temperature = get_temperature(assistive);
 
     trace!(
@@ -1830,7 +1640,7 @@ async fn call_llm_endpoint(
     );
 
     let (ai_mode, _previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, false);
+        responses_chain_request(user_message, system_prompt, assistive, model, false, false);
 
     // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
     // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
@@ -1875,26 +1685,29 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
-/// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
-/// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
+/// Resolve one lane's auth: a signed-in provider account wins over a stored
+/// API key (same order as the Agent provider). The token is fetched, and
+/// refreshed when near expiry, for this request only. Returns
+/// `(secret, bearer_only)` — account tokens must not also go out as `x-api-key`.
 async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
+    if let Some(reason) = lane.request_unavailable_reason() {
+        anyhow::bail!("{reason}");
+    }
     if lane.credential().account_auth()
         && let Some(vendor) = lane.vendor()
     {
-        let token = account_auth::access_token(vendor)
-            .await
-            .map_err(|error| anyhow::anyhow!("Provider account authentication failed: {error}"))?;
+        let token = account_auth::access_token(vendor).await.map_err(|error| {
+            anyhow::anyhow!(
+                "{} account authentication failed: {error}",
+                vendor.display_name()
+            )
+        })?;
         return Ok((token, true));
     }
-    let api_key = lane.credential().request_api_key();
-    if api_key.is_none() && !lane.request_available() {
-        anyhow::bail!(
-            "{}",
-            lane.unavailable_reason()
-                .unwrap_or("LLM lane is unavailable")
-        );
-    }
-    Ok((api_key.unwrap_or_default(), false))
+    Ok((
+        lane.credential().request_api_key().unwrap_or_default(),
+        false,
+    ))
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API) through the sealed lane.
@@ -1905,7 +1718,6 @@ async fn call_llm_endpoint_streaming(
     lane: &RuntimeLlmLane,
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
-    let endpoint = lane.endpoint().to_string();
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
     let auth_header_mode = if bearer_only {
@@ -1913,7 +1725,24 @@ async fn call_llm_endpoint_streaming(
     } else {
         AuthHeaderMode::BearerAndApiKey
     };
-    let temperature = get_temperature(assistive);
+    // Same account backend and headers as the Agent provider; a key-auth lane
+    // keeps its own endpoint and chain.
+    let account_route = bearer_only
+        .then(|| {
+            lane.vendor()
+                .and_then(account_auth::account_responses_route)
+        })
+        .flatten();
+    let account_backend = account_route.is_some();
+    let (endpoint, extra_headers) = match account_route {
+        Some(route) => (route.endpoint, route.headers),
+        None => (lane.endpoint().to_string(), Vec::new()),
+    };
+    let temperature = if account_backend {
+        None
+    } else {
+        get_temperature(assistive)
+    };
 
     trace!(
         "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
@@ -1929,8 +1758,14 @@ async fn call_llm_endpoint_streaming(
         temperature
     );
 
-    let (ai_mode, previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, true);
+    let (ai_mode, previous_response_id, request) = responses_chain_request(
+        user_message,
+        system_prompt,
+        assistive,
+        model,
+        true,
+        account_backend,
+    );
 
     let StreamRequestContext {
         callbacks,
@@ -1945,13 +1780,20 @@ async fn call_llm_endpoint_streaming(
         initial_response_timeout,
         inter_chunk_timeout,
     )
-    .with_auth_header_mode(auth_header_mode);
+    .with_auth_header_mode(auth_header_mode)
+    .with_extra_headers(extra_headers);
     let streamed = manager.stream(&request).await?;
     let output = ProviderOutput {
         assistant_text: streamed.assistant_text,
         reasoning_text: streamed.reasoning_text,
     };
-    if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
+    if account_backend {
+        // `store: false`: the id names nothing a later request may chain to.
+        debug!(
+            "SSE complete on the account backend for {}; no chain id retained",
+            if assistive { "assistive" } else { "formatting" }
+        );
+    } else if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
         debug!(
             "SSE complete, response_id ({}): {}",
@@ -1975,9 +1817,26 @@ async fn call_llm_endpoint_streaming(
     Ok(output)
 }
 
-/// Check if AI formatting is available for report/test flows.
+/// Check if the cloud formatting lane can send a request now.
 pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
-    lane.request_available()
+    lane.request_unavailable_reason().is_none()
+}
+
+/// Whether a Smart/Corrections text pass has an engine under this generation:
+/// the selected Apple on-device formatter (host-registered, no credential),
+/// or the configured cloud formatting lane. Max is not a text pass; its
+/// availability is the Agent lane's (see the app's Max consultation).
+/// `None` means a request may be attempted; the text always comes from the
+/// caller, never from audio or a seal.
+pub fn text_formatting_unavailable_reason(settings: &RuntimeSettingsSnapshot) -> Option<String> {
+    if settings.values().format_on_device && crate::llm::on_device::on_device_formatter().is_some()
+    {
+        return None;
+    }
+    settings
+        .llm_lanes()
+        .formatting()
+        .request_unavailable_reason()
 }
 
 /// Wire-contract and text-hygiene tests for the formatting module.
@@ -1988,78 +1847,6 @@ pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
 /// would otherwise read each other's overrides.
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn corrections_word_receipt_counts_repetitions_and_order() {
-        use super::corrections_word_receipt;
-        for output in ["Iwo Iwo.", "Iwo Ola Iwo.", "Iwo Iwo Iwo Iwo."] {
-            assert!(!corrections_word_receipt("Iwo Iwo Iwo", output).preserves_words());
-        }
-        assert!(corrections_word_receipt("iwo iwo iwo", "Iwo, Iwo. Iwo!").preserves_words());
-        assert!(!corrections_word_receipt("plan był dobry", "dobry był plan").preserves_words());
-    }
-
-    #[test]
-    fn corrections_word_guard_rejects_loss_and_delivers_safe_light_plus() {
-        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
-        let raw = "czy plan który przedstawiles był dobry";
-        let result = guard_corrections_result(
-            raw,
-            AiFormatResult {
-                text: "Czy który przedstawiles był dobry?".into(),
-                reasoning_text: Some("private reasoning".into()),
-                status: AiFormatStatus::Applied,
-            },
-        );
-        assert_eq!(result.status, AiFormatStatus::Failed);
-        assert_eq!(result.text, crate::pipeline::light_plus::apply(raw));
-        assert!(result.reasoning_text.is_none());
-    }
-
-    #[test]
-    fn corrections_floor_accounts_for_hesitations_markers_and_numbers() {
-        use super::{corrections_floor, corrections_word_receipt};
-        let raw = "yyy hm mhm no właśnie [laugh] dawka 1,4 mg";
-        let output = corrections_floor(raw);
-        assert!(corrections_word_receipt(raw, &output).preserves_words());
-        assert!(!corrections_word_receipt(raw, "no właśnie dawka 14 mg").preserves_words());
-    }
-
-    #[test]
-    fn corrections_word_guard_also_checks_failed_and_noop_text() {
-        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
-        for status in [
-            AiFormatStatus::Failed,
-            AiFormatStatus::AiNoop,
-            AiFormatStatus::Skipped,
-        ] {
-            let result = guard_corrections_result(
-                "Iwo Iwo Iwo",
-                AiFormatResult {
-                    text: "Iwo".into(),
-                    reasoning_text: None,
-                    status,
-                },
-            );
-            assert_eq!(result.status, AiFormatStatus::Failed);
-            assert_eq!(result.text, "Iwo Iwo Iwo.");
-        }
-    }
-
-    #[test]
-    fn corrections_word_guard_accepts_case_punctuation_and_paragraphs() {
-        use super::{AiFormatResult, AiFormatStatus, guard_corrections_result};
-        let formatted = "Plan, który przedstawiłeś.\n\nIwo, Iwo!";
-        let result = guard_corrections_result(
-            "plan który przedstawiłeś Iwo Iwo",
-            AiFormatResult {
-                text: formatted.into(),
-                reasoning_text: None,
-                status: AiFormatStatus::Applied,
-            },
-        );
-        assert_eq!(result.status, AiFormatStatus::Applied);
-        assert_eq!(result.text, formatted);
-    }
     use super::*;
     use crate::config::Config;
     use mockito::Matcher;
@@ -2103,6 +1890,7 @@ mod tests {
             input: vec![],
             instructions: chained_instructions("SYS", Some("resp_123")),
             previous_response_id: Some("resp_123".into()),
+            store: None,
             max_output_tokens: None,
             temperature: None,
             stream: false,
@@ -2125,10 +1913,8 @@ mod tests {
         let chained = build_responses_input("SYS", Some("resp_123"), user);
         assert_eq!(chained.len(), 2);
         assert_eq!(chained[0].role, "developer");
-        match &chained[0].content[0] {
-            InputContent::Text { text } => assert_eq!(text, "SYS"),
-            other => panic!("developer item must be text, got {other:?}"),
-        }
+        let InputContent::Text { text } = &chained[0].content[0];
+        assert_eq!(text, "SYS");
         assert_eq!(chained[1].role, "user");
 
         let first =
@@ -2636,6 +2422,91 @@ mod tests {
         }
         reset_conversation_for_mode(AiMode::Formatting);
         reset_conversation_for_mode(AiMode::Assistive);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn formatter_oauth_uses_account_backend_without_key_or_stored_chain() {
+        use crate::config::keychain::test_support::install_bundle;
+        use crate::llm::account_auth::{AccountTokens, OPENAI_ACCOUNT_TOKENS_ACCOUNT};
+        use crate::llm::provider::ProviderKind;
+        use crate::state::conversation::{
+            AiMode, reset_conversation_for_mode, set_response_id_for_mode,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let mut env = TestEnv::clean();
+        env.set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        env.set(
+            account_auth::CODEX_BACKEND_ENDPOINT_ENV,
+            &format!("{}/account/responses", server.url()),
+        );
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
+        }
+        env.guards.push(EnvGuard::remove("LLM_OPENAI_API_KEY"));
+        env.guards.push(EnvGuard::remove("OPENAI_API_KEY"));
+        let tokens = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "synthetic-account-access".into(),
+            None,
+            None,
+            None,
+            Some(3600),
+        );
+        let serialized = serde_json::to_string(&tokens).unwrap();
+        let _bundle = install_bundle(&[(OPENAI_ACCOUNT_TOKENS_ACCOUNT, &serialized)]);
+        let snapshot = Config::load_runtime_snapshot().unwrap();
+        let lane = snapshot.llm_lanes().formatting();
+        assert!(lane.credential().account_auth());
+        assert!(lane.credential().api_key().is_none());
+        let mock = server.mock("POST", "/account/responses")
+            .match_header("authorization", "Bearer synthetic-account-access")
+            .match_header("x-api-key", Matcher::Missing)
+            .match_header("originator", "codescribe")
+            .match_request(|request| {
+                let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["stream"] == true && body["store"] == false
+                    && body.get("previous_response_id").is_none()
+                    && body.get("temperature").is_none()
+                    && body.get("max_output_tokens").is_none()
+                    && body["instructions"] == "format only"
+            })
+            .with_status(200).with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"ephemeral\"}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Formatted.\"}\n\n",
+                "data: {\"type\":\"response.output_text.done\",\"text\":\"Formatted.\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"ephemeral\",\"status\":\"completed\"}}\n\n",
+                "data: [DONE]\n\n"))
+            .expect(1).create_async().await;
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "must-not-be-sent".into());
+        let output = call_llm_endpoint_streaming(
+            "raw words",
+            "format only",
+            false,
+            lane,
+            StreamRequestContext {
+                callbacks: StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                initial_response_timeout: Duration::from_secs(2),
+                inter_chunk_timeout: Duration::from_secs(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.assistant_text, "Formatted.");
+        assert_eq!(
+            crate::state::conversation::get_previous_response_id_for_mode(AiMode::Formatting)
+                .as_deref(),
+            Some("must-not-be-sent")
+        );
+        mock.assert_async().await;
+        reset_conversation_for_mode(AiMode::Formatting);
     }
 
     #[tokio::test]

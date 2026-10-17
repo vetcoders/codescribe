@@ -44,7 +44,9 @@ are stored in the pending records or migration logs.
 `CodescribeConfig.provider_access_snapshot` is the explicit background acquisition
 boundary for Settings and Setup. It refreshes the existing core bundle, lets the
 existing runtime loader complete pending credential imports, and returns provider
-rows, key presence, STT lanes and a revision. `provider_access_revision` is a
+rows, key presence, STT lanes and a revision. It also re-seals the live recording
+controller through the one settings-refresh path, so credentials acquired after
+launch reach the next idle take. `provider_access_revision` is a
 cache-only check. The view models reject an older generation or revision after a
 credential/config mutation and request one subsequent read before publishing.
 

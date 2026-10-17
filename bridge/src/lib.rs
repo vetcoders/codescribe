@@ -98,12 +98,29 @@ pub use tray_status::{
 /// (overlay quality records).
 #[derive(uniffi::Error, Debug)]
 pub enum CsError {
-    Agent { msg: String },
-    Config { msg: String },
-    Recording { msg: String },
-    License { msg: String },
-    Quality { msg: String },
-    Runtime { msg: String },
+    Agent {
+        msg: String,
+    },
+    Config {
+        msg: String,
+    },
+    Recording {
+        msg: String,
+    },
+    License {
+        msg: String,
+    },
+    Quality {
+        msg: String,
+    },
+    Runtime {
+        msg: String,
+    },
+    /// Guided calibration measured but kept no profile. Swift owns the
+    /// sentence for each refusal (docs/LOCALIZATION.md §5).
+    CalibrationRefused {
+        refusal: CsCalibrationRefusal,
+    },
 }
 
 impl std::fmt::Display for CsError {
@@ -118,6 +135,81 @@ impl std::fmt::Display for CsError {
             | CsError::Runtime { msg } => {
                 write!(f, "{msg}")
             }
+            CsError::CalibrationRefused { refusal } => {
+                write!(f, "calibration_refused: {refusal:?}")
+            }
+        }
+    }
+}
+
+impl CsError {
+    /// A typed refusal crosses as `CalibrationRefused`; any other calibration
+    /// failure keeps its message as `Recording`.
+    fn from_calibration(error: &anyhow::Error) -> Self {
+        match error.downcast_ref::<codescribe_core::config::GuidedCalibrationRefused>() {
+            Some(refused) => {
+                tracing::warn!(%refused, "guided calibration kept no profile");
+                CsError::CalibrationRefused {
+                    refusal: (&refused.0).into(),
+                }
+            }
+            None => CsError::Recording {
+                msg: error.to_string(),
+            },
+        }
+    }
+}
+
+/// Why a guided calibration kept no profile: a code and its arguments. The
+/// four the person can act on are named; a measurement that is only to be
+/// repeated is `Unusable`, its English detail logged where it is mapped.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq)]
+pub enum CsCalibrationRefusal {
+    /// Every sample was at the digital-silence floor. This identifies the
+    /// measured signal, not the cause of a device-routing failure.
+    DigitalSilence {
+        device_name: String,
+        samples: u64,
+    },
+    NoActiveSpeech,
+    InsufficientSpeech {
+        measured_seconds: f32,
+        required_seconds: f32,
+    },
+    InsufficientSeparation {
+        threshold_dbfs: f32,
+        noise_floor_dbfs: f32,
+    },
+    Unusable,
+}
+
+impl From<&codescribe_core::config::EnergyCalibrationRefusal> for CsCalibrationRefusal {
+    fn from(refusal: &codescribe_core::config::EnergyCalibrationRefusal) -> Self {
+        use codescribe_core::config::EnergyCalibrationRefusal as Refusal;
+        match refusal {
+            Refusal::DigitalSilence {
+                device_name,
+                samples,
+            } => Self::DigitalSilence {
+                device_name: device_name.clone(),
+                samples: *samples,
+            },
+            Refusal::NoActiveSpeech => Self::NoActiveSpeech,
+            Refusal::InsufficientSpeech {
+                measured_seconds,
+                required_seconds,
+            } => Self::InsufficientSpeech {
+                measured_seconds: *measured_seconds,
+                required_seconds: *required_seconds,
+            },
+            Refusal::InsufficientSeparation {
+                threshold_dbfs,
+                noise_floor_dbfs,
+            } => Self::InsufficientSeparation {
+                threshold_dbfs: *threshold_dbfs,
+                noise_floor_dbfs: *noise_floor_dbfs,
+            },
+            _ => Self::Unusable,
         }
     }
 }
@@ -130,6 +222,112 @@ pub fn agent_conversation_bus_path() -> String {
     codescribe::presentation::transcript_bus::transcript_bus_path()
         .to_string_lossy()
         .into_owned()
+}
+
+/// Validate and recover managed journal linkage before the first take. The
+/// potentially expensive archive verification never runs on the UI thread.
+#[uniffi::export]
+pub async fn prepare_transcript_storage() -> Result<bool, CsError> {
+    application_runtime::run(async {
+        tokio::task::spawn_blocking(|| {
+            let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+            prepare_transcript_storage_at(&path, &codescribe_core::stt::active_names::bridge_home())
+        })
+        .await
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })?
+        .map_err(|error| CsError::Recording {
+            msg: format!("Transcript storage unavailable: {error}"),
+        })
+    })
+    .await?
+}
+
+fn prepare_transcript_storage_at(
+    path: &std::path::Path,
+    bridge_home: &std::path::Path,
+) -> std::io::Result<bool> {
+    use codescribe::presentation::transcript_bus_maintenance::generation;
+    use std::{fs, io};
+
+    let mut receipt = path.as_os_str().to_os_string();
+    receipt.push(".generations.json");
+    let receipt = std::path::Path::new(&receipt);
+    // Only a generation receipt makes the main journal managed. Without one
+    // there is nothing to recover, and acquiring its lease would create a lock
+    // file in a directory that may not exist before the first take.
+    let mut managed_main = false;
+    for selected in [path, receipt] {
+        match fs::symlink_metadata(selected) {
+            Ok(metadata) if metadata.is_file() => managed_main |= selected == receipt,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Transcript storage is not a regular file: {}",
+                        selected.display()
+                    ),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    if managed_main {
+        paths.insert(path.to_path_buf());
+    }
+    let buses = bridge_home.join("buses");
+    let entries = match fs::symlink_metadata(&buses) {
+        Ok(metadata) if metadata.is_dir() => Some(fs::read_dir(&buses)?),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Channel storage is not a directory: {}", buses.display()),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(entries) = entries {
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with("channel-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let receipt = entry
+                .path()
+                .with_file_name(format!("{name}.generations.json"));
+            match fs::symlink_metadata(&receipt) {
+                Ok(metadata) if metadata.is_file() && entry.file_type()?.is_file() => {
+                    paths.insert(entry.path());
+                }
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Managed channel storage is not a regular file: {}",
+                            entry.path().display()
+                        ),
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let mut recovered = false;
+    for path in paths {
+        recovered |= generation::recover_device_number(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+    }
+    Ok(recovered)
 }
 
 /// Start the one process-owned async runtime. Idempotent while running; once
@@ -240,9 +438,143 @@ impl From<CsLanguage> for codescribe_core::config::Language {
 }
 
 #[cfg(test)]
+mod calibration_refusal_tests {
+    use super::{CsCalibrationRefusal, CsError};
+    use codescribe_core::config::{EnergyCalibrationRefusal, GuidedCalibrationRefused};
+
+    /// 2026-10-15: the AirPods refusal reached Settings as an English sentence
+    /// inside `Recording(msg:)`. It crosses as a code with its arguments.
+    #[test]
+    fn guided_refusal_crosses_as_a_code_and_other_failures_keep_their_message() {
+        let error = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::DigitalSilence {
+                device_name: "AirPods Pro".into(),
+                samples: 240_000,
+            },
+        ));
+        assert!(
+            error
+                .to_string()
+                .starts_with("calibration_refused: `AirPods Pro` sent no sound")
+        );
+        assert!(matches!(
+            CsError::from_calibration(&error),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::DigitalSilence { ref device_name, samples: 240_000 }
+            } if device_name == "AirPods Pro"
+        ));
+        let thin = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::InsufficientSpeech {
+                measured_seconds: 0.4,
+                required_seconds: 1.0,
+            },
+        ));
+        assert!(matches!(
+            CsError::from_calibration(&thin),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::InsufficientSpeech { .. }
+            }
+        ));
+        let broken = anyhow::Error::new(GuidedCalibrationRefused(
+            EnergyCalibrationRefusal::NonFinite("peak_db"),
+        ));
+        assert!(matches!(
+            CsError::from_calibration(&broken),
+            CsError::CalibrationRefused {
+                refusal: CsCalibrationRefusal::Unusable
+            }
+        ));
+        let busy = anyhow::anyhow!("energy calibration refused while an agent channel is open");
+        assert!(matches!(
+            CsError::from_calibration(&busy),
+            CsError::Recording { ref msg } if msg.contains("agent channel")
+        ));
+    }
+}
+
+#[cfg(test)]
 mod startup_tests {
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn storage_preparation_skips_unmanaged_files_and_reports_a_broken_managed_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let home = root.path().join("agent-bridge");
+        std::fs::create_dir_all(home.join("buses")).unwrap();
+        let channel = home.join("buses/channel-3.jsonl");
+        std::fs::write(&channel, b"untouched unmanaged data\n").unwrap();
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.exists());
+        let receipt = channel.with_file_name("channel-3.jsonl.generations.json");
+        std::fs::write(&receipt, b"{broken").unwrap();
+        let error = super::prepare_transcript_storage_at(&bus, &home).unwrap_err();
+        assert!(error.to_string().contains("channel-3.jsonl"));
+        assert_eq!(
+            std::fs::read(&channel).unwrap(),
+            b"untouched unmanaged data\n"
+        );
+        assert_eq!(std::fs::read(&receipt).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn storage_preparation_without_a_main_receipt_creates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("absent/bus.jsonl");
+        let home = root.path().join("agent-bridge");
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.parent().unwrap().exists());
+        std::fs::create_dir_all(bus.parent().unwrap()).unwrap();
+        std::fs::write(&bus, b"{}\n").unwrap();
+        assert!(!super::prepare_transcript_storage_at(&bus, &home).unwrap());
+        assert!(!bus.with_file_name("bus.jsonl.generation.lock").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn storage_preparation_refuses_symlinked_managed_channels_receipts_and_directory() {
+        use std::os::unix::fs::symlink;
+        for mode in [
+            "directory",
+            "channel",
+            "receipt",
+            "main_bus",
+            "main_receipt",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let bus = root.path().join("bus.jsonl");
+            let home = root.path().join("agent-bridge");
+            let outside = root.path().join("outside");
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let sentinel = outside.join("sentinel");
+            std::fs::write(&sentinel, b"preserve").unwrap();
+            if mode == "main_bus" {
+                symlink(&sentinel, &bus).unwrap();
+            } else if mode == "main_receipt" {
+                symlink(&sentinel, bus.with_file_name("bus.jsonl.generations.json")).unwrap();
+            } else if mode == "directory" {
+                symlink(&outside, home.join("buses")).unwrap();
+            } else {
+                std::fs::create_dir_all(home.join("buses")).unwrap();
+                let channel = home.join("buses/channel-3.jsonl");
+                let receipt = home.join("buses/channel-3.jsonl.generations.json");
+                if mode == "channel" {
+                    symlink(&sentinel, &channel).unwrap();
+                    std::fs::write(&receipt, b"{}").unwrap();
+                } else {
+                    std::fs::write(&channel, b"preserve channel").unwrap();
+                    symlink(&sentinel, &receipt).unwrap();
+                }
+            }
+            assert!(
+                super::prepare_transcript_storage_at(&bus, &home).is_err(),
+                "{mode}"
+            );
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+        }
+    }
 
     #[test]
     fn startup_returns_while_compaction_thread_is_held_at_entry() {

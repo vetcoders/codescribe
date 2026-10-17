@@ -52,7 +52,8 @@ final class OnDeviceFormatterHost: CsOnDeviceFormatter, Sendable {
     }
   }
 
-  private static func generateText(instructions: String, userMessage: String) async throws -> String {
+  private static func generateText(instructions: String, userMessage: String) async throws -> String
+  {
     guard #available(macOS 26.0, *) else {
       throw FormatterUnavailable()
     }
@@ -65,7 +66,7 @@ final class OnDeviceFormatterHost: CsOnDeviceFormatter, Sendable {
   }
 
   static func mapError(_ error: Error) -> CsOnDeviceFormatOutcome {
-    let message = String(describing: error)
+    let message = error.userFacingMessage
     if #available(macOS 27.0, *), let modelError = error as? LanguageModelError {
       switch modelError {
       case .unsupportedLanguageOrLocale: return .unsupportedLanguage(message: message)

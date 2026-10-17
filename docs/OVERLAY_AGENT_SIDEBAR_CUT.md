@@ -2,7 +2,7 @@
 
 Updated: 2026-10-07.
 Owner and integrator: this Codex session, explicitly assigned by the Founder.
-Runtime: Fleet Worktree; `/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`.
+Runtime: Fleet Worktree; `/Users/tester/.vibecrafted/worktrees/e19c/codescribe`.
 Branch: `codex/overlay-integrate-261007`.
 Baseline: `d9e4233153cac7cd3dd6c4e45e6ee4d1e1c11d79`.
 Source checkpoints: `3c1d183b8f64ed8019b156f854120285955bd912`,

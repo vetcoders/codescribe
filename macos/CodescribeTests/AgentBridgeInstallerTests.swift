@@ -31,13 +31,15 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let lease = installer.bridgeRoot.appendingPathComponent("leases/\(candidate.leaseID).json")
     try FileManager.default.createDirectory(
       at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)
-    func writeLease(padding: Int, model: String? = nil) throws {
+    func writeLease(padding: Int, model: String? = nil, repository: String? = nil) throws {
       var row: [String: Any] = [
         "schema": "codescribe.agent-bridge.lease.v1", "lease_id": candidate.leaseID,
         "provider": candidate.provider, "provider_session_id": candidate.session,
         "bus": customBus, "pending": [["text": String(repeating: "x", count: padding)]],
       ]
       row["model"] = model
+      row["repository_name"] = repository
+      row["workspace"] = "/tmp/project/worktree"
       try JSONSerialization.data(withJSONObject: row).write(to: lease)
     }
     try writeLease(padding: 5 << 20)
@@ -55,6 +57,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(
       withModel["2"]?.identity, resolved["2"]?.identity,
       "Changing display metadata must not change playback identity")
+    try writeLease(padding: 0, model: "gpt-6.1-sol", repository: "codescribe")
+    let withRepository = await RealAgentBridgeInstaller.boundPlaybackAgents(
+      for: ["2": candidate], installer: installer)
+    XCTAssertEqual(withRepository["2"]?.descriptor, "Codex · gpt-6.1-sol · codescribe")
+    XCTAssertEqual(withRepository["2"]?.workspace, "/tmp/project/worktree")
+    XCTAssertEqual(withRepository["2"]?.identity, resolved["2"]?.identity)
     try writeLease(padding: 16 << 20)
     let oversized = await RealAgentBridgeInstaller.boundPlaybackAgents(
       for: ["2": candidate], installer: installer)
@@ -129,6 +137,34 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let unreadable = await RealAgentBridgeInstaller.playbackMuteSnapshot(
       for: [identity], installer: installer)
     XCTAssertNil(unreadable[identity], "An existing unreadable object is not a missing receipt")
+  }
+
+  func testGlobalPlaybackReceiptHasOneScopeAndDoesNotBorrowPerAgentState() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let path = installer.bridgeRoot.appendingPathComponent("runtime/playback-mutes/global.json")
+    let absent = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+    XCTAssertEqual(absent, false)
+    try FileManager.default.createDirectory(
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    for muted in [true, false] {
+      let row: [String: Any] = [
+        "schema": "codescribe.agent-playback-mute.v1", "scope": "all", "muted": muted,
+      ]
+      try JSONSerialization.data(withJSONObject: row).write(to: path, options: .atomic)
+      let snapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+      XCTAssertEqual(snapshot, muted)
+    }
+    for data in [
+      Data("not-json".utf8),
+      Data(
+        "{\"schema\":\"codescribe.agent-playback-mute.v1\",\"scope\":\"one\",\"muted\":false}".utf8),
+      Data(repeating: 32, count: 65537),
+    ] {
+      try data.write(to: path)
+      let snapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot(installer: installer)
+      XCTAssertNil(snapshot)
+    }
   }
 
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {
@@ -1253,6 +1289,88 @@ final class AgentBridgeInstallerTests: XCTestCase {
         atPath: home.appendingPathComponent(".local/bin/cs-bus").path))
   }
 
+  // The fresh-profile incident (2026-10-12): the bus wrote its ack cursor into
+  // `runtime/` before anything was installed, and the installer read that state
+  // directory as somebody else's installation.
+  func testLaunchInstallsOverRuntimeStateLeftByTheBusWithoutAReceipt() throws {
+    let home = scratch.appendingPathComponent("sync-state-only-home", isDirectory: true)
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("follower filip attached\n".utf8)
+    try logBytes.write(to: log)
+    let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
+    let cursorBytes = Data("{\"cursor\": 41}\n".utf8)
+    try cursorBytes.write(to: cursor)
+    let cursorInode = try fileNumber(cursor)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("runtime installed"), detail)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path),
+      "the first launch that finds only bus state still commits a receipt")
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("bin/bus-demux.py").path))
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(try fileNumber(cursor), cursorInode, "ack cursor keeps its inode")
+    XCTAssertTrue(installer.synchronizeManagedPayload().contains("unchanged"))
+  }
+
+  func testLaunchRetainsARuntimeHoldingPayloadWithoutAReceipt() throws {
+    let home = scratch.appendingPathComponent("sync-unowned-payload-home", isDirectory: true)
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let helper = runtime.appendingPathComponent("bin/bus-demux.py")
+    try FileManager.default.createDirectory(
+      at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let helperBytes = Data("#!/usr/bin/env python3\nprint('another installation')\n".utf8)
+    try helperBytes.write(to: helper)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("skipped"), detail)
+    XCTAssertEqual(try Data(contentsOf: helper), helperBytes)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+  }
+
+  func testFirstInstallAdoptsAManagedCommandLeftByAForgottenProfile() throws {
+    let home = scratch.appendingPathComponent("orphaned-command-home")
+    let orphan = home.appendingPathComponent(".local/bin/cs-bus")
+    try FileManager.default.createDirectory(
+      at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(
+      """
+      #!/usr/bin/env python3
+      # codescribe-managed-command: {"bundle_version":"0.0.1","managed_id":"forgotten-profile"}
+      print('previous generation')
+
+      """.utf8
+    ).write(to: orphan)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: orphan.path)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    _ = try installer.installRuntime()
+
+    let managedID = try XCTUnwrap(
+      try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))[
+        "managed_id"] as? String)
+    XCTAssertEqual(installer.managedCommandID(orphan), managedID)
+    XCTAssertTrue(
+      try String(contentsOf: orphan, encoding: .utf8).contains("print('bridge')"),
+      "the adopted command carries this bundle's helper")
+  }
+
   func testForeignCommandRefusesBeforePayloadMutation() throws {
     let home = scratch.appendingPathComponent("foreign-command-home")
     let foreign = home.appendingPathComponent(".local/bin/cs-say")
@@ -1459,6 +1577,109 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(preserved.contains("followers/filip.log"), preserved.joined(separator: ","))
     let payloadPaths = try XCTUnwrap(receipt["payload_files"] as? [[String: Any]])
     XCTAssertFalse(payloadPaths.contains { $0["path"] as? String == "docs/legacy.txt" })
+  }
+
+  func testCommandLineParsesBothFlagFormsAndRefusesEverythingElse() {
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: ["Codescribe"]), .notRequested)
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: ["Codescribe", "--install-agent-bridge"]),
+      .runtime)
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "claude-code,codex"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=claude-code,codex"],
+      ["Codescribe", "--agent-clients", " claude-code , codex ", "--install-agent-bridge"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=codex,claude-code,codex"],
+    ] {
+      XCTAssertEqual(
+        AgentBridgeCommandLine.request(arguments: arguments),
+        .clients([.claudeCode, .codex]),
+        arguments.joined(separator: " "))
+    }
+    XCTAssertEqual(
+      AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--install-agent-bridge", "--agent-clients=agents",
+      ]),
+      .clients([.agents]))
+
+    // A selection without the installation verb is not a runnable request.
+    guard
+      case .usage(let orphan) = AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--agent-clients=codex",
+      ])
+    else { return XCTFail("a bare --agent-clients must be a usage error") }
+    XCTAssertTrue(orphan.contains("--install-agent-bridge"), orphan)
+    XCTAssertFalse(orphan.contains("\n"), orphan)
+
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "claude"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients=codex,cursor"],
+    ] {
+      guard case .usage(let unknown) = AgentBridgeCommandLine.request(arguments: arguments) else {
+        return XCTFail(
+          "an unknown client must be a usage error: \(arguments.joined(separator: " "))")
+      }
+      for name in AgentBridgeClient.allCases.map(\.rawValue) {
+        XCTAssertTrue(unknown.contains(name), unknown)
+      }
+      XCTAssertFalse(unknown.contains("\n"), unknown)
+    }
+
+    for arguments in [
+      ["Codescribe", "--install-agent-bridge", "--agent-clients"],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients="],
+      ["Codescribe", "--install-agent-bridge", "--agent-clients", "  "],
+    ] {
+      guard case .usage(let empty) = AgentBridgeCommandLine.request(arguments: arguments) else {
+        return XCTFail(
+          "a valueless flag must not deselect clients: \(arguments.joined(separator: " "))")
+      }
+      XCTAssertTrue(empty.contains("--agent-clients"), empty)
+    }
+  }
+
+  func testCommandLineSelectionInstallsTheNamedClientsIntoTheBridgeHome() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("cli-home", isDirectory: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+
+    guard
+      case .clients(let selected) = AgentBridgeCommandLine.request(arguments: [
+        "Codescribe", "--install-agent-bridge", "--agent-clients=claude-code,agents",
+      ])
+    else { return XCTFail("the CLI must reach the explicit selection path") }
+
+    let status = try installer.install(selectedClients: selected)
+    XCTAssertEqual(Set(status.installedClients), [.claudeCode, .agents])
+    for client in [".claude", ".agents"] {
+      XCTAssertTrue(
+        FileManager.default.fileExists(
+          atPath: home.appendingPathComponent("\(client)/skills/codescribe/SKILL.md").path),
+        client)
+    }
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codex/skills/codescribe").path))
+    XCTAssertTrue(
+      FileManager.default.isExecutableFile(
+        atPath: home.appendingPathComponent(
+          ".codescribe/agent-bridge/runtime/bin/bus-demux.py"
+        ).path))
+
+    let summary = AgentBridgeCommandLine.summary(status)
+    XCTAssertFalse(summary.contains("\n"), summary)
+    for (client, relative) in [
+      (AgentBridgeClient.claudeCode, ".claude/skills/codescribe"),
+      (AgentBridgeClient.agents, ".agents/skills/codescribe"),
+    ] {
+      XCTAssertTrue(summary.contains(client.displayName), summary)
+      XCTAssertTrue(
+        summary.contains(
+          home.appendingPathComponent(relative, isDirectory: true).standardizedFileURL.path),
+        summary)
+    }
+    XCTAssertFalse(summary.contains(AgentBridgeClient.codex.displayName), summary)
   }
 
   private func makePayload(

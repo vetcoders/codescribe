@@ -364,12 +364,10 @@ pub struct SileroIngress {
     /// so some captured audio never reached this observer. The hole cannot be
     /// certified as speech or as silence.
     discontinuous: bool,
-    /// Session sample index of the first non-finite sample fed to this ingress.
+    /// First capture sample whose PCM/model view is invalid or misaligned.
     ///
-    /// The VAD reads whatever arrives; NaN and infinities produce a probability
-    /// that fails every threshold comparison, so invalid PCM leaves no crossing
-    /// and would be reported as measured silence. Recording where validity
-    /// ended keeps that region unmeasured instead.
+    /// Invalid PCM or a misaligned projection cannot certify a speech valley.
+    /// Recording where validity ended keeps that region unmeasured.
     first_invalid_sample: Option<u64>,
 }
 
@@ -470,6 +468,13 @@ impl SileroIngress {
                 AcousticAvailability::NotObserved,
             );
         }
+        if self.vad.vad_measurement_failed() {
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                SILERO_BOUNDARIES_PRODUCER,
+                AcousticAvailability::InvalidMeasurement { valid_samples: 0 },
+            );
+        }
         // Validity before continuity: a hole is audio this observer never got,
         // while invalid PCM is audio it got and could not read. Both refuse,
         // and the reason names which one actually happened.
@@ -537,9 +542,14 @@ impl SileroIngress {
         self.vad.push_scripted_speech_prob_for_test(prob);
     }
 
-    /// Feed one capture chunk. `samples_seen` is the session cursor *after*
-    /// this chunk (same counter `apple_stream_worker` already owns).
-    pub fn ingest(&mut self, samples: &[f32], samples_seen: u64) -> SileroIngest {
+    /// Feed capture identity and its time-aligned recognizer projection.
+    /// `samples_seen` remains the raw capture cursor after this chunk.
+    pub fn ingest(
+        &mut self,
+        samples: &[f32],
+        model_audio: &[f32],
+        samples_seen: u64,
+    ) -> SileroIngest {
         if samples.is_empty() {
             // Nothing was observed, so nothing is recorded. An empty call must
             // not advance the extent this ingress claims to have heard.
@@ -549,7 +559,27 @@ impl SileroIngress {
         // before any speech decision reads it.
         self.note_observed_pcm(samples.len() as u64, samples_seen);
         self.note_pcm_validity(samples, samples_seen);
-        let events = self.vad.feed(samples, 0);
+        if model_audio.len() != samples.len()
+            || model_audio.iter().any(|sample| !sample.is_finite())
+        {
+            self.first_invalid_sample
+                .get_or_insert(samples_seen.saturating_sub(samples.len() as u64));
+        }
+        // Once this epoch has an unreadable view, do not emit later boundaries
+        // from a model clock that missed part of its capture stream.
+        if self.first_invalid_sample.is_some() {
+            return SileroIngest {
+                open: self
+                    .ledger
+                    .utterances
+                    .last()
+                    .filter(|owner| !owner.closed)
+                    .map(|owner| owner.id),
+                speech_live: self.vad.open_segment_raw_range().is_some(),
+                ..SileroIngest::default()
+            };
+        }
+        let events = self.vad.feed(samples, model_audio);
         let boundaries = self.vad.take_vad_boundaries();
         let closed_here = events
             .iter()
@@ -565,6 +595,62 @@ impl SileroIngress {
         }
         out.sideband = self.observe_boundaries(&boundaries);
         out
+    }
+
+    /// Provider timing can nominate a boundary; only a continuous, valid
+    /// Silero silence candidate may close the existing physical owner.
+    pub fn confirm_phrase_valley(
+        &mut self,
+        phrase_end: u64,
+        min_valley_samples: u64,
+    ) -> SileroIngest {
+        if !self.vad_available()
+            || self.vad.vad_measurement_failed()
+            || self.discontinuous
+            || self.first_invalid_sample.is_some()
+            || self.observed_samples == 0
+            || !self
+                .vad
+                .confirm_phrase_valley(phrase_end, min_valley_samples)
+        {
+            return SileroIngest::default();
+        }
+        let boundaries = self.vad.take_vad_boundaries();
+        let closed_end = self.vad.last_closed_segment_raw_range().map(|(_, end)| end);
+        let mut out = self.observe_with_closed_end(None, true, closed_end, self.observed_samples);
+        if let Some(receipt) = self.vad.last_close_receipt() {
+            for id in &out.closed {
+                self.ledger.close_receipts.insert(*id, receipt);
+            }
+        }
+        out.sideband = self.observe_boundaries(&boundaries);
+        out
+    }
+
+    /// A phrase restart needs a measured non-speech interval between all
+    /// previous word pins and the new onset. Missing observation is not silence.
+    pub fn has_phrase_valley(&self, previous_end: u64, next_start: u64, minimum: u64) -> bool {
+        if minimum == 0
+            || next_start < previous_end
+            || next_start > self.observed_samples
+            || !self.vad_available()
+            || self.vad.vad_measurement_failed()
+            || self.discontinuous
+            || self.first_invalid_sample.is_some()
+        {
+            return false;
+        }
+        self.speech
+            .raw_ranges(self.observed_samples)
+            .windows(2)
+            .any(|pair| {
+                let quiet_start = pair[0].1;
+                let quiet_end = pair[1].0;
+                previous_end <= quiet_start.saturating_add(self.vad.speech_pad_raw() as u64)
+                    && next_start >= quiet_end
+                    && quiet_end.saturating_sub(quiet_start) >= minimum
+                    && previous_end <= quiet_end
+            })
     }
 
     /// The whole decision, separated from the VAD read so it is testable on
@@ -608,6 +694,28 @@ impl SileroIngress {
             out.closed.push(id);
         }
         if let Some((start, end)) = open_range {
+            // A fresh recognizer epoch replays DEFAULT_LEFT_PAD_SECS of PCM.
+            // Its owner must retain that same onset context, including words
+            // before the chunker's narrower pad. Refreshes keep the original
+            // start; a forced split never pads back into the preceding owner.
+            let has_open_owner = self.ledger.utterances().iter().any(|owner| !owner.closed);
+            let start = if !reopens && !has_open_owner {
+                let left_pad = (DEFAULT_LEFT_PAD_SECS * self.sample_rate as f32)
+                    .round()
+                    .max(0.0) as u64;
+                let extra_pad = left_pad.saturating_sub(self.vad.pre_roll_raw() as u64);
+                let previous_end = self
+                    .ledger
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .find(|owner| owner.closed)
+                    .map(|owner| owner.range.sample_end)
+                    .unwrap_or(0);
+                start.saturating_sub(extra_pad).max(previous_end.min(start))
+            } else {
+                start
+            };
             out.open =
                 Some(
                     self.ledger
@@ -772,6 +880,37 @@ pub fn slice_apple_words(
 mod tests {
     use super::*;
 
+    #[test]
+    fn misaligned_projection_is_unmeasured_not_silence() {
+        let mut ingress = SileroIngress::new(16_000, "projection-mismatch", 1);
+        ingress.ingest(&[0.1; 400], &[0.1; 399], 400);
+        assert!(matches!(
+            ingress.acoustic_speech_evidence().availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 0 }
+        ));
+    }
+
+    #[test]
+    fn misaligned_projection_keeps_the_open_epoch_without_inventing_silence() {
+        let mut ingress = SileroIngress::new(16_000, "projection-open", 1);
+        ingress.push_scripted_speech_prob_for_test(0.9);
+        let onset = ingress.ingest(&[0.2; 512], &[0.2; 512], 512);
+        assert!(onset.speech_live);
+        assert!(onset.open.is_some());
+        for cursor in [1024, 1536] {
+            let invalid = ingress.ingest(&[0.0; 512], &[0.0; 511], cursor);
+            assert!(
+                invalid.speech_live,
+                "unread audio cannot sleep an open epoch"
+            );
+            assert_eq!(invalid.open, onset.open);
+            assert!(invalid.closed.is_empty());
+            assert!(invalid.sideband.is_empty());
+        }
+        assert!(!ingress.has_phrase_valley(0, 1536, 512));
+        assert!(ingress.confirm_phrase_valley(512, 512).closed.is_empty());
+    }
+
     fn word(text: &str, start: u64, end: u64) -> FusionWord {
         FusionWord {
             confidence: None,
@@ -779,6 +918,76 @@ mod tests {
             sample_start: start,
             sample_end: end,
         }
+    }
+
+    #[test]
+    fn recognizer_onset_context_keeps_refresh_split_and_pause_ownership_disjoint() {
+        let mut ingress = SileroIngress::new(48_000, "onset-owner", 1);
+        ingress.observe(Some((104_448, 200_000)), false, 200_000);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+        assert_eq!(
+            ingress.ledger().utterance_covering(96_000).map(|u| u.id),
+            Some(1),
+            "retained recognizer onset PCM has an owner"
+        );
+        ingress.observe(Some((104_448, 411_648)), false, 411_648);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 88_320);
+
+        let split =
+            ingress.observe_with_closed_end(Some((240_000, 411_648)), true, Some(240_000), 411_648);
+        assert_eq!(split.closed, vec![1]);
+        assert_eq!(split.open, Some(2));
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 240_000);
+        assert_eq!(ingress.ledger().utterances()[1].range.sample_start, 240_000);
+        ingress.observe_with_closed_end(None, true, Some(411_648), 420_000);
+        ingress.observe(Some((425_000, 440_000)), false, 440_000);
+        assert_eq!(ingress.ledger().utterances()[2].range.sample_start, 420_000);
+        for pair in ingress.ledger().utterances().windows(2) {
+            assert!(pair[0].range.sample_end <= pair[1].range.sample_start);
+        }
+
+        let mut beginning = SileroIngress::new(48_000, "onset-zero", 1);
+        beginning.observe(Some((1_000, 8_000)), false, 8_000);
+        assert_eq!(beginning.ledger().utterances()[0].range.sample_start, 0);
+    }
+
+    #[test]
+    fn onset_padding_keeps_five_scripted_pcm_bursts_as_five_word_owners() {
+        let mut ingress = SileroIngress::new(16_000, "five-onsets", 1);
+        ingress.vad = SpeechSession::new_utterance_with_silence(16_000, 0.20);
+        let mut cursor = 0;
+        let mut words = Vec::new();
+        for _ in 0..5 {
+            let onset = cursor;
+            words.push(word("Iwo", onset + 4 * 512, onset + 8 * 512));
+            for _ in 0..20 {
+                ingress.push_scripted_speech_prob_for_test(0.9);
+                cursor += 512;
+                ingress.ingest(&[0.2; 512], &[0.2; 512], cursor);
+            }
+            for _ in 0..30 {
+                ingress.push_scripted_speech_prob_for_test(0.01);
+                cursor += 512;
+                ingress.ingest(&[0.0; 512], &[0.0; 512], cursor);
+            }
+        }
+        let owners = ingress.ledger().utterances();
+        assert_eq!(owners.len(), 5);
+        assert!(owners.iter().all(|owner| owner.closed));
+        for pair in owners.windows(2) {
+            assert!(pair[0].range.sample_end <= pair[1].range.sample_start);
+        }
+        let (assigned, leftovers) = slice_apple_words(ingress.ledger(), &words);
+        assert!(leftovers.is_empty());
+        assert_eq!(assigned.len(), 5);
+        for (index, (id, pins)) in assigned.iter().enumerate() {
+            assert_eq!(*id, index as u64 + 1);
+            assert_eq!(pins.len(), 1);
+            assert_eq!(pins[0].text, "Iwo");
+            assert_eq!(pins[0].sample_start, words[index].sample_start);
+            assert_eq!(pins[0].sample_end, words[index].sample_end);
+        }
+        assert_eq!(ingress.acoustic_speech_evidence().ranges().len(), 5);
     }
 
     /// A pause close is not a retroactive split: the chunker's padded end sits
@@ -794,13 +1003,13 @@ mod tests {
         for _ in 0..20 {
             ingress.push_scripted_speech_prob_for_test(0.9);
             cursor += 512;
-            ingress.ingest(&[0.2; 512], cursor);
+            ingress.ingest(&[0.2; 512], &[0.2; 512], cursor);
         }
         let mut closed = None;
         for _ in 0..30 {
             ingress.push_scripted_speech_prob_for_test(0.01);
             cursor += 512;
-            let out = ingress.ingest(&[0.0; 512], cursor);
+            let out = ingress.ingest(&[0.0; 512], &[0.0; 512], cursor);
             if let Some(id) = out.closed.first() {
                 closed = Some(*id);
                 break;
@@ -821,7 +1030,7 @@ mod tests {
     fn fusion_stop_records_end_of_capture_only_for_the_open_utterance() {
         let mut ingress = SileroIngress::new(16_000, "stop-receipt", 8);
         ingress.push_scripted_speech_prob_for_test(0.9);
-        let out = ingress.ingest(&[0.2; 512], 512);
+        let out = ingress.ingest(&[0.2; 512], &[0.2; 512], 512);
         let id = out.open.expect("speech opens a live utterance");
         assert!(ingress.ledger().close_receipt(id).is_none());
         assert_eq!(ingress.flush(512), Some(id));
@@ -906,7 +1115,9 @@ mod tests {
         assert_eq!(ledger.utterances()[0].range.sample_start, 0);
         assert_eq!(ledger.utterances()[0].range.sample_end, 24_000);
         assert!(ledger.utterances()[0].closed);
-        assert_eq!(ledger.utterances()[1].range.sample_start, second_start);
+        // Ownership covers the recognizer's 400 ms onset context. The chunker
+        // already supplied 64 ms, leaving 336 ms (5,376 samples) to retain.
+        assert_eq!(ledger.utterances()[1].range.sample_start, 42_624);
         assert!(!ledger.utterances()[1].closed);
         assert!(
             ledger.utterances()[1].range.sample_start - ledger.utterances()[0].range.sample_end
@@ -1309,7 +1520,9 @@ mod tests {
         let obs = ingress.observe(Some((16_000, 32_000)), true, 32_000);
         assert_eq!(obs.closed, vec![1]);
         assert_eq!(ingress.ledger().utterances().len(), 1);
-        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 16_000);
+        // Acoustic evidence above stays exact; ownership retains the extra
+        // 336 ms recognizer context before this chunker's padded start.
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 10_624);
         assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 32_000);
     }
 
@@ -1383,7 +1596,7 @@ mod tests {
         );
 
         // An empty chunk observes nothing and must not advance the extent.
-        ingress.ingest(&[], 16_000);
+        ingress.ingest(&[], &[], 16_000);
         assert_eq!(ingress.observed_samples(), 0);
         assert_eq!(
             ingress.acoustic_speech_evidence().availability(),
@@ -1489,7 +1702,11 @@ mod tests {
 
         // `ingest` records validity itself, before the model reads the chunk.
         let mut fed = SileroIngress::new(16_000, "validity-ingest", 5);
-        fed.ingest(&vec![f32::NEG_INFINITY; 1_600], 1_600);
+        fed.ingest(
+            &vec![f32::NEG_INFINITY; 1_600],
+            &vec![f32::NEG_INFINITY; 1_600],
+            1_600,
+        );
         assert_eq!(fed.observed_samples(), 1_600);
         assert_eq!(
             fed.acoustic_speech_evidence().availability(),
@@ -1498,7 +1715,7 @@ mod tests {
 
         // A finite chunk is not marked, so valid captures are untouched.
         let mut clean = SileroIngress::new(16_000, "validity-clean", 5);
-        clean.ingest(&vec![0.0f32; 1_600], 1_600);
+        clean.ingest(&vec![0.0f32; 1_600], &vec![0.0f32; 1_600], 1_600);
         assert_eq!(
             clean.acoustic_speech_evidence().availability(),
             AcousticAvailability::Observed {

@@ -8,6 +8,7 @@ import OSLog
 enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
   case codex
   case claudeCode = "claude-code"
+  case agents
 
   var id: String { rawValue }
 
@@ -15,6 +16,12 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
     switch self {
     case .codex: return "Codex"
     case .claudeCode: return "Claude Code"
+    case .agents:
+      // The path is data and stays verbatim; only the label is interface copy.
+      let label = String(
+        localized: "Other agents",
+        comment: "Agent client label; its ~/.agents path follows verbatim")
+      return "\(label) (~/.agents)"
     }
   }
 
@@ -24,6 +31,8 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
       return home.appendingPathComponent(".codex/skills/codescribe", isDirectory: true)
     case .claudeCode:
       return home.appendingPathComponent(".claude/skills/codescribe", isDirectory: true)
+    case .agents:
+      return home.appendingPathComponent(".agents/skills/codescribe", isDirectory: true)
     }
   }
 }
@@ -264,7 +273,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let receiptMatchesManagedFolder =
         marker.map { marker in
           guard let receipt else { return false }
-          return recorded && receipt.managedID == marker.managedID
+          return recorded && marker.client == client && receipt.managedID == marker.managedID
             && receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
             && managedSkillPayloadMatchesReceipt(
               client: client, destination: destination, receipt: receipt, manifest: manifest)
@@ -341,12 +350,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   func installBundledRuntime() throws -> String {
     guard let receipt = validReceipt() else {
-      guard !fileManager.fileExists(atPath: runtimeDirectory.path),
-        (try? runtimeDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true
-      else {
-        throw AgentBridgeInstallationError.conflict(
-          path: runtimeDirectory.path, reason: "unowned runtime retained")
-      }
+      // Whether this root already holds an installation is decided once, by
+      // `initializing` under the installation lease.
       _ = try install(selectedClients: [], adopting: nil, runtimeOnly: true, initializing: true)
       return "Agent bridge runtime installed; client skills remain unselected."
     }
@@ -555,12 +560,21 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       // Every remaining path entry still has to prove marker ownership below.
       try requireSynchronizationOwnership(previousReceipt, allowMissingSelectedFolders: true)
     }
-    if initializing, expectedReceipt == nil,
-      previousReceipt != nil || fileManager.fileExists(atPath: runtimeDirectory.path)
-        || fileManager.fileExists(atPath: receiptURL.path)
-    {
-      throw AgentBridgeInstallationError.conflict(
-        path: receiptURL.path, reason: "the installation changed before runtime initialization")
+    if initializing, expectedReceipt == nil {
+      // The receipt is the only authority on whether this root already holds
+      // an installation. Re-read under the lease so an initialization that
+      // started earlier cannot overwrite a receipt committed meanwhile.
+      guard previousReceipt == nil, !fileManager.fileExists(atPath: receiptURL.path) else {
+        throw AgentBridgeInstallationError.conflict(
+          path: receiptURL.path, reason: "the installation changed before runtime initialization")
+      }
+      // `runtime/` is also the bus state root: the running app writes follower
+      // logs and ack cursors there before anything is installed, so its
+      // existence proves nothing. Payload inside it does.
+      if try runtimeHoldsPayload(manifest: manifest) {
+        throw AgentBridgeInstallationError.conflict(
+          path: runtimeDirectory.path, reason: "unowned runtime payload retained")
+      }
     }
     if let expectedReceipt {
       // UI installation may have changed the selection while startup verified
@@ -1020,6 +1034,24 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     return units.contains(String(first))
   }
 
+  /// Payload evidence inside `runtime/`. The directory doubles as the bus state
+  /// root — follower logs, ack cursors, playback receipts — which the app
+  /// writes before any installation exists. Only payload, or a directory
+  /// redirected away from this root, marks an installation the receipt cannot
+  /// account for.
+  private func runtimeHoldsPayload(manifest: AgentBridgeBundleManifest) throws -> Bool {
+    guard try pathEntryExists(runtimeDirectory) else { return false }
+    let values = try? runtimeDirectory.resourceValues(forKeys: [
+      .isDirectoryKey, .isSymbolicLinkKey,
+    ])
+    guard values?.isDirectory == true, values?.isSymbolicLink != true else { return true }
+    guard let entries = try? fileManager.contentsOfDirectory(atPath: runtimeDirectory.path) else {
+      return true
+    }
+    let units = Set(payloadUnits(manifest: manifest))
+    return entries.contains { isPayloadPath($0, units: units) }
+  }
+
   /// Removes empty directories below `root`, deepest first. `root` itself stays.
   private func pruneEmptyDirectories(under root: URL) {
     guard
@@ -1090,7 +1122,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       markerValues.isRegularFile == true, markerValues.isSymbolicLink != true,
       let marker = try? decode(AgentBridgeManagedMarker.self, from: markerURL),
       marker.schema == Self.markerSchema,
-      marker.client == client,
+      (marker.client == client
+        || (client == .agents && marker.client == .claudeCode
+          && destination.standardizedFileURL == client.skillDirectory(home: homeDirectory).standardizedFileURL)),
       marker.agentBridgeRoot == bridgeRoot.standardizedFileURL.path
     else { return nil }
     return marker
@@ -1252,7 +1286,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "cs-say"].filter { name in
+    ["cs-bus", "cs-say", "cs-junie", "bus-mcp.py"].filter { name in
       manifest.files.contains { $0.path == "bin/" + name }
     }
   }
@@ -1285,6 +1319,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.conflict(
         path: directory.path, reason: "the command directory is redirected")
     }
+    // `ownedCommandIDs` is empty only when neither a receipt nor a client
+    // marker identifies an installation at this home, so no live installation
+    // can own the command: a first installation adopts the orphan a previous
+    // one left in the command directory. Once an identity is known, a command
+    // claiming a different one belongs to that other installation. A command
+    // without this product's managed header is never Codescribe's to replace.
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
@@ -1293,7 +1333,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         let ownedFile =
           link == nil
           && managedCommandID(destination).map {
-            ownedCommandIDs.contains($0)
+            ownedCommandIDs.isEmpty || ownedCommandIDs.contains($0)
           } == true
         guard ownedLink || ownedFile else {
           throw AgentBridgeInstallationError.conflict(
@@ -1313,6 +1353,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = commandURL(name)
       // cs-bus receives the complete verified helper, so neither entrypoint
       // depends on the replaceable runtime/bin payload after publication.
+      let mode = name.hasSuffix(".py") ? 0o644 : 0o755
       let source = runtimeDirectory.appendingPathComponent(
         name == "cs-bus" ? manifest.helper : "bin/" + name)
       let script = try String(contentsOf: source, encoding: .utf8)
@@ -1324,14 +1365,17 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       ]
       if let commit = manifest.sourceCommit { metadata["source_commit"] = commit }
       let generation = try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys])
+      // -E: a host that leaks its own PYTHONHOME/PYTHONPATH (seen from a
+      // Vibecrafted launcher, 2026-10-15) must not kill the helper before
+      // its first line; the helper keeps its children clean the same way.
       let header =
-        "#!/usr/bin/env python3\n" + Self.commandMarker
+        "#!/usr/bin/env -S python3 -E\n" + Self.commandMarker
         + String(decoding: generation, as: UTF8.self) + "\n"
       let data = Data((header + body).utf8)
       if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == nil,
         (try? Data(contentsOf: destination)) == data
       {
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        try fileManager.setAttributes([.posixPermissions: mode], ofItemAtPath: destination.path)
         continue
       }
       try fileManager.createDirectory(
@@ -1340,7 +1384,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         .appendingPathComponent(".\(name).stage-\(transactionID)")
       defer { try? fileManager.removeItem(at: stage) }
       try data.write(to: stage)
-      try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stage.path)
+      try fileManager.setAttributes([.posixPermissions: mode], ofItemAtPath: stage.path)
       try replace(
         destination: destination, with: stage, transactionID: transactionID, records: &records)
     }

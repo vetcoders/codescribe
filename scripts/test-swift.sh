@@ -10,6 +10,17 @@ SWIFT_TEST_MAX_TEST_SECONDS="$5"
 SWIFT_TEST_LOG="$6"
 shift 6
 
+# Xcode forwards only TEST_RUNNER_ variables into the XCTest host. Keep its
+# native config and FFI on Make's disposable test root, never ~/.codescribe.
+: "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
+export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
+export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
+# The host's overlay polls the agent bridge and its Rust core answers the
+# channel roster from it. A live ~/.codescribe/agent-bridge drew a second
+# overlay with the real conversations during a take (2026-10-13).
+mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?
+export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"
+
 echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?
 # Select the Rust artifact independently from the Swift XCTest configuration.
@@ -44,6 +55,28 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 echo "=== Regenerating Xcode project from project.yml ==="
 ( cd macos && xcodegen generate ) || exit $?
+# Keep the AX client outside the XCTest host's process and TCC identity.
+# Its private mailbox admits only this run's synthetic DerivedData host.
+mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?
+xcrun swift -swift-version 6 -warnings-as-errors scripts/tests/native-ax-probe.swift \
+  "$CODESCRIBE_DATA_DIR/ax-probe" > "$CODESCRIBE_DATA_DIR/ax-probe.log" 2>&1 &
+AX_PROBE_PID=$!
+trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true; cp "$CODESCRIBE_DATA_DIR/ax-probe.log" "$SWIFT_TEST_LOG.ax-probe.log"' EXIT
+export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"
+AX_PROBE_DEADLINE=$((SECONDS + 15))
+while [[ ! -f "$CODESCRIBE_DATA_DIR/ax-probe/ready" ]]; do
+  if ! kill -0 "$AX_PROBE_PID" 2>/dev/null || (( SECONDS >= AX_PROBE_DEADLINE )); then
+    cat "$CODESCRIBE_DATA_DIR/ax-probe.log" >&2
+    echo "test-swift: independent AX client did not start" >&2
+    exit 2
+  fi
+  sleep 0.05
+done
+if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then
+  echo "test-swift: independent AX client has no accessibility permission" >&2
+  exit 2
+fi
+
 echo "=== Swift front-end tests (CodescribeTests) ==="
 cd macos || exit $?
 # Prefer the selected dylib at runtime while retaining bundled framework lookup.

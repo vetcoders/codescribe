@@ -58,6 +58,38 @@ final class RealChatEngine: AgentChatEngine {
     try await agent.generateThreadTitle(text: text)
   }
 
+  /// A typed Max turn runs on the consultation's retained owner under its
+  /// durable acceptance id, whatever dictation formatting level is selected.
+  /// The owner's events for exactly this turn stream through the same
+  /// listener the Agent lane uses, so text, reasoning, tools and approval
+  /// cards render live instead of after the final reply.
+  func consultationReply(
+    _ text: String,
+    threadId: String,
+    turnID: String,
+    attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
+  ) async throws -> String {
+    let result = try await withListenedTurn(
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult
+    ) { listener in
+      try await agent.streamMaxConsultation(
+        text: text,
+        threadId: threadId,
+        turnId: turnID,
+        attachments: attachmentPaths.map { CsAttachment(path: $0) },
+        listener: listener
+      )
+    }
+    ThreadsChangeBus.postThreadsChanged()
+    return result
+  }
+
   func streamReply(
     _ text: String,
     threadId: String,
@@ -67,6 +99,50 @@ final class RealChatEngine: AgentChatEngine {
     onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
     onToolResult:
       @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
+  ) async throws -> String {
+    // A restored Max row must never be opened through a second AgentSession.
+    // Its explicit continuation entry point carries the durable acceptance id.
+    if let thread = try? CodescribeThreads().loadThread(id: threadId),
+      thread.mode == "max" || thread.tags.contains("max-consultation")
+    {
+      throw NSError(
+        domain: "Codescribe.Max", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Continue this conversation through its Max owner."])
+    }
+    return try await withListenedTurn(
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult
+    ) { listener in
+      // Text-only path stays byte-identical to before; only route through the
+      // vision method when the composer actually staged an image.
+      if attachmentPaths.isEmpty {
+        attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
+        return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
+      }
+      attachLog.info(
+        "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
+      )
+      let attachments = attachmentPaths.map { CsAttachment(path: $0) }
+      return try await agent.streamReplyWithAttachments(
+        text: text,
+        threadId: threadId,
+        attachments: attachments,
+        listener: listener
+      )
+    }
+  }
+
+  /// Run one bridge turn with its listener events replayed, in order, on the
+  /// main actor: the Agent stream and the Max consultation stream render text,
+  /// reasoning, tools and approval cards through this one path. The channel is
+  /// drained before the call returns or throws, so no event trails the result.
+  private func withListenedTurn(
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void,
+    run: (StreamListener) async throws -> String
   ) async throws -> String {
     let channel = AsyncStream<StreamListenerEvent>.makeStream()
     let listener = StreamListener(continuation: channel.continuation)
@@ -90,30 +166,14 @@ final class RealChatEngine: AgentChatEngine {
               summary: ffiRequest.summary,
               command: ffiRequest.command,
               cwd: ffiRequest.cwd,
-              paths: ffiRequest.paths
+              paths: ffiRequest.paths,
+              arguments: ffiRequest.arguments
             ))
         }
       }
     }
     do {
-      let result: String
-      // Text-only path stays byte-identical to before; only route through the
-      // vision method when the composer actually staged an image.
-      if attachmentPaths.isEmpty {
-        attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
-        result = try await agent.streamReply(text: text, threadId: threadId, listener: listener)
-      } else {
-        attachLog.info(
-          "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
-        )
-        let attachments = attachmentPaths.map { CsAttachment(path: $0) }
-        result = try await agent.streamReplyWithAttachments(
-          text: text,
-          threadId: threadId,
-          attachments: attachments,
-          listener: listener
-        )
-      }
+      let result = try await run(listener)
       channel.continuation.finish()
       await consumer.value
       return result
@@ -125,10 +185,13 @@ final class RealChatEngine: AgentChatEngine {
   }
 
   func cancelReply(threadId: String) -> Bool {
+    if let thread = try? CodescribeThreads().loadThread(id: threadId),
+      thread.mode == "max" || thread.tags.contains("max-consultation")
+    { return false }
     // Swift Task cancellation never reaches the Rust future through the
     // generated UniFFI bindings (they poll to completion), so this explicit
     // bridge call is what actually aborts the in-flight turn.
-    agent.cancelTurn(threadId: threadId)
+    return agent.cancelTurn(threadId: threadId)
   }
 
   func installToolApprovalHandler(

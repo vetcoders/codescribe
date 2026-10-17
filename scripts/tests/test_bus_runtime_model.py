@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -18,6 +19,39 @@ FOREIGN = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
 
 class RuntimeModelTests(unittest.TestCase):
+    def test_repository_context(self):
+        repository = self.home / "project"
+        repository.mkdir()
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(repository), *args], check=True,
+                capture_output=True, text=True)
+        git("init")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "--allow-empty", "-m", "fixture")
+        nested = repository / "sources"
+        nested.mkdir()
+        expected = {"workspace": str(nested.resolve()), "repository_name": "project",
+                    "repository_root": str(repository.resolve())}
+        self.assertEqual(DEMUX.repository_context(nested), expected)
+        worktree = self.home / "separate-cut"
+        git("worktree", "add", "--detach", str(worktree))
+        self.assertEqual(DEMUX.repository_context(worktree), {
+            "workspace": str(worktree.resolve()), "repository_name": "project",
+            "repository_root": str(worktree.resolve())})
+        self.assertEqual(DEMUX.repository_context(self.home), {"workspace": str(self.home.resolve())})
+
+    def test_repository_metadata_survives_lease_resume(self):
+        lease = DEMUX.SessionLease(
+            root=self.root, provider="codex", provider_session_id=SESSION, name="nina",
+            bus=self.bus, requested_id=None, ttl_seconds=30, follow_from_end=False,
+            provider_metadata_home=self.home, workspace=self.home)
+        self.addCleanup(lease._release_lock)
+        self.assertEqual(lease.repository_context, {"workspace": str(self.home.resolve())})
+        lease._release_lock()
+        resumed = self.lease()
+        self.assertEqual(resumed.repository_context, lease.repository_context)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

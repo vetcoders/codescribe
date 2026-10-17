@@ -87,6 +87,13 @@ reload = "hot"
 category = "audio"
 description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and the channel reopens on the same binding. Default 5 per the Founder's 2026-09-29 voice decision (seal cc6c8248, closes A.5.3); a channel that heard no voice stays open. 0 disables the threshold; utterance silence inside the session is a different knob."
 
+[vars.CODESCRIBE_AGENT_SEND_HOLD_SEC]
+default = "10"
+type = "u32"
+reload = "hot"
+category = "ui"
+description = "Send hold: seconds a typed or sealed agent message stays editable in the overlay before the follower hands it to the agent. The bus row carries hold_until; the owning lease parks it as held, promotes it on expiry, and honours revise / withdraw / release controls meanwhile. Mirrors interaction.agent_send_hold_sec in settings.json (env wins); 0 delivers immediately. Founder's 2026-10-15 request: fix a transcription before the agent reads it."
+
 [vars.AUTO_SILENCE]
 default = "1"
 type = "bool"
@@ -262,14 +269,14 @@ default = "https://api.openai.com/v1/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Shared OpenAI-compatible endpoint fallback for LLM lanes; normalized to /v1/responses"
+description = "RETIRED (ignored with one warning): the lane seals on its provider's pinned endpoint; pick the provider with LLM_FORMATTING_PROVIDER / LLM_ASSISTIVE_PROVIDER"
 
 [vars.LLM_MODEL]
 default = "gpt-4.1"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Shared OpenAI model fallback for LLM lanes"
+description = "RETIRED (ignored with one warning): models are per lane, LLM_FORMATTING_MODEL / LLM_ASSISTIVE_MODEL"
 
 [vars.LLM_LIBRAXIS_API_KEY]
 default = ""
@@ -312,7 +319,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Formatting-lane endpoint override; falls back to shared LLM_ENDPOINT"
+description = "RETIRED (ignored with one warning): the formatting lane seals on its provider's pinned endpoint (LLM_FORMATTING_PROVIDER)"
 
 [vars.LLM_FORMATTING_MODEL]
 default = "gpt-4.1"
@@ -340,7 +347,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Assistive/agent-lane endpoint override; falls back to shared LLM_ENDPOINT"
+description = "RETIRED (ignored with one warning): the assistive/agent lane seals on its provider's pinned endpoint (LLM_ASSISTIVE_PROVIDER)"
 
 [vars.LLM_ASSISTIVE_MODEL]
 default = "gpt-5.5"
@@ -708,7 +715,7 @@ default = "0"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
+description = "Arm the DictationTranscriber lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Power-user override for the Voice Lab witness key audio.dictation_witness_armed: present env wins over Settings in either direction and is recorded by name in the snapshot provenance. The witness re-checks unresolved recovery debt in the background after each committed utterance seal and once more at Stop (docs/STT_CONTRACT.md, 2026-10-15). The Rust side sets this key explicitly on the spawned bridge child for a DT request, so the armed decision crosses the process boundary without depending on the app process environment. Not a shipped default — flipping it is an operator decision"
 
 [vars.STT_FILE_ENDPOINT]
 default = ""
@@ -936,7 +943,7 @@ default = "https://api.anthropic.com/v1/messages"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
+description = "RETIRED (ignored with one warning): the Anthropic lane seals on the Messages API endpoint of the provider"
 
 [vars.CODESCRIBE_OPENAI_OAUTH_CLIENT_ID]
 default = ""
@@ -950,7 +957,7 @@ default = "https://auth.openai.com"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (proxies and staging only)"
+description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (HTTPS proxies and staging only; credential requests never follow redirects)"
 
 [vars.CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""
@@ -964,14 +971,14 @@ default = "https://console.anthropic.com"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
+description = "Override the Anthropic OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects)"
 
 [vars.LLM_XAI_ENDPOINT]
 default = "https://api.x.ai/v1/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "xAI Responses API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses (override for proxies). xAI speaks the OpenAI Responses protocol, so this lane uses the Responses request builder unchanged"
+description = "RETIRED (ignored with one warning): the xAI lane seals on https://api.x.ai/v1/responses; xAI speaks the OpenAI Responses protocol, so the lane uses the Responses request builder unchanged"
 
 [vars.CODESCRIBE_XAI_OAUTH_CLIENT_ID]
 default = ""
@@ -985,7 +992,7 @@ default = "https://auth.x.ai"
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Override the xAI OAuth issuer base URL used for account login (proxies and staging only). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
+description = "Override the xAI OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
 
 [vars.LLM_USE_STREAMING]
 default = "1"
@@ -1048,7 +1055,7 @@ default = "https://chatgpt.com/backend-api/codex/responses"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Full Responses endpoint URL override for the Agent's signed-in OpenAI account (Codex backend) lane; does not affect the API-key lane endpoint. Read from the process environment on each account-lane stream request. Leading/trailing whitespace is trimmed; unset, empty or whitespace-only values use the default. Use only a trusted destination: the account bearer token is sent to this URL."
+description = "Full Responses endpoint URL override for a signed-in OpenAI account (Codex backend), used by both the Agent and the formatting lane when they ride that account; does not affect an API-key lane endpoint. Read from the process environment on each account-lane stream request. Leading/trailing whitespace is trimmed; unset, empty or whitespace-only values use the default. Use only a trusted destination: the account bearer token is sent to this URL."
 
 [vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
 default = "1"
@@ -1802,3 +1809,10 @@ type = "bool"
 reload = "restart"
 category = "build"
 description = "Build-time developer surface bit shared by Rust and Swift. The supported app build verifies private Voice Lab access and its public-key pack before accepting 1. Distribution release forces 0. Runtime environment cannot enable a production binary."
+
+[vars.CODESCRIBE_AX_PROBE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Private request mailbox for the parent-owned external accessibility client in make test-swift. Passed through TEST_RUNNER_ to the isolated XCTest host; never read by app runtime."

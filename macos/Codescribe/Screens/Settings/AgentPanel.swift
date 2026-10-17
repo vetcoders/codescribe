@@ -47,7 +47,19 @@ struct LLMLanesSection: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: 12) {
+      SettingsControlRow(
+        title: String(localized: "Hold before sending"),
+        subtitle: String(
+          localized: "Edit or withdraw a message to an agent during this window. 0 sends immediately.")
+      ) {
+        Stepper(value: model.agentSendHoldSeconds, in: 0...30) {
+          Text("\(Int(model.settings.agentSendHoldSec)) sec")
+            .monospacedDigit()
+        }
+        .accessibilityIdentifier("agent-send-hold-seconds")
+      }
+
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
       }
@@ -90,6 +102,15 @@ private struct LLMLaneEditor: View {
     laneModel.repeatsDiscoveryFailure(of: model.llmLane(.assistive))
   }
 
+  /// Where the model name comes from: a stored override or the provider default.
+  private var modelSourceCaption: String {
+    hasOverride
+      ? String(localized: "Set manually", comment: "Model field caption: an override is stored")
+      : String(
+        localized: "Provider default model",
+        comment: "Model field caption: no override, the provider default resolves")
+  }
+
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
     case "fresh": return CSColor.olive
@@ -100,7 +121,7 @@ private struct LLMLaneEditor: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6) {
       VStack(alignment: .leading, spacing: 2) {
         Text(lane.title)
           .font(CSFont.ui(14.5, .bold))
@@ -116,7 +137,7 @@ private struct LLMLaneEditor: View {
 
       // The settings keys behind these rows live under "Active configuration
       // details" on the tab; the card itself stays free of identifiers.
-      SettingsControlRow(title: String(localized: "Provider")) {
+      SettingsControlRow(title: String(localized: "Provider"), inset: 10) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
             Button {
@@ -144,7 +165,9 @@ private struct LLMLaneEditor: View {
         .accessibilityValue(laneModel.providerDisplayName)
       }
 
-      SettingsControlRow(title: String(localized: "Model")) {
+      // The source caption sits under the row title: a third line under the
+      // field made the card tall for one short word.
+      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10) {
         VStack(alignment: .trailing, spacing: 8) {
           // Discovery state ("discovering…", cached, failed) is the footer line below.
           if laneModel.usesDiscoveredPicker {
@@ -196,17 +219,6 @@ private struct LLMLaneEditor: View {
             .accessibilityLabel("Reset \(lane.title) model")
           }
 
-          Text(
-            hasOverride
-              ? String(
-                localized: "Set manually", comment: "Model field caption: an override is stored")
-              : String(
-                localized: "Provider default model",
-                comment: "Model field caption: no override, the provider default resolves")
-          )
-          .font(CSFont.ui(10.5))
-          .foregroundStyle(Color.secondary)
-          .accessibilityLabel("\(lane.title) model source")
         }
         .frame(width: 440)
         .onAppear { modelDraft = laneModel.configuredModel }
@@ -230,13 +242,10 @@ private struct LLMLaneEditor: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           Spacer(minLength: 0)
-          Button("Refresh") {
-            model.refreshModelDiscovery(providerId: laneModel.providerId)
-          }
-          .font(CSFont.ui(11, .semibold))
-          .foregroundStyle(Color.secondary)
-          .csFocusRing()
-          .accessibilityLabel("Refresh \(lane.title) models")
+          SettingsRefreshButton(
+            busy: laneModel.discovery.status == "loading",
+            axLabel: "Refresh \(lane.title) models"
+          ) { model.refreshModelDiscovery(providerId: laneModel.providerId) }
         }
         // The provider's own words, on request only; the main line stays plain.
         if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {

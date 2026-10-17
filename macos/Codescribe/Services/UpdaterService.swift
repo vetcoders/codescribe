@@ -26,12 +26,18 @@ final class UpdaterService: ObservableObject {
   @Published private(set) var canCheckForUpdates = false
 
   private let controller: SPUStandardUpdaterController
+  private let releasePolicy: ReleaseUpdatePolicy
   private var cancellable: AnyCancellable?
 
   init() {
+    let policy = ReleaseUpdatePolicy(
+      currentVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+        as? String ?? ""
+    )
+    releasePolicy = policy
     controller = SPUStandardUpdaterController(
       startingUpdater: true,
-      updaterDelegate: nil,
+      updaterDelegate: policy,
       userDriverDelegate: nil
     )
     cancellable = controller.updater.publisher(for: \.canCheckForUpdates)
@@ -64,5 +70,46 @@ final class UpdaterService: ObservableObject {
   func checkForUpdates() {
     NSApp.activate(ignoringOtherApps: true)
     controller.checkForUpdates(nil)
+  }
+}
+
+/// Sparkle applies OS, channel, rollout and skipped-update filters first.
+/// This final selection accepts only canonical release identities: counters
+/// from older feeds cannot masquerade as newer product versions.
+@MainActor
+final class ReleaseUpdatePolicy: NSObject, SPUUpdaterDelegate {
+  let currentVersion: String
+
+  init(currentVersion: String) {
+    self.currentVersion = currentVersion
+  }
+
+  static func accepts(version: String, displayVersion: String, currentVersion: String) -> Bool {
+    guard version == displayVersion,
+      isReleaseVersion(version), isReleaseVersion(currentVersion)
+    else { return false }
+    return SUStandardVersionComparator.default.compareVersion(version, toVersion: currentVersion)
+      == .orderedDescending
+  }
+
+  private static func isReleaseVersion(_ value: String) -> Bool {
+    let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+    return parts.count == 3 && parts.allSatisfy { part in
+      !part.isEmpty && (part.count == 1 || part.first != "0")
+        && part.utf8.allSatisfy { (48...57).contains($0) }
+    }
+  }
+
+  func bestValidUpdate(in appcast: SUAppcast, for updater: SPUUpdater) -> SUAppcastItem? {
+    let candidates = appcast.items.filter {
+      Self.accepts(
+        version: $0.versionString, displayVersion: $0.displayVersionString,
+        currentVersion: currentVersion
+      )
+    }
+    return candidates.max {
+      SUStandardVersionComparator.default.compareVersion($0.versionString, toVersion: $1.versionString)
+        == .orderedAscending
+    } ?? SUAppcastItem.empty()
   }
 }

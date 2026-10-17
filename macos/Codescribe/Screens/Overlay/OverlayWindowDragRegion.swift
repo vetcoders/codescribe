@@ -43,3 +43,92 @@ final class OverlayWindowDragRegionView: NSView {
   }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
+
+/// Geometry and mounted identity only; this background never intercepts clicks.
+/// Cursor decisions stay with the existing FloatingOverlayPanel owner.
+struct OverlayMenuCursorRegion: NSViewRepresentable {
+  var onHover: ((Bool) -> Void)? = nil
+
+  func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
+    let view = OverlayMenuCursorRegionView()
+    view.onHover = onHover
+    return view
+  }
+
+  func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {
+    nsView.onHover = onHover
+  }
+}
+
+final class OverlayMenuCursorRegionView: NSView {
+  private weak var owner: FloatingOverlayPanel?
+  var onHover: ((Bool) -> Void)?
+  private(set) var hovered = false
+  private var hoverArea: NSTrackingArea?
+
+  func updateHover(at point: NSPoint?) {
+    let inside =
+      point.map {
+        window != nil && !isHiddenOrHasHiddenAncestor
+          && bounds.intersection(visibleRect).contains(convert($0, from: nil))
+      } ?? false
+    setHovered(inside)
+  }
+
+  private func setHovered(_ inside: Bool) {
+    guard hovered != inside else { return }
+    hovered = inside
+    onHover?(inside)
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverArea { removeTrackingArea(hoverArea) }
+    let area = NSTrackingArea(
+      rect: bounds.intersection(visibleRect), options: [.mouseEnteredAndExited, .activeAlways],
+      owner: self, userInfo: nil)
+    addTrackingArea(area)
+    hoverArea = area
+  }
+
+  override func mouseEntered(with event: NSEvent) { updateHover(at: event.locationInWindow) }
+  override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    setHovered(false)
+    owner?.menuCursorRegions.remove(self)
+    owner = window as? FloatingOverlayPanel
+    owner?.menuCursorRegions.add(self)
+  }
+}
+
+/// Geometry and mounted identity only; this background never intercepts clicks.
+/// A click inside opens the panel keyboard gate for selectable SwiftUI text.
+struct OverlaySelectableTextRegion: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlaySelectableTextRegionView {
+    OverlaySelectableTextRegionView()
+  }
+
+  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {}
+}
+
+final class OverlaySelectableTextRegionView: NSView {
+  private weak var owner: FloatingOverlayPanel?
+
+  func contains(windowPoint: NSPoint) -> Bool {
+    window != nil && !isHiddenOrHasHiddenAncestor
+      && bounds.intersection(visibleRect).contains(convert(windowPoint, from: nil))
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    owner?.selectableTextRegions.remove(self)
+    owner = window as? FloatingOverlayPanel
+    owner?.selectableTextRegions.add(self)
+  }
+}

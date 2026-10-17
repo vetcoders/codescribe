@@ -195,6 +195,8 @@ impl AcousticLedger {
             verdict: verdict.clone(),
         };
         self.word_deletions.push(receipt.clone());
+        self.settle_closed_edge_words(&observation.occurrence);
+        self.reconcile_returned_word_debt(&observation.occurrence);
         Ok(receipt)
     }
 }

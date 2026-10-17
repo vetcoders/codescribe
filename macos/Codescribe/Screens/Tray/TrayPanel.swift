@@ -22,7 +22,10 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     isOpaque = false
     backgroundColor = .clear
-    hasShadow = true
+    // The SwiftUI sheet paints its own shadow inside `TrayPanelSurface.shadowMargin`.
+    // AppKit's window shadow followed the glass's full rectangle and showed as
+    // square corners behind the rounded sheet (Maciej's zoom, 2026-10-15 17:37).
+    hasShadow = false
     isReleasedWhenClosed = false
     hidesOnDeactivate = false
     level = .popUpMenu
@@ -134,11 +137,17 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
 
   private func reposition() {
     guard let anchorRect, let screen = anchor?.window?.screen else { return }
-    setFrame(
-      Self.placement(
-        anchor: anchorRect, visibleScreen: screen.visibleFrame,
-        contentHeight: contentHeight), display: true)
+    // `placement` is the visible sheet; the window grows by the shadow margin
+    // on every side so the SwiftUI shadow is not clipped at the window edge.
+    let sheet = Self.placement(
+      anchor: anchorRect, visibleScreen: screen.visibleFrame,
+      contentHeight: contentHeight)
+    setFrame(sheet.insetBy(dx: -Self.shadowMargin, dy: -Self.shadowMargin), display: true)
   }
+
+  /// Room for `OverlayCanvasSurface`'s shadow (radius 20, offset 9) around the
+  /// sheet; `reposition` grows the window frame by this much on every side.
+  static let shadowMargin: CGFloat = 32
 
   static func placement(anchor: NSRect, visibleScreen: NSRect, contentHeight: CGFloat) -> NSRect {
     let bounds = visibleScreen.insetBy(dx: 6, dy: 6)
@@ -150,16 +159,19 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
   }
 }
 
-private struct TrayPanelSurface<Content: View>: View {
+struct TrayPanelSurface<Content: View>: View {
+  @Environment(\.colorScheme) private var colorScheme
   let content: Content
   let onHeightChange: (CGFloat) -> Void
 
+  /// The menu is the same physical sheet as the overlay and the setup wizard:
+  /// `OverlayCanvasSurface` (shared glass + the palette's 84 % veil + border +
+  /// shadow). It always sits next to the overlay and has one state only, open
+  /// or hidden, so any difference in darkness shows twice (Maciej, ch1
+  /// 2026-10-15 15:55Z: "menu w treju powinno być też ciemne takie jak overlay").
   var body: some View {
-    if #available(macOS 26, *) {
-      menu.glassEffect(.regular, in: .rect(cornerRadius: 22))
-    } else {
-      menu.background(.regularMaterial, in: .rect(cornerRadius: 22))
-    }
+    OverlayCanvasSurface(palette: .resolve(colorScheme)) { menu }
+      .padding(TrayPanel.shadowMargin)
   }
 
   private var menu: some View {
@@ -173,6 +185,6 @@ private struct TrayPanelSurface<Content: View>: View {
         }
     }
     .scrollBounceBehavior(.basedOnSize)
-    .clipShape(.rect(cornerRadius: 22))
+    .clipShape(.rect(cornerRadius: CSRadius.window))
   }
 }

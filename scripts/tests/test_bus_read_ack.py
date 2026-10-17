@@ -60,6 +60,105 @@ class ReadAckTests(unittest.TestCase):
              patch.object(DEMUX, "emit"):
             self.assertEqual(DEMUX.acknowledge_delivery(self.args(ack=identities)), 0)
 
+    def bounded_watch(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(SOURCE), "--watch", "--until-event",
+             "--provider", "codex", "--session", self.session,
+             "--bridge-home", str(self.root), "--max-wait", "0.05", *extra],
+            capture_output=True, text=True, timeout=5)
+
+    def test_bounded_watch_wakes_for_existing_mailbox_without_reading_or_acknowledging(self):
+        before = (self.root / "leases" / f"{self.lease}.json").read_bytes()
+        result = self.bounded_watch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notice = json.loads(result.stdout)
+        self.assertEqual(notice["kind"], "mailbox_ready")
+        self.assertEqual(notice["pending_count"], 5)
+        self.assertNotIn("read_delivery_ids", notice)
+        self.assertNotIn("Iwo", result.stdout)
+        self.assertEqual((self.root / "leases" / f"{self.lease}.json").read_bytes(), before)
+        self.assertFalse((self.root / "acknowledgments").exists())
+
+    def test_bounded_watch_ignores_acked_messages_and_drafts(self):
+        self.ack(self.ids)
+        self.pending.append(dict(self.envelope("e" * 24), kind="revised"))
+        self.save()
+        result = self.bounded_watch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["kind"], "watch_timeout")
+
+    def test_bounded_watch_wakes_on_arrival_during_wait(self):
+        import threading
+        self.pending = []
+        self.save()
+        def arrive():
+            self.pending = [self.envelope(self.ids[0])]
+            self.save()
+        timer = threading.Timer(0.15, arrive)
+        timer.start()
+        try:
+            result = self.bounded_watch("--max-wait", "2")
+        finally:
+            timer.join()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["kind"], "mailbox_ready")
+        self.assertFalse((self.root / "acknowledgments").exists())
+
+    def test_bounded_watch_refuses_foreign_owner_and_invalid_options(self):
+        self.pending[0]["delivery_owner"]["provider"] = "kimi-code"
+        self.save()
+        result = self.bounded_watch()
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("foreign pending delivery owner", result.stderr)
+        for extra in [("--max-wait", "0"), ("--max-wait", "nan"),
+                      ("--max-wait", "61"), ("--once",), ("--read-pending",),
+                      ("--ack", self.ids[0]), ("--to", "leon"), ("--takeover",)]:
+            with self.subTest(extra=extra):
+                self.assertEqual(self.bounded_watch(*extra).returncode, 2)
+
+    def open_watch(self, timeout):
+        """--until-event without --max-wait: no deadline, so no empty turn."""
+        return subprocess.run(
+            [sys.executable, str(SOURCE), "--watch", "--until-event",
+             "--provider", "codex", "--session", self.session,
+             "--bridge-home", str(self.root)],
+            capture_output=True, text=True, timeout=timeout)
+
+    def test_open_watch_never_ends_on_an_empty_mailbox(self):
+        self.ack(self.ids)
+        self.save()
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            self.open_watch(timeout=1.5)
+        self.assertFalse((caught.exception.stdout or b"").strip())
+        self.assertFalse((self.root / "acknowledgments" / self.lease / "watch_timeout").exists())
+
+    def test_open_watch_ends_only_when_a_message_arrives(self):
+        import threading
+        self.pending = []
+        self.save()
+        def arrive():
+            self.pending = [self.envelope(self.ids[0])]
+            self.save()
+        timer = threading.Timer(0.4, arrive)
+        timer.start()
+        try:
+            result = self.open_watch(timeout=5)
+        finally:
+            timer.join()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notice = json.loads(result.stdout)
+        self.assertEqual(notice["kind"], "mailbox_ready")
+        self.assertEqual(notice["pending_count"], 1)
+        self.assertFalse((self.root / "acknowledgments").exists())
+
+    def test_bounded_watch_refuses_missing_lease_without_creating_one(self):
+        (self.root / "leases" / f"{self.lease}.json").unlink()
+        result = self.bounded_watch()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse((self.root / "leases" / f"{self.lease}.json").exists())
+
     def test_archive_and_mailbox_read_cannot_combine_before_any_state_change(self):
         before = {str(p.relative_to(self.root)): p.read_bytes()
                   for p in self.root.rglob("*") if p.is_file()}
@@ -80,7 +179,8 @@ class ReadAckTests(unittest.TestCase):
     def test_five_equal_messages_are_read_completely_without_automatic_ack(self):
         before = (self.root / "leases" / f"{self.lease}.json").read_bytes()
         result = self.read()
-        self.assertEqual(result["deliveries"], self.pending)
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         self.assertEqual(result["read_delivery_ids"], self.ids)
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(before, (self.root / "leases" / f"{self.lease}.json").read_bytes())
@@ -134,16 +234,19 @@ class ReadAckTests(unittest.TestCase):
         self.pending = [notice]
         self.save()
         read = self.read()
-        self.assertEqual(read["deliveries"], [notice])
+        self.assertEqual(read["deliveries"], [
+            {**notice, "addressed_to": "unknown (source has no address)"}])
         self.ack(read["read_delivery_ids"])
         self.assertEqual(self.read()["remaining"], 0)
 
     def test_limit_does_not_truncate_or_ack_unread_items(self):
         result = self.read(read_limit=2)
-        self.assertEqual(result["deliveries"], self.pending[:2])
+        self.assertEqual(result["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[:2]])
         self.assertEqual(result["remaining"], 3)
         self.ack(result["read_delivery_ids"])
-        self.assertEqual(self.read()["deliveries"], self.pending[2:])
+        self.assertEqual(self.read()["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending[2:]])
 
     def test_byte_limit_refuses_oversized_first_envelope_without_partial_text(self):
         self.pending[0]["text"] = "Iwo " * 20000
@@ -151,7 +254,8 @@ class ReadAckTests(unittest.TestCase):
         with patch.object(DEMUX, "emit") as emit, self.assertRaisesRegex(ValueError, "read-bytes"):
             DEMUX.read_pending_command(self.args())
         emit.assert_not_called()
-        self.assertEqual(self.read(read_bytes=200000)["deliveries"], self.pending)
+        self.assertEqual(self.read(read_bytes=200000)["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
 
     def test_foreign_payload_refuses_whole_read(self):
         self.pending[3]["provider_session_id"] = "foreign"
@@ -216,6 +320,9 @@ class ReadAckTests(unittest.TestCase):
 
     def test_native_message_contains_full_task_and_read_then_ack_for_current_ownership(self):
         self.pending[0]["text"] = "Do not install old build 2094; this text stays in the bus."
+        # The normalizer stamps typed Founder text with this producer schema;
+        # only Founder copies carry text into the queue (CS160-R013).
+        self.pending[0]["producer_schema"] = DEMUX.AGENT_USER_MESSAGE_SCHEMA
         self.save()
         with patch("shutil.which", return_value="/fake/codex"), patch("subprocess.run",
                 return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
@@ -226,9 +333,15 @@ class ReadAckTests(unittest.TestCase):
         self.assertIn(self.pending[0]["text"], notice)
         self.assertIn("--read-pending", notice)
         self.assertIn("--ack", notice)
-        self.assertIn(self.session, notice)
-        self.assertIn(str(self.root), notice)
-        self.assertIn("2026-10-07T13:37:33Z", notice)
+        self.assertIn(self.ids[0], notice)
+        self.assertIn("from: Founder (typed)\n", notice)
+        self.assertLess(len(notice) - len(self.pending[0]["text"]), 250)
+        self.assertNotIn("Delivery provenance", notice)
+        # Full owner/timestamp coordinates remain in the authoritative read,
+        # rather than repeating the envelope around every queue copy.
+        received = self.read()["deliveries"][0]
+        self.assertEqual(received["provider_session_id"], self.session)
+        self.assertEqual(received["emitted_at"], "2026-10-07T13:37:33Z")
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease, self.ids[0]))
 
     def test_short_message_with_large_pcm_diagnostics_fits_default_read_budget(self):
@@ -292,7 +405,8 @@ class ReadAckTests(unittest.TestCase):
         result = self.cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         read = json.loads(result.stdout)
-        self.assertEqual(read["deliveries"], self.pending)
+        self.assertEqual(read["deliveries"], [
+            {**row, "addressed_to": "unknown (source has no address)"} for row in self.pending])
         ack = subprocess.run([sys.executable, str(SOURCE), "--provider", "codex", "--session", self.session,
                               "--bridge-home", str(self.root), "--bus", str(self.bus),
                               "--ack", *read["read_delivery_ids"]], capture_output=True, text=True)

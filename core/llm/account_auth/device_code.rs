@@ -143,7 +143,7 @@ where
 pub async fn request_device_code(
     config: &DeviceAuthConfig,
 ) -> Result<DeviceCode, AccountAuthError> {
-    let client = reqwest::Client::new();
+    let client = super::oauth_http_client(&config.issuer)?;
     request_device_code_with_client(&client, config).await
 }
 
@@ -308,7 +308,7 @@ pub async fn complete_device_code_login(
     config: &DeviceAuthConfig,
     device_code: &DeviceCode,
 ) -> Result<(), AccountAuthError> {
-    let client = reqwest::Client::new();
+    let client = super::oauth_http_client(&config.issuer)?;
     match config.provider {
         ProviderKind::XaiResponses => {
             let tokens = poll_xai_device_token(&client, config, device_code).await?;

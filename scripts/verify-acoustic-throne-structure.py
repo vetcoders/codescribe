@@ -31,7 +31,7 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=4"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=8"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     # The overlay early return calls `OverlayPasteResult::noop()`; the
@@ -39,12 +39,24 @@ AST_BODIES = {
     "noop": "app/controller/delivery_route.rs",
     "execute_clipboard_paste": "app/controller/mod.rs",
     "stop": "core/audio/streaming_recorder.rs",
-    "complete_stop": "core/audio/streaming_recorder.rs",
+    "close_capture": "core/audio/streaming_recorder.rs",
+    "release_take_pcm_feed": "core/audio/streaming_recorder.rs",
+    "release_capture_subscriber": "core/audio/streaming_recorder.rs",
+    "finish_closed_capture": "core/audio/streaming_recorder.rs",
+    "detach_closed_take": "core/audio/streaming_recorder.rs",
+    "detach_take_state": "core/audio/streaming_recorder.rs",
+    "is_settled": "core/audio/streaming_recorder.rs",
+    "finish": "core/audio/streaming_recorder.rs",
+    "copy_stop_error": "core/audio/streaming_recorder.rs",
+    "finalize_take_archive": "core/audio/streaming_recorder.rs",
     "terminal_finality": "core/pipeline/acoustic_ledger.rs",
     "has_no_capture_facts": "core/pipeline/acoustic_ledger.rs",
     "matches_refused_document": "app/presentation/transcript_bus.rs",
     "process_terminal_stop_error": "app/controller/mod.rs",
 }
+# ClosedChannel::finish consumes self; the take's terminal owner must be borrowed.
+AST_SIGNATURES = {"finish": "pub async fn finish(&mut self)"}
+
 # The shipped default when no lease is supplied. A fleet worktree that owns a
 # shared target must be able to state its own budget instead of having this
 # value forced on it; nothing else about the child environment is negotiable.
@@ -142,6 +154,7 @@ def ast_tool_digest(repo: Path) -> str:
     files = [root / "Cargo.toml", *sorted((root / "src").rglob("*"))]
     if {path.relative_to(root).as_posix() for path in files} != {
         "Cargo.toml", "src/lib.rs", "src/main.rs", "src/productions.rs", "src/finality.rs",
+        "src/closed_take.rs",
     } or any(path.is_symlink() or not path.is_file() for path in files):
         raise RuntimeError("neutral AST source inventory changed")
     workspace = tomllib.loads((repo / "Cargo.toml").read_text())["workspace"]["dependencies"]
@@ -223,7 +236,8 @@ def structural_ast_evidence(verifier: StructuralVerifier) -> dict[str, Any]:
         return cached
     bodies = []
     for symbol, file in AST_BODIES.items():
-        rows = corridor_body_rows(verifier.body(symbol, file), symbol=symbol, file=file, signature_contains=None)
+        rows = corridor_body_rows(verifier.body(symbol, file), symbol=symbol, file=file,
+                                  signature_contains=AST_SIGNATURES.get(symbol))
         if len(rows) != 1:
             raise RuntimeError(f"neutral AST requires one complete body for {file}::{symbol}")
         bodies.append(rows[0])
@@ -457,11 +471,16 @@ class StructuralVerifier:
             ).payload
         return self._literal_occurrences[literal]
 
+    # A truncated body is rejected, never read partially, so the cap only has
+    # to clear the longest declaration a corridor names. `DictationOverlayView`
+    # passed 1000 lines on 2026-10-14 (1003), which the old cap truncated.
+    BODY_LINE_CAP = 2000
+
     def body(self, symbol: str, file: str) -> dict[str, Any]:
         key = (symbol, file)
         if key not in self._bodies:
             self._bodies[key] = self.run_loct(
-                "body", symbol, "--file", file, "--line-cap", "1000"
+                "body", symbol, "--file", file, "--line-cap", str(self.BODY_LINE_CAP)
             ).payload
         return self._bodies[key]
 
@@ -1708,6 +1727,7 @@ def verify_code_corridors(
             ast_contract = hop.get("ast_contract")
             if ast_contract is not None and (
                 ast_contract != symbol or AST_BODIES.get(symbol) != file
+                or (symbol in AST_SIGNATURES and signature != AST_SIGNATURES[symbol])
             ):
                 raise RuntimeError("unadmitted AST hop contract")
             if (
@@ -1802,7 +1822,7 @@ def verify_code_corridors(
                 evidence = structural_ast_evidence(verifier)
                 ast_result = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
                 companions = {"paste_text_from_overlay": ("execute_clipboard_paste", "noop"),
-                              "stop": ("complete_stop",)}.get(symbol, ())
+                              "stop": ('close_capture', 'release_take_pcm_feed', 'release_capture_subscriber', 'finish_closed_capture', 'detach_closed_take', 'detach_take_state', 'is_settled', 'finish', 'copy_stop_error', 'finalize_take_archive')}.get(symbol, ())
                 companion_failures = [failure for row in evidence["contracts"]
                                       if row["symbol"] in companions for failure in row["failures"]]
                 if not ast_result["accepted"] or evidence["failures"] or companion_failures:
@@ -1905,8 +1925,13 @@ def verify_code_corridors(
                 and row["enclosing_symbol"].get("file") == caller_file
             ]
             if caller in AST_BODIES and caller_file == AST_BODIES[caller]:
+                # Some AST-owned symbols are overloaded in one file. Select
+                # the same typed body authenticated for neutral AST evidence;
+                # a same-name consuming helper must not make its borrowed
+                # owner ambiguous or lend that owner a callsite.
                 caller_rows = corridor_body_rows(verifier.body(caller, caller_file),
-                    symbol=caller, file=caller_file, signature_contains=None)
+                    symbol=caller, file=caller_file,
+                    signature_contains=AST_SIGNATURES.get(caller))
                 if len(caller_rows) != 1:
                     matching_rows = []
                 else:

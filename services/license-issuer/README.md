@@ -4,6 +4,14 @@ Signs CSK1 licence codes for the form at <https://codescribe.vetcoders.io/licens
 Node stdlib only (node 18+), Ed25519 via `node:crypto`; the token contract is
 `core/licensing/mod.rs` — see the header of `server.mjs`.
 
+Request contract test (runs the real `server.mjs` on an ephemeral port with a
+throwaway seed; a body whose `email` is not a string must be a 400 and the
+process must keep serving):
+
+```bash
+node --test services/license-issuer/
+```
+
 ## Deployment (ops VPS, same box as pensieve.vetcoders.io)
 
 | Piece        | Location                                                                                                      |
@@ -26,10 +34,28 @@ Site redeploy:
 
 ```bash
 cd site && npm run build
-rsync -az --delete dist/ libraxis-vm:/tmp/codescribe-landing-stage/
-ssh libraxis-vm 'sudo rsync -a --delete /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
+rsync -az --delete --exclude /appcast.xml --exclude /rc/ dist/ libraxis-vm:/tmp/codescribe-landing-stage/
+ssh libraxis-vm 'sudo rsync -a --delete --exclude /appcast.xml --exclude /rc/ /tmp/codescribe-landing-stage/ /srv/codescribe-landing/ \
   && rm -rf /tmp/codescribe-landing-stage'
 ```
+
+`/rc/` holds separately shared candidate downloads. Preserve it during site
+redeploys; publishing a candidate there does not update the homepage or stable
+Sparkle feed.
+
+`/srv/codescribe-landing/appcast.xml` is the live Sparkle feed. It is not part
+of the site build; the exclusion keeps `--delete` from removing it. Publish a
+new feed only from the signed `appcast.xml` attached to the GitHub release
+whose DMG it points at:
+
+```bash
+gh release download vX.Y.Z --repo vetcoders/codescribe --pattern appcast.xml --dir /tmp/codescribe-feed
+scp /tmp/codescribe-feed/appcast.xml libraxis-vm:/tmp/appcast.xml
+ssh libraxis-vm 'cp /srv/codescribe-landing/appcast.xml ~/appcast.xml.previous \
+  && sudo install -m 0644 /tmp/appcast.xml /srv/codescribe-landing/appcast.xml && rm /tmp/appcast.xml'
+```
+
+Rollback restores `~/appcast.xml.previous` the same way.
 
 ## Open-beta posture (operator decision, 2026-08-09)
 

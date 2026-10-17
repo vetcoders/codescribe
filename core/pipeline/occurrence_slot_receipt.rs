@@ -5,7 +5,7 @@
 //! `survived` describes the FINAL slot geometry, not historical causation.
 //! A slot can have several reasons against one Whisper observation: a midpoint
 //! in a gap may also have no overlap at all. Deltas are slot minus Whisper on
-//! the capture clock. Normalization matches `same_word_pin` (edge non-alphanumeric
+//! the capture clock. Normalization matches `normalize_word_token` (edge non-alphanumeric
 //! characters stripped, Unicode lowercase), and never influences the ledger.
 
 use std::collections::BTreeMap;

@@ -3,8 +3,8 @@ import XCTest
 @testable import Codescribe
 
 /// Full 2³ matrix for the composer's ⌘V routing (`Composer.pasteDisposition`).
-/// Semantics: file URLs always win; a bare image (no text) stages as a file;
-/// any text present — including image+text from a browser copy — pastes as text.
+/// Semantics: file URLs always win; an image stages as a file even with
+/// a filename/URL text representation; text-only copies remain editable text.
 @MainActor
 final class ComposerPasteDispositionTests: XCTestCase {
   func testFileURLsStageFilesRegardlessOfImageAndText() {
@@ -35,11 +35,11 @@ final class ComposerPasteDispositionTests: XCTestCase {
     )
   }
 
-  func testImageWithTextPassesThroughAsText() {
-    // Browser copy puts image + text on the pasteboard — the user expects TEXT.
+  func testImageWithTextStagesImage() {
+    // Image copies can include a filename or URL as their text representation.
     XCTAssertEqual(
       Composer.pasteDisposition(hasFileURLs: false, hasImage: true, hasText: true),
-      .passthroughText
+      .stageImage
     )
   }
 

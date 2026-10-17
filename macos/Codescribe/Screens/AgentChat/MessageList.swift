@@ -8,10 +8,13 @@ enum StreamScrollFollowAction: Equatable {
 
 /// Operator-facing chat column density. Persisted via `ChatLayoutPolicy.defaultsKey`.
 ///
-/// Plan P0-1: Comfortable / Wide / Full with remembered choice. Width still
+/// Plan P0-1: Standard / Wide / Full width with remembered choice. Width still
 /// derives from the viewport (not a static pt constant); the mode only changes
 /// how aggressively the column fills available space and when the prose cap
 /// kicks in so code fences / tables can claim room on wide monitors.
+///
+/// The raw values are the persisted preference and stay as they are; only the
+/// operator-facing labels were renamed (Founder brief, round 18, 2026-10-10).
 enum ChatWidthMode: String, CaseIterable, Identifiable {
   case comfortable
   case wide
@@ -21,9 +24,10 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .comfortable: return String(localized: "Comfortable", comment: "Chat width")
-    case .wide: return String(localized: "Wide", comment: "Chat width")
-    case .full: return String(localized: "Full", comment: "Chat width: the whole window")
+    case .comfortable: return String(localized: "Standard", comment: "Conversation width")
+    case .wide: return String(localized: "Wide", comment: "Conversation width")
+    case .full:
+      return String(localized: "Full width", comment: "Conversation width: the whole column")
     }
   }
 
@@ -59,8 +63,12 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
 enum ChatLayoutPolicy {
   /// `UserDefaults` / `@AppStorage` key for the operator width preference.
   static let defaultsKey = "codescribe.chatWidthMode"
-  /// Horizontal padding applied by `MessageList` around the LazyVStack.
+  /// Padding applied by `MessageList` around the LazyVStack, on every edge.
   static let listPadding: CGFloat = 20
+  /// Vertical gap between the LazyVStack's children.
+  static let turnSpacing: CGFloat = 16
+  /// Invisible last child the follow-tail scroll targets.
+  static let liveEdgeAnchorHeight: CGFloat = 1
   /// Minimum readable bubble width on a narrow window.
   static let minimumReadable: CGFloat = 280
   /// Default mode when the preference is missing or unknown.
@@ -104,6 +112,18 @@ enum ChatLayoutPolicy {
   /// class of bug that floats glyphs like `)"` outside the Agent window.
   static func documentWidth(for containerWidth: CGFloat) -> CGFloat {
     max(minimumReadable, containerWidth > 0 ? containerWidth : minimumReadable)
+  }
+
+  /// Height the no-turns block may claim so the scroll document lands exactly
+  /// on the viewport height and an empty thread cannot scroll.
+  ///
+  /// Besides the empty-state block the document also carries the list padding
+  /// on both edges, the live-edge anchor and the one stack gap above it.
+  /// Reserving `viewportHeight - 2 * listPadding` therefore overshot the
+  /// viewport by that gap plus the anchor, which is what painted a scrollbar
+  /// on a thread with no messages (Founder brief, round 18, 2026-10-10).
+  static func emptyStateHeight(viewportHeight: CGFloat) -> CGFloat {
+    max(0, viewportHeight - listPadding * 2 - turnSpacing - liveEdgeAnchorHeight)
   }
 }
 
@@ -236,15 +256,24 @@ struct MessageList: View {
       let containerWidth = viewport.size.width
       ScrollViewReader { proxy in
         ScrollView {
-          LazyVStack(spacing: 16) {
+          LazyVStack(spacing: ChatLayoutPolicy.turnSpacing) {
             if hiddenTurnCount > 0 {
               ShowEarlierButton(hiddenCount: hiddenTurnCount) {
                 visibleTurnBudget += Self.turnWindow
               }
             }
             if messages.isEmpty {
+              // Centered in the visible viewport, not pinned under the chrome:
+              // the composer below is the only other point of gravity. The
+              // height accounts for everything else inside the document, so
+              // the empty thread fills the viewport without scrolling it.
               AgentEmptyThread()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(
+                  maxWidth: .infinity,
+                  minHeight: ChatLayoutPolicy.emptyStateHeight(
+                    viewportHeight: viewport.size.height),
+                  alignment: .center
+                )
             }
             ForEach(visibleMessages) { message in
               turn(message, containerWidth: containerWidth, mode: widthMode)
@@ -252,7 +281,7 @@ struct MessageList: View {
                 .id(message.id)
             }
             Color.clear
-              .frame(height: 1)
+              .frame(height: ChatLayoutPolicy.liveEdgeAnchorHeight)
               .id(bottomAnchor)
           }
           // Pin the document to the viewport width so a single
@@ -280,8 +309,11 @@ struct MessageList: View {
             }
           )
         }
-        .coordinateSpace(name: scrollSpace)
         .scrollContentBackground(.hidden)
+        // The document height is exact (see `emptyStateHeight`), so this only
+        // absorbs sub-point layout rounding: a content height that fits never
+        // rubber-bands. It is not the fix for the empty-thread scrollbar.
+        .scrollBounceBehavior(.basedOnSize)
         // NO list-wide `.textSelection(.enabled)` here — the shared
         // SelectionOverlay spanning the whole LazyVStack is the exact
         // mechanism the 2026-08-04 livelock spun on (every view-graph
@@ -328,6 +360,11 @@ struct MessageList: View {
         }
       }
     }
+    // The visible region names the space, not the scroll view: the scroll
+    // view runs beneath the toolbar and the composer bar, while this reader
+    // stays inside them. The live edge is then the reader's bottom, and the
+    // follow-tail test keeps comparing against `viewport.size.height`.
+    .coordinateSpace(name: scrollSpace)
   }
 
   private func perform(
@@ -405,24 +442,33 @@ struct MessageList: View {
 }
 
 private let agentEmptyThreadTitle = String(
-  localized: "New thread", comment: "Headline of a conversation with no turns yet")
+  localized: "What are we doing today?",
+  comment: "Headline of a conversation with no turns yet")
 private let agentEmptyThreadDetail = String(
-  localized: "Write in the composer, or dictate. The reply stays in this thread.")
+  localized: "Write or dictate a message to start the conversation.")
 
-/// Quiet first screen for a thread that has no turns yet.
+/// Quiet first screen for a thread that has no turns yet: one calm voice
+/// glyph, one question, one line about typing or dictating. The chrome
+/// already names the thread, so the headline does not repeat the title
+/// (Founder brief 2026-10-10). No starter prompts — Codescribe is not an
+/// assistant for everything.
 private struct AgentEmptyThread: View {
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(spacing: 10) {
+      Image(systemName: "waveform")
+        .font(.system(size: 24, weight: .medium))
+        .foregroundStyle(CSColor.textTertiary)
       Text(agentEmptyThreadTitle)
-        .font(CSFont.ui(15, .semibold))
+        .font(CSFont.ui(16, .semibold))
         .foregroundStyle(Color.primary)
+        .padding(.top, 2)
       Text(agentEmptyThreadDetail)
-        .font(CSFont.ui(13, .regular))
+        .font(CSFont.ui(12.5, .regular))
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: 420, alignment: .leading)
-    .padding(.top, 28)
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: 420)
     .accessibilityElement(children: .combine)
   }
 }
@@ -643,13 +689,14 @@ private struct YouTurn: View {
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 5) {
-      HStack(spacing: 8) {
-        Text("You · \(message.timestamp)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
-        CopyMessageButton(text: copyText)
-      }
       VStack(alignment: .leading, spacing: 9) {
+        HStack(spacing: 8) {
+          Text("You")
+          Spacer(minLength: 8)
+          MessageTimestampLabel(date: message.timestamp)
+        }
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
         if !message.attachments.isEmpty {
           WrapLayout(spacing: 6) {
             ForEach(message.attachments) { AttachmentChip(attachment: $0) }
@@ -672,6 +719,10 @@ private struct YouTurn: View {
             selection: message.contextSelection,
             app: message.contextApp
           )
+        }
+        HStack {
+          Spacer(minLength: 0)
+          CopyMessageButton(text: copyText)
         }
       }
       .padding(.horizontal, 15)
@@ -700,7 +751,11 @@ private struct YouTurn: View {
         if let wire = message.wireText {
           // Debug affordance: the exact prompt the model received,
           // skeleton and all.
-          Button("Copy full prompt") { chatCopy(wire) }
+          Button("Copy full prompt") {
+            // Diagnostic payload, not a content copy: preserve it verbatim.
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(wire, forType: .string)
+          }
         }
       }
       // Clip the chrome so markdown/code/selection never paints past the
@@ -797,7 +852,7 @@ private struct ContextChip: View {
 /// back to a photo glyph. Loaded once on appear so scrolling doesn't re-decode.
 /// Click opens an in-app preview sheet (metadata + zoom + Reveal/Copy path);
 /// restored turns with a nil URL surface an honest missing-asset state.
-private struct AttachmentChip: View {
+struct AttachmentChip: View {
   let attachment: MessageAttachment
   @State private var thumbnail: NSImage?
   @State private var showPreview = false
@@ -833,6 +888,10 @@ private struct AttachmentChip: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
     .csFocusRing(cornerRadius: CSRadius.pill)
+    // Inside the overlay panel the chip floats above message text whose
+    // tracking set the I-beam (Maciej, 2026-10-17 01:15Z); the region claims
+    // the arrow there and registers nothing in an ordinary window.
+    .background { OverlayMenuCursorRegion() }
     .help(
       attachment.url == nil
         ? String(localized: "Preview attachment (original file may be missing)")
@@ -853,6 +912,11 @@ private struct AttachmentChip: View {
 /// fallback when the source path is gone (restored threads), plus Reveal in
 /// Finder / Copy path / Open with default app.
 struct AttachmentPreviewSheet: View {
+  /// Margin between the image and the card's rounded edge. At least the card
+  /// radius, so an image's own corners (overlay screenshots carry 22 pt ones)
+  /// never meet the card's corner arc and show a wedge of card under them.
+  static let imageInset: CGFloat = 14
+
   let attachment: MessageAttachment
   var onRemove: (() -> Void)? = nil
   @Environment(\.dismiss) private var dismiss
@@ -896,6 +960,7 @@ struct AttachmentPreviewSheet: View {
                 width: max(240, image.size.width * zoom),
                 height: max(160, image.size.height * zoom)
               )
+              .padding(Self.imageInset)
               .frame(maxWidth: .infinity, maxHeight: .infinity)
           }
           .frame(minHeight: 280, maxHeight: 480)
@@ -961,7 +1026,9 @@ struct AttachmentPreviewSheet: View {
         }
 
         Button("Copy path") {
-          chatCopy(pathText)
+          // Tool metadata, not user content: preserve the literal path.
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(pathText, forType: .string)
         }
         .disabled(attachment.url == nil)
 
@@ -1016,7 +1083,7 @@ struct AttachmentPreviewSheet: View {
 /// Minimal wrapping layout: lays chips left→right, wrapping to a new row when the
 /// next would exceed the proposed width. Hugs its content so the You bubble stays
 /// tight around 1–N attachment chips instead of overflowing or forcing full width.
-private struct WrapLayout: Layout {
+struct WrapLayout: Layout {
   var spacing: CGFloat = 6
 
   func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
@@ -1235,11 +1302,13 @@ private struct ToolTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
-        Text("Tool activity · \(message.timestamp)")
+        Text("Tool activity")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
-        CopyMessageButton(text: copyText)
         Spacer(minLength: 0)
+        MessageTimestampLabel(date: message.timestamp)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
       }
 
       DisclosureGroup(isExpanded: $expanded) {
@@ -1277,6 +1346,10 @@ private struct ToolTurn: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
+      HStack {
+        Spacer(minLength: 0)
+        CopyMessageButton(text: copyText)
+      }
     }
     .frame(
       maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1345,23 +1418,22 @@ private struct AssistantTurn: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack(spacing: 8) {
-        Text("Agent · \(message.timestamp)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-        speechButton
-        if !message.isThinking {
-          CopyMessageButton(text: message.text)
-          if !message.text.isEmpty {
+      VStack(alignment: .leading, spacing: 9) {
+        HStack(spacing: 8) {
+          Text("Agent")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textTertiary)
+          speechButton
+          if !message.isThinking && !message.text.isEmpty {
             RenderModeButton(mode: message.renderMode) {
               onToggleRenderMode(message.id)
             }
           }
+          Spacer(minLength: 8)
+          MessageTimestampLabel(date: message.timestamp)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textTertiary)
         }
-        Spacer(minLength: 0)
-      }
-
-      VStack(alignment: .leading, spacing: 9) {
         if !message.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           ReasoningDisclosure(
             text: message.reasoning,
@@ -1415,6 +1487,12 @@ private struct AssistantTurn: View {
                 MarkdownText(raw: message.text)
               }
             }
+          }
+        }
+        if !message.isThinking {
+          HStack {
+            Spacer(minLength: 0)
+            CopyMessageButton(text: message.text)
           }
         }
       }
@@ -1583,18 +1661,25 @@ private struct RenderModeButton: View {
   }
 }
 
-/// Puts a message's raw text on the general pasteboard — the single copy path
-/// shared by the bubble context menu and the inline copy button.
-private func chatCopy(_ text: String) {
-  NSPasteboard.general.clearContents()
-  NSPasteboard.general.setString(text, forType: .string)
+/// Shared by the bubble context menu and inline button. Success is reported
+/// only after the existing Rust copy authority has acknowledged the write.
+@MainActor
+@discardableResult
+func chatCopy(_ text: String) async -> Bool {
+  do {
+    try await UserTextClipboard.copy(text)
+    return true
+  } catch {
+    NSSound.beep()
+    return false
+  }
 }
 
 /// Right-click "Copy" that puts a message's raw text on the pasteboard.
 private struct CopyButton: View {
   let text: String
   var body: some View {
-    Button("Copy") { chatCopy(text) }
+    Button("Copy") { Task { await chatCopy(text) } }
   }
 }
 
@@ -1602,16 +1687,20 @@ private struct CopyButton: View {
 /// hovered). Copies the raw pre-render text via the same `chatCopy` path the
 /// context menu uses, then flips to a green "copied" for ~1.5s. Disabled when
 /// there is nothing to copy.
-private struct CopyMessageButton: View {
+struct CopyMessageButton: View {
   let text: String
+  var labelFont: Font = CSFont.mono(10, .medium)
+  var restingColor: Color = CSColor.textTertiary
   @State private var copied = false
   @State private var hovering = false
 
   var body: some View {
     Button {
-      chatCopy(text)
-      copied = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      Task { @MainActor in
+        guard await chatCopy(text) else { return }
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      }
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)
@@ -1620,7 +1709,7 @@ private struct CopyMessageButton: View {
             ? String(localized: "copied", comment: "Button state after copying")
             : String(localized: "copy", comment: "Button: copy this message")
         )
-        .font(CSFont.mono(10, .medium))
+        .font(labelFont)
       }
       .foregroundStyle(labelColor)
     }
@@ -1632,7 +1721,7 @@ private struct CopyMessageButton: View {
 
   private var labelColor: Color {
     if copied { return CSColor.oliveLight }
-    return hovering ? Color.secondary : CSColor.textTertiary
+    return hovering ? Color.secondary : restingColor
   }
 }
 

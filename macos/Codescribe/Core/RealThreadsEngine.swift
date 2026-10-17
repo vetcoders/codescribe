@@ -50,11 +50,12 @@ final class RealThreadsEngine: BackgroundThreadListing {
       case "user":
         guard !text.isEmpty || content.hasDisplayableNonTextBlock else { return nil }
         return ChatMessage(
-          role: .you, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
+          role: .you, timestamp: Self.messageDate(timestampMs: message.timestampMs), text: text)
       case "assistant":
         guard !text.isEmpty else { return nil }
         return ChatMessage(
-          role: .assistant, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text
+          role: .assistant, timestamp: Self.messageDate(timestampMs: message.timestampMs),
+          text: text
         )
       default: return nil  // skip system/tool turns in the transcript view
       }
@@ -134,7 +135,7 @@ final class RealThreadsEngine: BackgroundThreadListing {
       )
     }
     var message = ChatMessage(
-      role: .tool, timestamp: timeString(timestampMs: timestampMs), text: "")
+      role: .tool, timestamp: messageDate(timestampMs: timestampMs), text: "")
     let n = lines.count
     message.toolTitle = String(
       localized: "What I checked · \(n) tools",
@@ -143,12 +144,9 @@ final class RealThreadsEngine: BackgroundThreadListing {
     return message
   }
 
-  private static func timeString(timestampMs: Int64) -> String {
-    guard timestampMs > 0 else { return "" }
-    let date = Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
-    let formatter = DateFormatter()
-    formatter.dateFormat = "HH:mm"
-    return formatter.string(from: date)
+  private static func messageDate(timestampMs: Int64) -> Date? {
+    guard timestampMs > 0 else { return nil }
+    return Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
   }
 }
 

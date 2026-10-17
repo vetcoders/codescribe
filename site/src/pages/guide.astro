@@ -3,6 +3,8 @@ import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import { page } from '../lib/asset';
+// The version chip names the published release the download buttons serve.
+import { SITE_VERSION } from '../lib/release';
 ---
 
 <Layout
@@ -15,7 +17,7 @@ import { page } from '../lib/asset';
     <header class="hero">
       <div class="container">
         <div class="hero-top">
-          <p class="eyebrow">CODESRIBE · USER GUIDE · 2026</p>
+          <p class="eyebrow">CODESCRIBE · USER GUIDE · 2026</p>
           <div class="lang-switch" role="group" aria-label="Wybór języka / Language selection">
             <button type="button" class="lang-btn active" data-lang="pl" aria-pressed="true">PL</button>
             <button type="button" class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
@@ -34,7 +36,7 @@ import { page } from '../lib/asset';
 
         <div class="chips">
           <span class="chip">macOS 14+</span>
-          <span class="chip">Codescribe 0.16.0</span>
+          <span class="chip">Codescribe {SITE_VERSION}</span>
           <span class="chip lang-text" data-pl="Głos i tekst" data-en="Voice & Text">Głos i tekst</span>
           <span class="chip lang-text" data-pl="Działa offline" data-en="Works offline">Działa offline</span>
         </div>
@@ -85,9 +87,9 @@ import { page } from '../lib/asset';
             <span class="card-icon" aria-hidden="true">✦</span>
             <h3 class="lang-text" data-pl="Wbudowany Agent" data-en="Built-in Agent">Wbudowany Agent</h3>
             <p class="lang-text"
-              data-pl="Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji."
-              data-en="The Agent window and Assistive mode provide a native surface for quick summaries and context editing, sharing the singular microphone controller safely.">
-              Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji.
+              data-pl="Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji. Czat Agenta wymaga klucza licencyjnego — w otwartej becie darmowego (Settings / Ustawienia → License / Licencja)."
+              data-en="The Agent window and Assistive mode provide a native surface for quick summaries and context editing, sharing the singular microphone controller safely. Agent chat needs a license key, free during the open beta (Settings → License).">
+              Okno Agenta i tryb Assistive to osobna powierzchnia Codescribe dla szybkich podsumowań i redakcji. Korzystają z tego samego, bezpiecznego właściciela mikrofonu bez kolizji. Czat Agenta wymaga klucza licencyjnego — w otwartej becie darmowego (Settings / Ustawienia → License / Licencja).
             </p>
             <a href="#talk" class="card-link lang-text" data-pl="Rozróżnienie gestów →" data-en="Gesture guide →">Rozróżnienie gestów →</a>
           </article>
@@ -450,9 +452,9 @@ import { page } from '../lib/asset';
       <div class="container text-center">
         <h2 class="lang-text" data-pl="Gotowy do pracy z głosem?" data-en="Ready to Bring Voice to Your Stack?">Gotowy do pracy z głosem?</h2>
         <p class="cta-desc lang-text"
-          data-pl="Pobierz podpisany, notaryzowany instalator Codescribe i zacznij dyktować w 60 sekund."
-          data-en="Download signed, notarized Codescribe and start dictating in under 60 seconds.">
-          Pobierz podpisany, notaryzowany instalator Codescribe i zacznij dyktować w 60 sekund.
+          data-pl="Pobierz podpisany, notaryzowany instalator Codescribe. Przy pierwszym uruchomieniu kreator przeprowadzi Cię przez uprawnienia, język i skróty."
+          data-en="Download the signed, notarized Codescribe installer. On first launch, setup walks you through permissions, language, and shortcuts.">
+          Pobierz podpisany, notaryzowany instalator Codescribe. Przy pierwszym uruchomieniu kreator przeprowadzi Cię przez uprawnienia, język i skróty.
         </p>
         <a class="install-btn" href={`${page('')}#install`}>Download Codescribe (.dmg)</a>
       </div>

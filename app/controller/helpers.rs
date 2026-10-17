@@ -11,15 +11,16 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
-use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
+use crate::os::hold_badge::{
+    BadgeMode, HoldBadgeConfig, hide_hold_badge, show_hold_badge_with_config,
+};
 use crate::os::tray_status;
 use anyhow::{Context, Result};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, StreamOptions,
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
-    ThreadIndex, ThreadMessage, ThreadStore,
+    AgentSession, AgentUiEvent, Message, StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput,
+    ThreadDeliveryReceipt, ThreadDeliverySource, ThreadIndex, ThreadMessage, ThreadStore,
 };
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
@@ -50,6 +51,18 @@ pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
             f64::from(persisted_size),
         ));
     }
+}
+
+/// Drop a transient recording badge through the hold-badge lifecycle and
+/// return a refused or failed start to an idle tray.
+///
+/// Called only after the controller has refused or unwound its own start.
+/// The controller owns capture; a stale Listening/Thinking tray projection
+/// cannot veto that settlement. A competing live start returns before here.
+/// The refusal explanation stays on its presentation event.
+pub fn settle_failed_start_chrome() {
+    hide_hold_badge();
+    tray_status::update_tray_status(tray_status::TrayStatus::Idle);
 }
 
 /// Check if current session is assistive mode
@@ -90,17 +103,17 @@ pub(super) fn observe_paste_target(latched_target: Option<&str>) -> super::Paste
     }
 }
 
-/// Tell the user why an armed paste was held and how to finish it (⌘V).
+/// Tell the user why an armed paste was held and how to finish it with Deferred Paste.
 #[cfg(not(test))]
 pub(super) fn announce_paste_hold(notice: &str) {
-    info!(notice, "paste held on clipboard");
-    crate::os::notifications::notify("Codescribe held the paste", notice);
+    info!(notice, "paste held in deferred buffer");
+    crate::os::notifications::notify("Codescribe deferred the paste", notice);
 }
 
 /// Unit tests post no user notification; the log line is the witness.
 #[cfg(test)]
 pub(super) fn announce_paste_hold(notice: &str) {
-    info!(notice, "paste held on clipboard");
+    info!(notice, "paste held in deferred buffer");
 }
 
 /// Route transcription delta to the active overlay.
@@ -550,11 +563,8 @@ fn initialize_agent_runtime(
 ) -> Result<AgentRuntime> {
     let registry = crate::agent::tools::configured_registry();
 
-    let provider = crate::agent::create_provider_for_lane(
-        runtime_settings.as_ref(),
-        codescribe_core::config::RuntimeLlmLaneKind::Assistive,
-    )
-    .context("Failed to create default agent provider")?;
+    let provider = crate::agent::create_agent_provider(runtime_settings.as_ref())
+        .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
@@ -565,59 +575,6 @@ fn initialize_agent_runtime(
         settings_snapshot_digest: runtime_settings.digest().clone(),
         reset_chain_on_next_send: false,
     })
-}
-
-/// Per-turn provider options. The model comes from live assistive lane truth
-/// rather than a cached value, and a non-positive `ai_assistive_max_tokens`
-/// resolves to `None` (provider default) instead of a zero-token request.
-/// `reset_chain` stays false here: only the retry path overrides it.
-fn build_agent_stream_options(
-    ai_assistive_max_tokens: i32,
-    use_assistive_persona: bool,
-    runtime_settings: &RuntimeSettingsSnapshot,
-) -> StreamOptions {
-    let assistive_lane = runtime_settings.llm_lanes().assistive();
-    let max_tokens = u32::try_from(ai_assistive_max_tokens)
-        .ok()
-        .filter(|tokens| *tokens > 0);
-
-    StreamOptions {
-        model: assistive_lane.model().to_string(),
-        system_prompt: Some(compose_agent_system_prompt(
-            use_assistive_persona,
-            runtime_settings
-                .ai_execution()
-                .formatter()
-                .assistive_prompt()
-                .composed_content(),
-        )),
-        max_tokens,
-        temperature: None,
-        // First-attempt default: preserve conversational chain. Session retry
-        // path will clone+override this to true for retry attempts only.
-        reset_chain: false,
-    }
-}
-
-/// Compose the agent system prompt.
-///
-/// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
-/// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
-///   workspace + doctrine, no "text assistant" identity.
-fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt: &str) -> String {
-    let workspace = crate::agent::tools::workspace::workspace_prompt_section();
-    let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
-    // Measured Responses/streaming contract facts + the answer-first rule —
-    // rides BOTH lanes so a spoken engine question gets substance, not a
-    // clarification questionnaire (operator incident 2026-08-14).
-    let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
-    if use_assistive_persona {
-        format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
-    } else {
-        format!(
-            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
-        )
-    }
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
@@ -866,74 +823,6 @@ fn agent_send_error_is_transient(error: &anyhow::Error) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
-/// Maximum number of image attachments forwarded to the model per message.
-/// Kept in sync with the legacy (`ai_formatting`) cap so both send paths behave
-/// alike. Sized for real multi-image use (e.g. comparing several wireframes);
-/// vision-capable backends accept far more, images are size-capped individually.
-const MAX_AGENT_VISION_IMAGES: usize = 16;
-
-/// Split an outgoing payload into its visible text and the loaded image
-/// attachments referenced by the `ATTACHMENTS (image paths)` marker.
-///
-/// This is the fix for the attachment pipeline: the voice-chat send path appends
-/// image paths to the payload as *text* (`build_attachments_block`). Without this
-/// step the agent path forwarded them as plain text and the model never received
-/// real vision input. Here we strip the marker block from the text and load each
-/// image as bytes so `AgentSession::send` can emit proper `input_image` blocks.
-///
-/// Returns `(cleaned_text, loaded_images, dropped_names)`. `dropped_names` lists
-/// images that could not be forwarded (missing/unreadable/too large) so the
-/// caller can surface a visible attachment error instead of silently continuing.
-pub(super) fn build_image_attachments_from_text(
-    text: &str,
-) -> (String, Vec<ImageAttachment>, Vec<String>) {
-    let (cleaned, mut paths) = codescribe_core::attachment::parse_image_attachment_block(text);
-
-    if paths.is_empty() {
-        return (cleaned, Vec::new(), Vec::new());
-    }
-
-    let mut dropped: Vec<String> = Vec::new();
-
-    if paths.len() > MAX_AGENT_VISION_IMAGES {
-        for extra in &paths[MAX_AGENT_VISION_IMAGES..] {
-            dropped.push(file_label(extra));
-        }
-        warn!(
-            "Too many image attachments ({}); forwarding first {} as vision input",
-            paths.len(),
-            MAX_AGENT_VISION_IMAGES
-        );
-        paths.truncate(MAX_AGENT_VISION_IMAGES);
-    }
-
-    let mut attachments = Vec::with_capacity(paths.len());
-    for path in &paths {
-        match codescribe_core::attachment::load_image_for_vision(
-            path,
-            codescribe_core::attachment::MAX_VISION_IMAGE_BYTES,
-        ) {
-            Some((data, media_type)) => attachments.push(ImageAttachment { data, media_type }),
-            None => {
-                warn!(
-                    "Dropping image attachment (unsupported, unreadable, or too large): {}",
-                    path.display()
-                );
-                dropped.push(file_label(path));
-            }
-        }
-    }
-
-    (cleaned, attachments, dropped)
-}
-
-/// Short, user-facing label for an attachment path (file name, path fallback).
-fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
-}
-
 /// Production send path: `run_agent_send_path_with_persist` wired to the real
 /// ThreadStore delivery.
 async fn run_agent_send_path(
@@ -971,6 +860,11 @@ async fn run_agent_send_path(
 /// On failure, persist the user payload before classifying and degrading the
 /// runtime. This voice boundary owns terminal errors; composer errors still
 /// travel through the bridge Result channel.
+///
+/// `text` is a transcript and stays plain text end to end: it never selects a
+/// file, so this route sends no vision input. Images reach the model only as the
+/// typed attachment list the user staged in the composer
+/// (`CodescribeAgent::stream_reply_with_attachments`).
 async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
@@ -1007,7 +901,6 @@ where
 
     // A terminal belongs to this invocation, never to an error's wording.
     let mut terminal_published = false;
-    let user_message_index = runtime.session.messages().len();
     let send_result = {
         // Correlation id for the SwiftUI store (disjoint from its per-thread
         // UUID). Captured before the mutable session/ui_rx split so the borrow of
@@ -1020,23 +913,20 @@ where
         let provider_chain_before = runtime.session.snapshot_response_chain().await;
         let mut cancellation = register_agent_delivery_turn(&thread_store_id);
         let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
-        let (user_text, image_attachments, dropped_images) =
-            build_image_attachments_from_text(&text);
         // Open the turn on the SwiftUI chat before streaming: the listener inserts
-        // a You-bubble (user_text) + assistant placeholder, then fills it from the
-        // deltas below. `user_text` is the attachment-marker-stripped transcript,
-        // so the bubble shows the spoken text, not the internal attachment block.
+        // a You-bubble (text) + assistant placeholder, then fills it from the
+        // deltas below.
         // W10-A runtime receipt: log before publish so installed-app probes can
         // prove reveal_ts < done_ts (Swift logs w10a_reveal_* on the same turn).
         info!(
             target: "codescribe::agent_delivery",
             "w10a_turn_started thread_id={} user_chars={}",
             thread_store_id,
-            user_text.chars().count()
+            text.chars().count()
         );
         crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
             thread_id: thread_store_id.clone(),
-            user_text: user_text.clone(),
+            user_text: text.clone(),
         });
         // Hold the agent-turn lease for the rest of this function: streaming,
         // tools, Stop, error and persistence. `make install-if-idle` probes it
@@ -1061,19 +951,6 @@ where
                 None
             }
         };
-        if !image_attachments.is_empty() {
-            info!(
-                "Agent send: forwarding {} image(s) as vision input",
-                image_attachments.len()
-            );
-        }
-        if !dropped_images.is_empty() {
-            warn!(
-                "Could not attach {} image(s) as vision input: {}",
-                dropped_images.len(),
-                dropped_images.join(", ")
-            );
-        }
         /// How the select loop below broke. Function-local because it exists
         /// only to carry the loop's verdict past the borrow scope of the pinned
         /// send future — the future must be dropped before the pre-turn
@@ -1088,7 +965,7 @@ where
         // Scope the pinned send future tightly: cancellation must drop its
         // mutable session borrow before we can restore the pre-turn snapshot.
         let completion = {
-            let send_future = session.send(user_text, image_attachments, &stream_options);
+            let send_future = session.send(text, Vec::new(), &stream_options);
             tokio::pin!(send_future);
             loop {
                 tokio::select! {
@@ -1174,15 +1051,10 @@ where
             Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
-            // Vision conversion strips the attachment marker for the provider.
-            // Retain the original failed payload for a retry, including selections
-            // and unreadable image paths. Successful history stays unchanged.
-            let mut messages = runtime.session.messages().to_vec();
-            if let Some(message) = messages.get_mut(user_message_index)
-                && let Some(ContentBlock::Text(user_text)) = message.content.first_mut()
-            {
-                *user_text = text;
-            }
+            // The failed turn's user message stays in history for a retry;
+            // restoring the same messages also drops the provider chain so the
+            // retry replays them.
+            let messages = runtime.session.messages().to_vec();
             runtime.session.restore_messages(messages);
             if let Err(persist_error) = persist_runtime(runtime) {
                 warn!("Failed to persist failed agent turn: {persist_error:#}");
@@ -1216,10 +1088,12 @@ async fn run_agent_send(
     use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(
+    // The canonical Agent options owner: live Agent lane model, composed Agent
+    // prompt and token cap, shared with the bridge chat and Max.
+    let stream_options = crate::agent::agent_stream_options(
+        runtime_settings.as_ref(),
         ai_assistive_max_tokens,
         use_assistive_persona,
-        runtime_settings.as_ref(),
     );
     let agent_result = {
         let mut guard = runtime_state.lock().await;
@@ -1996,74 +1870,6 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
-    /// Text with no attachment marker must come through byte-identical — the
-    /// splitter must not rewrite ordinary messages on its way past them.
-    #[test]
-    fn test_build_image_attachments_passthrough_without_marker() {
-        let text = "plain message, no attachments";
-        let (cleaned, images, dropped) = build_image_attachments_from_text(text);
-        assert_eq!(cleaned, text);
-        assert!(images.is_empty());
-        assert!(dropped.is_empty());
-    }
-
-    /// The marker block and its raw paths must disappear from model-visible
-    /// text while the readable image becomes real vision input. An unreadable
-    /// path is reported as dropped, never silently forwarded as text — that
-    /// silent passthrough was the original attachment bug.
-    #[test]
-    fn test_build_image_attachments_loads_real_image_and_reports_dropped() {
-        let dir = std::env::temp_dir().join(format!("cs_helpers_vision_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let img = dir.join("shot.png");
-        std::fs::write(&img, b"\x89PNG\r\n\x1a\nfake").expect("test: write fake image");
-        let missing = dir.join("gone.png");
-
-        let text = format!(
-            "describe these\n\n---\nATTACHMENTS (image paths)\n- {}\n- {}\n",
-            img.display(),
-            missing.display()
-        );
-        let (cleaned, images, dropped) = build_image_attachments_from_text(&text);
-
-        // Marker block and raw paths are gone from the model-visible text.
-        assert!(!cleaned.contains("ATTACHMENTS (image paths)"));
-        assert!(!cleaned.contains(&img.display().to_string()));
-        assert!(cleaned.contains("describe these"));
-
-        // Only the readable image becomes a real vision attachment; the missing
-        // one is reported as dropped (visible error), never forwarded as text.
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].media_type, "image/png");
-        assert!(!images[0].data.is_empty());
-        assert_eq!(dropped, vec!["gone.png".to_string()]);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Past the cap, the overflow is surfaced rather than quietly discarded:
-    /// exactly `MAX_AGENT_VISION_IMAGES` are forwarded and the remainder come
-    /// back as dropped names the caller can show.
-    #[test]
-    fn test_build_image_attachments_caps_and_reports_overflow() {
-        let dir = std::env::temp_dir().join(format!("cs_helpers_cap_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let mut lines = String::from("multi\n\nATTACHMENTS (image paths)\n");
-        for i in 0..(MAX_AGENT_VISION_IMAGES + 2) {
-            let p = dir.join(format!("img{i}.png"));
-            std::fs::write(&p, b"\x89PNG\r\n\x1a\nfake")
-                .expect("test: write fake image for overflow");
-            lines.push_str(&format!("- {}\n", p.display()));
-        }
-        let (_cleaned, images, dropped) = build_image_attachments_from_text(&lines);
-
-        // Cap honored, overflow surfaced (not silently dropped).
-        assert_eq!(images.len(), MAX_AGENT_VISION_IMAGES);
-        assert_eq!(dropped.len(), 2);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     // ── Voice-assistive delivery: UI-event → delivery-event mapping + publish ──
 
     /// Every UI event variant must cross to its delivery twin unchanged. The two
@@ -2663,7 +2469,7 @@ mod tests {
             delivery.try_recv().expect("turn opener"),
             AgentDeliveryEvent::TurnStarted {
                 thread_id: thread_id.to_string(),
-                user_text: build_image_attachments_from_text(&payload).0,
+                user_text: payload.clone(),
             }
         );
         assert_eq!(
@@ -2734,10 +2540,8 @@ mod tests {
         assert_eq!(inputs.len(), 2);
         assert_eq!(
             inputs[0][0].content,
-            vec![ContentBlock::Text(
-                build_image_attachments_from_text(&payload).0
-            )],
-            "the provider still sees the existing attachment projection"
+            vec![ContentBlock::Text(payload.clone())],
+            "the provider sees the user text unchanged"
         );
         assert_eq!(inputs[1][0].content, vec![ContentBlock::Text(payload)]);
         assert!(

@@ -23,15 +23,17 @@ import Foundation
 /// One physical executor for Settings and Setup credential operations. A view
 /// cancelling its task does not cancel or free a synchronous Security call.
 enum ProviderCredentialIO {
-  private static let queue = DispatchQueue(label: "codescribe.provider-credentials", qos: .userInitiated)
+  private static let queue = DispatchQueue(
+    label: "codescribe.provider-credentials", qos: .userInitiated)
 
   static func perform<T: Sendable>(
     _ operation: @escaping @Sendable () throws -> T
   ) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in
       queue.async {
-        do { continuation.resume(returning: try operation()) }
-        catch { continuation.resume(throwing: error) }
+        do { continuation.resume(returning: try operation()) } catch {
+          continuation.resume(throwing: error)
+        }
       }
     }
   }
@@ -100,7 +102,8 @@ protocol SettingsEngine {
   func setApiKeyAsync(account: String, secret: String) async throws
   func clearApiKeyAsync(account: String) async throws
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
   func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval
   func signOutAccountAsync(providerId: String) async throws
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption
@@ -145,16 +148,28 @@ protocol SettingsEngine {
 
 extension SettingsEngine {
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
-    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
+    CsProviderAccessSnapshot(
+      providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
+      sttLanes: sttLanes(), revision: 0)
   }
   func providerAccessRevision() -> UInt64 { 0 }
   func composerModelCacheStamp() -> String? { nil }
-  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try setApiKey(account: account, secret: secret)
+  }
   func clearApiKeyAsync(account: String) async throws { try clearApiKey(account: account) }
-  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption { try addCustomProvider(draft: draft) }
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption { try updateCustomProvider(id: id, draft: draft) }
-  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval { try removeCustomProvider(id: id) }
-  func signOutAccountAsync(providerId: String) async throws { try signOutAccount(providerId: providerId) }
+  func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
+    try addCustomProvider(draft: draft)
+  }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
+  { try updateCustomProvider(id: id, draft: draft) }
+  func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
+    try removeCustomProvider(id: id)
+  }
+  func signOutAccountAsync(providerId: String) async throws {
+    try signOutAccount(providerId: providerId)
+  }
 
   func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
     try teachDictionaryFromStore()
@@ -192,7 +207,8 @@ final class RealSettingsEngine: SettingsEngine {
       PendingToolApproval(
         callID: request.callId, sessionID: request.sessionId, threadID: request.threadId,
         tool: request.tool, server: request.server, risk: request.risk,
-        summary: request.summary, command: request.command, cwd: request.cwd, paths: request.paths
+        summary: request.summary, command: request.command, cwd: request.cwd,
+        paths: request.paths, arguments: request.arguments
       )
     }
   }
@@ -282,22 +298,32 @@ final class RealSettingsEngine: SettingsEngine {
   func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
   func composerModelCacheStamp() -> String? { config.composerModelCacheStamp() }
   func setApiKeyAsync(account: String, secret: String) async throws {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().setApiKey(account: account, secret: secret)
+    }
   }
   func clearApiKeyAsync(account: String) async throws {
     try await ProviderCredentialIO.perform { try CodescribeConfig().clearApiKey(account: account) }
   }
   func addCustomProviderAsync(draft: CsCustomProviderDraft) async throws -> CsProviderOption {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().addCustomProvider(draft: draft) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().addCustomProvider(draft: draft)
+    }
   }
-  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws -> CsProviderOption {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().updateCustomProvider(id: id, draft: draft) }
+  func updateCustomProviderAsync(id: String, draft: CsCustomProviderDraft) async throws
+    -> CsProviderOption
+  {
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().updateCustomProvider(id: id, draft: draft)
+    }
   }
   func removeCustomProviderAsync(id: String) async throws -> CsCustomProviderRemoval {
     try await ProviderCredentialIO.perform { try CodescribeConfig().removeCustomProvider(id: id) }
   }
   func signOutAccountAsync(providerId: String) async throws {
-    try await ProviderCredentialIO.perform { try CodescribeConfig().signOutAccount(providerId: providerId) }
+    try await ProviderCredentialIO.perform {
+      try CodescribeConfig().signOutAccount(providerId: providerId)
+    }
   }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
@@ -396,6 +422,8 @@ struct MockSettingsEngine: SettingsEngine {
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
+  /// Live hardware reads (a device switched under an open window); nil serves `audioSnapshot`.
+  var audioSnapshotLoader: (() -> CsAudioInputSnapshot)?
   var admissionReadiness: CsAdmissionReadiness = .sampleGranted
   var calibrationReport: CsEnergyCalibrationReport = .sample
   var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
@@ -423,6 +451,8 @@ struct MockSettingsEngine: SettingsEngine {
   /// Preview seed for the local-Whisper picker; the observer records selections.
   var whisperCatalog: CsWhisperModelCatalog = .sample
   var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
+  /// Live catalog reads for residency transitions; nil serves `whisperCatalog`.
+  var whisperCatalogLoader: (() -> CsWhisperModelCatalog)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -465,11 +495,15 @@ struct MockSettingsEngine: SettingsEngine {
   func updateConfigMany(entries: [CsConfigEntry]) throws {
     try updateConfigManyObserver?(entries)
   }
-  func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
+  func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot {
+    audioSnapshotLoader?() ?? audioSnapshot
+  }
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog { whisperCatalog }
+  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
+    whisperCatalogLoader?() ?? whisperCatalog
+  }
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     if let selectLocalWhisperModelObserver {
       return try await selectLocalWhisperModelObserver(reference)
@@ -487,7 +521,8 @@ struct MockSettingsEngine: SettingsEngine {
     let records = try qualityRecordsLoader?() ?? qualityRecords
     return CsQualityListing(
       records: Array(records.prefix(Int(clamping: limit))),
-      unchangedTakes: unchangedQualityTakes
+      unchangedTakes: unchangedQualityTakes,
+      totalCorrections: UInt64(records.count)
     )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
@@ -953,6 +988,7 @@ extension CsSettings {
     whisperContextWindowSec: 8,
     whisperAdaptiveBuffer: false,
     formatOnDevice: false,
+    dictationWitnessArmed: false,
     lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
@@ -993,6 +1029,7 @@ extension CsSettings {
     startAtLogin: false,
     agentEnterSends: true,
     agentAutoSend: false,
+    agentSendHoldSec: 10,
     dumpAudioLogs: false,
     // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
     llmFormattingProvider: "openai-responses",
@@ -1009,6 +1046,8 @@ extension CsSettings {
     bufferedInterimSec: nil,
     backendMaxUploadMb: nil,
     asrMode: nil,
+    // What the core resolves for no mode, no consent and no saved local choice.
+    resolvedAsrMode: "apple_only",
     cloudConsent: nil,
     asrGatewayUrl: nil
   )
@@ -1064,18 +1103,18 @@ extension CsSttLane {
   static let sampleFile = CsSttLane(
     id: "file",
     title: "File transcription",
-    accepts: "https multipart /v1/audio/transcriptions or NDJSON …:stream",
+    accepts: "multipart /v1/audio/transcriptions · NDJSON …:stream",
     placeholder: "https://…/v1/audio/transcriptions",
     endpoint: nil,
     endpointWireKey: "STT_FILE_ENDPOINT",
     keyAccount: "STT_FILE_API_KEY",
     apiKeySet: false
   )
-  /// Mirrors `SttLane::Live` (§B.0): wss live socket (stt-ws-v1).
+  /// Mirrors `SttLane::Live` (§B.0): the wss protocol ids.
   static let sampleLive = CsSttLane(
     id: "live",
     title: "Live transcript",
-    accepts: "wss live socket (stt-ws-v1)",
+    accepts: "stt-ws-v1 · xAI /v1/stt",
     placeholder: "wss://…/v1/audio/transcribe",
     endpoint: nil,
     endpointWireKey: "STT_LIVE_ENDPOINT",

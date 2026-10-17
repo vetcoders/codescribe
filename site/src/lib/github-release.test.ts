@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import {
   loadLatestRelease,
@@ -186,6 +187,17 @@ test("a broken newest DMG cannot silently advertise an older publication", async
       ])
     ),
     /valid uploaded/
+  );
+});
+
+test("the website build never carries its own Sparkle feed", () => {
+  // The signed appcast.xml is a release asset served beside the site. A copy
+  // in public/ lands in dist/ and replaces the live feed on a site redeploy.
+  // The removed 0.15.2 copy carried build 1838, above 0.16.0's build 479, so
+  // Sparkle would have offered installed 0.16.0 users a downgrade.
+  assert.equal(
+    existsSync(new URL("../../public/appcast.xml", import.meta.url)),
+    false
   );
 });
 

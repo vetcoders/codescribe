@@ -8,9 +8,13 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
+use codescribe_core::agent::{
+    ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolRegistry,
+    ToolResultContent, ToolRisk,
+};
 use codescribe_core::util::safe_path::safe_open_bounded;
 use serde_json::{Value, json};
 
@@ -20,14 +24,44 @@ use super::{output_guard, path_policy, workspace};
 const MAX_FILE_SIZE_BYTES: u64 = 512 * 1024;
 
 /// Register the read-only `read_file` tool on the shared [`ToolRegistry`].
+///
+/// It carries a validator so the permission gate decides on the canonical file
+/// the handler will open, not on the name the model typed.
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register_native(
+        .register_with_policy(
             read_file_definition(),
             Box::new(|input| Box::pin(handle_read_file(input))),
-            ToolRisk::ReadOnly,
+            ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+            Some(read_file_validator()),
         )
         .expect("register read_file tool");
+}
+
+/// Pre-flight check that resolves `path` through the same gate as the handler.
+///
+/// The preview carries the canonical target, so an alias such as
+/// `docs/info.txt -> .env` is judged as `.env` before any consent decision.
+/// A path that does not resolve inside the roots is a hard deny.
+fn read_file_validator() -> ToolInputValidator {
+    Arc::new(|input: &Value| {
+        let (canonical, _root) =
+            validate_path_for_read_with_roots(requested_path(input)?, &allowed_read_roots())?;
+        let canonical = canonical.display().to_string();
+        Ok(ToolCallPreview {
+            summary: format!("Read {canonical}"),
+            paths: vec![canonical],
+            ..Default::default()
+        })
+    })
+}
+
+/// The required `path` field of a `read_file` call.
+fn requested_path(input: &Value) -> Result<&str> {
+    input
+        .get("path")
+        .and_then(Value::as_str)
+        .context("Missing required string field 'path'")
 }
 
 /// Tool schema for `read_file`.
@@ -70,12 +104,7 @@ fn read_file_from_input(input: &Value) -> Result<String> {
 /// on metadata, the same ceiling on the bounded read, UTF-8 decoding, and finally
 /// a truncation that always carries a pointer back to the on-disk source.
 fn read_file_from_input_with_roots(input: &Value, roots: &[PathBuf]) -> Result<String> {
-    let path_str = input
-        .get("path")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'path'")?;
-
-    let (path, root) = validate_path_for_read_with_roots(path_str, roots)?;
+    let (path, root) = validate_path_for_read_with_roots(requested_path(input)?, roots)?;
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- safe_open_bounded canonicalizes the path and opens it through a cap_std root capability.
     let file = safe_open_bounded(&path, &root)
         .with_context(|| format!("Failed to open allowed file {}", path.display()))?;

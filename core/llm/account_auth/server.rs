@@ -445,7 +445,7 @@ pub async fn exchange_code_for_tokens(
 
     let config = provider_oauth_config(provider)?;
     let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let request = reqwest::Client::new().post(endpoint);
+    let request = super::oauth_http_client(issuer)?.post(endpoint);
     let request = match config.encoding {
         TokenRequestEncoding::Form => request.form(&[
             ("grant_type", "authorization_code"),
@@ -747,6 +747,68 @@ mod tests {
 
     /// RAII env override for serial tests; restores prior value on drop.
     use crate::test_isolation::EnvGuard;
+
+    #[tokio::test]
+    async fn token_exchange_never_sends_credentials_over_cleartext_transport() {
+        let mut server = mockito::Server::new_async().await;
+        let token_endpoint = server
+            .mock("POST", "/oauth/token")
+            .with_status(200)
+            .with_body(r#"{"access_token":"fixture-access"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        // Hostnames are not the numeric-loopback-only unit fixture channel.
+        let issuer = server.url().replace("127.0.0.1", "localhost");
+        let result = exchange_code_for_tokens(
+            ProviderKind::OpenAiResponses,
+            &issuer,
+            "fixture-client",
+            "http://localhost:1455/auth/callback",
+            &PkceCodes {
+                code_verifier: "fixture-verifier".into(),
+                code_challenge: "fixture-challenge".into(),
+            },
+            "fixture-code",
+        )
+        .await;
+        assert!(matches!(result, Err(AccountAuthError::Http(_))));
+        token_endpoint.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn token_exchange_never_follows_a_redirect_with_credentials() {
+        let mut server = mockito::Server::new_async().await;
+        let redirect_target = server
+            .mock("POST", "/stolen")
+            .with_status(200)
+            .with_body(r#"{"access_token":"fixture-access"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let token_endpoint = server
+            .mock("POST", "/oauth/token")
+            .with_status(307)
+            .with_header("location", &format!("{}/stolen", server.url()))
+            .expect(1)
+            .create_async()
+            .await;
+        let result = exchange_code_for_tokens(
+            ProviderKind::OpenAiResponses,
+            &server.url(),
+            "fixture-client",
+            "http://localhost:1455/auth/callback",
+            &PkceCodes {
+                code_verifier: "fixture-verifier".into(),
+                code_challenge: "fixture-challenge".into(),
+            },
+            "fixture-code",
+        )
+        .await;
+        assert!(matches!(result, Err(AccountAuthError::OAuth(_))));
+        token_endpoint.assert_async().await;
+        redirect_target.assert_async().await;
+    }
 
     /// Authorization-code grant posts form body and maps access/refresh/id.
     #[tokio::test]

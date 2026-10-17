@@ -76,22 +76,9 @@ pub struct OpenAiProvider {
     provider: ProviderKind,
 }
 
-/// The ChatGPT account's own Responses backend (codex-rs
-/// `model_provider_info.rs`: `https://chatgpt.com/backend-api/codex` under
-/// `AuthMode::Chatgpt`). Account tokens are refused by `api.openai.com`, so a
-/// signed-in lane streams here. Env override for tests / proxies.
-const CODEX_BACKEND_RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_BACKEND_ENDPOINT_ENV: &str = "CODESCRIBE_CODEX_BACKEND_ENDPOINT";
-/// `originator` header the Codex backend expects from every client.
-const CODEX_ORIGINATOR: &str = "codescribe";
-
-fn codex_backend_endpoint() -> String {
-    env::var(CODEX_BACKEND_ENDPOINT_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| CODEX_BACKEND_RESPONSES_ENDPOINT.to_string())
-}
+/// Test seam: the account backend override now lives with the account route.
+#[cfg(test)]
+use codescribe_core::llm::account_auth::CODEX_BACKEND_ENDPOINT_ENV;
 
 /// Which credential a request goes out on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,17 +286,13 @@ impl AgentProvider for OpenAiProvider {
             AuthRoute::Account => AuthHeaderMode::BearerOnly,
             AuthRoute::ApiKey => AuthHeaderMode::BearerAndApiKey,
         };
-        let (endpoint, extra_headers) = if codex_route {
-            let mut headers = vec![("originator".to_string(), CODEX_ORIGINATOR.to_string())];
-            match account_auth::account_id(self.provider) {
-                Some(account_id) => headers.push(("ChatGPT-Account-ID".to_string(), account_id)),
-                None => warn!(
-                    "Codex backend route without a ChatGPT-Account-ID: the stored tokens carry no workspace claim"
-                ),
-            }
-            (codex_backend_endpoint(), headers)
-        } else {
-            (self.endpoint.clone(), Vec::new())
+        // One account-route owner for the Agent and the formatter.
+        let (endpoint, extra_headers) = match codex_route
+            .then(|| account_auth::account_responses_route(self.provider))
+            .flatten()
+        {
+            Some(route) => (route.endpoint, route.headers),
+            None => (self.endpoint.clone(), Vec::new()),
         };
         let manager = ResponsesStreamingManager::new(
             &self.client,

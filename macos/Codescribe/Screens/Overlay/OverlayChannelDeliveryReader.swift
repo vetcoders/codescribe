@@ -21,6 +21,12 @@ actor OverlayChannelDeliveryReader {
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
   private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
+  // This is a restart cache, not transcript or delivery authority. Checkpoint
+  // complete snapshots, rather than fsyncing the entire roster for each bus.
+  private static let checkpointInterval: Duration = .seconds(30)
+  private static let checkpointByteLag: UInt64 = 8 << 20
+  private var lastCheckpoint: ContinuousClock.Instant?
+  private(set) var checkpointWrites: UInt64 = 0
   private struct PersistenceAttempt: Equatable {
     let offset: UInt64
     let inode: UInt64
@@ -43,6 +49,42 @@ actor OverlayChannelDeliveryReader {
   private var metadataObjects: [URL: MetadataObject] = [:]
   private var metadataCacheBytes = 0
   private var metadataAccess: UInt64 = 0
+  /// Lease and binding documents stay out of the receipt cache. A 500 ms poll
+  /// rotates through acknowledgment files and was evicting multi-megabyte
+  /// lease parses, so the next pass rebuilt them from scratch.
+  private var pinnedObjects: [URL: MetadataObject] = [:]
+  private var pinnedCacheBytes = 0
+  private static let pinnedCacheBudget = 8 << 20
+  private static let pinnedCacheEntries = 24
+  /// Conversation lists actually built. An idle poll reuses the previous list:
+  /// rebuilding and re-sorting unchanged history every 500 ms held two reader
+  /// threads at ~55 % of a core (sample of build 1004, 2026-10-14).
+  private(set) var conversationBuilds: UInt64 = 0
+  private var builtConversations: BuiltConversations?
+  private var nextLineage: UInt64 = 0
+
+  /// Everything the conversation list is built from. Equal inputs build an
+  /// equal list, and returning the same storage lets the main actor's equality
+  /// check end at buffer identity.
+  private struct ConversationInputs: Equatable {
+    let projections: [URL: ProjectionStamp]
+    let openedArchiveBus: URL?
+    let archives: [ArchiveSlot]
+  }
+  private struct ProjectionStamp: Equatable {
+    let lineage: UInt64
+    let revision: UInt64
+  }
+  private struct ArchiveSlot: Equatable {
+    let owner: OverlayConversationOwner
+    let bus: String
+    let loaded: Bool
+  }
+  private struct BuiltConversations {
+    let inputs: ConversationInputs
+    let conversations: [OverlayConversation]
+    let historyReplyIDs: Set<String>
+  }
 
   private struct MetadataObjectStamp: Equatable {
     let device: dev_t
@@ -72,6 +114,9 @@ actor OverlayChannelDeliveryReader {
   }
 
   private struct Cursor {
+    /// Reader-assigned on creation. A replaced cursor restarts its projection's
+    /// revision, so the pair, not the revision alone, names a projection state.
+    var lineage: UInt64 = 0
     var inode: UInt64 = 0
     var offset: UInt64 = 0
     var headHash = ""
@@ -104,7 +149,10 @@ actor OverlayChannelDeliveryReader {
 
   func read() throws -> [OverlayChannelDelivery] { try readSnapshot().deliveries }
 
-  func readSnapshot(selectedOwner: OverlayConversationOwner? = nil) throws
+  func readSnapshot(
+    selectedOwner: OverlayConversationOwner? = nil,
+    checkpointTime: ContinuousClock.Instant = .now
+  ) throws
     -> OverlayChannelDeliverySnapshot
   {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
@@ -216,11 +264,13 @@ actor OverlayChannelDeliveryReader {
     for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
       if FileManager.default.fileExists(atPath: bus.path) {
         try refresh(bus)
-      } else if buses[bus] == nil, let restored = persistedCursor(for: bus) {
+      } else if buses[bus] == nil, var restored = persistedCursor(for: bus) {
+        adopt(&restored)
         buses[bus] = restored
       }
     }
     var deliveries: [OverlayChannelDelivery] = []
+    var rosterOwners: [OverlayConversationOwner] = []
     for channel in bindings.keys.sorted() where channel.count == 1 && "123456789".contains(channel)
     {
       guard let binding = bindings[channel] else { continue }
@@ -229,8 +279,11 @@ actor OverlayChannelDeliveryReader {
           && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
       }
       guard owners.count == 1, let lease = owners.first,
-        let path = lease["bus"] as? String
+        let path = lease["bus"] as? String,
+        let owner = OverlayConversationOwner(
+          lease: lease, channel: channel, name: binding["audience"] as? String ?? "")
       else { continue }
+      rosterOwners.append(owner)
       let bus = URL(fileURLWithPath: path).standardizedFileURL
       guard var cursor = buses[bus] else { continue }
       cursor.projection.observeLease(lease, channel: channel, binding: binding)
@@ -239,24 +292,41 @@ actor OverlayChannelDeliveryReader {
       }
       buses[bus] = cursor
     }
+    let rosterByID = Dictionary(grouping: rosterOwners, by: \.id)
+    let archivesByID = Dictionary(grouping: archives.map(\.owner), by: \.id)
+    let verifiedOwners = Set(rosterByID.keys).union(archivesByID.keys).compactMap { id in
+      // A live binding plus its unique lease outranks an archive. Ambiguous
+      // coordinates are never resolved by alias, channel digit, or bus order.
+      let candidates = Set(rosterByID[id] ?? archivesByID[id] ?? [])
+      return candidates.count == 1 ? candidates.first : nil
+    }
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
-      for (owner, delivery) in cursor.projection.receiptCoordinates() {
+      for owner in verifiedOwners { cursor.projection.reconcileOwner(owner) }
+      // Up to 128 coordinates per bus and tick. Paths are built from strings:
+      // `appendingPathComponent(_:)` without `isDirectory:` asks the file
+      // system (getattrlist) on every call, six times per coordinate here,
+      // and that was the hottest frame of the 500 ms poll (sample 2026-10-14).
+      let wakeups = root.path + "/wakeups/"
+      let acknowledgments = root.path + "/acknowledgments/"
+      for (owner, delivery, accepted) in cursor.projection.receiptCoordinates() {
         guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
           continue
         }
-        let wakeup = root.appendingPathComponent("wakeups").appendingPathComponent(owner.leaseID)
-          .appendingPathComponent(delivery + ".json")
-        if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
-        let acknowledgment = root.appendingPathComponent("acknowledgments")
-          .appendingPathComponent(owner.leaseID).appendingPathComponent(delivery + ".json")
+        if !accepted {
+          let wakeup = URL(
+            fileURLWithPath: wakeups + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
+          if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+        }
+        let acknowledgment = URL(
+          fileURLWithPath: acknowledgments + owner.leaseID + "/" + delivery + ".json",
+          isDirectory: false)
         if let receipt = try? object(at: acknowledgment) {
           cursor.projection.observeAcknowledgment(
             receipt, owner: owner, delivery: delivery, busPath: bus.path)
         }
       }
       buses[bus] = cursor
-      try persist(bus, cursor: cursor, size: max(cursor.offset, persisted?[bus.path]?.length ?? 0))
     }
     for index in deliveries.indices {
       let channel = deliveries[index].channel
@@ -273,6 +343,36 @@ actor OverlayChannelDeliveryReader {
     buses = buses.filter { usedBuses.contains($0.key) }
     persistenceAttempts = persistenceAttempts.filter { usedBuses.contains($0.key) }
     savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
+    let inputs = ConversationInputs(
+      projections: buses.mapValues {
+        ProjectionStamp(lineage: $0.lineage, revision: $0.projection.revision)
+      },
+      openedArchiveBus: openedArchiveBus,
+      archives: archives.map { archive in
+        ArchiveSlot(
+          owner: archive.owner, bus: archive.bus,
+          loaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
+      })
+    let built: BuiltConversations
+    if let previous = builtConversations, previous.inputs == inputs {
+      built = previous
+    } else {
+      built = buildConversations(
+        inputs: inputs, archives: archives, openedArchiveBus: openedArchiveBus)
+      builtConversations = built
+    }
+    try checkpoint(at: checkpointTime)
+    return OverlayChannelDeliverySnapshot(
+      deliveries: deliveries, conversations: built.conversations,
+      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs)
+  }
+
+  private func buildConversations(
+    inputs: ConversationInputs,
+    archives: [(owner: OverlayConversationOwner, bus: String)],
+    openedArchiveBus: URL?
+  ) -> BuiltConversations {
+    conversationBuilds &+= 1
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
     var historyReplyIDs: Set<String> = []
@@ -294,7 +394,10 @@ actor OverlayChannelDeliveryReader {
             name: existing.name, owner: existing.owner,
             messages: rows.values.sorted {
               if $0.emittedAt != $1.emittedAt { return $0.emittedAt < $1.emittedAt }
-              return $0.order < $1.order
+              if $0.order != $1.order { return $0.order < $1.order }
+              // Two buses can both hand a take order 1; a dictionary walk
+              // must not decide which one a restored checkpoint lists first.
+              return $0.id < $1.id
             })
         } else {
           named[conversation.id] = conversation
@@ -315,13 +418,19 @@ actor OverlayChannelDeliveryReader {
         id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [],
         historyLoaded: buses[URL(fileURLWithPath: archive.bus).standardizedFileURL] != nil)
     }
-    return OverlayChannelDeliverySnapshot(
-      deliveries: deliveries,
+    return BuiltConversations(
+      inputs: inputs,
       conversations: [broadcast]
         + named.values.sorted {
           if $0.channel != $1.channel { return $0.channel < $1.channel }
           return $0.id < $1.id
-        }, archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: historyReplyIDs)
+        }, historyReplyIDs: historyReplyIDs)
+  }
+
+  private func adopt(_ cursor: inout Cursor) {
+    guard cursor.lineage == 0 else { return }
+    nextLineage &+= 1
+    cursor.lineage = nextLineage
   }
 
   private static func merge(
@@ -341,6 +450,10 @@ actor OverlayChannelDeliveryReader {
     }
     var result = firstIsNewer ? first : second
     let other = firstIsNewer ? second : first
+    // Terminal capture state is monotonic across delayed broadcast mirrors.
+    if first.captureState == .finished || second.captureState == .finished {
+      result.captureState = .finished
+    }
     result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
     if let otherOccurrences = other.occurrenceIDs {
       var occurrences = result.occurrenceIDs ?? []
@@ -370,7 +483,13 @@ actor OverlayChannelDeliveryReader {
     return result
   }
 
+  private func pinsMetadata(_ url: URL) -> Bool {
+    if url.lastPathComponent == "vc.agent-audience-binding.v1.json" { return true }
+    return url.deletingLastPathComponent().lastPathComponent == "leases"
+  }
+
   private func object(at url: URL) throws -> [String: Any] {
+    let pinned = pinsMetadata(url)
     do {
       var metadata = stat()
       guard fstatat(AT_FDCWD, url.path, &metadata, 0) == 0 else {
@@ -378,7 +497,13 @@ actor OverlayChannelDeliveryReader {
       }
       let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
-      if var cached = metadataObjects[url], cached.stamp == pathStamp {
+      if pinned {
+        if var cached = pinnedObjects[url], cached.stamp == pathStamp {
+          cached.access = metadataAccess
+          pinnedObjects[url] = cached
+          return cached.value
+        }
+      } else if var cached = metadataObjects[url], cached.stamp == pathStamp {
         cached.access = metadataAccess
         metadataObjects[url] = cached
         return cached.value
@@ -390,7 +515,11 @@ actor OverlayChannelDeliveryReader {
         throw CocoaError(.fileReadUnknown)
       }
       let stamp = MetadataObjectStamp(metadata)
-      if let old = metadataObjects.removeValue(forKey: url) { metadataCacheBytes -= old.bytes }
+      if pinned {
+        if let old = pinnedObjects.removeValue(forKey: url) { pinnedCacheBytes -= old.bytes }
+      } else if let old = metadataObjects.removeValue(forKey: url) {
+        metadataCacheBytes -= old.bytes
+      }
       let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
       guard data.count <= 16 << 20,
@@ -399,25 +528,40 @@ actor OverlayChannelDeliveryReader {
       // The open descriptor observes atomic replacement and follows symlinks.
       // In-place writes also invalidate through nanosecond mtime/ctime. Never
       // retain a parse whose file changed during that read.
-      if data.count <= Self.metadataCacheBudget,
-        fstat(handle.fileDescriptor, &metadata) == 0,
-        MetadataObjectStamp(metadata) == stamp
-      {
-        while metadataCacheBytes + data.count > Self.metadataCacheBudget
-          || metadataObjects.count >= Self.metadataCacheEntries
-        {
-          guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
-            let removed = metadataObjects.removeValue(forKey: oldest)
-          else { break }
-          metadataCacheBytes -= removed.bytes
+      if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
+        if pinned, data.count <= Self.pinnedCacheBudget {
+          while pinnedCacheBytes + data.count > Self.pinnedCacheBudget
+            || pinnedObjects.count >= Self.pinnedCacheEntries
+          {
+            guard let oldest = pinnedObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = pinnedObjects.removeValue(forKey: oldest)
+            else { break }
+            pinnedCacheBytes -= removed.bytes
+          }
+          pinnedObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          pinnedCacheBytes += data.count
+        } else if !pinned, data.count <= Self.metadataCacheBudget {
+          while metadataCacheBytes + data.count > Self.metadataCacheBudget
+            || metadataObjects.count >= Self.metadataCacheEntries
+          {
+            guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
+              let removed = metadataObjects.removeValue(forKey: oldest)
+            else { break }
+            metadataCacheBytes -= removed.bytes
+          }
+          metadataObjects[url] = MetadataObject(
+            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
+          metadataCacheBytes += data.count
         }
-        metadataObjects[url] = MetadataObject(
-          stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
-        metadataCacheBytes += data.count
       }
       return value
     } catch {
-      if let removed = metadataObjects.removeValue(forKey: url) {
+      if pinned {
+        if let removed = pinnedObjects.removeValue(forKey: url) {
+          pinnedCacheBytes -= removed.bytes
+        }
+      } else if let removed = metadataObjects.removeValue(forKey: url) {
         metadataCacheBytes -= removed.bytes
       }
       throw error
@@ -512,14 +656,15 @@ actor OverlayChannelDeliveryReader {
         guard cursor.partial.count <= 1 << 20 else { throw CocoaError(.fileReadCorruptFile) }
       }
     }
+    adopt(&cursor)
     buses[url] = cursor
-    try persist(url, cursor: cursor, size: size)
   }
 
   private func persistedCursor(for url: URL) -> Cursor? {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
     guard let mark = persisted?[url.path], let data = mark.projection,
-      let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data)
+      let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data),
+      projection.destinationVersion == 1
     else { return nil }
     guard (0...256).contains(mark.headLength) else { return nil }
     savedRevisions[url] = projection.revision
@@ -531,45 +676,70 @@ actor OverlayChannelDeliveryReader {
     return cursor
   }
 
-  private func persist(_ url: URL, cursor: Cursor, size: UInt64) throws {
-    var marks = persisted ?? [:]
-    let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
-    let attempt = PersistenceAttempt(
-      offset: offset, inode: cursor.inode,
-      headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
-      headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    if persistenceAttempts[url] == attempt { return }
-    if let previous = marks[url.path], savedRevisions[url] == cursor.projection.revision,
-      previous.offset == offset, previous.inode == cursor.inode,
-      previous.headHash == cursor.headHash, previous.streamID == cursor.streamID
+  private func checkpoint(at time: ContinuousClock.Instant) throws {
+    var changed: [(URL, Cursor, PersistenceAttempt)] = []
+    var largeLag = false
+    for url in buses.keys.sorted(by: { $0.path < $1.path }) {
+      guard let cursor = buses[url] else { continue }
+      let offset = cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count))
+      let attempt = PersistenceAttempt(
+        offset: offset, inode: cursor.inode,
+        headHash: cursor.headHash, streamID: cursor.streamID, revision: cursor.projection.revision,
+        headLength: cursor.headLength, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+      if persistenceAttempts[url] == attempt { continue }
+      let previous = persisted?[url.path]
+      if let previous, savedRevisions[url] == cursor.projection.revision,
+        previous.offset == offset, previous.inode == cursor.inode,
+        previous.headHash == cursor.headHash, previous.streamID == cursor.streamID,
+        previous.headLength == cursor.headLength,
+        previous.discardsLeadingParts == cursor.storage.discardsLeadingParts,
+        previous.dropsCutRow == cursor.dropsCutRow
+      {
+        continue
+      }
+      let savedOffset = persistenceAttempts[url]?.offset ?? previous?.offset ?? 0
+      if offset >= savedOffset, offset - savedOffset >= Self.checkpointByteLag {
+        largeLag = true
+      }
+      changed.append((url, cursor, attempt))
+    }
+    guard !changed.isEmpty else { return }
+    if let lastCheckpoint, !largeLag,
+      lastCheckpoint.duration(to: time) < Self.checkpointInterval
     {
       return
     }
-    // The durable offset points past the last consumed newline; an unfinished
-    // trailing row is re-read by the next generation once it completes.
+
+    var marks = persisted ?? [:]
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let mark = OverlayDeliveryCursorMark(
-      offset: offset,
-      inode: cursor.inode, length: size, headHash: cursor.headHash,
-      projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
-      streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
-      dropsCutRow: cursor.dropsCutRow)
-    guard marks[url.path] != mark else { return }
-    marks[url.path] = mark
+    for (url, cursor, attempt) in changed {
+      // Offset and projection are one atomic unit. Never checkpoint past an
+      // unfinished row or storage transaction, even though its bytes were read.
+      marks[url.path] = OverlayDeliveryCursorMark(
+        offset: attempt.offset,
+        inode: cursor.inode, length: cursor.offset, headHash: cursor.headHash,
+        projection: try encoder.encode(cursor.projection), headLength: cursor.headLength,
+        streamID: cursor.streamID, discardsLeadingParts: cursor.storage.discardsLeadingParts,
+        dropsCutRow: cursor.dropsCutRow)
+    }
     if marks.count > 16 {
       for path in marks.keys.sorted()
-      where path != url.path && buses[URL(fileURLWithPath: path)] == nil {
+      where buses[URL(fileURLWithPath: path)] == nil {
         marks.removeValue(forKey: path)
         if marks.count <= 16 { break }
       }
     }
     persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
-    // A successfully attempted unit may be evicted by the cache budget. Keep
-    // only this in-memory fingerprint to avoid re-encoding it on idle polls.
-    persistenceAttempts[url] = attempt
-    if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    lastCheckpoint = time
+    checkpointWrites &+= 1
+    // Save failure leaves all fingerprints dirty for retry. Successful eviction
+    // still records an attempt, so an oversized unit cannot spin on idle polls.
+    for (url, cursor, attempt) in changed {
+      persistenceAttempts[url] = attempt
+      if persisted?[url.path] != nil { savedRevisions[url] = cursor.projection.revision }
+    }
   }
 
   /// Expand every persisted occurrence before the existing UI projection acts.
@@ -680,7 +850,9 @@ actor OverlayChannelDeliveryReader {
     init(_ root: URL) throws {
       func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
         var value = stat()
-        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else { throw CocoaError(.fileReadUnknown) }
+        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
+          throw CocoaError(.fileReadUnknown)
+        }
         guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
           throw CocoaError(.fileReadCorruptFile)
         }
@@ -708,11 +880,13 @@ actor OverlayChannelDeliveryReader {
       let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
       guard bytes.count <= 4 << 20,
         let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-        Set(manifest.keys)
+        Set(manifest.keys).subtracting(["volume_uuid"])
           == Set([
             "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
             "segments", "active", "pending",
           ]),
+        manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+          || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
         manifest["schema"] as? String == "codescribe.bus-generations.v1",
         manifest["root"] as? String == root.path,
         let stream = manifest["stream_inode"] as? NSNumber,

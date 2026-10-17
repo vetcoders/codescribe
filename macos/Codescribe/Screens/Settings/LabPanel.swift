@@ -21,6 +21,10 @@ struct LabPanel: View {
         .toggleStyle(.switch)
         .font(.body)
 
+      sealLaneRow
+
+      dictationWitnessRow
+
       Picker(
         "Whisper buffering",
         selection: Binding(
@@ -48,7 +52,7 @@ struct LabPanel: View {
         Text("Apple on-device (experimental)").tag(true)
       }
       Text(
-        "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle."
+        "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
@@ -63,11 +67,86 @@ struct LabPanel: View {
     }
     .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
+    .task { await model.refreshAdmission() }
   }
 
-  /// Raw recognition timings. They used to be a Dictation tab; they are
-  /// parameters, not product choices, so Lab is their only surface. The
-  /// bindings and the promoted keys behind them are unchanged.
+  /// The committing lane. Settings › Audio states the effective value and
+  /// nothing else: turning the recorder's own precondition off is a power-user
+  /// act, so the one switch that can do it lives on this desk. An env override
+  /// still wins, and the switch then says so instead of lying about authority.
+  @ViewBuilder
+  private var sealLaneRow: some View {
+    let sealLane = sealLaneControlState(model.admission)
+    Toggle("Committing transcript fragments", isOn: sealLaneBinding)
+      .toggleStyle(.switch)
+      .font(.body)
+      .tint(CSColor.chromeAccent)
+      .disabled(!sealLane.isEnabled)
+      .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+      .accessibilityIdentifier("lab-committing-transcript-fragments")
+    Text("Required before a recording can start.")
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    if !sealLane.isEnabled {
+      Text(sealLane.detail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  /// Voice Lab experiment: the DictationTranscriber witness re-checks
+  /// unresolved recovery debt after each sealed utterance, in the background.
+  /// The effective value comes from the settings snapshot; an exported
+  /// process env still overrides the switch.
+  @ViewBuilder
+  private var dictationWitnessRow: some View {
+    Toggle(
+      String(localized: "DictationTranscriber witness (experimental)"),
+      isOn: Binding(
+        get: { model.settings.dictationWitnessArmed },
+        set: { model.setDictationWitnessArmed($0) }
+      )
+    )
+    .toggleStyle(.switch)
+    .font(.body)
+    .tint(CSColor.chromeAccent)
+    .accessibilityIdentifier("lab-dictation-witness")
+    Text(
+      String(
+        localized:
+          "Re-checks words a take left unresolved, in the background after each sealed utterance. A process env value overrides this toggle."
+      )
+    )
+    .font(.caption)
+    .foregroundStyle(.secondary)
+    .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private var sealLaneBinding: Binding<Bool> {
+    Binding(
+      get: { sealLaneControlState(model.admission).isOn },
+      set: { armed in
+        model.setSealLaneArmed(armed)
+        Task { await model.refreshAdmission() }
+      }
+    )
+  }
+
+  private func sealLaneAccessibilityValue(_ state: SealLaneControlState) -> String {
+    let value =
+      state.isOn
+      ? String(localized: "On", comment: "Toggle state")
+      : String(localized: "Off", comment: "Toggle state")
+    return state.isEnabled
+      ? value
+      : String(
+        localized: "\(value), overridden",
+        comment: "VoiceOver value: a toggle state frozen by an override")
+  }
+
+  /// Experimental recognition parameters. The speech-pause limit is a
+  /// product control in Agent settings; these engine timings stay in Lab.
   private var recognitionParameters: some View {
     VStack(alignment: .leading, spacing: 10) {
       SettingsSectionLabel(
@@ -76,19 +155,7 @@ struct LabPanel: View {
           comment: "Lab group: raw recognition timings"))
 
       VStack(alignment: .leading, spacing: 14) {
-        LabSecondsSlider(
-          title: String(localized: "Pause recognition after silence"),
-          detail: String(
-            localized:
-              "After this much silence the Apple engine goes idle. Recognition resumes when you start speaking again."
-          ),
-          seconds: model.settings.toggleSilenceSec,
-          value: $model.toggleSilenceSlider,
-          range: 0.5...30,
-          step: 0.5
-        )
-
-        LabSecondsSlider(
+        SettingsSecondsSlider(
           title: String(localized: "Whisper context length"),
           detail: String(
             localized:
@@ -100,7 +167,7 @@ struct LabPanel: View {
           step: 0.5
         )
 
-        LabSecondsSlider(
+        SettingsSecondsSlider(
           title: String(localized: "Sentence pause"),
           detail: String(
             localized:
@@ -122,50 +189,4 @@ struct LabPanel: View {
       .settingsGroupedInset()
     }
   }
-}
-
-/// One labelled seconds slider: title, the one line that says what it changes,
-/// and the live value. Shared shape for the Lab recognition parameters.
-private struct LabSecondsSlider: View {
-  let title: String
-  let detail: String
-  /// The persisted value, so the label shows what the core accepted.
-  let seconds: Float
-  @Binding var value: Double
-  let range: ClosedRange<Double>
-  let step: Double
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(CSFont.ui(13, .semibold))
-            .foregroundStyle(Color.primary)
-          Text(detail)
-            .font(CSFont.ui(11.5))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        Text(valueLabel)
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(Color.primary)
-      }
-      Slider(value: $value, in: range, step: step)
-        .tint(CSColor.chromeAccent)
-        .accessibilityLabel(title)
-        .accessibilityValue(valueLabel)
-    }
-  }
-
-  /// Seconds without a trailing zero: `5 s`, `1.5 s` — never `5.0 s`.
-  private var valueLabel: String {
-    String(
-      localized: "\(seconds, format: Self.seconds) s",
-      comment: "Slider value in seconds. The placeholder is the number; keep the unit abbreviated")
-  }
-
-  private static let seconds = FloatingPointFormatStyle<Float>.number
-    .precision(.fractionLength(0...1))
 }

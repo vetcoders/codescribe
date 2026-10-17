@@ -23,6 +23,17 @@ with the app; choose new clients in Settings → Agent. An unowned skill is kept
 If this shell does not include `~/.local/bin` on PATH, use those two stable full
 paths. No private checkout or hook script is required.
 
+On a host with no window — SSH, a worker session — name the clients on the
+command line instead of in Settings:
+
+```bash
+/Applications/Codescribe.app/Contents/MacOS/Codescribe \
+  --install-agent-bridge --agent-clients claude-code,codex
+```
+
+Valid names are `agents`, `claude-code` and `codex`; the flag replaces the
+selection exactly as the Settings panel does. See `docs/INSTALLATION.md`.
+
 To install only helpers and update already selected skills from source, run
 `make install-bus`. It uses the same Swift installer without building,
 restarting or replacing the app. Reattach the current session afterward; an
@@ -39,11 +50,12 @@ cs-say "Jestem na szynie." --provider codex --session <thread-id>
 cs-bus --status --provider codex --session <thread-id>
 ```
 
-Every provider requires an output-notifying `cs-bus --watch` monitor; its default
-is a short bell. Keep it active and renew notification windows during tasks.
-Codex also uses native queue wakeup after a final answer. Read the current
-`--read-pending` batch, immediately ACK only its complete returned IDs, drain to
-zero and check once more. Do not act on an obsolete
-queue copy. Use `--read-delivery` only for original acoustic details.
-Use `--watch --full` only for text diagnostics. A queue receipt is distinct from
-an agent ACK.
+Every provider requires an output-notifying `cs-bus --watch` monitor. Its default
+bell carries the complete message without a preview limit. Keep it active and
+renew notification windows during tasks. Immediately ACK each complete owned
+message received by this conversation; that withdraws its exact Codex queue
+submission before work begins. Codex also uses a compact full-text queue copy
+to wake later turns. Check queued copies with `--read-pending` before acting,
+ACK fresh IDs, drain to zero and check once more. Use `--read-delivery` only for
+original acoustic details. `--watch --full` is for receipt diagnostics. Printed
+stdout alone does not prove conversation receipt.

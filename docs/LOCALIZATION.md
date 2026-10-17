@@ -36,8 +36,11 @@
   with a plain relaunch intent: the choice is saved the moment it is picked, the
   row shows “Restart now” while the saved choice differs from the running
   language, and the relaunched app comes back with the tray in the new language
-  without reopening Settings or the wizard. The same busy and unavailable
-  messages apply; the row never relaunches on its own.
+  without reopening Settings or the wizard. The restart explanation, the button
+  and the busy or unavailable messages are rendered in the chosen language
+  (`LocalizedStringResource(locale:)` on `InterfaceLanguage.locale`), so the row
+  already reads the way the app will after the relaunch; the row never
+  relaunches on its own.
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter
@@ -153,20 +156,107 @@ The catalog lists the strings the Swift compiler extracts. Copy that Rust
 composes and hands across the bridge as a finished `String` (ledger §4) is
 invisible to it, so it is invisible to the worksheet and ships in English in
 every language. `make verify-l10n-bridge` (`scripts/l10n-bridge-census.py`)
-keeps that set from growing: every `String` field of a `Cs*` record and every
-`String` payload of a `Cs*` enum case in the generated bindings must be
-classified in `scripts/data/l10n-bridge-fields.txt` as `data` (identifier,
-path, wire value, vendor or model name, transcript or thread content, a code
-Swift switches on) or `prose` (a sentence a person reads as it arrives). A new
-field fails the gate until the cut that adds it classifies it; a `prose` line is
-a conscious decision to add debt. A line the bindings dropped fails too, so the
-`prose` lines stay the true burn-down list. The rule for new work is the
-ledger's: Rust sends a code and arguments, Swift owns the sentence.
+keeps that set from growing.
+
+Rust's text crosses in four shapes, and the census reads all four. Direction
+decides which half of a signature it looks at, because only the half travelling
+from Rust can arrive in English — UniFFI writes an object interface as
+`protocol XProtocol` beside `open class X` and a callback as `protocol X`
+beside `open class XImpl`, so the suffix is the direction:
+
+| shape    | what carries Rust's words                                       | named                               |
+| -------- | --------------------------------------------------------------- | ----------------------------------- |
+| record   | `public struct Cs*` field, `public enum Cs*` case payload       | `Record.field`, `Enum.case.payload` |
+| callback | an argument of `public protocol Cs*` — Rust calls Swift         | `Protocol.func.argument`            |
+| object   | a `-> String` of `public protocol *Protocol` — Swift calls Rust | `Object.func()`                     |
+| free     | a `-> String` of a top-level `public func`                      | `func()`                            |
+
+What Swift passes down and what Swift hands back from a callback are the app's
+own strings and are not the gate's business.
+
+Every such `String` must be classified in
+`scripts/data/l10n-bridge-fields.txt` as `data` (identifier, path, wire value,
+vendor or model name, transcript or thread content, a code Swift switches on)
+or `prose` (a sentence a person reads as it arrives). A new one fails the gate
+until the cut that adds it classifies it, and a line the bindings dropped fails
+too, so the `prose` lines stay the true burn-down list.
+
+**The list is ratchetted.** Classifying a new field `prose` used to be enough to
+pass — the gate printed the larger number and exited zero. `L10N_BASE` (default
+`origin/main`; CI passes the pull request's base) names the ref the census reads
+the same two files out of with `git show`, and a new `prose` line is refused.
+One arrival is forgiven: a seam the base's own **bindings already carried** and
+its classification never named is debt the census has only just learned to see,
+so a cut that widens the census can write it down. It is printed as _newly
+visible_. A field the base did not carry is new, and a field the base called
+`data` is a reclassification; both are refused. Neither answer is something a
+commit message can assert — both come from the base ref. If either base file is
+unreadable, the gate refuses with a diagnostic; a missing comparison is never
+success. An empty `L10N_BASE` also refuses. For a census-only report, call the
+Python CLI directly without `--base`.
+
+Make exports the literal `L10N_BASE` to the CLI's `--base-env` argument. It does
+not expand Make functions or interpolate the ref into shell code. Hooks inherit
+the caller's selected merge target; for this release stack use
+`L10N_BASE=origin/feat/humanize-codescribe-assets make check`.
+
+The rule for new work is the ledger's: Rust sends a code and arguments, Swift
+owns the sentence.
+
+### A translation may not be the English source
+
+Coverage is a gate on the _state_ of a unit, not on its words, and a `pl` unit
+whose value is the English source satisfied it: the state said somebody had
+handled the string, the count said the language was complete, and the string
+shipped in English. That was the one way an untranslated string could pass the
+gate that exists to catch it.
+
+`verify-l10n-catalog` refuses it, in any language but the source, at every
+plural form and substitution leaf, holding a unit against the English words at
+the same variation path. Two strings escape. One that carries no letter at all
+(`%@`, `%lld`, `100%%`) is the same everywhere and proves nothing. A key listed
+in `scripts/data/l10n-identical-allowed.txt` is identical on purpose — unit
+symbols, product and endpoint names, key names, and the words Polish borrows
+unchanged — and every line there carries its reason. A key added to that file
+because translating it looked like work is the gate defeating itself; the lint
+names the identical keys, the file says which of them are deliberate.
 
 After changing interface copy: build, `make l10n-sync`, commit the catalog with
 the code. A key that disappears from code is dropped from the catalog when it
 has no translations, and marked `stale` when it has — `verify-l10n-catalog`
 fails on stale rows so a translation is never orphaned silently.
+
+### Before the push: hooks
+
+`.pre-commit-config.yaml` carries `verify-l10n-catalog` and
+`verify-l10n-bridge` (inheriting `L10N_BASE`, default `origin/main`) at both the `pre-commit`
+and the `pre-push` stage; `make hooks` installs them. Both read files and exit
+in about a tenth of a second, so they are `always_run` rather than filtered by
+path: a Swift string, a Rust field, a catalog edit and a classification line
+live in four different places, and a hook that fires for only some of them
+protects none of them. `verify-l10n-sync` is deliberately absent — it needs a
+real Debug build and belongs to CI.
+
+### Every branch: the localization workflow
+
+`.github/workflows/l10n.yml` ("Localization gate") runs the whole localization
+set on **every branch** (`push: branches: ['**']`) and on **every pull
+request**, whatever its base, on the `xcode-27` image. It exists because
+`rust.yml` filters both triggers to `[main, develop]`: a push to an integration
+branch — the branch several cuts land on before anybody opens a pull request —
+ran no localization check at all, and the first gate to see an English string
+was the pull request into `main`, by which time the branch was the shape under
+review. A gate a branch can route around is a convention.
+
+Its one extra step fetches the base the prose ratchet measures against
+(`origin/<base_ref>` for a pull request, immutable `github.event.before` for a
+push to `main`, and `origin/main` for another branch push), because
+`actions/checkout` fetches one ref. A failed fetch fails the job; the census
+also refuses either unreadable base file.
+
+The steps duplicate `rust.yml`'s on a pull request into `main`. That is
+deliberate: the existing required status keeps its name and its teeth, and
+nothing in the new workflow is load-bearing for it.
 
 ### Required PR gate
 
@@ -501,6 +591,12 @@ so a round is closed only when the whole pending sheet has been read.
 
 Editing the catalog JSON by hand with `"state": "translated"` skips the review;
 drafts written by hand or by a script should carry `"state": "needs_review"`.
+
+A draft is allowed to be rough. It is not allowed to be English: a unit whose
+value is the English source is refused in either covered state (see "A
+translation may not be the English source"). Leaving the source text in place
+under `needs_review` is not a draft, it is the absence of one, and it is exactly
+what made a complete-looking catalog ship in English.
 
 ### How a review round is run
 

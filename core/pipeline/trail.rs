@@ -261,6 +261,8 @@ impl TrailSpeechEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotStart {
     #[serde(default)]
+    pub recovery_pending: bool,
+    #[serde(default)]
     pub word_policy: Option<String>,
     #[serde(default)]
     pub word_evidence: Option<WordEvidenceInput>,
@@ -275,12 +277,115 @@ pub struct TrailSlotStart {
     pub alternatives_before: usize,
     #[serde(default)]
     pub speech: Option<TrailSpeechEvidence>,
+    /// Physical anchor map used for this admission, not producer timestamps.
+    #[serde(default)]
+    pub anchor: Option<TrailAnchorEvidence>,
     #[serde(default)]
     pub assignments: Vec<(OccurrenceIdentity, OccurrenceIdentity)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailAnchorEvidence {
+    session: String,
+    capture_epoch: u64,
+    observed_samples: Option<u64>,
+    availability: String,
+    anchors: Vec<(OccurrenceIdentity, bool)>,
+    #[serde(default)]
+    capture_end: Option<OccurrenceIdentity>,
+    #[serde(default)]
+    quiet_fences: Vec<OccurrenceIdentity>,
+}
+
+impl TrailAnchorEvidence {
+    fn from_evidence(map: &crate::audio::capture_receipt::SpeechAnchorEvidence) -> Self {
+        Self {
+            session: map.identity.session.clone(),
+            capture_epoch: map.identity.capture_epoch,
+            observed_samples: map.availability.observed_samples(),
+            availability: map.availability.as_str().to_string(),
+            capture_end: None,
+            quiet_fences: Vec::new(),
+            anchors: map
+                .anchors
+                .iter()
+                .map(|anchor| (OccurrenceIdentity::from(&anchor.range), anchor.open_at_end))
+                .collect(),
+        }
+    }
+
+    fn evidence(
+        &self,
+        owner: &OccurrenceIdentity,
+    ) -> io::Result<crate::audio::capture_receipt::SpeechAnchorEvidence> {
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, CaptureEvidenceIdentity, SpeechAnchor, SpeechAnchorEvidence,
+        };
+        if self.session != owner.session || self.capture_epoch != owner.capture_epoch {
+            return Err(io::Error::other("anchor capture identity differs"));
+        }
+        if self.observed_samples.is_some() != (self.availability == "observed") {
+            return Err(io::Error::other(
+                "anchor availability differs from measurement extent",
+            ));
+        }
+        if self.capture_end.as_ref().is_some_and(|receipt| {
+            !receipt.same_capture(owner)
+                || receipt.sample_start != 0
+                || receipt.sample_end == 0
+                || self.observed_samples != Some(receipt.sample_end)
+        }) || self.quiet_fences.iter().any(|range| {
+            !range.same_capture(owner)
+                || !range.is_anchored()
+                || self
+                    .observed_samples
+                    .is_none_or(|end| range.sample_end > end)
+        }) {
+            return Err(io::Error::other(
+                "invalid capture-end or quiet-fence anchor receipt",
+            ));
+        }
+        let mut previous_end = 0;
+        for (range, _) in &self.anchors {
+            if !range.same_capture(owner)
+                || !range.is_anchored()
+                || range.sample_start < previous_end
+                || self
+                    .observed_samples
+                    .is_none_or(|extent| range.sample_end > extent)
+            {
+                return Err(io::Error::other("invalid recorded speech anchor map"));
+            }
+            previous_end = range.sample_end;
+        }
+        Ok(SpeechAnchorEvidence {
+            identity: CaptureEvidenceIdentity::new(&self.session, self.capture_epoch),
+            availability: self
+                .observed_samples
+                .map_or(AcousticAvailability::NotObserved, |observed_samples| {
+                    AcousticAvailability::Observed { observed_samples }
+                }),
+            anchors: self
+                .anchors
+                .iter()
+                .map(|(range, open_at_end)| SpeechAnchor {
+                    range: crate::stt::tail_provider::TailSampleRange {
+                        session: range.session.clone(),
+                        capture_epoch: range.capture_epoch,
+                        sample_start: range.sample_start,
+                        sample_end: range.sample_end,
+                    },
+                    open_at_end: *open_at_end,
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotEnd {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<super::acoustic_ledger::RecoveryDiagnostic>,
     #[serde(default)]
     pub word_choices: Vec<WordChoiceReceipt>,
     pub observation: ObservationIdentity,
@@ -331,6 +436,7 @@ impl SlotTrace {
             return Self(None);
         }
         let start = TrailSlotStart {
+            recovery_pending: ledger.text_recovery_pending(&observation.occurrence),
             word_policy: Some(WORD_POLICY.into()),
             word_evidence: ledger.word_evidence_input(observation).cloned(),
             word_choices_before: ledger.word_choices().len(),
@@ -348,6 +454,12 @@ impl SlotTrace {
                 .speech_evidence
                 .as_ref()
                 .map(TrailSpeechEvidence::from_evidence),
+            anchor: ledger.speech_anchors.as_ref().map(|map| {
+                let mut receipt = TrailAnchorEvidence::from_evidence(map);
+                receipt.capture_end = ledger.anchor_capture_end.clone();
+                receipt.quiet_fences = ledger.authenticated_anchor_quiet_fences();
+                receipt
+            }),
             assignments: ledger.assigned_word_pin_ranges(observation),
         };
         record(
@@ -416,6 +528,9 @@ impl SlotTrace {
                 &start.observation.occurrence,
                 TrailEvent::SlotEnd {
                     operation: Box::new(TrailSlotEnd {
+                        recovery: (start.recovery_pending
+                            || ledger.text_recovery_pending(&start.observation.occurrence))
+                        .then(|| ledger.recovery_diagnostic(&start.observation.occurrence)),
                         word_choices: ledger.word_choices()[start.word_choices_before..].to_vec(),
                         observation: start.observation.clone(),
                         first_ordinal: start.first_ordinal,
@@ -516,6 +631,12 @@ pub struct TrailDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrailEvent {
+    RecoveryRequired {
+        recovery: super::acoustic_ledger::RecoveryDiagnostic,
+    },
+    CoverageDiagnostics {
+        diagnostics: super::acoustic_ledger::CoverageDiagnostics,
+    },
     DecodeWork {
         observation: ObservationIdentity,
         decode: OccurrenceIdentity,
@@ -1191,6 +1312,7 @@ fn replay_slot_operation(
                 && (pins.len() != input.words.len()
                     || !pins.iter().zip(&input.words).all(|(pin, source)| {
                         pin.sample_start == source.sample_start
+                            && source.lexical_position.is_none()
                             && pin.sample_end == source.sample_end
                             && pin.text == source.surface
                             && pin.confidence == source.confidence
@@ -1220,6 +1342,60 @@ fn replay_slot_operation(
         .as_ref()
         .map(TrailSpeechEvidence::evidence)
         .transpose()?;
+    ledger.speech_anchors = start
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.evidence(&observation.occurrence))
+        .transpose()?;
+    let capture_end = start
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.capture_end.clone());
+    if let Some(receipt) = &capture_end {
+        let valid = ledger.speech_anchors.as_ref().is_some_and(|map| {
+            receipt.same_capture(&observation.occurrence)
+                && receipt.sample_start == 0
+                && receipt.sample_end > 0
+                && map.availability.observed_samples() == Some(receipt.sample_end)
+        });
+        if !valid
+            || ledger
+                .anchor_capture_end
+                .as_ref()
+                .is_some_and(|prior| prior != receipt)
+        {
+            return Err(io::Error::other("capture-end anchor receipt differs"));
+        }
+    } else if ledger.anchor_capture_end.is_some() {
+        return Err(io::Error::other("capture-end anchor receipt regressed"));
+    }
+    ledger.anchor_capture_end = capture_end;
+    ledger.replay_quiet_fences = start
+        .anchor
+        .as_ref()
+        .map(|anchor| anchor.quiet_fences.clone());
+    if let Some(ranges) = &ledger.replay_quiet_fences
+        && !ranges.is_empty()
+    {
+        let resolution = u64::from(
+            start
+                .capture_rate_hz
+                .ok_or_else(|| io::Error::other("quiet fence capture rate missing"))?,
+        )
+        .div_ceil(50)
+        .saturating_add(1);
+        let extent = start
+            .anchor
+            .as_ref()
+            .and_then(|anchor| anchor.observed_samples);
+        if ranges.iter().any(|range| {
+            !range.same_capture(&observation.occurrence)
+                || range.sample_end.checked_sub(range.sample_start) != Some(resolution)
+                || extent.is_none_or(|end| range.sample_end > end)
+        }) {
+            return Err(io::Error::other("invalid recorded exact-PCM quiet fence"));
+        }
+    }
     ledger.record_assigned_word_pins(observation, &start.assignments);
     match &start.input {
         TrailSlotInput::Words { words } => {
@@ -1317,10 +1493,19 @@ fn replay_validated(
     let mut pending: Option<PendingSlotReplay<'_>> = None;
     let mut effects_due = false;
     for row in records {
+        // Snapshots are passive diagnostics, not replay inputs or decision effects.
+        if matches!(
+            row.event,
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. }
+        ) {
+            continue;
+        }
         if effects_due && !matches!(row.event, TrailEvent::DecisionEffects { .. }) {
             return Err(io::Error::other("decision lacks slot effects"));
         }
         match &row.event {
+            // Observer snapshots cannot mutate replay or interrupt a slot batch.
+            TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
             TrailEvent::DecodeWork {
                 observation,
                 decode,
@@ -1678,6 +1863,115 @@ mod tests {
             );
             assert_eq!(projected, 0, "{fault}");
         }
+    }
+
+    #[test]
+    fn current_word_policy_replays_five_pins_and_refuses_prior_policies_before_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("word-policy-v5", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        let words = [
+            (2_000, 4_000),
+            (4_000, 6_000),
+            (8_000, 9_000),
+            (9_000, 10_500),
+            (10_500, 12_000),
+        ]
+        .into_iter()
+        .map(|(start, end)| WordPin::new(start, end, "Iwo").with_decode_window(0, 16_000))
+        .collect::<Vec<_>>();
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&observation, &words)
+                .grants_mutation()
+        );
+        drop(sink);
+        let mut rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let replayed = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(replayed.rendered_text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(replayed.slots_of(&owner).unwrap().len(), 5);
+        let start = rows
+            .iter_mut()
+            .find_map(|row| match &mut row.event {
+                TrailEvent::SlotStart { operation } => Some(operation),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(start.word_policy.as_deref(), Some(WORD_POLICY));
+        start.word_policy = Some("word-adjudication/v6".into());
+        let mut projected = 0;
+        let error = replay_decisions(&rows, |_, _, _| projected += 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported word adjudication policy")
+        );
+        assert_eq!(projected, 0);
+        for policy in [
+            "word-adjudication/v4",
+            "word-adjudication/v5",
+            "word-adjudication/v7",
+            "word-adjudication/v8",
+            "word-adjudication/v9",
+            "word-adjudication/v10",
+        ] {
+            for row in &mut rows {
+                if let TrailEvent::SlotStart { operation } = &mut row.event {
+                    operation.word_policy = Some(policy.into());
+                }
+            }
+            assert!(replay_decisions(&rows, |_, _, _| projected += 1).is_err());
+            assert_eq!(projected, 0);
+        }
+    }
+
+    #[test]
+    fn recovery_diagnostics_snapshots_cannot_grant_replay_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("passive-recovery-trail", 17, 0, 16_000);
+        let sink =
+            TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
+        let mut ledger = forensic_trail_measured_ledger(&owner);
+        let words = [
+            WordPin::new(2_000, 6_000, "Iwo").with_decode_window(0, 16_000),
+            WordPin::new(8_000, 12_000, "Iwo").with_decode_window(0, 16_000),
+        ];
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&observation, &words)
+                .grants_mutation()
+        );
+        record(
+            &owner,
+            TrailEvent::RecoveryRequired {
+                recovery: ledger.recovery_diagnostic(&owner),
+            },
+        );
+        drop(sink);
+        let mut rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let original = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        let mut changed = false;
+        for row in &mut rows {
+            if let TrailEvent::RecoveryRequired { recovery } = &mut row.event {
+                recovery.owner = OccurrenceIdentity::new("forged", 88, 0, u64::MAX);
+                recovery.committed = true;
+                recovery.pending = true;
+                changed = true;
+            }
+        }
+        assert!(changed);
+        let forged = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        assert_eq!(forged.slots_of(&owner), original.slots_of(&owner));
+        assert_eq!(forged.layer_trail(), original.layer_trail());
+        assert_eq!(forged.rendered_text(), "Iwo Iwo");
+        assert!(!forged.text_recovery_pending(&owner));
+        assert!(!forged.is_sealed(&owner));
     }
 
     #[test]
@@ -2142,7 +2436,11 @@ mod tests {
         ];
         match scenario {
             "batch" => {
-                ledger.admit_word_slots(&apple, &[WordPin::new(0, 4_000, "no")]);
+                // This is a replay/lineage test, with preceding PCM for a
+                // complete first correction rather than a capture-edge grant.
+                let mut children = children.clone();
+                children[0].sample_start = 2_000;
+                ledger.admit_word_slots(&apple, &[WordPin::new(2_000, 4_000, "no")]);
                 let mut confirmed = whisper.clone();
                 corroborate_candidate(
                     &mut ledger,
@@ -2497,8 +2795,9 @@ mod tests {
             ledger.admit_pinned_label(
                 &apple,
                 "weryfikowałeś",
-                &[WordPin::new(0, 16_000, "weryfikowałeś")],
+                &[WordPin::new(400, 16_000, "weryfikowałeś")],
             );
+            // This lineage fixture keeps the word beyond the 20ms+1 onset frame.
             // A word correction supplies its PCM pin, rather than granting
             // whole-label text the authority to replace an existing word.
             let mut observation =
@@ -2506,7 +2805,7 @@ mod tests {
             let receipt = corroborate_candidate(
                 &mut ledger,
                 &mut observation,
-                &[WordPin::new(0, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
+                &[WordPin::new(400, 16_000, "zweryfikowałeś").with_decode_window(0, 20_000)],
                 (0, 24_000),
             );
             assert!(receipt.grants_mutation());
@@ -2515,7 +2814,7 @@ mod tests {
             assert_eq!(operation.kind, SlotOperationKind::Correct);
             assert_eq!(
                 operation.source_ranges.as_slice(),
-                std::slice::from_ref(&owner)
+                &[OccurrenceIdentity::new(session, 7, 400, 16_000)]
             );
             assert_eq!(operation.outputs.len(), 1);
             assert_eq!(
@@ -2523,7 +2822,7 @@ mod tests {
                     operation.outputs[0].sample_start,
                     operation.outputs[0].sample_end
                 ),
-                (0, 16_000)
+                (400, 16_000)
             );
         }
         assert!(
@@ -2637,5 +2936,66 @@ mod tests {
         SINKS.get().unwrap().lock().unwrap().remove(&key);
         assert!(render_trace(&[], None).contains("INCOMPLETE"));
         assert!(trail_path(Path::new("/tmp"), "../escape").is_err());
+    }
+}
+
+#[cfg(test)]
+mod acoustic_v2_anchor_receipt_tests {
+    use super::*;
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, CaptureEvidenceIdentity, SpeechAnchor, SpeechAnchorEvidence,
+    };
+    use crate::stt::tail_provider::TailSampleRange;
+
+    #[test]
+    fn anchor_receipt_roundtrip_preserves_capture_geometry_and_open_edge() {
+        let owner = OccurrenceIdentity::new("anchor-replay", 19, 0, 32_000);
+        let map = SpeechAnchorEvidence {
+            identity: CaptureEvidenceIdentity::new("anchor-replay", 19),
+            availability: AcousticAvailability::Observed {
+                observed_samples: 32_000,
+            },
+            anchors: vec![SpeechAnchor {
+                range: TailSampleRange {
+                    session: "anchor-replay".into(),
+                    capture_epoch: 19,
+                    sample_start: 20_000,
+                    sample_end: 32_000,
+                },
+                open_at_end: true,
+            }],
+        };
+        let wire = serde_json::to_vec(&TrailAnchorEvidence::from_evidence(&map)).unwrap();
+        let recorded: TrailAnchorEvidence = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(recorded.evidence(&owner).unwrap(), map);
+        let foreign = OccurrenceIdentity::new("foreign", 19, 0, 32_000);
+        assert!(recorded.evidence(&foreign).is_err());
+    }
+
+    #[test]
+    fn forged_anchor_extent_or_availability_is_refused_before_replay() {
+        let owner = OccurrenceIdentity::new("anchor-replay", 19, 0, 32_000);
+        let mut wire = TrailAnchorEvidence {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            observed_samples: Some(32_000),
+            availability: "observed".into(),
+            capture_end: None,
+            quiet_fences: Vec::new(),
+            anchors: vec![(
+                OccurrenceIdentity::new("anchor-replay", 19, 20_000, 32_001),
+                true,
+            )],
+        };
+        assert!(wire.evidence(&owner).is_err());
+        wire.anchors[0].0.sample_end = 32_000;
+        wire.availability = "invalid_measurement".into();
+        assert!(wire.evidence(&owner).is_err());
+        wire.availability = "observed".into();
+        wire.anchors.push((
+            OccurrenceIdentity::new("anchor-replay", 19, 31_000, 32_000),
+            false,
+        ));
+        assert!(wire.evidence(&owner).is_err());
     }
 }

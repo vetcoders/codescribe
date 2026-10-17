@@ -34,10 +34,13 @@ impl SttLane {
             Self::Live => "Live transcript",
         }
     }
+    /// Transport arguments the lane accepts: API paths, encodings and protocol
+    /// ids, separated by `·`. Arguments only — the sentence that frames them is
+    /// the interface's, so it can be written in the interface language.
     pub fn accepts(self) -> &'static str {
         match self {
-            Self::File => "https multipart /v1/audio/transcriptions or NDJSON …:stream",
-            Self::Live => "wss live socket (stt-ws-v1 or xAI /v1/stt)",
+            Self::File => "multipart /v1/audio/transcriptions · NDJSON …:stream",
+            Self::Live => "stt-ws-v1 · xAI /v1/stt",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -107,7 +110,7 @@ pub fn validate_stt_endpoint(lane: SttLane, raw: &str) -> Result<String, SttEndp
     Ok(url.to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedSttLane {
     pub lane: SttLane,
     pub endpoint: String,
@@ -115,6 +118,19 @@ pub struct ResolvedSttLane {
     pub auth_mode: SttAuthMode,
     pub api_key: Option<String>,
 }
+
+impl std::fmt::Debug for ResolvedSttLane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedSttLane")
+            .field("lane", &self.lane)
+            .field("endpoint", &self.endpoint)
+            .field("key_account", &self.key_account)
+            .field("auth_mode", &self.auth_mode)
+            .field("api_key_present", &self.api_key.is_some())
+            .finish()
+    }
+}
+
 impl ResolvedSttLane {
     pub fn key_missing(&self) -> bool {
         // Official vendors resolve OAuth (including refresh) or their vendor key at

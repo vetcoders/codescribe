@@ -435,10 +435,10 @@ impl<'a> WhisperEncoderExecutionReceipt<'a> {
                 observation.source_input_samples,
                 observation.sample_rate,
             ),
-            vad_compacted_input_samples = observation.vad_compacted_input_samples,
-            vad_compacted_sample_rate_hz = observation.sample_rate,
-            vad_compacted_input_duration_ms = sample_duration_ms(
-                observation.vad_compacted_input_samples,
+            vad_selected_samples = observation.vad_selected_samples,
+            vad_sample_rate_hz = observation.sample_rate,
+            vad_selected_duration_ms = sample_duration_ms(
+                observation.vad_selected_samples,
                 observation.sample_rate,
             ),
             encoder_input_samples = self.encoder_input_samples_16k,
@@ -930,7 +930,7 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<RawTranscript> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             tracing::debug!("Skipping transcription: empty audio after resampling");
             return Ok(RawTranscript::default());
@@ -1050,7 +1050,7 @@ impl LocalWhisperEngine {
         control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
         control.check()?;
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             tracing::debug!("Skipping long transcription: empty audio after resampling");
             return Ok(RawTranscript::default());
@@ -1338,12 +1338,12 @@ impl LocalWhisperEngine {
     /// Detect the spoken language of in-memory audio, resampling to 16 kHz
     /// first.
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         self.detect_language_16k(&samples)
     }
 
     fn mel_tensor_16k(&self, samples_16k: &[f32]) -> Result<Tensor> {
-        let mel = whisper::audio::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
+        let mel = super::mel::pcm_to_mel(&self.config, samples_16k, &self.mel_filters);
         let mel_len = mel.len();
         Ok(Tensor::from_vec(
             mel,
@@ -1794,7 +1794,7 @@ impl LocalWhisperEngine {
         Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
     )> {
         control.check()?;
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let samples = audio_loader::resample_to_16k(audio, sample_rate)?;
         if samples.is_empty() {
             return Ok((RawTranscript::default(), None));
         }
@@ -1842,7 +1842,22 @@ impl LocalWhisperEngine {
         self.capture_word_alignment = false;
         let transcript = transcript?;
         let align_started = std::time::Instant::now();
-        let words = self.align_captured_words(language)?;
+        let words = {
+            let alignment_span = control.tail_execution_observation().map(|observation| {
+                let identity = &observation.identity;
+                tracing::info_span!(
+                    "tail_word_alignment",
+                    execution_id = %observation.execution_id,
+                    session_id = %identity.range.session,
+                    capture_epoch = identity.range.capture_epoch,
+                    request_id = identity.request_id,
+                    sample_start = identity.range.sample_start,
+                    sample_end = identity.range.sample_end,
+                )
+            });
+            let _entered = alignment_span.as_ref().map(|span| span.enter());
+            self.align_captured_words(language)?
+        };
         tracing::info!(
             decode_ms,
             decode_scope = "tail_inference_after_resampling_before_alignment",
@@ -1972,6 +1987,7 @@ impl LocalWhisperEngine {
             content_frames,
         ) else {
             tracing::info!(
+                reason = "measured_words_rejected",
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "tail_word_pin_alignment_unmeasured"
             );
@@ -1981,9 +1997,13 @@ impl LocalWhisperEngine {
         let duration = self.captured_sample_len as f32 / whisper::SAMPLE_RATE as f32;
         let mut segments = Vec::with_capacity(words.len());
         let mut previous_end = 0.0_f32;
-        for word in words {
+        for (word_index, word) in words.into_iter().enumerate() {
             if word.start_secs + 1.0e-3 < previous_end {
                 tracing::info!(
+                    reason = "nonmonotonic_merged_word",
+                    word_index,
+                    start_secs = word.start_secs,
+                    previous_end_secs = previous_end,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "tail_word_pin_alignment_unmeasured"
                 );
@@ -1993,6 +2013,13 @@ impl LocalWhisperEngine {
             let end = word.end_secs.min(duration);
             if end <= start {
                 tracing::info!(
+                    reason = "nonpositive_clamped_word_duration",
+                    word_index,
+                    start_secs = start,
+                    end_secs = end,
+                    source_start_secs = word.start_secs,
+                    source_end_secs = word.end_secs,
+                    duration_secs = duration,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "tail_word_pin_alignment_unmeasured"
                 );
@@ -2044,7 +2071,7 @@ fn file_level_log_mel(config: &Config, samples: &[f32], mel_filters: &[f32]) -> 
     let hop = whisper::HOP_LENGTH;
     let mut bins: Vec<Vec<f32>> = vec![Vec::new(); n_mels];
     for chunk in samples.chunks(whisper::N_SAMPLES) {
-        let padded = whisper::audio::pcm_to_mel(config, chunk, mel_filters);
+        let padded = super::mel::pcm_to_mel(config, chunk, mel_filters);
         let padded_frames = padded.len() / n_mels;
         if padded_frames == 0 {
             continue;

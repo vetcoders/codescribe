@@ -216,7 +216,8 @@ final class AgentChatCancellationTests: XCTestCase {
       summary: "write file",
       command: nil,
       cwd: nil,
-      paths: ["/workspace/file"]
+      paths: ["/workspace/file"],
+      arguments: nil
     )
     let other = PendingToolApproval(
       callID: "call-other",
@@ -228,7 +229,8 @@ final class AgentChatCancellationTests: XCTestCase {
       summary: "write other file",
       command: nil,
       cwd: nil,
-      paths: ["/workspace/other"]
+      paths: ["/workspace/other"],
+      arguments: nil
     )
 
     engine.emitApproval(other)
@@ -276,10 +278,10 @@ final class AgentChatCancellationTests: XCTestCase {
     XCTAssertEqual(ComposerActionAccessibility.identifier, "agent-composer-primary-action")
   }
 
-  func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
-    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).icon.systemName, "arrow.up.circle.fill")
-    XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
-    XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
+  func testComposerSendUsesOverlayPaperplaneAndSharedControlGeometry() {
+    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).systemImage, "paperplane.fill")
+    XCTAssertEqual(ComposerControlMetrics.glyphSize, 16)
+    XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 28)
   }
 
   func testVoiceStopRoutesOnlyToVoiceAdapterPreservesPartialAndRecovers() throws {

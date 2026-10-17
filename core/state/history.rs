@@ -316,6 +316,507 @@ fn existing_audio_for_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+/// The audio the daily archive wrote together with one transcript.
+///
+/// `daily_archive::save` publishes `<base>.{m4a,wav}` and `<base>.txt` from
+/// one stem, so the stem IS the durable take identity. Only a `.txt` inside
+/// the transcriptions bag qualifies; anything else, or a transcript whose
+/// paired audio is gone, yields `None` — never a neighbour, never the last
+/// recording.
+pub fn paired_audio_for_transcript(transcript: &Path) -> Option<PathBuf> {
+    if transcript.extension().and_then(|ext| ext.to_str()) != Some("txt") {
+        return None;
+    }
+    let resolved = transcript.canonicalize().ok()?;
+    let root = transcriptions_base_dir().canonicalize().ok()?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+        return None;
+    }
+    let stem = resolved.file_stem()?.to_str()?;
+    existing_audio_for_stem(resolved.parent()?, stem)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Archived transcript revisions
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ARCHIVE_REVISION_SCHEMA: &str = "codescribe.archive-revision.v1";
+const ARCHIVE_REVISION_SUFFIX: &str = ".revisions.jsonl";
+
+/// What produced one revision of an archived transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArchiveRevisionProvenance {
+    UserEdit,
+    Formatter,
+    Retranscribe,
+    /// An earlier version restored as a new revision. Legacy records stay
+    /// readable and count as an operation; new writes use `Navigate`.
+    Restore,
+    /// Undo, redo or a version pick: the cursor moves to an accepted step.
+    /// A receipt for the move, never a new step.
+    Navigate,
+    /// The take's own document as the live reducer accepted it (Raw or
+    /// Light+), admitted from the live history of the same take.
+    Transcript,
+}
+
+impl ArchiveRevisionProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UserEdit => "user-edit",
+            Self::Formatter => "formatter",
+            Self::Retranscribe => "retranscribe",
+            Self::Restore => "restore",
+            Self::Navigate => "navigate",
+            Self::Transcript => "transcript",
+        }
+    }
+}
+
+/// One persisted revision of an archived transcript.
+///
+/// Revision 0 is the archived `.txt` itself and is never written here. Every
+/// line names the raw evidence it revises by digest, so a chain can never be
+/// read back over a different transcript.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArchiveRevision {
+    pub schema: String,
+    pub revision: u64,
+    pub source_revision: u64,
+    pub provenance: ArchiveRevisionProvenance,
+    pub rendered_text: String,
+    pub receipt_id: String,
+    pub emitted_at: String,
+    pub evidence_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_revision: Option<u64>,
+    /// Formatter level or retranscription pass, for provenance display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// A version the live take accepted before the bytes that were archived
+    /// (Raw behind an auto-format delivered at Stop). Replay places it before
+    /// the original, in record order; only a chain with no other record may
+    /// admit one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub precedes_original: bool,
+}
+
+/// An archived transcript with its revision chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedDocument {
+    pub original_text: String,
+    pub revisions: Vec<ArchiveRevision>,
+}
+
+impl ArchivedDocument {
+    /// The accepted revision; 0 while the archive is unrevised.
+    pub fn head_revision(&self) -> u64 {
+        self.revisions
+            .last()
+            .map_or(0, |revision| revision.revision)
+    }
+
+    pub fn head(&self) -> Option<&ArchiveRevision> {
+        self.revisions.last()
+    }
+
+    /// Text of the selected version: what the canvas shows, Copy/Insert/Send
+    /// deliver and Format reads.
+    pub fn head_text(&self) -> &str {
+        let selected = self.timeline().selected_revision();
+        self.text_at(selected)
+            .unwrap_or(self.original_text.as_str())
+    }
+
+    pub fn text_at(&self, revision: u64) -> Option<&str> {
+        if revision == 0 {
+            return Some(&self.original_text);
+        }
+        self.revisions
+            .iter()
+            .find(|entry| entry.revision == revision)
+            .map(|entry| entry.rendered_text.as_str())
+    }
+
+    /// Replay the chain as one linear history: the original and every
+    /// accepted operation, with the selected step. An operation after an undo
+    /// ends the abandoned redo branch; a navigation only moves the cursor.
+    /// Equal texts stay separate steps: each is an attempt the user made.
+    pub fn timeline(&self) -> ArchiveTimeline {
+        let step = |record: &ArchiveRevision| ArchiveStep {
+            revision: record.revision,
+            provenance: record.provenance.as_str().to_string(),
+            detail: record.detail.clone(),
+            rendered_text: record.rendered_text.clone(),
+            emitted_at: record.emitted_at.clone(),
+            receipt_id: record.receipt_id.clone(),
+        };
+        // Versions the live take accepted before the archived bytes lead the
+        // history; the writer admits them only into an otherwise empty chain.
+        let priors = self
+            .revisions
+            .iter()
+            .take_while(|record| record.precedes_original)
+            .count();
+        let mut steps = self.revisions[..priors]
+            .iter()
+            .map(step)
+            .collect::<Vec<_>>();
+        steps.push(ArchiveStep {
+            revision: 0,
+            provenance: "original".to_string(),
+            detail: None,
+            rendered_text: self.original_text.clone(),
+            emitted_at: String::new(),
+            receipt_id: String::new(),
+        });
+        let mut cursor = steps.len() - 1;
+        for record in &self.revisions[priors..] {
+            if record.provenance == ArchiveRevisionProvenance::Navigate {
+                if let Some(target) = record
+                    .restored_revision
+                    .and_then(|target| steps.iter().position(|step| step.revision == target))
+                {
+                    cursor = target;
+                }
+                continue;
+            }
+            steps.truncate(cursor + 1);
+            steps.push(step(record));
+            cursor = steps.len() - 1;
+        }
+        ArchiveTimeline { steps, cursor }
+    }
+}
+
+/// One accepted step of an archived transcript. `revision` is the chain
+/// record that accepted it (0 for the archived original): its identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveStep {
+    pub revision: u64,
+    pub provenance: String,
+    pub detail: Option<String>,
+    pub rendered_text: String,
+    pub emitted_at: String,
+    pub receipt_id: String,
+}
+
+/// The replayed linear history of an archived transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveTimeline {
+    pub steps: Vec<ArchiveStep>,
+    pub cursor: usize,
+}
+
+impl ArchiveTimeline {
+    pub fn selected(&self) -> Option<&ArchiveStep> {
+        self.steps.get(self.cursor)
+    }
+
+    /// Chain revision of the selected version (0 is the archived original).
+    pub fn selected_revision(&self) -> u64 {
+        self.selected().map_or(0, |step| step.revision)
+    }
+}
+
+/// Admit one archived transcript: a `.txt` file inside the transcriptions bag.
+fn admit_archived_transcript(transcript: &Path) -> Result<daily_archive::ArchivePin> {
+    anyhow::ensure!(
+        transcript.extension().and_then(|ext| ext.to_str()) == Some("txt"),
+        "not an archived transcript: {}",
+        transcript.display()
+    );
+    let resolved = transcript
+        .canonicalize()
+        .with_context(|| format!("archived transcript missing: {}", transcript.display()))?;
+    let root = transcriptions_base_dir()
+        .canonicalize()
+        .context("transcriptions folder unavailable")?;
+    anyhow::ensure!(
+        resolved.starts_with(&root) && resolved.is_file(),
+        "not an archived transcript: {}",
+        transcript.display()
+    );
+    daily_archive::admit_revision_source(&resolved, &root)
+}
+
+fn evidence_digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+/// The persisted chain is JSON Lines with one complete-record rule: a record
+/// is accepted only together with its terminating newline. Bytes after the
+/// last newline were never acknowledged to any caller (an interrupted legacy
+/// append, a split UTF-8 character, even a whole JSON object): they are not
+/// part of the chain, they are never parsed as a record, and a writer removes
+/// them before it appends. Every complete record must be valid, in order and
+/// bound to the same raw evidence, or the whole chain is refused untouched.
+struct ParsedChain {
+    revisions: Vec<ArchiveRevision>,
+    accepted_len: usize,
+}
+
+fn parse_revision_chain(chain: &[u8], evidence: &str, label: &Path) -> Result<ParsedChain> {
+    let accepted_len = chain
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let mut revisions: Vec<ArchiveRevision> = Vec::new();
+    if let Some(body) = chain[..accepted_len].strip_suffix(b"\n") {
+        for (index, line) in body.split(|byte| *byte == b'\n').enumerate() {
+            let revision = std::str::from_utf8(line)
+                .ok()
+                .and_then(|line| serde_json::from_str::<ArchiveRevision>(line).ok())
+                .with_context(|| {
+                    format!("corrupt revision {} in {}", index + 1, label.display())
+                })?;
+            let expected = revisions.len() as u64 + 1;
+            anyhow::ensure!(
+                revision.schema == ARCHIVE_REVISION_SCHEMA
+                    && revision.revision == expected
+                    && revision.source_revision.checked_add(1) == Some(expected),
+                "revision chain out of order in {}",
+                label.display()
+            );
+            anyhow::ensure!(
+                revision.evidence_sha256 == evidence,
+                "archived transcript changed under its revision chain: {}",
+                label.display()
+            );
+            revisions.push(revision);
+        }
+    }
+    Ok(ParsedChain {
+        revisions,
+        accepted_len,
+    })
+}
+
+fn archived_document_from(
+    transcript: &[u8],
+    chain: &[u8],
+    label: &Path,
+) -> Result<(ArchivedDocument, usize)> {
+    let original_text = String::from_utf8(transcript.to_vec())
+        .with_context(|| format!("archived transcript is not UTF-8: {}", label.display()))?;
+    let parsed = parse_revision_chain(chain, &evidence_digest(&original_text), label)?;
+    Ok((
+        ArchivedDocument {
+            original_text,
+            revisions: parsed.revisions,
+        },
+        parsed.accepted_len,
+    ))
+}
+
+/// One planned rewrite of a revision chain: the full accepted contents, the
+/// unacknowledged tail it drops (kept aside as evidence) and the receipt.
+struct ChainWrite<T> {
+    contents: Vec<u8>,
+    uncommitted_tail: Vec<u8>,
+    value: T,
+}
+
+/// The archived transcript at `transcript` with its accepted revisions.
+/// Readers hold the shared directory lease, so they see one whole chain.
+pub fn read_archived_document(transcript: &Path) -> Result<ArchivedDocument> {
+    let transcript = admit_archived_transcript(transcript)?;
+    let (raw, chain) = daily_archive::read_revision_chain(&transcript)?;
+    let (document, accepted_len) = archived_document_from(&raw, &chain, &transcript.path)?;
+    if accepted_len < chain.len() {
+        warn!(
+            "archived transcript {} has {} unacknowledged revision bytes; the next accepted revision sets them aside",
+            transcript.path.display(),
+            chain.len() - accepted_len
+        );
+    }
+    Ok(document)
+}
+
+/// What an accepted revision says, decided against the current document.
+struct PlannedRevision {
+    provenance: ArchiveRevisionProvenance,
+    rendered_text: String,
+    restored_revision: Option<u64>,
+    detail: Option<String>,
+    precedes_original: bool,
+}
+
+/// Accept one revision under the exclusive directory lease: validate the raw
+/// evidence and the accepted prefix, compare the head, then rewrite the chain
+/// as that prefix plus exactly one new record. The receipt exists only after
+/// the rewrite and its directory entry are durable.
+fn accept_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    plan: impl FnOnce(&ArchivedDocument) -> Result<PlannedRevision>,
+) -> Result<ArchiveRevision> {
+    let transcript = admit_archived_transcript(transcript)?;
+    daily_archive::update_revision_chain(&transcript, |raw, chain| {
+        let (document, accepted_len) = archived_document_from(raw, chain, &transcript.path)?;
+        anyhow::ensure!(
+            document.head_revision() == source_revision,
+            "stale archived transcript revision: current {}, requested {}",
+            document.head_revision(),
+            source_revision
+        );
+        let PlannedRevision {
+            provenance,
+            rendered_text,
+            restored_revision,
+            detail,
+            precedes_original,
+        } = plan(&document)?;
+        let revision = ArchiveRevision {
+            schema: ARCHIVE_REVISION_SCHEMA.to_string(),
+            revision: source_revision
+                .checked_add(1)
+                .context("archived transcript revision exhausted")?,
+            source_revision,
+            provenance,
+            rendered_text,
+            receipt_id: format!("archive-{}-{}", provenance.as_str(), uuid::Uuid::new_v4()),
+            emitted_at: chrono::Utc::now().to_rfc3339(),
+            evidence_sha256: evidence_digest(&document.original_text),
+            restored_revision,
+            detail,
+            precedes_original,
+        };
+        let mut contents = chain[..accepted_len].to_vec();
+        contents.extend_from_slice(&serde_json::to_vec(&revision)?);
+        contents.push(b'\n');
+        Ok(ChainWrite {
+            contents,
+            uncommitted_tail: chain[accepted_len..].to_vec(),
+            value: revision,
+        })
+    })
+}
+
+/// Accept one revision of an archived transcript against `source_revision`.
+///
+/// The archived `.txt` and its audio are raw evidence and stay untouched; the
+/// chain lives in `<base>.txt.revisions.jsonl` beside them, which no history
+/// listing treats as a transcript. A head that moved since the caller read it
+/// refuses the request instead of overwriting newer work, across processes.
+pub fn commit_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    rendered_text: &str,
+    provenance: ArchiveRevisionProvenance,
+    detail: Option<String>,
+) -> Result<ArchiveRevision> {
+    anyhow::ensure!(
+        !matches!(
+            provenance,
+            ArchiveRevisionProvenance::Restore
+                | ArchiveRevisionProvenance::Navigate
+                | ArchiveRevisionProvenance::Transcript
+        ),
+        "a navigation names the version it selects; a live document enters by admission"
+    );
+    anyhow::ensure!(
+        !rendered_text.trim().is_empty(),
+        "A transcript revision cannot be empty"
+    );
+    accept_archived_revision(transcript, source_revision, |document| {
+        // A format or a retranscription is an attempt even when its bytes
+        // repeat the selected version; only a hand edit that changes nothing
+        // is no revision.
+        anyhow::ensure!(
+            provenance != ArchiveRevisionProvenance::UserEdit
+                || document.head_text() != rendered_text,
+            "the revision does not change the transcript"
+        );
+        Ok(PlannedRevision {
+            provenance,
+            rendered_text: rendered_text.to_string(),
+            restored_revision: None,
+            detail,
+            precedes_original: false,
+        })
+    })
+}
+
+/// Admit one version the live reducer already accepted for the take this
+/// archive holds. The live history stays the authority while the take is
+/// current; this is its durable record, written through the same head CAS
+/// and evidence binding as every other revision, so a reopened take replays
+/// the same versions after the next take or a restart.
+///
+/// `precedes_original` admits a version accepted before the archived bytes
+/// (Raw behind an auto-format delivered at Stop); it is refused once the
+/// chain holds anything but such versions. Equal bytes are never refused:
+/// each live step is one accepted attempt.
+pub fn admit_live_revision(
+    transcript: &Path,
+    source_revision: u64,
+    rendered_text: &str,
+    provenance: ArchiveRevisionProvenance,
+    detail: Option<String>,
+    precedes_original: bool,
+) -> Result<ArchiveRevision> {
+    anyhow::ensure!(
+        !matches!(
+            provenance,
+            ArchiveRevisionProvenance::Restore | ArchiveRevisionProvenance::Navigate
+        ),
+        "a live navigation is admitted as a navigation"
+    );
+    anyhow::ensure!(
+        !rendered_text.trim().is_empty(),
+        "A transcript revision cannot be empty"
+    );
+    accept_archived_revision(transcript, source_revision, |document| {
+        anyhow::ensure!(
+            !precedes_original
+                || document
+                    .revisions
+                    .iter()
+                    .all(|record| record.precedes_original),
+            "a version before the original can only lead an unrevised chain"
+        );
+        Ok(PlannedRevision {
+            provenance,
+            rendered_text: rendered_text.to_string(),
+            restored_revision: None,
+            detail,
+            precedes_original,
+        })
+    })
+}
+
+/// Undo, redo or pick a version of an archived transcript: select the
+/// accepted step `target_revision` names. Appends one navigation receipt;
+/// no step is added and no text is produced again.
+pub fn navigate_archived_revision(
+    transcript: &Path,
+    source_revision: u64,
+    target_revision: u64,
+) -> Result<ArchiveRevision> {
+    accept_archived_revision(transcript, source_revision, |document| {
+        let timeline = document.timeline();
+        let target = timeline
+            .steps
+            .iter()
+            .position(|step| step.revision == target_revision)
+            .context("selected version is not in this transcript's history")?;
+        anyhow::ensure!(
+            target != timeline.cursor,
+            "the selected version is already shown"
+        );
+        Ok(PlannedRevision {
+            provenance: ArchiveRevisionProvenance::Navigate,
+            rendered_text: timeline.steps[target].rendered_text.clone(),
+            restored_revision: Some(target_revision),
+            detail: None,
+            precedes_original: false,
+        })
+    })
+}
+
 /// Get the transcriptions base directory
 fn transcriptions_base_dir() -> PathBuf {
     // Use config_dir as the single source of truth for filesystem roots.
@@ -1053,8 +1554,19 @@ mod daily_archive {
         file: File,
     }
 
+    impl Entry<'_> {
+        /// The stage was renamed onto its final leaf: its name now belongs to
+        /// a published file and must not be unlinked.
+        fn disarm(&mut self) {
+            self.name = CString::default();
+        }
+    }
+
     impl Drop for Entry<'_> {
         fn drop(&mut self) {
+            if self.name.as_bytes().is_empty() {
+                return;
+            }
             // SAFETY: remove only this guard's single staging/reservation entry.
             if unsafe { libc::unlinkat(self.dir.as_raw_fd(), self.name.as_ptr(), 0) } < 0 {
                 warn!(
@@ -1150,6 +1662,340 @@ mod daily_archive {
         Ok(())
     }
 
+    /// `flock` on a fresh description of a pinned directory: the same lease
+    /// shape as the truth sidecar writer, held by every process that reads or
+    /// revises an archived transcript's revision chain in that directory.
+    struct DirLease(File);
+
+    impl DirLease {
+        fn acquire(dir: &File, operation: libc::c_int) -> Result<Self> {
+            // SAFETY: `.` names the pinned directory itself; a successful
+            // openat transfers exactly one owned descriptor.
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    c".".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    0,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision lease refused");
+            }
+            // SAFETY: `fd` came from a successful openat and has one owner.
+            let lease = unsafe { File::from_raw_fd(fd) };
+            // SAFETY: the descriptor stays open for the life of this lease.
+            if unsafe { libc::flock(lease.as_raw_fd(), operation) } < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision lease refused");
+            }
+            Ok(Self(lease))
+        }
+    }
+
+    impl Drop for DirLease {
+        fn drop(&mut self) {
+            // SAFETY: release only the lock this lease acquired.
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    fn identity(file: &File) -> Result<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    /// Admission owns the root, day and raw source descriptors before waiting
+    /// for the day lease. Never resolve their paths again through symlinks.
+    pub(super) struct ArchivePin {
+        pub(super) path: PathBuf,
+        root_path: PathBuf,
+        root: File,
+        relative_parent: PathBuf,
+        dir: File,
+        leaf: CString,
+        source: File,
+        source_stamp: LeafStamp,
+    }
+
+    fn open_directory_below(dir: &File, relative: &Path) -> Result<File> {
+        let mut current = dir.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                anyhow::bail!("archive directory needs normal relative components");
+            };
+            current = open_at(
+                &current,
+                &CString::new(name.as_bytes())?,
+                libc::O_RDONLY | libc::O_DIRECTORY,
+            )?;
+        }
+        Ok(current)
+    }
+
+    fn open_directory(path: &Path) -> Result<File> {
+        let relative = path
+            .strip_prefix(Path::new("/"))
+            .context("archive directory must be absolute")?;
+        open_directory_below(&File::open("/")?, relative)
+    }
+
+    pub(super) fn admit_revision_source(transcript: &Path, root: &Path) -> Result<ArchivePin> {
+        let relative = transcript
+            .strip_prefix(root)
+            .context("archived transcript is outside its admitted root")?;
+        let relative_parent = relative
+            .parent()
+            .context("archive needs parent")?
+            .to_path_buf();
+        let leaf = CString::new(
+            relative
+                .file_name()
+                .context("archive needs leaf")?
+                .as_bytes(),
+        )?;
+        let root_dir = open_directory(root)?;
+        let dir = open_directory_below(&root_dir, &relative_parent)?;
+        let source = open_at(&dir, &leaf, libc::O_RDONLY | libc::O_NONBLOCK)?;
+        let source_stamp = LeafStamp::read(&source)?;
+        let admitted = ArchivePin {
+            path: transcript.to_path_buf(),
+            root_path: root.to_path_buf(),
+            root: root_dir,
+            relative_parent,
+            dir,
+            leaf,
+            source,
+            source_stamp,
+        };
+        admitted.ensure_admitted()?;
+        Ok(admitted)
+    }
+
+    impl ArchivePin {
+        fn ensure_admitted(&self) -> Result<()> {
+            let current_root = open_directory(&self.root_path)?;
+            let current_dir = open_directory_below(&current_root, &self.relative_parent)?;
+            anyhow::ensure!(
+                identity(&self.root)? == identity(&current_root)?
+                    && identity(&self.dir)? == identity(&current_dir)?,
+                "archive directory changed after admission: {}",
+                self.path.display()
+            );
+            let current_source = open_at(&self.dir, &self.leaf, libc::O_RDONLY | libc::O_NONBLOCK)?;
+            anyhow::ensure!(
+                self.source_stamp == LeafStamp::read(&self.source)?
+                    && self.source_stamp == LeafStamp::read(&current_source)?,
+                "raw archive source changed after admission: {}",
+                self.path.display()
+            );
+            Ok(())
+        }
+    }
+
+    fn pin_leased(transcript: &ArchivePin, operation: libc::c_int) -> Result<DirLease> {
+        let lease = DirLease::acquire(&transcript.dir, operation)?;
+        transcript.ensure_admitted()?;
+        Ok(lease)
+    }
+
+    fn chain_leaf(leaf: &CStr) -> Result<CString> {
+        let mut name = leaf.to_bytes().to_vec();
+        name.extend_from_slice(ARCHIVE_REVISION_SUFFIX.as_bytes());
+        Ok(CString::new(name)?)
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct LeafStamp {
+        dev: u64,
+        ino: u64,
+        len: u64,
+        modified: (i64, i64),
+        changed: (i64, i64),
+    }
+
+    impl LeafStamp {
+        fn read(file: &File) -> Result<Self> {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata()?;
+            anyhow::ensure!(metadata.is_file(), "archive leaf is not a regular file");
+            Ok(Self {
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                len: metadata.len(),
+                modified: (metadata.mtime(), metadata.mtime_nsec()),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            })
+        }
+    }
+
+    /// Keep the descriptor open so replacement cannot recycle its identity;
+    /// absence is a receipt too, distinct from an existing empty file.
+    struct LeafSnapshot {
+        bytes: Vec<u8>,
+        admitted: Option<(File, LeafStamp)>,
+    }
+
+    impl LeafSnapshot {
+        fn ensure_unchanged(&self, dir: &File, name: &CStr) -> Result<()> {
+            match (
+                self.admitted.as_ref(),
+                open_at(dir, name, libc::O_RDONLY | libc::O_NONBLOCK),
+            ) {
+                (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                (Some((file, expected)), Ok(current)) => {
+                    anyhow::ensure!(
+                        *expected == LeafStamp::read(file)?
+                            && *expected == LeafStamp::read(&current)?,
+                        "archive leaf changed after read: {}",
+                        name.to_string_lossy()
+                    );
+                    Ok(())
+                }
+                (_, Err(error)) => Err(error.into()),
+                (None, Ok(_)) => anyhow::bail!(
+                    "archive leaf appeared after read: {}",
+                    name.to_string_lossy()
+                ),
+            }
+        }
+    }
+
+    /// Read one regular leaf through the pinned directory and retain its
+    /// identity. A symlink or special file is refused; absence is explicit.
+    fn read_leaf(dir: &File, name: &CStr, optional: bool) -> Result<LeafSnapshot> {
+        use std::io::Read;
+        let mut file = match open_at(dir, name, libc::O_RDONLY | libc::O_NONBLOCK) {
+            Ok(file) => file,
+            Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(LeafSnapshot {
+                    bytes: Vec::new(),
+                    admitted: None,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let stamp = LeafStamp::read(&file)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let snapshot = LeafSnapshot {
+            bytes,
+            admitted: Some((file, stamp)),
+        };
+        snapshot.ensure_unchanged(dir, name)?;
+        Ok(snapshot)
+    }
+
+    /// The raw transcript and its revision chain, read as one coherent pair
+    /// under the shared lease.
+    pub(super) fn read_revision_chain(transcript: &ArchivePin) -> Result<(Vec<u8>, Vec<u8>)> {
+        let _lease = pin_leased(transcript, libc::LOCK_SH)?;
+        let chain = chain_leaf(&transcript.leaf)?;
+        let raw = read_leaf(&transcript.dir, &transcript.leaf, false)?;
+        let revisions = read_leaf(&transcript.dir, &chain, true)?;
+        raw.ensure_unchanged(&transcript.dir, &transcript.leaf)?;
+        revisions.ensure_unchanged(&transcript.dir, &chain)?;
+        transcript.ensure_admitted()?;
+        Ok((raw.bytes, revisions.bytes))
+    }
+
+    /// Keep bytes after the last record boundary beside the chain before a
+    /// rewrite drops them. They were never acknowledged, but they are the
+    /// only evidence of an interrupted writer.
+    fn quarantine_tail(dir: &File, chain: &CStr, tail: &[u8]) -> Result<()> {
+        let leaf = std::str::from_utf8(chain.to_bytes()).unwrap_or("archive.revisions.jsonl");
+        let name = format!("{leaf}.torn-{}", uuid::Uuid::new_v4());
+        let mut entry = stage(dir)?;
+        entry.file.write_all(tail)?;
+        publish(&entry, &name)?;
+        warn!(
+            "archive revision chain had {} unacknowledged bytes; kept as {name}",
+            tail.len()
+        );
+        Ok(())
+    }
+
+    /// Revise one chain under the exclusive lease. `plan` sees the raw
+    /// transcript and current chain bytes while the lease is held. Admission
+    /// and leaf receipts are checked again immediately before publication.
+    /// Creating the first chain is atomic no-replace. Replacing an existing
+    /// chain is atomic rename, but not inode-conditional: a process ignoring
+    /// the lease can still race the final check and rename. Do not claim an
+    /// adversarial filesystem CAS that the platform does not provide.
+    pub(super) fn update_revision_chain<T>(
+        transcript: &ArchivePin,
+        plan: impl FnOnce(&[u8], &[u8]) -> Result<ChainWrite<T>>,
+    ) -> Result<T> {
+        let _lease = pin_leased(transcript, libc::LOCK_EX)?;
+        let dir = &transcript.dir;
+        let chain = chain_leaf(&transcript.leaf)?;
+        let raw = read_leaf(dir, &transcript.leaf, false)?;
+        let current = read_leaf(dir, &chain, true)?;
+        let write = plan(&raw.bytes, &current.bytes)?;
+        transcript.ensure_admitted()?;
+        raw.ensure_unchanged(dir, &transcript.leaf)?;
+        current.ensure_unchanged(dir, &chain)?;
+        if !write.uncommitted_tail.is_empty() {
+            quarantine_tail(dir, &chain, &write.uncommitted_tail)?;
+        }
+        let mut entry = stage(dir)?;
+        entry.file.write_all(&write.contents)?;
+        entry.file.sync_all()?;
+        transcript.ensure_admitted()?;
+        raw.ensure_unchanged(dir, &transcript.leaf)?;
+        current.ensure_unchanged(dir, &chain)?;
+        if current.admitted.is_none() {
+            // SAFETY: no-replace publication of the synced stage in the
+            // pinned directory refuses an entry planted after our check.
+            if unsafe {
+                libc::linkat(
+                    dir.as_raw_fd(),
+                    entry.name.as_ptr(),
+                    dir.as_raw_fd(),
+                    chain.as_ptr(),
+                    0,
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision first publication refused");
+            }
+        } else {
+            // SAFETY: both names live in the leased directory. This never
+            // follows a symlink, but the final identity check and rename are
+            // separate syscalls; noncooperating writers are not serialized.
+            if unsafe {
+                libc::renameat(
+                    dir.as_raw_fd(),
+                    entry.name.as_ptr(),
+                    dir.as_raw_fd(),
+                    chain.as_ptr(),
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error())
+                    .context("archive revision publication refused");
+            }
+            entry.disarm();
+        }
+        // SAFETY: fsync of the leased directory makes publication durable.
+        if unsafe { libc::fsync(dir.as_raw_fd()) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("archive revision not confirmed durable");
+        }
+        transcript.ensure_admitted()?;
+        let published = open_at(dir, &chain, libc::O_RDONLY | libc::O_NONBLOCK)?;
+        anyhow::ensure!(
+            identity(&entry.file)? == identity(&published)?,
+            "archive revision replaced before acknowledgement"
+        );
+        Ok(write.value)
+    }
+
     pub(super) fn save_text(
         root: &Path,
         now: &DateTime<Local>,
@@ -1231,7 +2077,22 @@ mod daily_archive {
 #[cfg(not(unix))]
 mod daily_archive {
     use super::*;
+    pub(super) struct ArchivePin {
+        pub(super) path: PathBuf,
+    }
+    pub(super) fn admit_revision_source(_transcript: &Path, _root: &Path) -> Result<ArchivePin> {
+        anyhow::bail!("secure daily archive requires Unix directory descriptors")
+    }
     pub(super) fn admit_source(_path: &Path) -> Result<fs::File> {
+        anyhow::bail!("secure daily archive requires Unix directory descriptors")
+    }
+    pub(super) fn read_revision_chain(_transcript: &ArchivePin) -> Result<(Vec<u8>, Vec<u8>)> {
+        anyhow::bail!("secure daily archive requires Unix directory descriptors")
+    }
+    pub(super) fn update_revision_chain<T>(
+        _transcript: &ArchivePin,
+        _plan: impl FnOnce(&[u8], &[u8]) -> Result<ChainWrite<T>>,
+    ) -> Result<T> {
         anyhow::bail!("secure daily archive requires Unix directory descriptors")
     }
     pub(super) fn save_text(
@@ -1727,6 +2588,43 @@ mod tests {
         assert!(dir.starts_with(&tmp_canon));
     }
 
+    /// Archived audio is the same-stem pair only: a sibling take, a formatted
+    /// artifact of another stem, or a path outside the bag never resolves.
+    #[test]
+    #[serial]
+    fn paired_audio_resolves_only_the_same_stem_take() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
+        let day = transcriptions_dir(&Local::now());
+        let take_a = day.join("101500_alpha-take_raw.txt");
+        let take_b = day.join("101600_bravo-take_raw.txt");
+        let formatted_a = day.join("101500_alpha-take_formatted.txt");
+        fs::write(&take_a, "alpha").expect("text a");
+        fs::write(day.join("101500_alpha-take_raw.m4a"), b"a").expect("audio a");
+        fs::write(&take_b, "bravo").expect("text b");
+        fs::write(day.join("101600_bravo-take_raw.wav"), b"b").expect("audio b");
+        fs::write(&formatted_a, "Alpha.").expect("formatted a");
+
+        let audio_a = paired_audio_for_transcript(&take_a).expect("take a audio");
+        assert!(audio_a.ends_with("101500_alpha-take_raw.m4a"));
+        let audio_b = paired_audio_for_transcript(&take_b).expect("take b audio");
+        assert!(audio_b.ends_with("101600_bravo-take_raw.wav"));
+        assert_eq!(paired_audio_for_transcript(&formatted_a), None);
+
+        fs::remove_file(day.join("101500_alpha-take_raw.m4a")).expect("drop audio a");
+        assert_eq!(paired_audio_for_transcript(&take_a), None);
+        assert_eq!(
+            paired_audio_for_transcript(&day.join("101600_bravo-take_raw.wav")),
+            None
+        );
+
+        let outside = TempDir::new().expect("outside");
+        let foreign = outside.path().join("101600_bravo-take_raw.txt");
+        fs::write(&foreign, "bravo").expect("foreign text");
+        fs::write(outside.path().join("101600_bravo-take_raw.m4a"), b"x").expect("foreign");
+        assert_eq!(paired_audio_for_transcript(&foreign), None);
+    }
+
     /// save_entry writes a .txt raw artifact with preview equal to the stored text.
     #[test]
     #[serial]
@@ -2079,3 +2977,366 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod archive_revision_integration_tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn fixture(root: &Path, name: &str) -> PathBuf {
+        let day = root.join("2026-10-09");
+        fs::create_dir_all(&day).unwrap();
+        let path = day.join(format!("{name}.txt"));
+        fs::write(&path, "Raw source: five Iwo Iwo Iwo Iwo Iwo.").unwrap();
+        path
+    }
+
+    #[test]
+    #[serial]
+    fn archive_revisions_reopen_restore_and_refuse_stale_head_without_touching_raw() {
+        let root = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            root.path().to_str().unwrap(),
+        );
+        let path = fixture(&transcriptions_base_dir(), "revision");
+        let raw = fs::read(&path).unwrap();
+        let audio = path.with_extension("wav");
+        fs::write(&audio, b"immutable audio evidence").unwrap();
+        let accepted = commit_archived_revision(
+            &path,
+            0,
+            "Formatted source.",
+            ArchiveRevisionProvenance::Formatter,
+            Some("smart".into()),
+        )
+        .unwrap();
+        assert_eq!(accepted.revision, 1);
+        let reopened = read_archived_document(&path).unwrap();
+        assert_eq!(reopened.head_text(), "Formatted source.");
+        assert_eq!(
+            reopened.text_at(0),
+            Some(std::str::from_utf8(&raw).unwrap())
+        );
+        assert_eq!(reopened.timeline().cursor, 1);
+        assert_eq!(reopened.timeline().steps[0].revision, 0);
+        assert!(
+            commit_archived_revision(
+                &path,
+                0,
+                "Stale text",
+                ArchiveRevisionProvenance::UserEdit,
+                None
+            )
+            .is_err()
+        );
+        let restored = navigate_archived_revision(&path, 1, 0).unwrap();
+        assert_eq!(restored.revision, 2);
+        assert_eq!(restored.restored_revision, Some(0));
+        assert_eq!(
+            read_archived_document(&path)
+                .unwrap()
+                .head_text()
+                .as_bytes(),
+            raw
+        );
+        assert_eq!(fs::read(&path).unwrap(), raw);
+        assert_eq!(fs::read(audio).unwrap(), b"immutable audio evidence");
+    }
+
+    #[test]
+    #[serial]
+    fn torn_utf8_and_unterminated_json_are_quarantined_before_next_accepted_revision() {
+        let root = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            root.path().to_str().unwrap(),
+        );
+        for index in 0..4 {
+            let path = fixture(&transcriptions_base_dir(), &format!("torn-{index}"));
+            commit_archived_revision(
+                &path,
+                0,
+                "First accepted",
+                ArchiveRevisionProvenance::UserEdit,
+                None,
+            )
+            .unwrap();
+            let chain = PathBuf::from(format!("{}{}", path.display(), ARCHIVE_REVISION_SUFFIX));
+            let prefix = fs::read(&chain).unwrap();
+            let tail = match index {
+                0 => b"{\"schema\":".to_vec(),
+                1 => vec![0xe2, 0x82],
+                2 => b"{\"revision\":999}".to_vec(),
+                _ => {
+                    let mut ghost = read_archived_document(&path)
+                        .unwrap()
+                        .head()
+                        .unwrap()
+                        .clone();
+                    ghost.revision = 2;
+                    ghost.source_revision = 1;
+                    ghost.rendered_text = "Valid JSON, never acknowledged".into();
+                    ghost.receipt_id = "unacknowledged-ghost".into();
+                    serde_json::to_vec(&ghost).unwrap()
+                }
+            };
+            let mut torn = prefix.clone();
+            torn.extend_from_slice(&tail);
+            fs::write(&chain, &torn).unwrap();
+            assert_eq!(read_archived_document(&path).unwrap().head_revision(), 1);
+            commit_archived_revision(
+                &path,
+                1,
+                "Second accepted",
+                ArchiveRevisionProvenance::Retranscribe,
+                Some("quality".into()),
+            )
+            .unwrap();
+            let reopened = read_archived_document(&path).unwrap();
+            assert_eq!(reopened.head_revision(), 2);
+            assert_eq!(reopened.head_text(), "Second accepted");
+            assert_eq!(reopened.head().unwrap().detail.as_deref(), Some("quality"));
+            assert!(fs::read(&chain).unwrap().starts_with(&prefix));
+            let tail_copy = fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry.file_name().to_string_lossy().starts_with(&format!(
+                        "{}{}.torn-",
+                        path.file_name().unwrap().to_string_lossy(),
+                        ARCHIVE_REVISION_SUFFIX
+                    ))
+                })
+                .expect("unacknowledged bytes remain as evidence");
+            assert_eq!(fs::read(tail_copy.path()).unwrap(), tail);
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "Raw source: five Iwo Iwo Iwo Iwo Iwo."
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn malformed_complete_record_and_changed_raw_refuse_without_rewriting_chain() {
+        let root = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            root.path().to_str().unwrap(),
+        );
+        let path = fixture(&transcriptions_base_dir(), "corrupt");
+        commit_archived_revision(
+            &path,
+            0,
+            "Accepted",
+            ArchiveRevisionProvenance::UserEdit,
+            None,
+        )
+        .unwrap();
+        let chain = PathBuf::from(format!("{}{}", path.display(), ARCHIVE_REVISION_SUFFIX));
+        let accepted = fs::read(&chain).unwrap();
+        let mut corrupt = accepted.clone();
+        corrupt.extend_from_slice(b"{not-json}\n");
+        fs::write(&chain, &corrupt).unwrap();
+        assert!(
+            commit_archived_revision(
+                &path,
+                1,
+                "Must refuse",
+                ArchiveRevisionProvenance::UserEdit,
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&chain).unwrap(), corrupt);
+        fs::write(&chain, &accepted).unwrap();
+        fs::write(&path, "Replaced raw").unwrap();
+        assert!(read_archived_document(&path).is_err());
+        assert!(
+            commit_archived_revision(
+                &path,
+                1,
+                "Must refuse",
+                ArchiveRevisionProvenance::UserEdit,
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&chain).unwrap(), accepted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_pin_refuses_directory_redirection_after_admission() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let path = fixture(&root, "pin");
+        let pin = daily_archive::admit_revision_source(&path, &root).unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("pin.txt"), "Redirected source").unwrap();
+        let day = path.parent().unwrap();
+        fs::rename(day, root.join("saved-day")).unwrap();
+        symlink(outside.path(), day).unwrap();
+        assert!(daily_archive::read_revision_chain(&pin).is_err());
+        assert!(
+            daily_archive::update_revision_chain(&pin, |_, _| Ok(ChainWrite {
+                contents: b"must not land\n".to_vec(),
+                uncommitted_tail: Vec::new(),
+                value: ()
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(outside.path().join("pin.txt")).unwrap(),
+            "Redirected source"
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revision_publication_refuses_leaf_replacement_and_absent_to_present() {
+        use std::os::unix::fs::symlink;
+        for variant in ["replace", "symlink", "appear", "in-place", "raw"] {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            let path = fixture(&root, variant);
+            let chain = PathBuf::from(format!("{}{}", path.display(), ARCHIVE_REVISION_SUFFIX));
+            if variant != "appear" {
+                fs::write(&chain, b"previous\n").unwrap();
+            }
+            let pin = daily_archive::admit_revision_source(&path, &root).unwrap();
+            let planted = root.join("planted");
+            fs::write(&planted, b"external replacement\n").unwrap();
+            let result = daily_archive::update_revision_chain(&pin, |_, _| {
+                match variant {
+                    "replace" => fs::rename(&planted, &chain).unwrap(),
+                    "symlink" => {
+                        fs::remove_file(&chain).unwrap();
+                        symlink(&planted, &chain).unwrap();
+                    }
+                    "appear" | "in-place" => fs::write(&chain, b"external replacement\n").unwrap(),
+                    "raw" => fs::write(&path, b"changed raw").unwrap(),
+                    _ => unreachable!(),
+                }
+                Ok(ChainWrite {
+                    contents: b"must not land\n".to_vec(),
+                    uncommitted_tail: Vec::new(),
+                    value: (),
+                })
+            });
+            assert!(result.is_err(), "{variant} must refuse before publication");
+            assert_eq!(
+                fs::read(&chain).unwrap(),
+                if variant == "raw" {
+                    b"previous\n".as_slice()
+                } else {
+                    b"external replacement\n".as_slice()
+                }
+            );
+            if variant == "symlink" {
+                assert!(chain.symlink_metadata().unwrap().file_type().is_symlink());
+            }
+        }
+    }
+
+    #[test]
+    fn cas_process_probe() {
+        let Some(root) = std::env::var_os("CODESCRIBE_DATA_DIR").map(PathBuf::from) else {
+            return;
+        };
+        let request = root.join("archive-cas-probe.json");
+        let Ok(request) = fs::read(request) else {
+            return;
+        };
+        let path: PathBuf = serde_json::from_slice(&request).unwrap();
+        let pid = std::process::id();
+        fs::write(root.join(format!("ready-{pid}")), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !root.join("go").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parent never released CAS probe"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let accepted = commit_archived_revision(
+            &path,
+            0,
+            &format!("writer {pid}"),
+            ArchiveRevisionProvenance::UserEdit,
+            None,
+        )
+        .is_ok();
+        fs::write(
+            root.join(format!("result-{pid}.json")),
+            serde_json::to_vec(&accepted).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn directory_lease_serializes_archive_cas_across_processes() {
+        let root = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            root.path().to_str().unwrap(),
+        );
+        let path = fixture(&transcriptions_base_dir(), "processes");
+        fs::write(
+            root.path().join("archive-cas-probe.json"),
+            serde_json::to_vec(&path).unwrap(),
+        )
+        .unwrap();
+        let mut children = (0..3)
+            .map(|_| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "state::history::archive_revision_integration_tests::cas_process_probe",
+                        "--test-threads=1",
+                    ])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !children
+            .iter()
+            .all(|child| root.path().join(format!("ready-{}", child.id())).exists())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child process failed to reach real CAS barrier"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        fs::write(root.path().join("go"), b"go").unwrap();
+        let mut accepted = 0;
+        for child in &mut children {
+            assert!(child.wait().unwrap().success());
+            let result = fs::read(root.path().join(format!("result-{}.json", child.id()))).unwrap();
+            if serde_json::from_slice::<bool>(&result).unwrap() {
+                accepted += 1;
+            }
+        }
+        assert_eq!(accepted, 1, "exactly one process owns source revision zero");
+        let reopened = read_archived_document(&path).unwrap();
+        assert_eq!(reopened.head_revision(), 1);
+        assert_eq!(reopened.revisions.len(), 1);
+        assert_eq!(
+            reopened.original_text,
+            "Raw source: five Iwo Iwo Iwo Iwo Iwo."
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "history_linear_tests.rs"]
+mod archive_linear_navigation_tests;

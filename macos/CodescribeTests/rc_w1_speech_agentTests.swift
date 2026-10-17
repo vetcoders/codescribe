@@ -174,8 +174,8 @@ final class RCW1SpeechAgentTests: XCTestCase {
   func testStoppedSpeechLateFailureCannotClearOrFailTheNextRequest() async {
     let engine = SpeechEngine()
     let store = AgentChatStore(engine: engine)
-    let first = ChatMessage(role: .assistant, timestamp: "now", text: "First")
-    let second = ChatMessage(role: .assistant, timestamp: "now", text: "Second")
+    let first = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "First")
+    let second = ChatMessage(role: .assistant, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "Second")
     var starts = engine.starts.stream.makeAsyncIterator()
     let firstTask = Task { await store.speak(first) }
     _ = await starts.next()

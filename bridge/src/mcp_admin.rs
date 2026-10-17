@@ -10,15 +10,16 @@
 //! Every mutation goes through the core store's atomic, unknown-field-preserving
 //! writer, so a hand-edited config is never clobbered. Sync-only: the CRUD calls
 //! are cheap disk I/O; `test_server` blocks on a one-shot discovery handshake
-//! (bounded by a 10s timeout) run on the core's dedicated thread + runtime.
+//! (bounded by a 10s timeout) run on the core's dedicated thread + runtime, and
+//! records the outcome in the app's MCP evidence owner so Agent Diagnostics
+//! reads the same test the MCP tab just showed.
 
 use std::time::Duration;
 
 use codescribe_core::agent::{AgentPermissions, PermissionLevel, ToolRegistry, tool_grants};
 use codescribe_core::config::keychain::{delete_key, save_key};
 use codescribe_core::mcp::{
-    McpServerSpec, McpServerSummary, add_server, list_servers, probe_server_blocking,
-    remove_server, update_server,
+    McpServerSpec, McpServerSummary, add_server, list_servers, remove_server, update_server,
 };
 
 use crate::CsError;
@@ -321,9 +322,10 @@ impl CodescribeMcpAdmin {
     /// Spawn the named server, run the `initialize` + `tools/list` handshake, and
     /// report its advertised identity + live tool count. Bounded by a 10s timeout.
     /// A failed handshake is returned as `ok == false` with a reason, never as a
-    /// thrown error.
+    /// thrown error. Either outcome becomes connection evidence for that exact
+    /// config entry; it never registers tools in the running agent.
     pub fn test_server(&self, name: String) -> CsMcpTestResult {
-        match probe_server_blocking(&name, TEST_TIMEOUT) {
+        match codescribe::agent::tools::mcp::test_configured_server(&name, TEST_TIMEOUT) {
             Ok(summary) => CsMcpTestResult {
                 ok: true,
                 tool_count: summary.tool_count as u32,

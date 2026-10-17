@@ -383,7 +383,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "coverage_refused", text: "Words kept without a seal",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed, showsDiagnostics: true)
@@ -403,7 +403,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "formatted", text: "Sealed words",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
       canFormat: true, terminal: true)
-    state.toggleCollapsed()
+    state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed)
@@ -564,7 +564,7 @@ final class OverlayIntentRailTests: XCTestCase {
   /// The rail's own dispatch route reaches the retention owner, and the
   /// retained bytes leave through the injected pasteboard rather than the
   /// reducer, a seal, a delivery or the canvas.
-  func testPreviousTakeMenuDispatchesRecoveryAndDiscardThroughTheProductionRoute() throws {
+  func testPreviousTakeMenuDispatchesRecoveryAndDiscardThroughTheProductionRoute() async throws {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntentRail.swift")
@@ -576,11 +576,8 @@ final class OverlayIntentRailTests: XCTestCase {
     let recovered = stateWithOneRetainedEdit()
     let engine = OverlayIntentBoundaryEngine()
     recovered.engine = engine
-    var written: [String] = []
-    recovered.recoveryClipboardWriter = { text in
-      written.append(text)
-      return true
-    }
+    let written = RecoveryWriteRecorder()
+    recovered.recoveryClipboardWriter = written.writer
     let rail = OverlayIntentRail(
       phase: recovered.statusText,
       intents: OverlayIntentRail.projectedIntents(for: recovered),
@@ -591,8 +588,9 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(rail.intents.contains(.discardSuperseded))
 
     rail.dispatch(.recoverSuperseded)
+    await recovered.recoveryCopyTask?.value
 
-    XCTAssertEqual(written, ["Zdanie z moją poprawką."])
+    XCTAssertEqual(written.texts, ["Zdanie z moją poprawką."])
     XCTAssertFalse(recovered.hasRecoverableSupersededWork)
     XCTAssertNil(recovered.recoveryFailure)
     XCTAssertTrue(engine.formatterRequests.isEmpty, "recovery is not a reducer path")
@@ -612,6 +610,7 @@ final class OverlayIntentRailTests: XCTestCase {
     let refused = stateWithOneRetainedEdit()
     refused.recoveryClipboardWriter = { _ in false }
     refused.relayIntent(.recoverSuperseded)
+    await refused.recoveryCopyTask?.value
     XCTAssertTrue(refused.hasRecoverableSupersededWork)
     XCTAssertNotNil(refused.recoveryFailure)
     XCTAssertEqual(
@@ -620,15 +619,17 @@ final class OverlayIntentRailTests: XCTestCase {
   }
 
   func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
-    // All cases deliberately over-approximate co-visibility, so adding an
-    // intent cannot silently evade the census. Close is a custom brand dot.
+    XCTAssertNotEqual(OverlayIntent.undo.systemImage, OverlayIntent.redo.systemImage)
+    // Other cases over-approximate co-visibility. Close is a custom brand dot.
     let symbols =
       OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
-        OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
-        OverlayControlSymbols.actions, OverlayControlSymbols.placement,
-        OverlayControlSymbols.miniToTranscript, OverlayControlSymbols.midiToTranscript,
-        OverlayControlSymbols.returnToMini, "pin.fill",
+        OverlayControlSymbols.history, OverlayControlSymbols.versions,
+        OverlayControlSymbols.previousTake,
+        OverlayControlSymbols.actions, OverlayControlSymbols.pin,
+        OverlayControlSymbols.pinned,
+        OverlayControlSymbols.miniToMidi, OverlayControlSymbols.midiToTranscript,
+        OverlayControlSymbols.returnToMini,
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
     let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
@@ -693,7 +694,7 @@ final class OverlayIntentRailTests: XCTestCase {
 
     await fulfillment(of: [reached], timeout: 0.2)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertEqual(state.toast, "retranscribed — Back keeps the old text")
+    XCTAssertEqual(state.toast, "retranscribed")
   }
 
   func testMissingEngineSurfacesCopyAndInsertFailuresOnCanvas() {
@@ -920,8 +921,8 @@ final class OverlayIntentRailTests: XCTestCase {
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand widget")
-    XCTAssertEqual(collapsed.previewSymbol, "arrow.down.left", "click opens the full view")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand to compact widget")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.left", "click opens MIDI")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

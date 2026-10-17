@@ -4,19 +4,32 @@
 //! (`whisper/timing.py` `find_alignment`, model card alignment heads):
 //! pre-softmax cross-attention from the checkpoint's alignment heads, softmax,
 //! token-axis z-score, width-7 median filter, mean across heads, then DTW.
-//! A word boundary is a jump in that path. Ranges are never split uniformly
+//! Interior boundaries follow the reference DTW path. Its forced frame-zero
+//! first boundary is replaced by the leading edge of the first predictive
+//! attention peak; it is not a measured onset.
+//! A word boundary is otherwise a jump in that path. Ranges are never split uniformly
 //! across characters or tokens.
 //!
 //! Encoder frames are 20 ms (`SAMPLE_RATE / (HOP_LENGTH * 2) = 50`), the same
-//! clock as Whisper's timestamp tokens. DTW runs on the text tokens: the
-//! `sot` prefix, the `no_timestamps` row, and the closing end-of-text row are
-//! not word pins.
+//! clock as Whisper's timestamp tokens. After normalization over the full
+//! forced sequence, DTW keeps `no_timestamps` through the last text row.
+//! These predictive rows supply one boundary more than the text token count;
+//! the final jump closes the last word without assigning it trailing silence.
 
 /// Seconds per encoder frame after the stride-2 convolution.
 pub const ENCODER_FRAME_SECS: f32 = 0.02;
 
 /// Odd median-filter width used by OpenAI's alignment.
 const MEDIAN_WIDTH: usize = 7;
+
+/// `whisper/timing.py` `merge_punctuations` defaults: marks that open onto
+/// the following word.
+const PREPENDED_PUNCTUATION: &[char] = &['"', '\'', '“', '¿', '(', '[', '{', '-'];
+
+/// Marks that close onto the preceding word.
+const APPENDED_PUNCTUATION: &[&str] = &[
+    "\"", "'", ".", "。", ",", "，", "!", "！", "?", "？", ":", "：", "”", ")", "]", "}", "、",
+];
 
 /// One measured word. `start_secs` / `end_secs` are on the audio the decoder saw.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,8 +52,10 @@ pub struct MeasuredWord {
 /// `len(sot_sequence)` and does not include `no_timestamps`. `content_frames`
 /// trims padded encoder frames (`num_frames // 2` in the reference).
 ///
-/// Returns `None` when the path does not yield a strictly increasing pin per
-/// word. Callers keep the utterance-grain span in that case.
+/// A lexical word without measured frames receives no word pin. Other measured
+/// words survive; the caller retains the independent raw transcript. Zero-duration
+/// punctuation may attach to a measured word. Returns `None` if no measured
+/// word remains or the alignment inputs are inconsistent.
 pub fn align_measured_words(
     head_qk: &[Vec<Vec<f32>>],
     sot_prefix_len: usize,
@@ -53,10 +68,24 @@ pub fn align_measured_words(
         || word_token_counts.len() != word_texts.len()
         || content_frames == 0
     {
+        tracing::info!(
+            reason = "invalid_alignment_inputs",
+            head_count = head_qk.len(),
+            word_count = word_token_counts.len(),
+            text_count = word_texts.len(),
+            content_frames,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let token_rows = head_qk[0].len();
     if token_rows <= sot_prefix_len + 2 || head_qk.iter().any(|head| head.len() != token_rows) {
+        tracing::info!(
+            reason = "inconsistent_token_rows",
+            token_rows,
+            sot_prefix_len,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let frame_count = head_qk[0][0].len().min(content_frames);
@@ -65,29 +94,58 @@ pub fn align_measured_words(
             .iter()
             .any(|head| head.iter().any(|row| row.len() < frame_count))
     {
+        tracing::info!(
+            reason = "inconsistent_frame_rows",
+            frame_count,
+            content_frames,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
-    // Drop the sot prefix, the `no_timestamps` row that follows it, and the
-    // final eot row. DTW then runs on the text tokens alone, so a word boundary
-    // is the first encoder frame of the next word's tokens.
-    let row_start = sot_prefix_len + 1;
+    // Reference matrix[len(sot_sequence):-1]: the no_timestamps row predicts
+    // the first text token, and the last text row supplies the closing jump.
+    // Removing the first predictive row leaves no measured final boundary.
+    let row_start = sot_prefix_len;
     let row_end = token_rows - 1;
     if row_end <= row_start {
+        tracing::info!(
+            reason = "missing_text_rows",
+            row_start,
+            row_end,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
     let rows = row_end - row_start;
     let text_tokens: usize = word_token_counts.iter().sum();
-    if text_tokens != rows {
+    if rows - 1 != text_tokens {
+        tracing::info!(
+            reason = "token_count_mismatch",
+            text_tokens,
+            rows,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
     let mut weights = Vec::with_capacity(head_qk.len());
+    let mut onset_weights = vec![0.0_f32; frame_count];
     for head in head_qk {
-        let mut matrix = vec![vec![0.0_f32; frame_count]; rows];
+        // Prefix and EOT participate in token-axis normalization before the
+        // DTW slice, just as in find_alignment. Slicing first changes the
+        // attention distribution and therefore every measured boundary.
+        let mut matrix = vec![vec![0.0_f32; frame_count]; token_rows];
         for (row, src) in matrix.iter_mut().enumerate() {
-            src.copy_from_slice(&head[row_start + row][..frame_count]);
+            src.copy_from_slice(&head[row][..frame_count]);
             softmax_in_place(src);
+        }
+        // Onset reads this token's distribution over time. Token-axis
+        // z-scoring can amplify background where other tokens are absent.
+        let mut first = [matrix[row_start].clone()];
+        median_filter_rows(&mut first, MEDIAN_WIDTH);
+        for (sum, value) in onset_weights.iter_mut().zip(&first[0]) {
+            *sum += value / head_qk.len() as f32;
         }
         zscore_token_axis(&mut matrix);
         median_filter_rows(&mut matrix, MEDIAN_WIDTH);
@@ -97,7 +155,7 @@ pub fn align_measured_words(
     let mut mean = vec![vec![0.0_f32; frame_count]; rows];
     let scale = head_qk.len() as f32;
     for head in &weights {
-        for (row_index, row) in head.iter().enumerate() {
+        for (row_index, row) in head[row_start..row_end].iter().enumerate() {
             for (frame, value) in row.iter().enumerate() {
                 mean[row_index][frame] += value / scale;
             }
@@ -111,52 +169,156 @@ pub fn align_measured_words(
         }
     }
     let (text_indices, time_indices) = dtw(&cost);
-    let jump_times = jump_times(&text_indices, &time_indices);
+    let mut jump_times = jump_times(&text_indices, &time_indices);
     if jump_times.len() < rows {
+        tracing::info!(
+            reason = "incomplete_dtw_path",
+            jump_count = jump_times.len(),
+            rows,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
-    let path_end =
-        time_indices.last().copied().unwrap_or(0).saturating_add(1) as f32 * ENCODER_FRAME_SECS;
-
+    // Global DTW necessarily opens row zero at frame zero. Read the first
+    // predictive attention peak instead, without moving any interior/tail jump.
+    let onset = first_predictive_onset(&onset_weights)?;
+    jump_times[0] = onset as f32 * ENCODER_FRAME_SECS;
     let mut boundaries = Vec::with_capacity(word_token_counts.len() + 1);
     boundaries.push(0usize);
     let mut cursor = 0usize;
-    for count in word_token_counts {
+    for (word_index, count) in word_token_counts.iter().enumerate() {
         if *count == 0 {
+            tracing::info!(
+                reason = "zero_word_token_count",
+                word_index,
+                "tail_word_pin_alignment_refused"
+            );
             return None;
         }
         cursor += count;
         boundaries.push(cursor);
     }
     if boundaries.last().copied() != Some(text_tokens) {
+        tracing::info!(
+            reason = "word_boundary_count_mismatch",
+            boundary_token_end = ?boundaries.last().copied(),
+            text_tokens,
+            "tail_word_pin_alignment_refused"
+        );
         return None;
     }
 
-    let mut words = Vec::with_capacity(word_texts.len());
+    // Coincident path jumps do not measure a lexical word. The raw transcript
+    // remains independent of these pins, so keep the measured subset without
+    // manufacturing a compound pin from an arbitrarily long decoder loop.
+    // Only punctuation can share a neighbouring word's range.
+    let mut words: Vec<MeasuredWord> = Vec::with_capacity(word_texts.len());
+    let mut unmeasured: Vec<MeasuredWord> = Vec::new();
     for (index, text) in word_texts.iter().enumerate() {
         let start = jump_times[boundaries[index]];
         let end_index = boundaries[index + 1];
-        let end = if end_index < jump_times.len() {
-            jump_times[end_index]
-        } else {
-            path_end
-        };
-        if end <= start {
-            return None;
-        }
+        let end = jump_times[end_index];
         let text = text.trim();
         if text.is_empty() {
+            tracing::info!(
+                reason = "empty_word_text",
+                word_index = index,
+                token_start = boundaries[index],
+                token_len = end_index - boundaries[index],
+                "tail_word_pin_alignment_refused"
+            );
             return None;
         }
-        words.push(MeasuredWord {
+        let mut word = MeasuredWord {
             text: text.to_string(),
             start_secs: start,
             end_secs: end,
             token_start: boundaries[index],
             token_len: end_index - boundaries[index],
-        });
+        };
+        if end <= start {
+            let punctuation_only = text.chars().all(|ch| {
+                PREPENDED_PUNCTUATION.contains(&ch)
+                    || APPENDED_PUNCTUATION.iter().any(|mark| mark.starts_with(ch))
+            });
+            if !punctuation_only {
+                tracing::info!(
+                    reason = "nonpositive_lexical_word_duration",
+                    word_index = index,
+                    token_start = word.token_start,
+                    token_len = word.token_len,
+                    start_secs = start,
+                    end_secs = end,
+                    "tail_word_pin_lexical_position_unmeasured"
+                );
+                unmeasured.clear();
+                continue;
+            }
+            tracing::info!(
+                reason = "nonpositive_word_duration",
+                word_index = index,
+                token_start = word.token_start,
+                token_len = word.token_len,
+                start_secs = start,
+                end_secs = end,
+                "tail_word_pin_merged_into_measured_neighbour"
+            );
+            if APPENDED_PUNCTUATION.contains(&text)
+                && unmeasured.is_empty()
+                && let Some(last) = words.last_mut()
+                && last.token_start + last.token_len == word.token_start
+            {
+                last.text = join_word_text(&last.text, &word.text);
+                last.token_len = word.token_start + word.token_len - last.token_start;
+            } else {
+                unmeasured.push(word);
+            }
+            continue;
+        }
+        if let Some(token_start) = unmeasured.first().map(|carried| carried.token_start) {
+            let mut lead = String::new();
+            for carried in unmeasured.drain(..) {
+                lead = join_word_text(&lead, &carried.text);
+            }
+            word.text = join_word_text(&lead, &word.text);
+            word.token_len += word.token_start - token_start;
+            word.token_start = token_start;
+        }
+        words.push(word);
     }
-    Some(words)
+    if !unmeasured.is_empty() {
+        let Some(last) = words.last_mut() else {
+            tracing::info!(
+                reason = "no_measured_word",
+                word_count = word_texts.len(),
+                "tail_word_pin_alignment_refused"
+            );
+            return None;
+        };
+        for carried in unmeasured.drain(..) {
+            if last.token_start + last.token_len == carried.token_start {
+                last.text = join_word_text(&last.text, &carried.text);
+                last.token_len += carried.token_len;
+            }
+        }
+    }
+    (!words.is_empty()).then_some(words)
+}
+
+/// Join two adjacent word texts in reading order. Opening punctuation binds
+/// to the word after it and closing punctuation to the word before it, as in
+/// [`merge_word_punctuation`]; any other pair keeps one separating space.
+fn join_word_text(left: &str, right: &str) -> String {
+    if left.is_empty() {
+        return right.to_string();
+    }
+    let glued = left.chars().all(|ch| PREPENDED_PUNCTUATION.contains(&ch))
+        || APPENDED_PUNCTUATION.contains(&right);
+    if glued {
+        format!("{left}{right}")
+    } else {
+        format!("{left} {right}")
+    }
 }
 
 /// Group tokenizer pieces into `(start, len)` spans. A piece that starts
@@ -186,17 +348,12 @@ pub fn word_token_spans(pieces: &[String]) -> Vec<(usize, usize)> {
 /// Merge punctuation the way `whisper/timing.py` `merge_punctuations` does,
 /// keeping the measured union of the token ranges.
 pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
-    const PREPENDED: &[char] = &['"', '\'', '“', '¿', '(', '[', '{', '-'];
-    const APPENDED: &[&str] = &[
-        "\"", "'", ".", "。", ",", "，", "!", "！", "?", "？", ":", "：", "”", ")", "]", "}", "、",
-    ];
-
     let mut index = words.len().saturating_sub(1);
     while index > 0 {
         let previous = index - 1;
         let lead = words[previous].text.trim();
-        let opens =
-            words[previous].text.starts_with(' ') && lead.chars().all(|ch| PREPENDED.contains(&ch));
+        let opens = words[previous].text.starts_with(' ')
+            && lead.chars().all(|ch| PREPENDED_PUNCTUATION.contains(&ch));
         if opens {
             let taken = words[previous].clone();
             words[index].text = format!("{}{}", taken.text.trim(), words[index].text.trim());
@@ -212,7 +369,7 @@ pub fn merge_word_punctuation(words: &mut Vec<MeasuredWord>) {
     let mut index = 0usize;
     while index + 1 < words.len() {
         let following = words[index + 1].text.trim();
-        if !words[index].text.ends_with(' ') && APPENDED.contains(&following) {
+        if !words[index].text.ends_with(' ') && APPENDED_PUNCTUATION.contains(&following) {
             let end = words[index + 1].end_secs;
             words[index].text = format!("{}{following}", words[index].text.trim());
             words[index].end_secs = end;
@@ -300,6 +457,34 @@ fn median_filter_rows(matrix: &mut [Vec<f32>], width: usize) {
     }
 }
 
+/// Leading half-height crossing of the dominant predictive attention peak.
+/// Median-filtered time probabilities, averaged across alignment heads.
+/// A flat/nonpositive row has no onset evidence.
+fn first_predictive_onset(scores: &[f32]) -> Option<usize> {
+    let (peak_index, &peak) = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.is_finite())
+        .max_by(|left, right| left.1.total_cmp(right.1))?;
+    if peak <= 0.0 {
+        return None;
+    }
+    let floor = scores
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .min_by(f32::total_cmp)?;
+    if peak - floor <= f32::EPSILON {
+        return None;
+    }
+    let threshold = peak * 0.5;
+    let mut onset = peak_index;
+    while onset > 0 && scores[onset - 1] >= threshold {
+        onset -= 1;
+    }
+    Some(onset)
+}
+
 /// OpenAI `dtw_cpu`: border is infinite, ties prefer a time step.
 fn dtw(cost: &[Vec<f64>]) -> (Vec<usize>, Vec<usize>) {
     let rows = cost.len();
@@ -365,6 +550,10 @@ fn jump_times(text_indices: &[usize], time_indices: &[usize]) -> Vec<f32> {
 }
 
 #[cfg(test)]
+#[path = "word_pins_oracle_tests.rs"]
+mod oracle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -383,16 +572,17 @@ mod tests {
 
     /// Attention peaks, not token counts, place the boundary.
     ///
-    /// Two words: one token then five. A uniform token split would open the
-    /// second word at 1/6 of the frame axis. The alignment heads put that
-    /// word on the late blob, so the pin starts after the midpoint.
+    /// Two one-token words. The predictive attention jumps open the second
+    /// word before the midpoint, rather than at a uniform half-window split.
     #[test]
     fn alignment_follows_attention_peaks_not_a_uniform_split() {
         let frames = 40;
         // Two equal tokens. A uniform split would open the second word at
         // half the frame axis. Attention puts the first word on an early blob,
         // so the boundary follows that blob.
-        let heads = spike(4, frames, &[(0, 0), (1, 2), (2, 30)]);
+        // Separate the predictive peaks: the former row-1 peak at frame 2
+        // gives a zero-duration first word in the pinned OpenAI reference.
+        let heads = spike(4, frames, &[(0, 0), (1, 12), (2, 30)]);
         let words = align_measured_words(&heads, 0, &[1, 1], &["raz", "dwa"], frames)
             .expect("measured pins");
         assert_eq!(words.len(), 2);
@@ -449,6 +639,68 @@ mod tests {
         // The punctuation token joins the word's span so per-token evidence
         // (A6 confidence aggregation) covers the merged surface.
         assert_eq!((words[1].token_start, words[1].token_len), (1, 2));
+    }
+
+    #[test]
+    fn first_predictive_onset_follows_the_peak_after_leading_silence() {
+        let scores = [-0.2, 0.1, -0.1, 0.2, 1.2, 2.0, 1.4, -0.3];
+        assert_eq!(first_predictive_onset(&scores), Some(4));
+        let mut shifted = vec![-0.2; 5];
+        shifted.extend(scores);
+        assert_eq!(first_predictive_onset(&shifted), Some(9));
+        assert_eq!(first_predictive_onset(&[0.0; 20]), None);
+        assert_eq!(first_predictive_onset(&[-1.0; 20]), None);
+        assert_eq!(first_predictive_onset(&[f32::NAN; 20]), None);
+    }
+
+    #[test]
+    fn first_word_pin_moves_with_attention_not_the_decode_window_origin() {
+        let heads = spike(4, 80, &[(0, 10), (1, 35), (2, 60)]);
+        let words = align_measured_words(&heads, 0, &[1, 1], &["Ostatni", "wyraz"], 80).unwrap();
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].start_secs, 10.0 * ENCODER_FRAME_SECS);
+        assert_eq!(words[0].token_start, 0);
+        assert_eq!(words[1].token_start, 1);
+        assert!(words[0].end_secs > words[0].start_secs);
+    }
+
+    #[test]
+    fn unmeasured_lexical_word_cannot_borrow_its_neighbours_range() {
+        let heads = spike(4, 40, &[(0, 0), (1, 2), (2, 30)]);
+        let words = align_measured_words(&heads, 0, &[1, 1], &["omen", "omen"], 40)
+            .expect("the measured neighbour must survive");
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["omen"],
+            "an unmeasured lexical position must not become part of a compound word pin"
+        );
+        assert_eq!((words[0].token_start, words[0].token_len), (1, 1));
+    }
+
+    #[test]
+    fn five_measured_repetitions_keep_five_distinct_word_pins() {
+        let heads = spike(
+            7,
+            120,
+            &[(0, 10), (1, 25), (2, 40), (3, 55), (4, 70), (5, 85)],
+        );
+        let words = align_measured_words(&heads, 0, &[1; 5], &["Iwo"; 5], 120)
+            .expect("five positive attention ranges");
+        assert_eq!(words.len(), 5);
+        assert!(
+            words
+                .iter()
+                .all(|word| word.text == "Iwo" && word.end_secs > word.start_secs)
+        );
+        assert!(
+            words
+                .windows(2)
+                .all(|pair| pair[0].end_secs <= pair[1].start_secs)
+        );
+        assert_eq!(words.iter().map(|word| word.token_len).sum::<usize>(), 5);
     }
 
     #[test]

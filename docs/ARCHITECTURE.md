@@ -315,6 +315,38 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### Agent window header
+
+The detail chrome (`AgentChatView.swift`) carries one title — the current
+thread's — and nothing that competes with it. The native titlebar keeps the
+window title, dragging and the close / minimise / fullscreen controls; the
+content never repeats a window-level header. The minimise button and ⌘M are
+enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
+miniaturising it, so App Exposé never shows an empty tile; the tray's
+"Open chat", the summon shortcut and the passive voice reveal bring it back.
+
+- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
+  followed by the turn count, the thread's model and the live turn status.
+  The toggle lives in the detail chrome so it stays reachable while the
+  native sidebar is collapsed.
+- **Right:** exactly two controls. The pin (always on top) shows its state
+  rather than hinting at it — pinned is the filled glyph on an accent plate
+  with the `selected` trait and an "On" Accessibility value, unpinned is the
+  outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
+  `AgentWindowCapabilities` applies the window level.
+- **"•••" menu:** the single home for the header's actions — thread section
+  (Rename, Add to / Remove from favorites, Markdown exports when the thread
+  is persisted), the "Conversation width" submenu (Standard / Wide / Full
+  width, the conversation column's density — not the window size), "Open
+  settings", and the destructive "Delete Thread" last, behind the shared
+  confirmation. There is no separate width selector or Settings gear in the
+  chrome.
+
+An empty thread does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
+no-turns block to the viewport minus everything else the scroll document
+carries (list padding on both edges, the stack gap and the live-edge anchor),
+so the content fits exactly instead of overshooting by those points.
+
 ### Thread history interactions
 
 The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
@@ -324,7 +356,8 @@ share three contracts:
   row's Accessibility activation and the keyboard all call the same `select`
   path in `ThreadRail`. To Accessibility a row is a single button labelled
   with the thread title, with the `selected` trait on the open thread and
-  Rename / Favorite / Delete as named actions; while a title is being renamed
+  Rename / Add to favorites / Delete as named actions, worded exactly as the
+  header menu words them; while a title is being renamed
   the row exposes its children so the text field stays reachable. Rows are
   keyboard focus targets: Return or Space opens the focused row, Up / Down
   opens the neighbouring row in visible order (`ThreadRailNavigation`,
@@ -334,13 +367,162 @@ share three contracts:
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
   thread and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
-  destination (the Transcripts folder from Settings › User › Local data) in a
+  destination (the Transcripts folder from Settings › About › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
   "Export failed" alert naming the thread and the folder to check. Finder is
   never opened as a side effect of the menu action. `ThreadExportOutcome`
   carries the result; `RealThreadsEngine` still collapses the bridge error
   into `nil`, so the failure alert cannot quote the underlying reason.
+
+### Max consultation continuity
+
+A Max consultation is an ordinary `Thread` in the shared `ThreadStore`,
+distinguished by `mode == "max"` (`MAX_CONSULTATION_MODE`) and the
+`max-consultation` tag. One consultation is _selected_
+(`threads/consultations/selection/current.json`); only the explicit
+"New consultation" action (`begin_new_max_consultation`) changes that file.
+Viewing or selecting an older consultation in the Agent window never changes
+the selection.
+
+Continuity is logical, not a provider chain: the consultation owner
+(`ConsultationRuntime`, held by `RecordingController`) restores the thread's
+messages under its lease and replays them with every request; the provider's
+response chain is reset per turn. The same owner serves both entry points:
+
+- **Voice.** A Max dictation take enters the owner through
+  `FormattingConsultation` (`format_text_with_status_for_policy`).
+- **Agent window.** The composer sends a typed turn on a Max row through
+  `CodescribeAgent::stream_max_consultation`, which hands it to
+  `run_max_consultation_turn` and on to
+  `RecordingController::enqueue_max_consultation_text_turn`: same FIFO,
+  Agent lane, Max prompt and Max approval broker as speech. The composer's
+  durable accepted-turn id is the turn's identity: the journal refuses a
+  repeat of it and the window renders exactly the owner events stamped with
+  it (`subscribe_max_consultation_events`), so text, reasoning, tool rows and
+  approval cards stream as they do for an Agent turn. The turn runs under Max
+  regardless of the dictation formatting level selected at the moment,
+  because the consultation is Max by identity. The owner persists history
+  once, in `max` mode, so the Assistive lane and its `assistive` delivery
+  never touch a consultation. `stream_reply` on a Max thread carries no
+  acceptance identity and mints one; the Agent window never takes that route.
+
+Guards:
+
+- `ThreadDeliveryGateway::deliver` refuses to rewrite a `max` thread with any
+  other mode, so no lane can silently convert a consultation and break the
+  next `restore_consultation`.
+- Only the selected consultation accepts new typed turns; typing into an older
+  one fails with a readable error. Older consultations stay readable.
+- Max tool approvals suspend in the controller's broker. The Agent window
+  shows the card for the turn it is rendering and answers it through the same
+  exact (session, thread, call) match (`CodescribeAgent::resolve_tool_approval`
+  falls through to that broker). The Settings › Creator panel keeps showing
+  the same pending cards.
+- Stop cannot abort an admitted Max instruction: the owner never replays or
+  rolls back tool effects. The window settles its bubble; the answer still
+  lands in history and appears on the next refresh.
+- A turn interrupted by a crash or a failure is **abandoned**, not retained for
+  recovery. The journal (`core/agent/thread_store/consultation.rs`) retires
+  that identity into `abandoned` on the next `ConsultationJournal::open` — or
+  immediately, when this owner observes the failure — drops the instructions
+  still waiting behind it, and the conversation continues. An abandoned
+  identity is refused for life exactly like a completed one, so nothing is
+  replayed and no tool effect is rolled back or retried. The gap is explained
+  in history as a thread note
+  (`ThreadDeliveryGateway::record_consultation_recovery`); a consultation with
+  no thread file yet is only logged. "New consultation" is never required to
+  get a consultation working again. The one state that still blocks execution
+  is a journal that cannot be written, because then the owner cannot prove
+  what it retired.
+
+### Tool consent card contents
+
+A card never shows only a tool name and a risk tier. Everything on it is built
+in `ToolRegistry::decide_with_targets` (`core/agent/registry.rs`) from the one
+immutable `input` the gate decided on and the session later dispatches, so the
+card cannot describe a different call than the one suspended.
+
+Two sources feed it, and there is no third:
+
+- The tool's `ToolInputValidator` returns a `ToolCallPreview` — summary,
+  command, cwd and the canonical `paths` the handler will open. Validators
+  resolve exactly as their handler does, so an alias is judged as its target.
+  `confirm_targets` re-runs the validator right before dispatch and refuses a
+  call whose targets moved while the operator was deciding.
+- The registry adds `arguments`: the call's own JSON, rendered by
+  `redacted_arguments`. A call with no arguments carries none, so a
+  no-argument tool grows no empty block.
+
+One redaction module serves all of it: `core/agent/redaction.rs` is the single
+authority for the card's command line, the card's argument snapshot and the
+Tool Activity summary of a finished call, with one placeholder (`[REDACTED]`)
+and one key list. There is no second redactor — a secret hidden on one surface
+can no longer reappear on the next.
+
+Boundary: this is best-effort display redaction on the operator's own screen,
+not a security boundary. The agent already holds every value it passes, and the
+dispatched input is never changed. Structured signals are covered (keys,
+key/value siblings, headers, option names, assignments, quoted and per-element
+argv values); free-form shapes are not guaranteed (`curl -u user:pass`,
+`mysql -pSECRET`, a credential inside a URL path, JSON nested inside a string,
+tuple-shaped pairs such as `[["Authorization", "Bearer …"]]`).
+New shapes are backlog items, not approval-gate defects. The rules that do
+belong to the gate stay strict: the card never hides the action it approves,
+and a peer can never present itself as the Founder.
+
+- By key: any value under a key normalized (ASCII alphanumerics, lowercased)
+  to contain `token`, `password`, `passwd`, `secret`, `apikey`, `accesskey`,
+  `privatekey`, `authorization`, `cookie`, `credential`, `bearer` or
+  `environment` is replaced whole, at any depth, subtree included. Bare `key`
+  and `auth` are deliberately absent: they would blank a summary that merely
+  mentions an "author" or a "keyboard".
+- By command token: every surviving string value also passes through
+  `redact_command_line`, because a secret inside an ordinary string sits under
+  no key at all — `command: "curl -H 'Authorization: Bearer …'"` is redacted
+  in the snapshot exactly as it is in `preview.command`. A token names a
+  secret only in four shapes, judged by the same key predicate: an assignment
+  (`TOKEN=…`, `--password=…` → `name=[REDACTED]`), a header with an attached
+  value (`X-Api-Key:…` → `X-Api-Key:[REDACTED]`), a header name whose value
+  follows (one value; `Authorization` takes a scheme and a credential), and
+  an option name (`--token …`, `--api-key …`), plus the bare `Bearer` /
+  `Basic` scheme. A secret value is hidden whole: a quoted value runs to its
+  closing quote (`--password 'two words'`, `-H 'Cookie: a=1; b=2'`), and in a
+  string array one element is one value, so `["--password", "two words"]`
+  hides both words and the next element (a URL, `-h db`) stays visible. An
+  ordinary word that only contains a marker (`tokenizer.py`) names nothing,
+  and an option is never taken for a secret value, so the card always shows
+  the action (`--delete-all`). Whitespace is preserved. The redactor state
+  carries across array elements, so the argv pair `["--token", "abc"]` hides
+  `abc`; a non-string element ends that run.
+- By sibling key: a key/value-shaped object (`{"key": "api_key", "value": …}`,
+  `{"name": "Authorization", "value": …}`) hides its value field when a name
+  field names a secret, although the property itself is only called `value`.
+- The validator's own `summary` and `command` reach the card through
+  `redact_command_line` in the registry as well, so a query or command line a
+  tool copies from the call cannot bypass the module.
+- Bounds are unchanged: a string over 200 characters and a snapshot over
+  4 KiB are cut with an explicit marker.
+
+Coverage: every filesystem tool names its resolved target and the size of what
+it writes or replaces; every process tool (`run_process`, `stop_process`,
+`observe_process`, `project_build`, `project_test`) names the program, the
+redacted synthetic argv line and the resolved cwd, which also travels as that
+call's authorization target. `project_build` / `project_test` bind a second
+target: the build file their detection rested on (`Cargo.toml`, or the
+`Makefile` actually found). Detection reads the directory's contents, not its
+path, so a `Cargo.toml` dropped in while the card was open would otherwise
+turn an approved `make test` into `cargo test` under an unchanged cwd; with
+the marker in `paths` the re-detection no longer matches and `confirm_targets`
+refuses. Every MCP tool names its server and upstream tool, with
+Desktop Commander additionally contributing its hardened per-tool checks.
+Anything else is still fully described by the argument snapshot.
+
+`CsToolApprovalRequest` carries the same fields to Swift, where the single
+`ToolApprovalCard` paints them: command and cwd monospaced, the remaining
+targets below, and the argument snapshot in a bounded scroll so a long call
+cannot push Deny off the card. The card changes nothing about the verdict —
+Deny, timeout and cancel still never reach a handler.
 
 ### Restored tool inspector metadata
 

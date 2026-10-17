@@ -24,12 +24,12 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertTrue(close.contains("size: 9"))
     XCTAssertFalse(close.contains("compact ?"), "Close size must not depend on header width")
     XCTAssertFalse(close.contains("state.mode"), "Close must not signal engine state")
-    XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered ? 1.15 : 1)"))
+    XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)"))
     XCTAssertTrue(close.contains("if closeDotHovered {"))
     XCTAssertTrue(close.contains("OverlayCloseCross()"))
     XCTAssertTrue(close.contains(".onHover {"))
     XCTAssertTrue(close.contains("closeDotHovered = $0"))
-    XCTAssertTrue(close.contains("state.setWidgetInteraction(.closeControl, held: $0)"))
+    XCTAssertFalse(close.contains("setPresentationMode"), "Close hover must never morph the window")
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertFalse(tail.contains("Text(\"×\")"))
     XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
@@ -147,7 +147,13 @@ final class OverlayChromeV3Tests: XCTestCase {
       if #available(macOS 26, *) {
         let glass = try XCTUnwrap(descendant(OverlayDesktopGlassView.self, in: root))
         XCTAssertEqual(glass.style, .regular)
-        XCTAssertNil(glass.tintColor)
+        XCTAssertNil(
+          glass.tintColor,
+          "The palette veil is a layer above the glass so it survives a non-key window")
+        XCTAssertEqual(
+          OverlayCanvasBackdrop.glassVeil(.resolve(scheme)),
+          OverlayAppearancePalette.resolve(scheme).desktopBackground.nsColor.withAlphaComponent(
+            0.84))
         XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
         XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
       } else {

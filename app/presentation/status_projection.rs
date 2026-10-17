@@ -20,8 +20,8 @@ pub enum PresentationStatusKind {
     CalibrationFailed,
 }
 
-/// One passive status card. Rust owns all wording and classification; Swift
-/// paints these values and exposes no repair action.
+/// One passive status card. Rust owns classification and diagnostic wording;
+/// Swift localizes known refusal headlines by code and preserves unknown text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresentationStatusProjection {
     pub schema: String,

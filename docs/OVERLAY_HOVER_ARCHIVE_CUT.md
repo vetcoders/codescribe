@@ -1,8 +1,11 @@
 # Widget hover, agent archive and audio controls
 
+Historical receipt. The 2026-10-08 manual presentation cut supersedes the automatic
+mini/midi hover behavior below; see `HOTKEYS_CONTRACT.md` and the 0.16.1 changelog.
+
 Updated: 2026-10-07. Author and integrator: Astra, Codex session
 `01a11150-1934-7432-8573-b5bb95b9edb6`, explicitly designated by the Founder.
-Runtime: Fleet Worktree `/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`;
+Runtime: Fleet Worktree `/Users/tester/.vibecrafted/worktrees/e19c/codescribe`;
 parent `/Volumes/vc-workspace/vetcoders/codescribe`.
 Branch: `codex/widget-hover-261007`.
 Baseline: `80352ed3b8754523418835043aacbdf524ec01cd`, admitted integration generation.
@@ -550,7 +553,7 @@ test. Founder-native acceptance remains pending.
 
 This unit runs in Fleet Worktree e19c, selected parent
 `/Volumes/vc-workspace/vetcoders/codescribe`, worker root
-`/Users/polyversai/.vibecrafted/worktrees/e19c/codescribe`, branch
+`/Users/tester/.vibecrafted/worktrees/e19c/codescribe`, branch
 `codex/widget-hover-261007`, baseline
 631ccdc3cfd6fb15fd74983d93d5dccb25dee958. Astra remains the explicitly assigned
 integrator. Native workers authored production only; Astra wrote and ran the

@@ -795,6 +795,10 @@ pub struct SpeechIntegrity {
     pub acoustic_speech_ms_since_text_advance: u64,
     pub pending_occurrences: u64,
     pub phase: SpeechIntegrityPhase,
+    /// Silero hears speech at this sequence. Paint only: the cursor dot tells
+    /// a speaking voice from a quiet one; it grants nothing to the transcript.
+    #[serde(default)]
+    pub speech_live: bool,
 }
 
 /// The phrase lifecycle's account of the final that replaced a preview.

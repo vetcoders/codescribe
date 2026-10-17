@@ -2,17 +2,23 @@
 //!
 //! No shell string concatenation — argv only. Terminal path policy from
 //! [`super::path_policy`] is applied to the synthetic command line for program
-//! and path gates. Mutating/process tools default to Ask.
+//! and path gates. Mutating/process tools default to Ask. What the approval
+//! card shows of that command line passes through the shared
+//! [`redact_command_line`] first, so a secret in the argv never becomes
+//! operator-visible text.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
+use codescribe_core::agent::{
+    CommandRedactor, ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator,
+    ToolRegistry, ToolResultContent, ToolRisk, redact_command_line,
+};
 use serde_json::{Value, json};
 
 use super::{output_guard, path_policy, workspace};
@@ -22,6 +28,42 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Ceiling for a caller-supplied timeout, so no single tool call can pin a
 /// process indefinitely.
 const MAX_TIMEOUT_SECS: u64 = 300;
+/// Git configuration that names a program to run, pinned to an inert value
+/// before the model's own arguments. Hooks stay: a commit through this tool
+/// meets the repository's gates like any other commit.
+const GIT_CONFIG_PINS: &[&str] = &[
+    "--no-pager",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.sshCommand=ssh",
+    "-c",
+    "core.askPass=",
+    "-c",
+    "core.editor=true",
+    "-c",
+    "sequence.editor=true",
+    "-c",
+    "gpg.program=gpg",
+    "-c",
+    "gpg.ssh.program=ssh-keygen",
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "protocol.ext.allow=never",
+];
+/// Subcommands that take diff options: external diff drivers and textconv
+/// filters are programs from configuration and attributes, switched off here.
+const GIT_DIFF_COMMANDS: &[&str] = &[
+    "diff",
+    "log",
+    "show",
+    "diff-tree",
+    "diff-files",
+    "diff-index",
+    "whatchanged",
+    "format-patch",
+];
 
 /// Environment keys re-exported into agent-spawned processes after `env_clear`.
 ///
@@ -75,42 +117,185 @@ fn process_table() -> &'static Mutex<HashMap<u32, TrackedProcess>> {
 
 /// Register the process tool family. Everything that can start or signal a
 /// process is [`ToolRisk::ProcessControl`]; only observation is read-only.
+///
+/// Every tool here carries a validator, so the approval card names the program,
+/// the argument vector and the resolved working directory before the operator
+/// answers — a process call is never only a tool name and a risk tier.
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register_native(
+        .register_with_policy(
             run_process_definition(),
             Box::new(|input| Box::pin(async move { handle_run_process(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(run_process_validator()),
         )
         .expect("register run_process");
     registry
-        .register_native(
+        .register_with_policy(
             observe_process_definition(),
             Box::new(|input| Box::pin(async move { handle_observe_process(input) })),
-            ToolRisk::ReadOnly,
+            ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+            Some(tracked_pid_validator("Check")),
         )
         .expect("register observe_process");
     registry
-        .register_native(
+        .register_with_policy(
             stop_process_definition(),
             Box::new(|input| Box::pin(async move { handle_stop_process(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(tracked_pid_validator("Stop")),
         )
         .expect("register stop_process");
     registry
-        .register_native(
+        .register_with_policy(
             project_build_definition(),
             Box::new(|input| Box::pin(async move { handle_project_build(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(project_validator("build")),
         )
         .expect("register project_build");
     registry
-        .register_native(
+        .register_with_policy(
             project_test_definition(),
             Box::new(|input| Box::pin(async move { handle_project_test(input) })),
-            ToolRisk::ProcessControl,
+            ToolExecutionPolicy::native(ToolRisk::ProcessControl),
+            Some(project_validator("test")),
         )
         .expect("register project_test");
+}
+
+/// Pre-flight validator for `run_process`: resolves the call exactly as
+/// [`run_process_from_input`] will, and hands the gate the program, the full
+/// argument vector and the canonical cwd it resolved them against.
+///
+/// The resolved cwd travels as the call's target, so a directory symlink
+/// re-pointed while the operator was deciding invalidates the approval through
+/// the registry's own `confirm_targets` check rather than being followed.
+fn run_process_validator() -> ToolInputValidator {
+    Arc::new(|input: &Value| {
+        let program = require_program(input)?;
+        let args = requested_args(input);
+        let cwd = resolve_cwd(require_cwd(input)?)?;
+        let cmdline = synthetic_command_line(program, &args);
+        path_policy::validate_terminal(&cmdline, cwd.to_str().context("cwd utf-8")?, &roots())?;
+        Ok(process_preview(
+            format!("Run {program} with {} argument(s)", args.len()),
+            display_command_line(program, &args),
+            cwd,
+        ))
+    })
+}
+
+/// The card's rendering of program and argv. Each argument is redacted as one
+/// argv element before joining, so a spaced value inside one argument
+/// (`--password=two words`) is hidden whole; the policy still judges the raw
+/// [`synthetic_command_line`].
+fn display_command_line(program: &str, args: &[String]) -> String {
+    let mut redactor = CommandRedactor::new();
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(|part| redactor.redact_argument(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Pre-flight validator for `project_build` / `project_test`: runs the same
+/// build-system detection the handler runs, so the card names the exact command
+/// the operator is approving instead of "a build".
+///
+/// The call's targets are the resolved cwd *and* the build file the detection
+/// decided on. Binding only the directory would let a `Cargo.toml` dropped
+/// into it while the card was open silently promote an approved `make test`
+/// to `cargo test`; with the marker in `paths`, the re-detection at dispatch
+/// no longer matches what was authorized and `confirm_targets` refuses.
+fn project_validator(kind: &'static str) -> ToolInputValidator {
+    Arc::new(move |input: &Value| {
+        let cwd = resolve_cwd(require_cwd(input)?)?;
+        let (program, args, marker) = detect_project_command(&cwd, kind)?;
+        let mut preview = process_preview(
+            format!("Project {kind} in the workspace"),
+            synthetic_command_line(program, &args),
+            cwd,
+        );
+        preview.paths.push(marker.display().to_string());
+        Ok(preview)
+    })
+}
+
+/// Pre-flight validator for `observe_process` / `stop_process`: a bare pid says
+/// nothing, so the card recalls the command and cwd that pid was started with.
+///
+/// A pid the agent never started is refused here, before any approval is asked
+/// for — the same rule the handlers enforce.
+fn tracked_pid_validator(verb: &'static str) -> ToolInputValidator {
+    Arc::new(move |input: &Value| {
+        let pid = require_pid(input)?;
+        let table = process_table().lock().expect("process table");
+        let Some(tracked) = table.get(&pid) else {
+            bail!("Unknown process pid {pid} (not started via run_process)");
+        };
+        Ok(process_preview(
+            format!("{verb} process {pid} started by this agent"),
+            tracked.command.clone(),
+            tracked.cwd.clone(),
+        ))
+    })
+}
+
+/// The single shape every process-tool preview takes: a one-line summary, the
+/// synthetic command line, and the resolved cwd carried both as the displayed
+/// directory and as the call's authorization target.
+///
+/// The command line goes through the shared [`redact_command_line`] before it
+/// is shown: an argv like `["--token", "abc"]` joins into a line that would
+/// otherwise put the secret on the card verbatim. Display only — the argv
+/// actually spawned is untouched.
+fn process_preview(summary: String, command: String, cwd: PathBuf) -> ToolCallPreview {
+    let cwd = cwd.display().to_string();
+    ToolCallPreview {
+        summary,
+        command: Some(redact_command_line(&command)),
+        cwd: Some(cwd.clone()),
+        paths: vec![cwd],
+    }
+}
+
+/// The required `program` field of a `run_process` call.
+fn require_program(input: &Value) -> Result<&str> {
+    input
+        .get("program")
+        .and_then(Value::as_str)
+        .context("Missing required string field 'program'")
+}
+
+/// The required `cwd` field shared by the process and project tools.
+fn require_cwd(input: &Value) -> Result<&str> {
+    input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .context("Missing required string field 'cwd'")
+}
+
+/// The required `pid` field of `observe_process` / `stop_process`.
+fn require_pid(input: &Value) -> Result<u32> {
+    let pid = input
+        .get("pid")
+        .and_then(Value::as_u64)
+        .context("Missing required integer field 'pid'")?;
+    u32::try_from(pid).context("pid out of range")
+}
+
+/// The optional `args` array of a `run_process` call, as owned strings.
+fn requested_args(input: &Value) -> Vec<String> {
+    input
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Wire schema for `run_process` (capability `process.run`).
@@ -288,24 +473,9 @@ fn apply_sanitized_child_env(command: &mut Command) {
 /// background runs return a pid registered in [`process_table`]. The child env
 /// is sanitized to the allowlist before either path.
 fn run_process_from_input(input: &Value) -> Result<String> {
-    let program = input
-        .get("program")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'program'")?;
-    let args: Vec<String> = input
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let cwd_str = input
-        .get("cwd")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'cwd'")?;
-    let cwd = resolve_cwd(cwd_str)?;
+    let program = require_program(input)?;
+    let args = requested_args(input);
+    let cwd = resolve_cwd(require_cwd(input)?)?;
     let timeout_secs = input
         .get("timeout_secs")
         .and_then(Value::as_u64)
@@ -329,13 +499,41 @@ fn run_process_from_input(input: &Value) -> Result<String> {
         .collect::<Result<_>>()?;
     // nosemgrep: rust.actix.command-injection.rust-actix-command-injection.rust-actix-command-injection -- argv-only spawn after path_policy::validate_terminal (blocks shell operators + forbidden programs) and sanitize_argv_program (rejects control/metacharacters / parent-dir components).
     let mut command = Command::new(&program_os);
+    let git = path_policy::is_git_program(program);
+    if git {
+        // Git runs programs named in configuration, which the argv profile
+        // never sees: pagers, SSH wrappers, editors, fsmonitor daemons,
+        // signature helpers, external diff and textconv drivers, `ext::`
+        // transports. Pin them before the model's arguments; the profile
+        // refuses a model-supplied `-c`, so these are the last word.
+        command.args(GIT_CONFIG_PINS);
+        match args.iter().position(|arg| !arg.starts_with('-')) {
+            Some(subcommand) => {
+                command.args(&args_os[..=subcommand]);
+                if GIT_DIFF_COMMANDS.contains(&args[subcommand].as_str()) {
+                    command.args(["--no-ext-diff", "--no-textconv"]);
+                }
+                command.args(&args_os[subcommand + 1..]);
+            }
+            None => {
+                command.args(&args_os);
+            }
+        }
+    } else {
+        command.args(&args_os);
+    }
     command
-        .args(&args_os)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_sanitized_child_env(&mut command);
+    if git {
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_PAGER", "cat");
+    }
 
     if background {
         let child = command
@@ -439,10 +637,7 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<std::proc
 /// An exited process is reported once with its exit code and then dropped from
 /// the table, so the pid cannot be observed or stopped afterwards.
 fn observe_from_input(input: &Value) -> Result<String> {
-    let pid = input
-        .get("pid")
-        .and_then(Value::as_u64)
-        .context("Missing required integer field 'pid'")? as u32;
+    let pid = require_pid(input)?;
     let mut table = process_table().lock().expect("process table");
     let Some(tracked) = table.get_mut(&pid) else {
         bail!("Unknown process pid {pid} (not started via run_process)");
@@ -479,10 +674,7 @@ fn observe_from_input(input: &Value) -> Result<String> {
 
 /// Kill a tracked background process and reap it, removing it from the table.
 fn stop_from_input(input: &Value) -> Result<String> {
-    let pid = input
-        .get("pid")
-        .and_then(Value::as_u64)
-        .context("Missing required integer field 'pid'")? as u32;
+    let pid = require_pid(input)?;
     let mut table = process_table().lock().expect("process table");
     let Some(mut tracked) = table.remove(&pid) else {
         bail!("Unknown process pid {pid} (not started via run_process)");
@@ -499,27 +691,43 @@ fn stop_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
-/// Detect the build system in `cwd` and run its build or test command.
+/// The build or test command for `cwd`, detected from what is on disk, plus
+/// the build file the detection rests on.
 ///
 /// Cargo wins over Make when both are present; neither present is an error
-/// rather than a guess. Runs through [`run_process_from_input`] so the same
-/// policy, sandbox, and env sanitation apply, then relabels the capability.
-fn project_action(input: &Value, kind: &str) -> Result<String> {
-    let cwd_str = input
-        .get("cwd")
-        .and_then(Value::as_str)
-        .context("Missing required string field 'cwd'")?;
-    let cwd = resolve_cwd(cwd_str)?;
-    let (program, args): (&str, Vec<&str>) = if cwd.join("Cargo.toml").exists() {
+/// rather than a guess. One throne: the approval card and the spawn read the
+/// same answer, so the operator cannot be shown a command the handler then
+/// replaces.
+///
+/// The marker travels back because detection is a function of the directory's
+/// *contents*, not its path: a `Cargo.toml` appearing while the card is open
+/// turns an approved `make test` into `cargo test` with the cwd unchanged.
+/// [`project_validator`] carries the marker as a second authorization target,
+/// so a changed detection changes the targets and `confirm_targets` refuses
+/// the call instead of running the command nobody approved.
+fn detect_project_command(cwd: &Path, kind: &str) -> Result<(&'static str, Vec<String>, PathBuf)> {
+    let cargo = cwd.join("Cargo.toml");
+    let makefile = cwd.join("Makefile");
+    let lowercase_makefile = cwd.join("makefile");
+    let (program, args, marker): (&'static str, Vec<&'static str>, PathBuf) = if cargo.exists() {
         match kind {
-            "build" => ("cargo", vec!["build", "--all-targets"]),
-            "test" => ("cargo", vec!["test", "--all-targets", "--", "--quiet"]),
+            "build" => ("cargo", vec!["build", "--all-targets"], cargo),
+            "test" => (
+                "cargo",
+                vec!["test", "--all-targets", "--", "--quiet"],
+                cargo,
+            ),
             _ => bail!("unknown project action {kind}"),
         }
-    } else if cwd.join("Makefile").exists() || cwd.join("makefile").exists() {
+    } else if makefile.exists() || lowercase_makefile.exists() {
+        let marker = if makefile.exists() {
+            makefile
+        } else {
+            lowercase_makefile
+        };
         match kind {
-            "build" => ("make", vec!["build"]),
-            "test" => ("make", vec!["test"]),
+            "build" => ("make", vec!["build"], marker),
+            "test" => ("make", vec!["test"], marker),
             _ => bail!("unknown project action {kind}"),
         }
     } else {
@@ -528,11 +736,24 @@ fn project_action(input: &Value, kind: &str) -> Result<String> {
             cwd.display()
         );
     };
+    Ok((
+        program,
+        args.into_iter().map(str::to_string).collect(),
+        marker,
+    ))
+}
 
-    let args_owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+/// Detect the build system in `cwd` and run its build or test command.
+///
+/// Runs through [`run_process_from_input`] so the same policy, sandbox, and env
+/// sanitation apply, then relabels the capability.
+fn project_action(input: &Value, kind: &str) -> Result<String> {
+    let cwd = resolve_cwd(require_cwd(input)?)?;
+    let (program, args, _marker) = detect_project_command(&cwd, kind)?;
+
     let synthetic = json!({
         "program": program,
-        "args": args_owned,
+        "args": args,
         "cwd": cwd.display().to_string(),
         "timeout_secs": 300,
         "background": false,
@@ -691,5 +912,119 @@ mod tests {
         let output = run_with_timeout(command, Duration::from_secs(5)).unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "hi");
+    }
+
+    /// CS160-R010: the process card names the program, the full argv and the
+    /// resolved cwd, and that cwd is the call's authorization target.
+    #[test]
+    fn process_preview_names_program_argv_and_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let args = vec!["--release".to_string(), "--locked".to_string()];
+        let preview = process_preview(
+            "Run cargo with 2 argument(s)".to_string(),
+            synthetic_command_line("cargo", &args),
+            cwd.clone(),
+        );
+        let shown = cwd.display().to_string();
+        assert_eq!(preview.command.as_deref(), Some("cargo --release --locked"));
+        assert_eq!(preview.cwd.as_deref(), Some(shown.as_str()));
+        assert_eq!(preview.paths, vec![shown]);
+        assert!(preview.summary.contains("cargo"));
+    }
+
+    /// Two calls that differ only in argv cannot share a card.
+    #[test]
+    fn different_argv_produce_different_process_cards() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let card = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            process_preview(
+                String::new(),
+                synthetic_command_line("git", &args),
+                cwd.clone(),
+            )
+        };
+        assert_ne!(
+            card(&["status"]).command,
+            card(&["push", "--force"]).command
+        );
+    }
+
+    /// One throne for build detection: the card and the spawn read the same
+    /// answer. Cargo wins over Make; neither present is refused, not guessed.
+    /// The detection also names the build file it rests on, so the card can
+    /// bind it.
+    #[test]
+    fn project_command_detection_is_shared_and_refuses_to_guess() {
+        let tmp = TempDir::new().unwrap();
+        assert!(detect_project_command(tmp.path(), "build").is_err());
+        std::fs::write(tmp.path().join("Makefile"), "build:\n").unwrap();
+        assert_eq!(
+            detect_project_command(tmp.path(), "test").unwrap(),
+            (
+                "make",
+                vec!["test".to_string()],
+                tmp.path().join("Makefile")
+            )
+        );
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(
+            detect_project_command(tmp.path(), "build").unwrap(),
+            (
+                "cargo",
+                vec!["build".to_string(), "--all-targets".to_string()],
+                tmp.path().join("Cargo.toml")
+            )
+        );
+    }
+
+    /// A pid the agent never started is refused before any approval is asked.
+    #[test]
+    fn stop_card_refuses_a_pid_this_agent_did_not_start() {
+        let validator = tracked_pid_validator("Stop");
+        assert!(validator(&json!({"pid": 1})).is_err());
+        assert!(validator(&json!({"pid": u64::from(u32::MAX) + 1})).is_err());
+        assert!(validator(&json!({})).is_err());
+    }
+
+    /// PR #173 review (P1): the process card's command line goes through the
+    /// one redaction authority, so an argv secret never reaches the card.
+    #[test]
+    fn process_card_redacts_a_secret_in_the_argv() {
+        let tmp = TempDir::new().unwrap();
+        let args = vec!["--token".to_string(), "abc".to_string(), "-v".to_string()];
+        let preview = process_preview(
+            String::new(),
+            synthetic_command_line("curl", &args),
+            tmp.path().to_path_buf(),
+        );
+        assert_eq!(
+            preview.command.as_deref(),
+            Some("curl --token [REDACTED] -v")
+        );
+    }
+
+    /// PR #173 review round 5: the process card redacts each argument as one
+    /// argv element, so a spaced value inside one argument is hidden whole,
+    /// and the card survives the registry's second redaction pass intact.
+    #[test]
+    fn process_card_hides_a_spaced_value_inside_one_argument() {
+        let args: Vec<String> = [
+            "--password=two words",
+            "-H",
+            "Authorization: Bearer x",
+            "https://example.test",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        let shown = display_command_line("curl", &args);
+        assert_eq!(
+            shown,
+            "curl --password=[REDACTED] [REDACTED] -H Authorization: [REDACTED] [REDACTED] https://example.test"
+        );
+        assert_eq!(codescribe_core::agent::redact_command_line(&shown), shown);
     }
 }

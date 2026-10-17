@@ -1,0 +1,277 @@
+{
+  "model_id": "mlx-community/parakeet-tdt-0.6b-v3@ed2b7e8c",
+  "weights_sha256": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592",
+  "input_sample_rate": 48000,
+  "frame_hop_samples": 3840,
+  "frame0_centre_sample": 0,
+  "centre_uncertainty_samples": 1920,
+  "pcm_span": [0, 575488],
+  "decode": "greedy_tdt",
+  "runtime": "parakeet-mlx 0.5.3 f32",
+  "events": [
+    {
+      "frame": 14,
+      "centre_sample": 53760,
+      "duration_frames": 2,
+      "token_id": 360,
+      "word_start": true,
+      "confidence": 0.9942
+    },
+    {
+      "frame": 16,
+      "centre_sample": 61440,
+      "duration_frames": 2,
+      "token_id": 669,
+      "word_start": false,
+      "confidence": 0.9987
+    },
+    {
+      "frame": 18,
+      "centre_sample": 69120,
+      "duration_frames": 2,
+      "token_id": 306,
+      "word_start": false,
+      "confidence": 0.9992
+    },
+    {
+      "frame": 20,
+      "centre_sample": 76800,
+      "duration_frames": 3,
+      "token_id": 1644,
+      "word_start": false,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 23,
+      "centre_sample": 88320,
+      "duration_frames": 2,
+      "token_id": 7888,
+      "word_start": false,
+      "confidence": 0.9922
+    },
+    {
+      "frame": 25,
+      "centre_sample": 96000,
+      "duration_frames": 2,
+      "token_id": 1358,
+      "word_start": false,
+      "confidence": 0.9631
+    },
+    {
+      "frame": 30,
+      "centre_sample": 115200,
+      "duration_frames": 3,
+      "token_id": 1350,
+      "word_start": true,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 33,
+      "centre_sample": 126720,
+      "duration_frames": 3,
+      "token_id": 7866,
+      "word_start": false,
+      "confidence": 0.9968
+    },
+    {
+      "frame": 36,
+      "centre_sample": 138240,
+      "duration_frames": 2,
+      "token_id": 343,
+      "word_start": true,
+      "confidence": 0.7635
+    },
+    {
+      "frame": 38,
+      "centre_sample": 145920,
+      "duration_frames": 2,
+      "token_id": 561,
+      "word_start": false,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 40,
+      "centre_sample": 153600,
+      "duration_frames": 3,
+      "token_id": 454,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 43,
+      "centre_sample": 165120,
+      "duration_frames": 3,
+      "token_id": 380,
+      "word_start": true,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 46,
+      "centre_sample": 176640,
+      "duration_frames": 3,
+      "token_id": 7942,
+      "word_start": false,
+      "confidence": 0.9972
+    },
+    {
+      "frame": 59,
+      "centre_sample": 226560,
+      "duration_frames": 2,
+      "token_id": 406,
+      "word_start": true,
+      "confidence": 0.5938
+    },
+    {
+      "frame": 61,
+      "centre_sample": 234240,
+      "duration_frames": 2,
+      "token_id": 2214,
+      "word_start": false,
+      "confidence": 0.9078
+    },
+    {
+      "frame": 67,
+      "centre_sample": 257280,
+      "duration_frames": 3,
+      "token_id": 1385,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 70,
+      "centre_sample": 268800,
+      "duration_frames": 2,
+      "token_id": 328,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 72,
+      "centre_sample": 276480,
+      "duration_frames": 2,
+      "token_id": 4210,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 74,
+      "centre_sample": 284160,
+      "duration_frames": 1,
+      "token_id": 627,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 75,
+      "centre_sample": 288000,
+      "duration_frames": 2,
+      "token_id": 7898,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 77,
+      "centre_sample": 295680,
+      "duration_frames": 3,
+      "token_id": 735,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 80,
+      "centre_sample": 307200,
+      "duration_frames": 2,
+      "token_id": 458,
+      "word_start": true,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 82,
+      "centre_sample": 314880,
+      "duration_frames": 2,
+      "token_id": 1262,
+      "word_start": false,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 84,
+      "centre_sample": 322560,
+      "duration_frames": 2,
+      "token_id": 7983,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 86,
+      "centre_sample": 330240,
+      "duration_frames": 4,
+      "token_id": 2144,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 102,
+      "centre_sample": 391680,
+      "duration_frames": 4,
+      "token_id": 358,
+      "word_start": true,
+      "confidence": 1.0
+    },
+    {
+      "frame": 108,
+      "centre_sample": 414720,
+      "duration_frames": 4,
+      "token_id": 875,
+      "word_start": true,
+      "confidence": 0.9998
+    },
+    {
+      "frame": 112,
+      "centre_sample": 430080,
+      "duration_frames": 3,
+      "token_id": 722,
+      "word_start": false,
+      "confidence": 1.0
+    },
+    {
+      "frame": 115,
+      "centre_sample": 441600,
+      "duration_frames": 2,
+      "token_id": 475,
+      "word_start": true,
+      "confidence": 0.9106
+    },
+    {
+      "frame": 117,
+      "centre_sample": 449280,
+      "duration_frames": 2,
+      "token_id": 2955,
+      "word_start": false,
+      "confidence": 0.9999
+    },
+    {
+      "frame": 119,
+      "centre_sample": 456960,
+      "duration_frames": 2,
+      "token_id": 7875,
+      "word_start": false,
+      "confidence": 0.9324
+    },
+    {
+      "frame": 121,
+      "centre_sample": 464640,
+      "duration_frames": 3,
+      "token_id": 913,
+      "word_start": false,
+      "confidence": 0.994
+    },
+    {
+      "frame": 136,
+      "centre_sample": 522240,
+      "duration_frames": 4,
+      "token_id": 7883,
+      "word_start": false,
+      "confidence": 0.5385
+    }
+  ]
+}

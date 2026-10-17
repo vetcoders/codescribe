@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions,
-    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore,
-    ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
+    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, MAX_CONSULTATION_MODE, Message,
+    StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage,
+    ThreadStore, ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
@@ -116,6 +116,10 @@ pub struct CsToolApprovalRequest {
     pub cwd: Option<String>,
     /// Filesystem paths the call declares it will touch.
     pub paths: Vec<String>,
+    /// Redacted, bounded JSON snapshot of the call's own arguments, so the card
+    /// shows what will run even for a tool whose validator names no path or
+    /// command. Absent only when the call carries no arguments.
+    pub arguments: Option<String>,
 }
 
 impl From<ToolApprovalRequest> for CsToolApprovalRequest {
@@ -135,6 +139,7 @@ impl From<ToolApprovalRequest> for CsToolApprovalRequest {
             command: request.command,
             cwd: request.cwd,
             paths: request.paths,
+            arguments: request.arguments,
         }
     }
 }
@@ -246,12 +251,12 @@ impl CodescribeAgent {
 
     /// True when the assistive lane can reach its provider under the CURRENT
     /// settings (fresh reload). A key-optional local endpoint counts as
-    /// available.
+    /// available; a lane without a model or provider does not.
     pub fn is_available(&self) -> bool {
-        self.current_settings()
-            .llm_lanes()
-            .assistive()
-            .request_available()
+        codescribe::agent::assistive_unavailable_reason(
+            self.current_settings().llm_lanes().assistive(),
+        )
+        .is_none()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
@@ -369,6 +374,43 @@ impl CodescribeAgent {
     pub fn cancel_turn(&self, thread_id: String) -> bool {
         self.approvals.cancel_thread(&thread_id);
         self.turns.cancel(&thread_id)
+    }
+
+    /// Stream one typed turn of the selected Max consultation, forwarding the
+    /// owner's text, reasoning, tool and approval events for exactly this turn
+    /// to `listener`. Returns the final assembled assistant text.
+    ///
+    /// `turn_id` is the composer's durable acceptance identity. It survives a
+    /// restart, so the consultation journal refuses a replay of an accepted
+    /// turn instead of running its tools twice, and it is the key the events
+    /// are matched on. The turn runs on the consultation owner under Max by
+    /// identity, independent of the dictation formatting level selected at the
+    /// moment: no second session, and the owner records the reply once.
+    ///
+    /// Attachments follow the composer contract of
+    /// [`Self::stream_reply_with_attachments`], judged on the Agent lane
+    /// because Max answers on it.
+    pub async fn stream_max_consultation(
+        &self,
+        text: String,
+        thread_id: String,
+        turn_id: String,
+        attachments: Vec<CsAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let settings = agent.current_settings();
+            let agent_lane = settings.llm_lanes().assistive();
+            let images = validate_composer_attachments(
+                &attachments,
+                agent_lane.supports_vision(agent_lane.model()),
+            )?;
+            agent
+                .run_max_consultation_turn(text, thread_id, turn_id, images, listener)
+                .await
+        })
+        .await?
     }
 
     /// Run the same agent loop against the embedding editor's live document.
@@ -536,11 +578,11 @@ impl CodescribeAgent {
     /// Recover outstanding cards after attaching or refreshing the UI.
     /// Reading this snapshot never executes or approves a tool.
     pub fn pending_tool_approvals(&self, thread_id: String) -> Vec<CsToolApprovalRequest> {
-        self.approvals
-            .pending_for_thread(&thread_id)
-            .into_iter()
-            .map(Into::into)
-            .collect()
+        let mut pending = self.approvals.pending_for_thread(&thread_id);
+        if let Some(broker) = max_approval_broker() {
+            pending.extend(broker.pending_for_thread(&thread_id));
+        }
+        pending.into_iter().map(Into::into).collect()
     }
 
     /// Answer a pending tool-approval request, resuming the suspended call.
@@ -558,9 +600,21 @@ impl CodescribeAgent {
         approved: bool,
         remember: bool,
     ) -> bool {
+        // A Max consultation turn suspends in the controller's broker; the
+        // Agent window answers that card through the same exact-key match.
         self.approvals
             .resolve(&session_id, &thread_id, &call_id, approved, remember)
+            || max_approval_broker().is_some_and(|broker| {
+                broker.resolve(&session_id, &thread_id, &call_id, approved, remember)
+            })
     }
+}
+
+/// The running controller's Max approval broker, if the app has one. Never
+/// constructs a controller: a settings or chat read must not create a recorder.
+fn max_approval_broker() -> Option<Arc<ApprovalBroker>> {
+    crate::hotkeys::current_controller(&crate::hotkeys::shared_controller())
+        .map(|controller| controller.max_approval_broker())
 }
 
 impl CodescribeAgent {
@@ -576,6 +630,23 @@ impl CodescribeAgent {
         listener: Arc<dyn CsAgentListener>,
         hosted: Option<HostedSession>,
     ) -> Result<String, CsError> {
+        // A Max consultation is Max by identity. Its typed turn joins the
+        // controller's owner (same FIFO, lane, prompt and approvals as speech)
+        // instead of running an Assistive turn that would rewrite the thread.
+        // This entry carries no acceptance identity, so the turn is minted
+        // here; the composer's durable id arrives through
+        // [`CodescribeAgent::stream_max_consultation`].
+        if hosted.is_none() && thread_is_max_consultation(&thread_id).await {
+            return self
+                .run_max_consultation_turn(
+                    text,
+                    thread_id,
+                    next_max_composer_turn_id(),
+                    attachments,
+                    listener,
+                )
+                .await;
+        }
         // One fresh seal for the WHOLE turn: lane identity, provider
         // credential, stream options and persistence labels all read the same
         // generation, and a key saved in Settings reaches the next send.
@@ -584,10 +655,7 @@ impl CodescribeAgent {
         let explicit_provider = hosted.as_ref().and_then(HostedSession::provider);
         let provider = match explicit_provider {
             Some(configuration) => configuration.build(settings.ai_execution().request_timing())?,
-            None => codescribe::agent::create_provider_for_lane(
-                settings.as_ref(),
-                codescribe_core::config::RuntimeLlmLaneKind::Assistive,
-            )?,
+            None => codescribe::agent::create_agent_provider(settings.as_ref())?,
         };
         let provider_label = explicit_provider
             .map(|p| p.wire.clone())
@@ -637,9 +705,9 @@ impl CodescribeAgent {
         }
 
         // Honor the same assistive system prompt + token cap the in-app
-        // controller path uses (build_agent_stream_options), so a Swift chat send
-        // is not stripped of the WORKSPACE-augmented assistive prompt and the
-        // configured `ai_assistive_max_tokens`.
+        // controller path uses (the canonical `agent_stream_options` owner), so
+        // a Swift chat send is not stripped of the WORKSPACE-augmented
+        // assistive prompt and the configured `ai_assistive_max_tokens`.
         let options = if let Some(system_prompt) = system_prompt {
             StreamOptions {
                 model: model.clone(),
@@ -651,9 +719,10 @@ impl CodescribeAgent {
                 reset_chain: false,
             }
         } else {
-            build_bridge_stream_options(
-                settings.values().ai_assistive_max_tokens,
+            codescribe::agent::agent_stream_options(
                 settings.as_ref(),
+                settings.values().ai_assistive_max_tokens,
+                true,
             )
         };
 
@@ -676,6 +745,143 @@ impl CodescribeAgent {
         // thread deletion, where persisting would resurrect the thread).
         deliver_completed_thread(thread_id, messages, provider_label, model).await;
         Ok(final_text)
+    }
+}
+
+/// True when the stored thread is a Max consultation. A missing or unreadable
+/// thread is not one: a brand-new composer thread has nothing on disk yet.
+async fn thread_is_max_consultation(thread_id: &str) -> bool {
+    let id = thread_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        ThreadStore::new()
+            .ok()
+            .and_then(|store| store.load_thread(&id).ok())
+            .is_some_and(|thread| thread.mode == MAX_CONSULTATION_MODE)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Monotonic composer turn ids for Max consultations. The journal refuses a
+/// repeated id, so a restart must never recycle one: wall-clock nanos plus a
+/// process counter.
+fn next_max_composer_turn_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "composer:{nanos}:{}",
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// Forward one owner event of the rendered turn to the Agent-window listener.
+/// Terminals are not forwarded here: the owner's reply receipt is the single
+/// source of success or failure, so neither is ever signalled twice. Returns
+/// `true` once the owner has emitted this turn's terminal.
+fn forward_max_consultation_event(event: AgentUiEvent, listener: &dyn CsAgentListener) -> bool {
+    match event {
+        AgentUiEvent::TextDelta(delta) => listener.on_text_delta(delta),
+        AgentUiEvent::TextDone(text) => listener.on_text_done(text),
+        AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
+        AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
+        AgentUiEvent::ToolApprovalRequested(request) => {
+            listener.on_tool_approval_requested(request.into());
+        }
+        AgentUiEvent::ToolResult {
+            name,
+            id,
+            summary,
+            is_error,
+        } => listener.on_tool_result(name, id, summary, is_error),
+        AgentUiEvent::Done | AgentUiEvent::Error(_) => return true,
+    }
+    false
+}
+
+impl CodescribeAgent {
+    /// Run a typed turn on the selected Max consultation through the running
+    /// app's controller. `turn_id` is the accepted turn's identity: the owner
+    /// journals it, stamps every event of the turn with it and refuses a
+    /// repeat, so the events rendered here are exactly this turn's and a
+    /// replay can never run it twice. Streams those events to `listener`;
+    /// history is persisted by the owner (mode `max`), so nothing here writes
+    /// the thread. Stop cannot abort an admitted Max instruction (the owner
+    /// never replays or rolls back tool effects); `cancel_turn` therefore
+    /// reports no active turn for a consultation.
+    async fn run_max_consultation_turn(
+        &self,
+        text: String,
+        thread_id: String,
+        turn_id: String,
+        attachments: Vec<ImageAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let controller = crate::hotkeys::current_controller(&crate::hotkeys::shared_controller())
+            .ok_or_else(|| CsError::Agent {
+            msg: "Max consultation needs the running app; open it from the menu bar app"
+                .to_string(),
+        })?;
+        // Subscribe before admission: the owner never replays deltas.
+        let mut events = controller.subscribe_max_consultation_events();
+        let mut answer = controller
+            .enqueue_max_consultation_text_turn(&thread_id, turn_id.clone(), text, attachments)
+            .await
+            .map_err(|error| CsError::Agent {
+                msg: format!("{error:#}"),
+            })?;
+        tracing::info!(
+            target: "codescribe::agent_delivery",
+            "max_composer_turn_admitted thread_id={thread_id} turn_id={turn_id}"
+        );
+        let mine = |event: &codescribe::controller::MaxConsultationEvent| {
+            event.consultation_id == thread_id && event.turn_id == turn_id
+        };
+        let mut terminal_seen = false;
+        let outcome = loop {
+            tokio::select! {
+                biased;
+                event = events.recv(), if !terminal_seen => {
+                    match event {
+                        Ok(event) if mine(&event) => {
+                            terminal_seen =
+                                forward_max_consultation_event(event.event, listener.as_ref());
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                "Max consultation renderer lagged by {skipped} events; history stays durable"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            terminal_seen = true;
+                        }
+                    }
+                }
+                outcome = &mut answer => break outcome,
+            }
+        };
+        // The owner emits the terminal before answering; pick up anything still
+        // queued for this turn so the final text never trails the receipt.
+        while let Ok(event) = events.try_recv() {
+            if mine(&event) && forward_max_consultation_event(event.event, listener.as_ref()) {
+                break;
+            }
+        }
+        match outcome {
+            Ok(Ok(answer)) => {
+                listener.on_done();
+                Ok(answer.text)
+            }
+            Ok(Err(error)) => Err(CsError::Agent {
+                msg: format!("{error:#}"),
+            }),
+            Err(_) => Err(CsError::Agent {
+                msg: "Max consultation owner stopped before replying".to_string(),
+            }),
+        }
     }
 }
 
@@ -901,46 +1107,6 @@ impl Drop for TurnGuard {
     }
 }
 
-/// Build the assistive stream options for a bridge chat send, honoring the same
-/// assistive system prompt and token cap the in-app controller path uses
-/// (`app/controller/helpers.rs::build_agent_stream_options`).
-fn build_bridge_stream_options(
-    ai_assistive_max_tokens: i32,
-    runtime_settings: &RuntimeSettingsSnapshot,
-) -> StreamOptions {
-    let max_tokens = u32::try_from(ai_assistive_max_tokens)
-        .ok()
-        .filter(|tokens| *tokens > 0);
-    StreamOptions {
-        model: runtime_settings.llm_lanes().assistive().model().to_string(),
-        system_prompt: Some(compose_agent_system_prompt(
-            runtime_settings
-                .ai_execution()
-                .formatter()
-                .assistive_prompt()
-                .composed_content(),
-        )),
-        max_tokens,
-        temperature: None,
-        reset_chain: false,
-    }
-}
-
-/// Compose the agent system prompt exactly like the controller path
-/// (`app/controller/helpers.rs::compose_agent_system_prompt`): the base assistive
-/// prompt, the WORKSPACE section (6238ca1) that pins project roots and tells the
-/// model to resolve names via `list_projects` instead of guessing paths, the
-/// review-tool + connector doctrine for long-running MCP review calls and
-/// GitHub-connector fallback, and the measured Responses/streaming API ground
-/// truth with the answer-first rule (operator incident 2026-08-14: a spoken
-/// engine question got a clarification questionnaire instead of an answer).
-fn compose_agent_system_prompt(assistive_prompt: &str) -> String {
-    let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
-    let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
-    let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
-    format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
-}
-
 /// Vision gate for an explicit scoped-session provider: the declared wire
 /// family answers through core's capability policy, the same source the
 /// assistive lane consults for the embedded default. An unrecognized wire is
@@ -964,7 +1130,7 @@ fn explicit_provider_supports_vision(configuration: &CsDocumentProvider) -> bool
 /// user chose to attach. Any failure returns a readable [`CsError`] naming the
 /// offending files so the composer surfaces it instead of sending a quietly
 /// degraded message. Also gates on the selected model's vision capability.
-fn validate_composer_attachments(
+pub(crate) fn validate_composer_attachments(
     attachments: &[CsAttachment],
     supports_vision: bool,
 ) -> Result<Vec<ImageAttachment>, CsError> {
@@ -1295,6 +1461,51 @@ mod tests {
         fn name(&self) -> &str {
             "scripted-provider"
         }
+    }
+
+    /// Owner terminals end the render loop but are never forwarded: the reply
+    /// receipt is the one terminal the Agent window sees, so a Max turn can
+    /// not be signalled done or failed twice.
+    #[test]
+    fn max_consultation_events_forward_content_and_stop_at_terminals() {
+        let listener = RecordingListener::default();
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::TextDelta("a".into()),
+            &listener
+        ));
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::ToolExecuting {
+                name: "read_file".into(),
+                id: "call-1".into(),
+            },
+            &listener
+        ));
+        assert!(!forward_max_consultation_event(
+            AgentUiEvent::TextDone("answer".into()),
+            &listener
+        ));
+        assert!(forward_max_consultation_event(
+            AgentUiEvent::Done,
+            &listener
+        ));
+        assert!(forward_max_consultation_event(
+            AgentUiEvent::Error("provider".into()),
+            &listener
+        ));
+        assert!(listener.tool_started.load(Ordering::SeqCst));
+        assert_eq!(listener.text_done_count.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.done_count.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.error_count.load(Ordering::SeqCst), 0);
+    }
+
+    /// The consultation journal refuses a repeated turn id, so composer ids
+    /// must be unique within a process and distinguishable across restarts.
+    #[test]
+    fn max_composer_turn_ids_never_repeat() {
+        let ids: std::collections::HashSet<String> =
+            (0..64).map(|_| next_max_composer_turn_id()).collect();
+        assert_eq!(ids.len(), 64);
+        assert!(ids.iter().all(|id| id.starts_with("composer:")));
     }
 
     /// Listener that only records that a tool started executing — the signal
@@ -1823,6 +2034,7 @@ mod tests {
             command: None,
             cwd: None,
             paths: vec!["/workspace/file".to_string()],
+            arguments: None,
         };
         let pending = broker.begin(request);
         assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true, false));
@@ -1849,6 +2061,7 @@ mod tests {
             command: None,
             cwd: None,
             paths: vec!["/workspace/file".to_string()],
+            arguments: None,
         });
         broker.cancel_thread("thread-cancel");
         assert!(!pending.await);

@@ -29,20 +29,26 @@ struct SettingsView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       sidebar
+        .scrollContentBackground(.hidden)
         .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
         .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
+        .background { SettingsSidebarMaterial().ignoresSafeArea() }
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
+        .modifier(CSDetailHeaderGlass())
+        .background(CSColor.sheet)
     }
-    .navigationTitle(Text("Settings"))
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
+        sectionToolbar.sharedBackgroundVisibility(.hidden)
       } else {
         brandToolbar
+        sectionToolbar
       }
     }
+    .modifier(CSWindowHeaderChrome())
     .csFocusPolicy()
     .controlSize(.regular)
     .frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
@@ -51,6 +57,12 @@ struct SettingsView: View {
       model.refresh()
       consumePendingDeepLink()
       model.refreshForCurrentSection()
+      model.beginWhisperResidencyObservation()
+      model.beginAudioDeviceObservation()
+    }
+    .onDisappear {
+      model.endWhisperResidencyObservation()
+      model.endAudioDeviceObservation()
     }
     .task {
       // The health footer must include the controller's real recording
@@ -79,23 +91,54 @@ struct SettingsView: View {
   }
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
-  /// Mission Control, App Exposé and the Window menu.
+  /// Mission Control, App Exposé and the Window menu, and never minimises
+  /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
+  /// keeps no minimise control rather than one that could leave an Exposé tile.
+  ///
+  /// The window titlebar and backing are configured to allow native sidebar
+  /// translucency (`.sidebar` material with `.behindWindow` blending) while
+  /// keeping the integrated titlebar/toolbar intact and content areas opaque.
   private func adoptHostWindow(_ window: NSWindow?) {
     hostWindow = window
-    window?.titleVisibility = .hidden
+    guard let window else { return }
+    // This owner keeps the Window-menu title while the toolbar paints the
+    // wordmark. A separate navigationTitle would restore a second visible title.
+    window.title = String(localized: "Settings")
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.styleMask.insert(.fullSizeContentView)
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    // The toolbar style belongs to the scene (`.windowToolbarStyle(.unified)`
+    // in App.swift): SwiftUI's toolbar bridging rewrites the NSWindow value
+    // after this adoption, so setting it here is not what the window keeps.
+    // The strip that once cut the sidebar beneath the titlebar came from a
+    // visible toolbar background, not from the style; see `CSWindowHeaderChrome`.
+    DockPresence.adopt(window)
   }
 
   private var brandToolbar: some ToolbarContent {
     ToolbarItem(placement: .navigation) {
-      HStack(spacing: 16) {
-        Wordmark(size: 16)
-          .fixedSize(horizontal: true, vertical: false)
-        Text(verbatim: "v\(model.appVersion)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
+      CSWindowHeaderItem {
+        HStack(spacing: 16) {
+          Wordmark(size: 16)
+            .fixedSize(horizontal: true, vertical: false)
+          Text(verbatim: "v\(model.appVersion)")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(Color.secondary)
+        }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
+    }
+  }
+
+  private var sectionToolbar: some ToolbarContent {
+    ToolbarItem(placement: .principal) {
+      CSWindowHeaderItem {
+        Text(model.currentTab?.title ?? model.section.title)
+          .font(CSFont.ui(14, .semibold))
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
     }
   }
 
@@ -211,7 +254,7 @@ struct SettingsView: View {
 /// Runtime-truth footer pinned under the sidebar. It is the one part of the old
 /// hand-drawn rail that carried information rather than chrome: a live health
 /// line that deep-links to the section owning the problem.
-private struct SettingsHealthFooter: View {
+struct SettingsHealthFooter: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
@@ -300,6 +343,25 @@ struct SettingsSectionLabel: View {
       .font(.subheadline.weight(.semibold))
       .foregroundStyle(.secondary)
       .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// Section label with one trailing action on the same line, so a helper such
+/// as refresh or a System Settings link does not take a row of its own.
+struct SettingsSectionHeaderRow<Action: View>: View {
+  let text: String
+  @ViewBuilder var action: () -> Action
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+    self.text = text
+    self.action = action
+  }
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      SettingsSectionLabel(text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      action()
+        .controlSize(.small)
+    }
   }
 }
 

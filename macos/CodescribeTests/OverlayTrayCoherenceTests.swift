@@ -30,7 +30,9 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     let dir = screensRoot.appendingPathComponent(directory)
     return try FileManager.default.contentsOfDirectory(atPath: dir.path)
       .filter { $0.hasSuffix(".swift") }
-      .map { (name: $0, text: try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8)) }
+      .map {
+        (name: $0, text: try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8))
+      }
   }
 
   // MARK: - Caution is a palette role, never a raw system colour
@@ -49,18 +51,19 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     }
   }
 
-  /// Both header diagnostic icons (acoustic warning, preference-save error)
-  /// tint from the same appearance-aware caution token.
-  func testHeaderDiagnosticsTintFromPaletteCaution() throws {
+  /// Header diagnostic marks stay neutral. A lagging transcript and a
+  /// preference-save error do not paint the caution yellow on the glyph.
+  func testHeaderDiagnosticsStayNeutral() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
-    let acoustic = try XCTUnwrap(view.range(of: "waveform.badge.magnifyingglass"))
+    let acoustic = try XCTUnwrap(view.range(of: "character: OverlayHeaderGlyph.transcription"))
     let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
-    for anchor in [acoustic, preference] {
-      let window = String(view[anchor.lowerBound...].prefix(200))
-      XCTAssertTrue(
-        window.contains("palette.processingStatus.color"),
-        "diagnostic icon must use the palette caution token")
-    }
+    // The chosen tint (2026-10-15) sits before the resting muted colour.
+    let acousticWindow = String(view[acoustic.lowerBound...].prefix(260))
+    let preferenceWindow = String(view[preference.lowerBound...].prefix(180))
+    XCTAssertTrue(acousticWindow.contains("palette.mutedText.color"))
+    XCTAssertTrue(preferenceWindow.contains("palette.primaryText.color"))
+    XCTAssertFalse(acousticWindow.contains("palette.processingStatus.color"))
+    XCTAssertFalse(preferenceWindow.contains("palette.processingStatus.color"))
   }
 
   // MARK: - Popovers and hints speak the brand type ramp

@@ -115,6 +115,32 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertTrue(cached.usesDiscoveredPicker, "usable cached catalogs retain model selection")
   }
 
+  func testFormattingRespectsResponsesAccountWithoutInventingAnAPIKey() {
+    var provider = CsProviderOption.sampleProviders[1]
+    provider.accountSignedIn = true
+    provider.apiKeySet = false
+    let runtime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: provider.displayName,
+      wire: provider.wire, endpoint: provider.endpoint, model: "formatter-model",
+      keyAccount: provider.apiKeyAccount, keyPresent: false, accountAuth: true,
+      available: true, unavailableReason: nil)
+    let lane = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "formatter-model",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "no_key", message: nil, models: []))
+    XCTAssertEqual(lane.availabilityDescription, "Connected account")
+    XCTAssertEqual(lane.availabilityTint, CSColor.oliveLight)
+    XCTAssertEqual(
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.oliveLight)
+    XCTAssertTrue(lane.discoveryDescription.contains("connected account covers model requests"))
+    XCTAssertTrue(lane.discoveryDescription.contains("model list needs"))
+    XCTAssertFalse(lane.discoveryDescription.contains("Formatting needs"))
+    XCTAssertFalse(lane.usesDiscoveredPicker)
+    provider.accountSignedIn = false
+    XCTAssertEqual(
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.terracotta)
+  }
+
   /// A stored key is presence, not validity: the lane says "Stored API key"
   /// while discovery, independently, may still report the key as rejected.
   func testStoredKeyLabelDoesNotClaimValidity() {
@@ -140,6 +166,26 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertEqual(rejected.discoveryErrorDetails, "{\"error\":\"Incorrect API key provided\"}")
     XCTAssertFalse(
       rejected.discoveryDescription.contains("Incorrect"), "the raw body stays under Error details")
+
+    // The same refusal next to a signed-in account must not read as a failed
+    // sign-in: the sentence says the account still covers requests.
+    var accountProvider = provider
+    accountProvider.accountSignedIn = true
+    let accountRuntime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: "xAI",
+      wire: provider.wire, endpoint: provider.endpoint, model: "grok-4",
+      keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: true,
+      available: true, unavailableReason: nil)
+    let rejectedWithAccount = LLMLaneModel(
+      lane: .formatting, runtime: accountRuntime, provider: accountProvider, configuredModel: "",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "key_rejected",
+        message: "{\"error\":\"Incorrect API key provided\"}", models: []))
+    XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Connected account")
+    XCTAssertEqual(
+      rejectedWithAccount.discoveryDescription,
+      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers."
+    )
 
     // Any other failure is a plain fetch error: the key is never blamed on a guess.
     let outage = LLMLaneModel(

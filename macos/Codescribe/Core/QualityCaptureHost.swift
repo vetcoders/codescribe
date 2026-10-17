@@ -20,4 +20,56 @@ import Foundation
 enum QualityCaptureHost {
   /// `XCTestCase` only exists in the process once the test bundle is loaded.
   static let isRunningTests = NSClassFromString("XCTestCase") != nil
+
+  static let dataDirectoryVariable = "CODESCRIBE_DATA_DIR"
+  static let agentBridgeHomeVariable = "CODESCRIBE_AGENT_BRIDGE_HOME"
+
+  /// Where the XCTest host keeps its state, so it never observes the live app.
+  struct IsolatedHomes: Equatable {
+    let data: URL
+    let agentBridge: URL
+  }
+
+  /// The XCTest host never observes the account's live runtime.
+  ///
+  /// `AppModel()` in a test attaches the production overlay, whose delivery
+  /// reader polls the agent bridge and the shared transcript bus every 500 ms,
+  /// and the in-process Rust core answers the channel roster from the same
+  /// bridge. Against the real `~/.codescribe`, a test run during a take drew a
+  /// second, English-language overlay with the live conversations (screen
+  /// recording 2026-10-13 09:46, review 2026-10-14).
+  ///
+  /// `make test-swift` exports isolated homes through `TEST_RUNNER_`; any other
+  /// launch (Xcode, a bare `xcodebuild test`) falls back to a per-process
+  /// temporary root. Swift and Rust both resolve these variables, so setting
+  /// them before the first engine exists isolates both sides.
+  @discardableResult
+  static func isolateFromLiveRuntime(
+    runningTests: Bool = isRunningTests,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+    processID: Int32 = ProcessInfo.processInfo.processIdentifier,
+    setVariable: (String, String) -> Void = { setenv($0, $1, 1) }
+  ) -> IsolatedHomes? {
+    guard runningTests else { return nil }
+    func configured(_ name: String) -> URL? {
+      guard let path = environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !path.isEmpty
+      else { return nil }
+      return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    }
+    let data =
+      configured(dataDirectoryVariable)
+      ?? temporaryDirectory.appendingPathComponent(
+        "codescribe-test-host-\(processID)", isDirectory: true)
+    let agentBridge =
+      configured(agentBridgeHomeVariable)
+      ?? data.appendingPathComponent("agent-bridge", isDirectory: true)
+    for (name, home) in [(dataDirectoryVariable, data), (agentBridgeHomeVariable, agentBridge)]
+    where configured(name) == nil {
+      try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+      setVariable(name, home.path)
+    }
+    return IsolatedHomes(data: data, agentBridge: agentBridge)
+  }
 }

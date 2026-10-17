@@ -162,7 +162,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
     return root.subviews.lazy.compactMap { self.descendant(of: type, in: $0) }.first
   }
 
-  func testLive1656SelectedReadOnlyWordsCanReceiveNativeCopyCommands() throws {
+  func testLive1656SelectedReadOnlyWordsCanReceiveNativeCopyCommands() async throws {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
@@ -200,7 +200,9 @@ final class OverlayEditKeyGateTests: XCTestCase {
     let menuItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     XCTAssertTrue(canvas.validateMenuItem(menuItem))
     let board = NSPasteboard(name: .init("codescribe.tests.live1656.\(UUID().uuidString)"))
-    XCTAssertTrue(canvas.copySelection(to: board))
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
+    try await settle(canvas.copySelection())
     XCTAssertEqual(board.string(forType: .string), "beta")
     XCTAssertFalse(state.isEditingTranscript)
     XCTAssertFalse(state.canInsert)
@@ -209,11 +211,11 @@ final class OverlayEditKeyGateTests: XCTestCase {
   func testLive1656EphemeralPaintReachesCanvasWithoutCommittingDelivery() throws {
     let state = OverlayState()
     state.handleRecordingPreparing()
+    state.handleRecordingStarted()
     state.applyCompactProjection(
       CsCompactProjection(
         sessionId: "edit-key-gate-fixture", captureEpoch: 1, sequence: 1,
         text: "", degraded: false, evidence: []))
-    state.handleRecordingStarted()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Live1656.ephemeral"))

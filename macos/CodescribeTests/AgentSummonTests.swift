@@ -24,7 +24,7 @@ final class AgentSummonTests: XCTestCase {
 
   func testRepeatedSummonPreservesThreadDraftAttachmentsAndIdleState() {
     var first = ChatThread(title: "First", meta: "now")
-    first.messages = [ChatMessage(role: .you, timestamp: "now", text: "existing")]
+    first.messages = [ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: "existing")]
     let second = ChatThread(title: "Second", meta: "now")
     let engine = SpyEngine()
     let store = AgentChatStore(engine: engine, threads: [first, second])

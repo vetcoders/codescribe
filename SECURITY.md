@@ -2,12 +2,15 @@
 
 ## Supported Versions
 
-Codescribe follows rolling support for the latest stable source and public release line.
+Codescribe supports the newest published release only. Security fixes land in
+source first and reach users in the next published release, which installed
+copies receive through the in-app updater.
 
-| Version | Supported |
-| ------- | --------- |
-| 0.12.x  | Yes       |
-| < 0.12  | No        |
+| Version                                                                             | Supported                                        |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------ |
+| [Latest published release](https://github.com/vetcoders/codescribe/releases/latest) | Yes                                              |
+| Unreleased source (version in `Cargo.toml` above the latest release)                | Reports accepted; fixes ship in the next release |
+| Older releases                                                                      | No — update to the latest release                |
 
 ## Reporting a Vulnerability
 
@@ -46,5 +49,7 @@ For local-first workflows, this project handles:
 - Microphone/audio capture
 - Local model execution
 - Optional API traffic to configured LLM providers
+- The license-key service at `https://codescribe.vetcoders.io/api/license/issue`
+- The signed Sparkle update feed at `https://codescribe.vetcoders.io/appcast.xml`
 
 Please include provider and endpoint details in your report when relevant.

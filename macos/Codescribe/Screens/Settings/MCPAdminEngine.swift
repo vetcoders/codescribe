@@ -85,11 +85,7 @@ struct MCPAddFailure: Equatable {
   /// The bridge flattens every store error into `CsError.Config(msg:)`; mocks
   /// throw plain errors. Either way the message is what the store said.
   init(_ error: Error) {
-    if case let CsError.Config(msg) = error {
-      self.init(storeMessage: msg)
-    } else {
-      self.init(storeMessage: String(describing: error))
-    }
+    self.init(storeMessage: error.userFacingMessage)
   }
 
   init(storeMessage detail: String) {
@@ -125,6 +121,25 @@ struct MCPAddFailure: Equatable {
       message = detail
       field = nil
     }
+  }
+
+  /// The bridge represents an empty remote endpoint as a missing endpoint,
+  /// so the store's command refusal needs the form's selected transport.
+  func forTransport(remote: Bool, endpoint: String) -> MCPAddFailure {
+    guard remote, field == .command,
+      endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return self }
+    return MCPAddFailure(
+      message: String(
+        localized: "The server URL is invalid. Enter a full HTTP or HTTPS URL with a hostname."),
+      field: .endpoint, detail: detail)
+  }
+
+  /// After a transport switch, an error for a hidden field belongs under the
+  /// form rather than disappearing or focusing an absent control.
+  func visibleField(remote: Bool) -> Field? {
+    if (remote && field == .command) || (!remote && field == .endpoint) { return nil }
+    return field
   }
 }
 

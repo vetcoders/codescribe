@@ -23,7 +23,7 @@ use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -50,6 +50,44 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
 /// Max characters of collapsed stderr carried into a WARN line.
 const STDERR_LOG_MAX_CHARS: usize = 200;
+/// Receive budgets apply before parsing, including initialization and discovery.
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 64 * 1024;
+const MAX_IGNORED_MESSAGES: usize = 128;
+const MAX_SSE_FRAMES: usize = 128;
+const MAX_TOOLS: usize = 1024;
+const MAX_DECODED_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ENCODED_IMAGE_BYTES: usize = MAX_DECODED_IMAGE_BYTES.div_ceil(3) * 4;
+
+#[derive(Debug)]
+enum McpClientError {
+    ResponseBytes,
+    StdioLineBytes,
+    StderrBytes,
+    IgnoredMessages,
+    SseFrames,
+    ToolCatalog,
+    EncodedImageBytes,
+    DecodedImageBytes,
+}
+
+impl std::fmt::Display for McpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ResponseBytes => "mcp_response_bytes_exceeded",
+            Self::StdioLineBytes => "mcp_stdio_line_bytes_exceeded",
+            Self::StderrBytes => "mcp_stderr_bytes_exceeded",
+            Self::IgnoredMessages => "mcp_ignored_messages_exceeded",
+            Self::SseFrames => "mcp_sse_frames_exceeded",
+            Self::ToolCatalog => "mcp_tool_catalog_exceeded",
+            Self::EncodedImageBytes => "mcp_encoded_image_bytes_exceeded",
+            Self::DecodedImageBytes => "mcp_decoded_image_bytes_exceeded",
+        })
+    }
+}
+
+impl std::error::Error for McpClientError {}
+
 /// Total attempts for a remote exchange, including the first. Bounded so a
 /// dead connector surfaces as an error instead of retrying indefinitely.
 const REMOTE_RECONNECT_ATTEMPTS: usize = 3;
@@ -101,7 +139,10 @@ impl McpConfigFile {
 
 /// One server entry. Transport is implied, not declared: a present [`Self::url`]
 /// selects remote HTTP, otherwise `command` is spawned over stdio.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `PartialEq` lets connection evidence be pinned to the exact entry it was
+/// gathered against: a changed entry makes earlier evidence stale.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct McpServerConfig {
     /// Executable to spawn for stdio transport. A bare name is resolved against
     /// the effective `PATH`; ignored when `url` is set.
@@ -297,6 +338,7 @@ impl McpClient {
         }
         .await;
         if let Err(error) = &result {
+            let _ = connection.child.start_kill();
             let stderr = connection.drain_stderr().await;
             warn_handshake_failure(&self.config.command, "tools/list", error, &stderr);
         }
@@ -363,6 +405,7 @@ impl McpClient {
         }
         .await;
         if let Err(error) = &result {
+            let _ = connection.child.start_kill();
             let stderr = connection.drain_stderr().await;
             warn_handshake_failure(&self.config.command, "tools/call", error, &stderr);
         }
@@ -389,6 +432,9 @@ impl McpClient {
             match operation(connection).await {
                 Ok(value) => return Ok(value),
                 Err(error) => {
+                    if error.downcast_ref::<McpClientError>().is_some() {
+                        return Err(error);
+                    }
                     warn!(
                         "Remote MCP connector '{}' attempt {}/{} failed: {}",
                         self.config.url.as_deref().unwrap_or("<missing>"),
@@ -534,12 +580,12 @@ impl RemoteConnection {
             "method": method,
             "params": params,
         });
-        let response = timeout(response_timeout, self.post(&message))
-            .await
-            .with_context(|| {
-                format!("Timed out waiting for remote MCP response to '{method}'")
-            })??;
-        parse_remote_response(response, id, method)
+        timeout(response_timeout, async {
+            let response = self.post(&message).await?;
+            parse_remote_response(response, id, method).await
+        })
+        .await
+        .with_context(|| format!("Timed out waiting for remote MCP response to '{method}'"))?
     }
 
     /// Fire-and-forget JSON-RPC notification (no id, no response awaited).
@@ -553,12 +599,12 @@ impl RemoteConnection {
         Ok(())
     }
 
-    /// POST one message and return the raw body with its content type.
+    /// POST one message and return its body stream without buffering it.
     ///
     /// Captures any `Mcp-Session-Id` for later requests, and treats a non-2xx
     /// status as an error naming the endpoint and code — the shape a connector
     /// outage takes in the Engine tab.
-    async fn post(&mut self, message: &Value) -> Result<RemoteResponse> {
+    async fn post(&mut self, message: &Value) -> Result<reqwest::Response> {
         let mut request = self
             .client
             .post(&self.endpoint)
@@ -585,16 +631,7 @@ impl RemoteConnection {
         {
             self.session_id = Some(session_id.to_string());
         }
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let body = response
-            .text()
-            .await
-            .context("Failed reading remote MCP response body")?;
+        // Error bodies are never read; even an endless 503 costs no body buffer.
         if !status.is_success() {
             bail!(
                 "Remote MCP connector '{}' returned HTTP {}",
@@ -602,52 +639,140 @@ impl RemoteConnection {
                 status.as_u16()
             );
         }
-        Ok(RemoteResponse { content_type, body })
+        Ok(response)
     }
-}
-
-/// Raw HTTP response body plus the content type needed to decide how to read
-/// it (Streamable HTTP may answer either plain JSON or an SSE stream).
-struct RemoteResponse {
-    content_type: String,
-    body: String,
 }
 
 /// Extract the JSON-RPC result matching `id`, handling both response shapes.
 ///
-/// SSE bodies are reduced to their `data:` frames; plain bodies parse as one
-/// message. Selecting by id is what makes an interleaved stream safe to read.
-/// A JSON-RPC `error` member becomes an `Err` naming the method.
-fn parse_remote_response(response: RemoteResponse, id: u64, method: &str) -> Result<Value> {
-    let messages: Vec<Value> = if response.content_type.contains("text/event-stream") {
-        response
-            .body
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                serde_json::from_str(line)
-                    .with_context(|| format!("Malformed remote MCP SSE data: {line}"))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        if response.body.trim().is_empty() {
-            bail!("Remote MCP server returned an empty response to '{method}'");
+/// SSE is parsed one frame at a time and dropped as soon as the matching reply
+/// arrives, even if the server keeps the stream open afterwards.
+async fn parse_remote_response(
+    mut response: reqwest::Response,
+    id: u64,
+    method: &str,
+) -> Result<Value> {
+    let is_sse = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"));
+    if !is_sse
+        && response
+            .content_length()
+            .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(McpClientError::ResponseBytes.into());
+    }
+    let mut body = Vec::new();
+    let mut sse = McpSseReader::default();
+    let mut received = 0;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed reading remote MCP response body")?
+    {
+        if is_sse {
+            for byte in chunk {
+                if received == MAX_RESPONSE_BYTES {
+                    return Err(McpClientError::ResponseBytes.into());
+                }
+                received += 1;
+                if let Some(result) = sse.push(byte, id, method)? {
+                    return Ok(result);
+                }
+            }
+        } else {
+            if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+                return Err(McpClientError::ResponseBytes.into());
+            }
+            body.extend_from_slice(&chunk);
         }
-        vec![
-            serde_json::from_str(response.body.trim())
-                .with_context(|| format!("Malformed remote MCP JSON response to '{method}'"))?,
-        ]
-    };
-    let message = messages
-        .into_iter()
-        .find(|message| message.get("id").and_then(Value::as_u64) == Some(id))
-        .with_context(|| format!("Remote MCP response to '{method}' omitted request id {id}"))?;
+    }
+    if is_sse {
+        if !sse.line.is_empty() {
+            sse.finish_line()?;
+        }
+        if !sse.data.is_empty()
+            && let Some(result) = sse.finish_frame(id, method)?
+        {
+            return Ok(result);
+        }
+    } else {
+        let message = serde_json::from_slice(&body)
+            .with_context(|| format!("Malformed remote MCP JSON response to '{method}'"))?;
+        if let Some(result) = matching_mcp_result(message, id, method)? {
+            return Ok(result);
+        }
+    }
+    bail!("Remote MCP response to '{method}' omitted request id {id}")
+}
+
+#[derive(Default)]
+struct McpSseReader {
+    line: Vec<u8>,
+    data: Vec<u8>,
+    frames: usize,
+}
+
+impl McpSseReader {
+    fn push(&mut self, byte: u8, id: u64, method: &str) -> Result<Option<Value>> {
+        if byte != b'\n' {
+            self.line.push(byte);
+            return Ok(None);
+        }
+        if self.line.is_empty() || self.line == b"\r" {
+            self.line.clear();
+            return self.finish_frame(id, method);
+        }
+        self.finish_line()?;
+        Ok(None)
+    }
+
+    fn finish_line(&mut self) -> Result<()> {
+        let line = self.line.strip_suffix(b"\r").unwrap_or(&self.line);
+        if let Some(data) = line.strip_prefix(b"data:") {
+            let data = data.strip_prefix(b" ").unwrap_or(data);
+            let separator = usize::from(!self.data.is_empty());
+            if data.len() + separator > MAX_RESPONSE_BYTES - self.data.len() {
+                return Err(McpClientError::ResponseBytes.into());
+            }
+            if separator != 0 {
+                self.data.push(b'\n');
+            }
+            self.data.extend_from_slice(data);
+        }
+        self.line.clear();
+        Ok(())
+    }
+
+    fn finish_frame(&mut self, id: u64, method: &str) -> Result<Option<Value>> {
+        if self.frames == MAX_SSE_FRAMES {
+            return Err(McpClientError::SseFrames.into());
+        }
+        self.frames += 1;
+        if self.data.is_empty() {
+            return Ok(None);
+        }
+        let message = serde_json::from_slice(&self.data).context("mcp_invalid_sse_json")?;
+        self.data.clear();
+        matching_mcp_result(message, id, method)
+    }
+}
+
+fn matching_mcp_result(mut message: Value, id: u64, method: &str) -> Result<Option<Value>> {
+    if message.get("id").and_then(Value::as_u64) != Some(id) {
+        return Ok(None);
+    }
     if let Some(error) = message.get("error") {
         bail!("MCP request '{method}' failed: {error}");
     }
-    Ok(message.get("result").cloned().unwrap_or(Value::Null))
+    Ok(Some(
+        message
+            .get_mut("result")
+            .map(Value::take)
+            .unwrap_or(Value::Null),
+    ))
 }
 
 /// Emit a WARN for a spawn-survived-but-handshake/call-failed MCP exchange,
@@ -671,10 +796,10 @@ struct StdioConnection {
     /// Request pipe, with SIGPIPE disabled per-fd (see `disable_sigpipe`).
     stdin: ChildStdin,
     /// Response pipe, read as lines.
-    stdout: Lines<BufReader<ChildStdout>>,
-    /// Piped stderr, read only on the failure path (see `drain_stderr`). Taken
-    /// out once drained so shutdown does not touch it again.
+    stdout: BufReader<ChildStdout>,
+    /// Piped stderr, drained alongside requests so it cannot block the server.
     stderr: Option<ChildStderr>,
+    stderr_buffer: Vec<u8>,
     /// Next JSON-RPC request id.
     next_id: u64,
     /// Per-request timeout.
@@ -714,11 +839,8 @@ impl StdioConnection {
             .env("PATH", &effective_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Pipe (not null) so a spawn-survived-but-handshake-failed server's
-            // stderr can be surfaced in a WARN. One-shot per call, drained on the
-            // failure path and closed at shutdown, so it cannot back-pressure a
-            // healthy call.
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = command.spawn().map_err(|err| {
             // Give the most common failure a concrete, actionable reason instead
@@ -757,8 +879,9 @@ impl StdioConnection {
         Ok(Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout).lines(),
+            stdout: BufReader::new(stdout),
             stderr,
+            stderr_buffer: Vec::new(),
             next_id: 1,
             response_timeout,
             initialize_timeout,
@@ -769,15 +892,13 @@ impl StdioConnection {
     /// single line and truncated for logging. Bounded by `STDERR_DRAIN_TIMEOUT`
     /// so a still-running child that holds stderr open cannot block the caller.
     async fn drain_stderr(&mut self) -> String {
-        let Some(stderr) = self.stderr.take() else {
-            return String::new();
-        };
-        let mut reader = BufReader::new(stderr);
-        let mut buffer = Vec::new();
-        // On timeout the read future is dropped; bytes already read stay in
-        // `buffer`, which is enough for a diagnostic snippet.
-        let _ = timeout(STDERR_DRAIN_TIMEOUT, reader.read_to_end(&mut buffer)).await;
-        truncate_stderr(&String::from_utf8_lossy(&buffer))
+        let _ = timeout(
+            STDERR_DRAIN_TIMEOUT,
+            capture_mcp_stderr(&mut self.stderr, &mut self.stderr_buffer),
+        )
+        .await;
+        self.stderr.take();
+        truncate_stderr(&String::from_utf8_lossy(&self.stderr_buffer))
     }
 
     /// Run the `initialize` exchange plus the `notifications/initialized`
@@ -824,62 +945,70 @@ impl StdioConnection {
     ) -> Result<Value> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        self.write_message(json!({
+        let message = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
-        }))
-        .await?;
-
-        loop {
-            let line = timeout(response_timeout, self.stdout.next_line())
-                .await
-                .with_context(|| format!("Timed out waiting for MCP response to '{method}'"))?
-                .with_context(|| format!("Failed reading MCP response to '{method}'"))?
-                .with_context(|| {
-                    format!("MCP server closed stdout before responding to '{method}'")
-                })?;
-
-            let message: Value = serde_json::from_str(line.trim())
-                .with_context(|| format!("Malformed MCP JSON-RPC message: {}", line.trim()))?;
-
-            if message.get("id").and_then(Value::as_u64) != Some(id) {
-                continue;
+        });
+        let stdin = &mut self.stdin;
+        let stdout = &mut self.stdout;
+        let exchange = async {
+            write_mcp_message(stdin, message).await?;
+            let mut remaining = MAX_RESPONSE_BYTES;
+            let mut ignored = 0;
+            loop {
+                let line = read_bounded_mcp_line(stdout, &mut remaining)
+                    .await?
+                    .with_context(|| {
+                        format!("MCP server closed stdout before responding to '{method}'")
+                    })?;
+                let message = serde_json::from_slice(&line).context("mcp_invalid_stdio_json")?;
+                if let Some(result) = matching_mcp_result(message, id, method)? {
+                    return Ok(result);
+                }
+                ignored += 1;
+                if ignored > MAX_IGNORED_MESSAGES {
+                    return Err(McpClientError::IgnoredMessages.into());
+                }
             }
-
-            if let Some(error) = message.get("error") {
-                bail!("MCP request '{method}' failed: {error}");
+        };
+        timeout(response_timeout, async {
+            tokio::pin!(exchange);
+            tokio::select! {
+                biased;
+                stderr = capture_mcp_stderr(&mut self.stderr, &mut self.stderr_buffer) => {
+                    stderr?;
+                    exchange.await
+                }
+                result = &mut exchange => result,
             }
-
-            return Ok(message.get("result").cloned().unwrap_or(Value::Null));
-        }
+        })
+        .await
+        .with_context(|| format!("Timed out waiting for MCP response to '{method}'"))?
     }
 
     /// Fire-and-forget JSON-RPC notification (no id, no response awaited).
     async fn notification(&mut self, method: &str, params: Value) -> Result<()> {
-        self.write_message(json!({
+        let message = json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
-        }))
+        });
+        timeout(self.response_timeout, async {
+            let write = write_mcp_message(&mut self.stdin, message);
+            tokio::pin!(write);
+            tokio::select! {
+                biased;
+                stderr = capture_mcp_stderr(&mut self.stderr, &mut self.stderr_buffer) => {
+                    stderr?;
+                    write.await
+                }
+                result = &mut write => result,
+            }
+        })
         .await
-    }
-
-    /// Serialize and write one newline-delimited JSON-RPC message, flushing it.
-    /// A write to a dead peer returns EPIPE rather than raising SIGPIPE — see
-    /// [`disable_sigpipe`].
-    async fn write_message(&mut self, message: Value) -> Result<()> {
-        let mut bytes = serde_json::to_vec(&message).context("Failed to serialize MCP message")?;
-        bytes.push(b'\n');
-        self.stdin
-            .write_all(&bytes)
-            .await
-            .context("Failed to write MCP message")?;
-        self.stdin
-            .flush()
-            .await
-            .context("Failed to flush MCP message")
+        .context("mcp_notification_timeout")?
     }
 
     /// Consume the connection and stop the server.
@@ -897,10 +1026,11 @@ impl StdioConnection {
         let already_exited = matches!(self.child.try_wait(), Ok(Some(_)));
         if !already_exited {
             let _ = timeout(SHUTDOWN_TIMEOUT, self.request("shutdown", json!({}))).await;
-            let _ = self
-                .notification("notifications/exit", json!({}))
-                .await
-                .map_err(|error| debug!("MCP exit notification failed: {error}"));
+            let _ = timeout(
+                SHUTDOWN_TIMEOUT,
+                self.notification("notifications/exit", json!({})),
+            )
+            .await;
         }
         drop(self.stdin);
 
@@ -918,6 +1048,67 @@ impl StdioConnection {
 
         Ok(())
     }
+}
+
+async fn read_bounded_mcp_line(
+    reader: &mut BufReader<ChildStdout>,
+    remaining: &mut usize,
+) -> Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await.context("mcp_stdout_read_failed")?;
+        if available.is_empty() {
+            return Ok((!line.is_empty()).then_some(line));
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if count > MAX_RESPONSE_BYTES - line.len() {
+            return Err(McpClientError::StdioLineBytes.into());
+        }
+        if count > *remaining {
+            return Err(McpClientError::ResponseBytes.into());
+        }
+        let complete = available[count - 1] == b'\n';
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        *remaining -= count;
+        if complete {
+            return Ok(Some(line));
+        }
+    }
+}
+
+async fn capture_mcp_stderr(stderr: &mut Option<ChildStderr>, buffer: &mut Vec<u8>) -> Result<()> {
+    let mut chunk = [0; 4096];
+    while let Some(pipe) = stderr.as_mut() {
+        let available = chunk.len().min(MAX_STDERR_BYTES + 1 - buffer.len());
+        let count = pipe
+            .read(&mut chunk[..available])
+            .await
+            .context("mcp_stderr_read_failed")?;
+        if count == 0 {
+            *stderr = None;
+            return Ok(());
+        }
+        if count > MAX_STDERR_BYTES - buffer.len() {
+            return Err(McpClientError::StderrBytes.into());
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+    }
+    Ok(())
+}
+
+/// Serialize and flush one message; the connection disabled SIGPIPE at spawn.
+async fn write_mcp_message(stdin: &mut ChildStdin, message: Value) -> Result<()> {
+    let mut bytes = serde_json::to_vec(&message).context("Failed to serialize MCP message")?;
+    bytes.push(b'\n');
+    stdin
+        .write_all(&bytes)
+        .await
+        .context("Failed to write MCP message")?;
+    stdin.flush().await.context("Failed to flush MCP message")
 }
 
 /// Mark the child's stdin pipe so writes to a dead peer return EPIPE instead
@@ -1021,6 +1212,13 @@ struct ToolsListResult {
 
 /// Decode a `tools/list` result into the tool list.
 fn parse_tools_list(value: Value) -> Result<Vec<McpTool>> {
+    if value
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.len() > MAX_TOOLS)
+    {
+        return Err(McpClientError::ToolCatalog.into());
+    }
     let result: ToolsListResult =
         serde_json::from_value(value).context("Failed to parse MCP tools/list result")?;
     Ok(result.tools)
@@ -1065,6 +1263,8 @@ fn parse_tool_call_result(value: Value) -> Result<Vec<ToolResultContent>> {
         serde_json::from_value(value).context("Failed to parse MCP tools/call result")?;
 
     let mut output = Vec::new();
+    let mut encoded_image_bytes = 0;
+    let mut decoded_image_bytes = 0;
     for block in result.content {
         match block {
             McpContentBlock::Text { text } if result.is_error => {
@@ -1072,9 +1272,26 @@ fn parse_tool_call_result(value: Value) -> Result<Vec<ToolResultContent>> {
             }
             McpContentBlock::Text { text } => output.push(ToolResultContent::Text(text)),
             McpContentBlock::Image { data, mime_type } => {
-                let bytes = BASE64
-                    .decode(data)
+                if data.len() > MAX_ENCODED_IMAGE_BYTES - encoded_image_bytes {
+                    return Err(McpClientError::EncodedImageBytes.into());
+                }
+                encoded_image_bytes += data.len();
+                let padding = data
+                    .bytes()
+                    .rev()
+                    .take(2)
+                    .take_while(|byte| *byte == b'=')
+                    .count();
+                let decoded_len = (data.len().div_ceil(4) * 3).saturating_sub(padding);
+                if decoded_len > MAX_DECODED_IMAGE_BYTES - decoded_image_bytes {
+                    return Err(McpClientError::DecodedImageBytes.into());
+                }
+                let mut bytes = vec![0; decoded_len];
+                let count = BASE64
+                    .decode_slice(data.as_bytes(), &mut bytes)
                     .context("Failed to decode MCP image content")?;
+                bytes.truncate(count);
+                decoded_image_bytes += count;
                 output.push(ToolResultContent::Image {
                     data: bytes,
                     media_type: mime_type,
@@ -1410,7 +1627,8 @@ mod tests {
         );
     }
 
-    /// Garbage JSON-RPC from the server surfaces as a Malformed MCP error, not a hang.
+    /// Garbage JSON-RPC from the server surfaces as the `mcp_invalid_stdio_json`
+    /// code, not a hang.
     #[tokio::test]
     async fn mcp_malformed_response_errors() {
         let client =
@@ -1422,7 +1640,7 @@ mod tests {
             .expect_err("malformed server output should fail");
 
         assert!(
-            error.to_string().contains("Malformed MCP JSON-RPC"),
+            error.to_string().contains("mcp_invalid_stdio_json"),
             "unexpected error: {error}"
         );
     }

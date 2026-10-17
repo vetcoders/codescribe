@@ -85,7 +85,7 @@ Still required before complete performance/deadline acceptance:
   for all mutation corridors, including deletion, split, seals and revisions.
   The two new operation tests are concrete minimum witnesses, not exhaustive
   trace certification.
-- Identified installed artifacts and W-0b measurements on Dragon and MacBook:
+- Identified installed artifacts and W-0b measurements on host-a and host-b:
   sustained dictation, Stop, repeated takes and idle; actual CPU/RSS/thermal
   limits and responsiveness. Unit tests cannot certify absence of heating.
 - An authorized physical microphone-to-agent/paste acceptance run. A Bus

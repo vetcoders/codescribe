@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // Owns the tray's state + action routing. The view is dumb: it observes this.
@@ -51,6 +52,9 @@ final class TrayViewModel: ObservableObject {
   @Published private(set) var historyItems: [TrayTranscript] = []
 
   private let engine: TrayEngine?
+  /// Shared invalidation edges from `AppModel` (nil in tests and previews).
+  private let configurationInvalidation: ConfigurationInvalidation?
+  private var configurationInvalidationSink: AnyCancellable?
 
   // Navigation intents — bound by App.swift to the actual window/scene opens.
   var onIntent: (TrayIntent) -> Void = { _ in }
@@ -79,15 +83,34 @@ final class TrayViewModel: ObservableObject {
   var onOpenLogFolder: () -> Void = {}
   var onCopyDebugInfo: () -> Void = {}
 
-  init(engine: TrayEngine? = nil, isRecording: Bool = false) {
+  init(
+    engine: TrayEngine? = nil,
+    isRecording: Bool = false,
+    configurationInvalidation: ConfigurationInvalidation? = nil
+  ) {
     self.engine = engine
     self.isRecording = isRecording
+    self.configurationInvalidation = configurationInvalidation
+    // Quick Settings follows writes made in Settings by re-reading the same
+    // persisted snapshot; recorder edges are not configuration.
+    configurationInvalidationSink = configurationInvalidation?.edges(excluding: self)
+      .sink { [weak self] edge in
+        guard edge == .settingsWritten else { return }
+        self?.refreshQuickSettings()
+      }
   }
 
   // MARK: - Navigation intents
 
   func onShowAgent() { onIntent(.openChat) }
   func onOpenWidget() { onIntent(.openWidget) }
+
+  /// The tray row's start/stop. Its result shows on the overlay, which the
+  /// panel sits over, so the tray closes behind the action.
+  func toggleDictationFromTray() {
+    toggleDictation()
+    onIntent(.closeTray)
+  }
 
   /// A popover is a short-lived surface. Do not carry an expanded wall of
   /// history/settings into the operator's next tray visit.
@@ -121,15 +144,7 @@ final class TrayViewModel: ObservableObject {
   /// genuine start still in flight keeps its lock.
   func refreshStatus() {
     guard let engine else { return }
-    if let toggles = engine.currentToggles() {
-      showDockIcon = toggles.showDockIcon
-      overlayEnabled = toggles.overlayEnabled
-      pasteMode = toggles.pasteMode
-      autoFormatLevel = toggles.autoFormatLevel
-      notesModeEnabled = toggles.notesMode
-      startInAssistive = toggles.startInAssistive
-      holdBadgeOption = toggles.holdBadgeOption
-    }
+    refreshQuickSettings()
     Task { [weak self] in
       guard let self else { return }
       let live = await engine.isRecording()
@@ -138,6 +153,25 @@ final class TrayViewModel: ObservableObject {
         self.isStartingDictation = false
       }
     }
+  }
+
+  /// Re-read only the persisted quick-setting projection. Never writes and
+  /// never touches recording state, so an external edge cannot loop.
+  func refreshQuickSettings() {
+    guard let toggles = engine?.currentToggles() else { return }
+    showDockIcon = toggles.showDockIcon
+    overlayEnabled = toggles.overlayEnabled
+    pasteMode = toggles.pasteMode
+    autoFormatLevel = toggles.autoFormatLevel
+    notesModeEnabled = toggles.notesMode
+    startInAssistive = toggles.startInAssistive
+    holdBadgeOption = toggles.holdBadgeOption
+  }
+
+  /// A quick-setting write reached the engine; open peers re-read the same
+  /// persisted truth (a rejected write re-reads the unchanged value).
+  private func publishSettingsWritten() {
+    configurationInvalidation?.settingsWritten(by: self)
   }
 
   /// Count of tray-initiated starts still awaiting the controller. Only these
@@ -188,10 +222,11 @@ final class TrayViewModel: ObservableObject {
   func setShowDockIcon(_ enabled: Bool) {
     showDockIcon = enabled
     engine?.setQuickToggle(.showDockIcon, enabled: enabled)
+    publishSettingsWritten()
     // Persisting the flag isn't enough: the app launches as an accessory
     // (LSUIElement), so flip the activation policy to actually show/hide the
-    // Dock icon at runtime.
-    NSApp.setActivationPolicy(enabled ? .regular : .accessory)
+    // Dock icon at runtime, and with it the minimise button of the windows.
+    DockPresence.apply(showDockIcon: enabled)
   }
 
   func setOverlayEnabled(_ enabled: Bool) {
@@ -201,6 +236,7 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
     refreshStatus()
+    publishSettingsWritten()
     onOverlayPreferenceChanged()
   }
 
@@ -213,6 +249,7 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setPasteMode(mode)
     refreshStatus()
+    publishSettingsWritten()
   }
 
   /// Persist one of the four normalized formatting IDs, then reconcile with
@@ -224,6 +261,7 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setAutoFormatLevel(level)
     refreshStatus()
+    publishSettingsWritten()
   }
 
   /// K3: persists immediately; next badge show uses the new size.
@@ -235,6 +273,7 @@ final class TrayViewModel: ObservableObject {
     }
     if engine.setHoldBadgeOption(option) {
       holdBadgeOption = option
+      publishSettingsWritten()
     } else {
       refreshStatus()
     }
@@ -251,6 +290,7 @@ final class TrayViewModel: ObservableObject {
     }
     if engine.setNotesMode(enabled) {
       notesModeEnabled = enabled
+      publishSettingsWritten()
     } else {
       refreshStatus()
     }
@@ -264,6 +304,7 @@ final class TrayViewModel: ObservableObject {
     }
     if engine.setStartInAssistive(enabled) {
       startInAssistive = enabled
+      publishSettingsWritten()
     } else {
       refreshStatus()
     }
@@ -283,9 +324,7 @@ final class TrayViewModel: ObservableObject {
   /// Copy a chosen recent transcript's full text to the system pasteboard.
   func copyTranscript(path: String) {
     guard let text = engine?.transcriptText(forPath: path) else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+    copyTranscriptText(text)
   }
 
   /// Reveal the folder holding the most recent transcript in Finder.
@@ -298,15 +337,25 @@ final class TrayViewModel: ObservableObject {
   /// Copy the most recent transcript's text to the system pasteboard.
   func copyLastTranscript() {
     guard let text = engine?.latestTranscriptText() else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+    copyTranscriptText(text)
+  }
+
+  private func copyTranscriptText(_ text: String) {
+    Task { @MainActor in
+      do {
+        try await UserTextClipboard.copy(text)
+        showCopyStatus(
+          String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
+      } catch {
+        showCopyStatus(error.userFacingMessage, kind: .failure)
+      }
+    }
   }
 
   /// Flash a transient "Copied" banner beside the copy actions, then auto-clear
   /// it (cancelling any in-flight clear so rapid copies keep the newest banner).
-  private func showCopyStatus(_ message: String) {
-    copyStatus = TrayActionStatus(kind: .success, message: message)
+  private func showCopyStatus(_ message: String, kind: TrayActionStatus.Kind = .success) {
+    copyStatus = TrayActionStatus(kind: kind, message: message)
     copyStatusClearTask?.cancel()
     copyStatusClearTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 4_000_000_000)

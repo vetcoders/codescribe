@@ -9,7 +9,7 @@ import { page } from "../lib/asset";
   description="Get help with codescribe: email hello@vetcoders.io, GitHub Issues, and honest response times."
   path="support"
 >
-  <LegalPage title="Support" eyebrow="Trust · Support">
+  <LegalPage title="Support" eyebrow="Trust · Support" updated="2026-10-14">
     <p>
       Codescribe is a local-first macOS app from Vetcoders / LibraxisAI. We keep
       support human and small-team honest.
@@ -30,7 +30,7 @@ import { page } from "../lib/asset";
             <strong>Email</strong><br />
             <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
           </td>
-          <td>Purchase, refunds, license, private bugs, accessibility</td>
+          <td>License keys, private bugs, accessibility</td>
           <td
             ><strong>Within 2 business days</strong> (Mon–Fri, Europe/Warsaw)</td
           >
@@ -51,13 +51,14 @@ import { page } from "../lib/asset";
         <tr>
           <td>
             <strong>Docs</strong><br />
-            <a
+            <a href={page("guide")}>User guide</a>
+            · <a
               href="https://github.com/vetcoders/codescribe#readme"
               target="_blank"
-              rel="noopener noreferrer">README &amp; guide</a
+              rel="noopener noreferrer">README</a
             >
           </td>
-          <td>Install, hotkeys, privacy posture, troubleshooting</td>
+          <td>Setup, hotkeys, agent channels; source builds in the README</td>
           <td>Self-serve, always available</td>
         </tr>
       </tbody>
@@ -70,14 +71,20 @@ import { page } from "../lib/asset";
       <li>macOS version and Apple Silicon machine class</li>
       <li>What you expected vs what happened</li>
       <li>Whether the issue is offline Raw mode or an AI/agent path</li>
-      <li>For purchases: order email and order ID (never paste API keys)</li>
+      <li>For license keys: the email you used on the license form (never paste API keys)</li>
     </ul>
 
     <h2>Security reports</h2>
     <p>
-      Please email <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
-      with subject “security” rather than opening a public issue for vulnerabilities
-      that could put users at risk.
+      Please email <a href="mailto:security@vetcoders.io">security@vetcoders.io</a>
+      (fallback <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>) rather
+      than opening a public issue for vulnerabilities that could put users at risk.
+      See the
+      <a
+        href="https://github.com/vetcoders/codescribe/blob/main/SECURITY.md"
+        target="_blank"
+        rel="noopener noreferrer">security policy</a
+      > for what to include and response targets.
     </p>
 
     <h2>Policies</h2>

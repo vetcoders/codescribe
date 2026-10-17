@@ -176,6 +176,11 @@ pub struct EnergyCalibrationArtifact {
 /// Why a calibration could not be derived, loaded, or served.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnergyCalibrationRefusal {
+    /// Every captured sample was at the digital-silence floor: the device sent no sound at
+    /// all, which is not a quiet room and not a speaker who stayed silent.
+    /// AirPods held by another Apple device do this: macOS refuses the route
+    /// for a recording-only session and the opened stream carries zeros.
+    DigitalSilence { device_name: String, samples: u64 },
     /// The measurement contained no active speech at all.
     NoActiveSpeech,
     /// Too little speech was measured to trust the median.
@@ -246,6 +251,13 @@ pub enum EnergyCalibrationRefusal {
 impl fmt::Display for EnergyCalibrationRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DigitalSilence {
+                device_name,
+                samples,
+            } => write!(
+                f,
+                "`{device_name}` sent no sound: all {samples} samples were at the digital-silence floor; check this device's input route"
+            ),
             Self::NoActiveSpeech => write!(f, "no active speech was measured"),
             Self::InsufficientSpeech {
                 measured_seconds,
@@ -344,6 +356,21 @@ impl fmt::Display for EnergyCalibrationRefusal {
 
 impl std::error::Error for EnergyCalibrationRefusal {}
 
+/// A guided measurement that kept no profile. It carries the refusal typed
+/// through `anyhow`, so the bridge hands Swift a code and arguments instead of
+/// an English sentence (docs/LOCALIZATION.md §5). Its text is the former
+/// `calibration_refused: …` message, unchanged for logs and status rows.
+#[derive(Debug)]
+pub struct GuidedCalibrationRefused(pub EnergyCalibrationRefusal);
+
+impl fmt::Display for GuidedCalibrationRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "calibration_refused: {}", self.0)
+    }
+}
+
+impl std::error::Error for GuidedCalibrationRefused {}
+
 /// Loader verdict frozen into the snapshot. Consumers display it; they may not
 /// upgrade `Missing`/`Refused` into a floor of their own.
 #[derive(Debug, Clone, PartialEq)]
@@ -416,6 +443,12 @@ impl EnergyCalibrationProfile {
             return Err(EnergyCalibrationRefusal::InvalidSampleRate(
                 receipt.sample_rate,
             ));
+        }
+        if receipt.sample_count > 0 && receipt.digital_zero_samples == receipt.sample_count {
+            return Err(EnergyCalibrationRefusal::DigitalSilence {
+                device_name: receipt.device_name.clone(),
+                samples: receipt.sample_count,
+            });
         }
         if !receipt.active_speech_median_dbfs_is_measured() {
             return Err(EnergyCalibrationRefusal::NoActiveSpeech);
@@ -915,6 +948,22 @@ impl SealedEnergyCalibration {
         profile.ledger_calibration(sample_rate)
     }
 
+    /// The same validated device profile supplies the speech-anchor floor.
+    /// Reading the sealed snapshot does not probe or reload calibration files.
+    pub fn speech_anchor_floor_for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<f32, EnergyCalibrationRefusal> {
+        self.for_capture(device_name, sample_rate)?;
+        let profile = self.profile_at(device_name, calibration_now_unix_ms()?)?;
+        let threshold_dbfs = profile
+            .measurement
+            .noise_floor_dbfs
+            .map_or(profile.floors.existence_threshold_dbfs, |noise| noise + 8.0);
+        Ok(db_to_linear(threshold_dbfs))
+    }
+
     /// Deterministic pre-mic admission against the complete live cpal path.
     pub fn for_capture_at(
         &self,
@@ -1011,6 +1060,22 @@ mod tests {
             EnergyCalibrationProfile::derive(&silent, 1, SOURCE_GUIDED_CAPTURE).unwrap_err(),
             EnergyCalibrationRefusal::NoActiveSpeech
         );
+        // 2026-10-15: three AirPods calibrations measured 240000 exact zeros
+        // and the refusal said "no active speech", blaming the speaker.
+        let mut dead = operator_receipt();
+        dead.digital_zero_samples = dead.sample_count;
+        dead.active_speech_samples = 0;
+        dead.active_speech_median_db = f32::NEG_INFINITY;
+        let refusal =
+            EnergyCalibrationProfile::derive(&dead, 1, SOURCE_GUIDED_CAPTURE).unwrap_err();
+        assert_eq!(
+            refusal,
+            EnergyCalibrationRefusal::DigitalSilence {
+                device_name: dead.device_name.clone(),
+                samples: dead.sample_count,
+            }
+        );
+        assert!(refusal.to_string().contains("sent no sound"));
         let mut thin = operator_receipt();
         thin.active_speech_samples = 8_820; // 0.1 s
         assert!(matches!(
@@ -1023,6 +1088,23 @@ mod tests {
             EnergyCalibrationProfile::derive(&noisy, 1, SOURCE_GUIDED_CAPTURE).unwrap_err(),
             EnergyCalibrationRefusal::InsufficientSeparation { .. }
         ));
+    }
+
+    #[test]
+    fn div0_admission_all_zero_device_is_named_but_quiet_audio_stays_unmeasured() {
+        let mut receipt = operator_receipt();
+        receipt.device_name = "Admission microphone without a route".to_owned();
+        receipt.digital_zero_samples = receipt.sample_count;
+        receipt.active_speech_samples = 0;
+        receipt.active_speech_median_db = f32::NEG_INFINITY;
+        let refusal = EnergyCalibrationProfile::derive(&receipt, 1, SOURCE_GUIDED_CAPTURE)
+            .expect_err("digital zero is not calibrated speech");
+        assert!(refusal.to_string().contains(&receipt.device_name));
+        receipt.digital_zero_samples = 0;
+        assert_eq!(
+            EnergyCalibrationProfile::derive(&receipt, 1, SOURCE_GUIDED_CAPTURE).unwrap_err(),
+            EnergyCalibrationRefusal::NoActiveSpeech
+        );
     }
 
     #[test]

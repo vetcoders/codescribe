@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import os
 import shutil
 import json
 import sys
@@ -2051,10 +2052,15 @@ def require_loct() -> None:
     loudly and the pure AST/manifest classes keep their teeth; any host with
     loct on PATH runs the full suite. See the Makefile GATE LEDGER row for
     verify."""
+    if os.environ.get("CODESCRIBE_SKIP_LIVE_THRONE"):
+        raise unittest.SkipTest("CODESCRIBE_SKIP_LIVE_THRONE set -- dev Loctree runner; pure contracts still run")
     if shutil.which("loct") is None:
         raise unittest.SkipTest(
             "loct not on PATH -- live throne rows need the Loctree CLI"
         )
+
+
+STOP_PASTE_CALL = 'clipboard::paste_to_stop_target(\n                &paste_text,\n                &target,\n                paste_mode,\n                config.restore_clipboard,\n                config.restore_clipboard_delay_ms,\n            )'
 
 
 class NeutralAstTests(unittest.TestCase):
@@ -2069,7 +2075,7 @@ class NeutralAstTests(unittest.TestCase):
         cls.payload = {"schema": "codescribe.structural-ast-input.v1", "bodies": []}
         for symbol, file in VERIFIER.AST_BODIES.items():
             rows = VERIFIER.corridor_body_rows(cls.live.body(symbol, file),
-                symbol=symbol, file=file, signature_contains=None)
+                symbol=symbol, file=file, signature_contains=VERIFIER.AST_SIGNATURES.get(symbol))
             if len(rows) != 1:
                 raise AssertionError(f"real positive body unavailable: {symbol}")
             cls.payload["bodies"].append(rows[0])
@@ -2090,7 +2096,7 @@ class NeutralAstTests(unittest.TestCase):
     def test_real_positive_and_comment_only_change(self):
         evidence = self.run_payload(self.payload)
         self.assertTrue(evidence["accepted"], evidence)
-        payload = self.mutate("complete_stop", "self.lifecycle_handle = None;",
+        payload = self.mutate("finish", "self.lifecycle_handle = None;",
             "/* return Ok(fake); unknown!(); */ self.lifecycle_handle = None;")
         self.assertTrue(self.run_payload(payload)["accepted"])
 
@@ -2110,34 +2116,31 @@ class NeutralAstTests(unittest.TestCase):
                          without_metadata["invocation"]["input_sha256"])
         self.assertEqual(payload, original, "handoff must not mutate Loctree evidence")
 
-    def test_prepared_capture_stop_preserves_ownership_and_error_path(self):
-        positive = self.run_payload(self.payload)
-        self.assertTrue(positive["accepted"], "negative evidence needs an accepted control")
+    def test_closed_capture_ownership_and_error_path(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
         mutations = [
-            ("feed_release_missing", "let release = self.release_take_pcm_feed();", ""),
-            ("release_forged", "let release = self.release_take_pcm_feed();",
-             "let release = TakeFeedRelease::NoTakeFeed;"),
-            ("prepared_not_consumed", "self.prepared_capture_archive.take()",
-             "self.prepared_capture_archive.as_ref()"),
-            ("prepared_error_swallowed", "            prepared\n", "            Ok(None)\n"),
-            ("prepared_early_error", "            prepared\n", "            prepared?\n"),
-            ("ordinary_stop_early_error", "self.recorder.stop().await", "self.recorder.stop().await?"),
-            ("shared_capture_stopped", "TakeFeedRelease::CaptureShared => Ok(None)",
-             "TakeFeedRelease::CaptureShared => self.recorder.stop().await"),
-            ("release_duplicated", "match release {", "match self.release_take_pcm_feed() {"),
-            ("tail_bypassed", "self.complete_stop(stopped).await", "Ok((String::new(), None))"),
-            ("prepared_read_twice", "let stopped =", "let _ = self.prepared_capture_archive.take(); let stopped ="),
+            ("stop", "self.finish_closed_capture(was_active).await", "Ok((String::new(), None))"),
+            ("close_capture", "TakeFeedRelease::CaptureShared => false", "TakeFeedRelease::CaptureShared => self.recorder.close_capture().await"),
+            ("release_take_pcm_feed", "self.take_subscriber.take()", "self.take_subscriber.as_ref()"),
+            ("detach_closed_take", "self.prepared_capture_archive.take()", "None"),
+            ("detach_take_state", "transcription_handle: self.transcription_handle.take()", "transcription_handle: None"),
+            ("detach_take_state", "acoustic_ledger: self.acoustic_ledger.clone()", "acoustic_ledger: None"),
+            ("release_capture_subscriber", "feed.id != id", "false"),
+            ("finish_closed_capture", "self.terminal_take.as_mut()", "self.terminal_take.take()"),
+            ("finish_closed_capture", "if take.is_settled()", "if true"),
+            ("finish", "self.archive_worker.as_mut()", "self.archive_worker.take()"),
+            ("finish", "self.transcription_handle.as_mut()", "self.transcription_handle.take()"),
+            ("is_settled", "&& self.event_sink.is_none()", ""),
+            ("is_settled", "&& self.archive_worker.is_none()", ""),
+            ("finalize_take_archive", "count as u64 == expected_samples", "true"),
+            ("copy_stop_error", "anyhow::Error::new(archive.clone())", 'anyhow!("discarded PCM identity")'),
         ]
-        for name, old, new in mutations:
-            with self.subTest(mutation=name):
-                evidence = self.run_payload(self.mutate("stop", old, new))
-                contracts = {row["symbol"]: row for row in evidence["contracts"]}
-                self.assertFalse(contracts["stop"]["accepted"], name)
-                self.assertTrue(contracts["stop"]["failures"], name)
-                self.assertFalse(evidence["accepted"], name)
-                for symbol, contract in contracts.items():
-                    if symbol != "stop":
-                        self.assertTrue(contract["accepted"], (name, symbol))
+        for symbol, old, new in mutations:
+            with self.subTest(symbol=symbol, mutation=old):
+                evidence = self.run_payload(self.mutate(symbol, old, new))
+                contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], evidence)
+                self.assertFalse(evidence["accepted"])
 
     def test_terminal_publication_acknowledgement_cannot_be_forged(self):
         positive = self.run_payload(self.payload)
@@ -2150,19 +2153,19 @@ class NeutralAstTests(unittest.TestCase):
             ("sink_taken_before_ack", "self.event_sink.as_ref()", "self.event_sink.take()"),
             ("timeout_forged_success", 'Err(anyhow!("presentation terminal drain timed out"))', "Ok(())"),
             ("sink_discarded_on_failure", "if drain_failure.is_none()", "if true"),
-            ("drain_error_discarded", "(cause, drain) => cause.or(drain)", "(cause, _drain) => cause"),
+            ("drain_error_discarded", "if let Some(drain) = drain_failure", "if let Some(drain) = None::<anyhow::Error>"),
             ("archive_error_discarded", "Err(error) => (None, Some(error), task_failure)",
              "Err(_error) => (None, None, task_failure)"),
         ]
         for name, old, new in mutations:
             with self.subTest(mutation=name):
-                evidence = self.run_payload(self.mutate("complete_stop", old, new))
+                evidence = self.run_payload(self.mutate("finish", old, new))
                 contracts = {row["symbol"]: row for row in evidence["contracts"]}
-                self.assertFalse(contracts["complete_stop"]["accepted"], name)
-                self.assertTrue(contracts["complete_stop"]["failures"], name)
+                self.assertFalse(contracts["finish"]["accepted"], name)
+                self.assertTrue(contracts["finish"]["failures"], name)
                 self.assertFalse(evidence["accepted"], name)
                 for symbol, contract in contracts.items():
-                    if symbol != "complete_stop":
+                    if symbol != "finish":
                         self.assertTrue(contract["accepted"], (name, symbol))
 
     def test_all_eleven_previous_mutants_rejected(self):
@@ -2171,13 +2174,13 @@ class NeutralAstTests(unittest.TestCase):
             ("focus_removed", "execute_clipboard_paste", "if focus_confirmed && preflight.can_post_events()", "if preflight.can_post_events()"),
             ("preflight_removed", "execute_clipboard_paste", "if focus_confirmed && preflight.can_post_events()", "if focus_confirmed"),
             ("wrong_paste_helper", "paste_text_from_overlay", "self.execute_clipboard_paste(", "self.wrong_helper("),
-            ("coverage_removed", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".wrong_finality(session, self.capture_epoch)"),
-            ("incomplete_success_decoy", "complete_stop", "if empty_capture {", "if empty_capture || bypass {"),
-            ("audio_receipt_removed", "complete_stop", "                    finality,\n                    audio_path,", "                    finality,"),
-            ("committed_receipt_removed", "complete_stop", "                    committed_text: transcript,", ""),
-            ("shutdown_bypass", "complete_stop", "if let Some(sender)", "if bypass { return Ok((String::new(), None)); } if let Some(sender)"),
-            ("shutdown_order", "complete_stop", "self.transcription_handle = None;", ""),
-            ("stop_bypass", "stop", "let stopped =", "if bypass { return Ok((String::new(), None)); } let stopped ="),
+            ("coverage_removed", "finish", ".terminal_finality(session, self.capture_epoch)", ".wrong_finality(session, self.capture_epoch)"),
+            ("incomplete_success_decoy", "finish", "if empty_capture {", "if empty_capture || bypass {"),
+            ("audio_receipt_removed", "finish", "                    finality,\n                    audio_path,", "                    finality,"),
+            ("committed_receipt_removed", "finish", "                    committed_text: transcript,", ""),
+            ("shutdown_bypass", "finish", "if let Some(sender)", "if bypass { return Ok((String::new(), None)); } if let Some(sender)"),
+            ("shutdown_order", "finish", "self.transcription_handle = None;", ""),
+            ("stop_bypass", "stop", "let was_active =", "if bypass { return Ok((String::new(), None)); } let was_active ="),
         ]
         for name, symbol, old, new in mutations:
             with self.subTest(mutation=name):
@@ -2221,11 +2224,95 @@ class NeutralAstTests(unittest.TestCase):
                 self.assertTrue(any("non-complete receipt" in failure
                                     for failure in contract["failures"]), contract)
 
+    def test_paste_requires_capability_current_focus_and_retained_identity(self):
+        positive = self.run_payload(self.payload)
+        self.assertTrue(positive["accepted"], "mutants require an accepted control")
+        cases = [
+            ("retained_target_removed", "let target = clipboard::StopPasteTarget::capture();", ""),
+            ("retained_process_check_removed", "target.matches_app_name(name)", "true"),
+            ("capability_hold_bypassed", "decision.route == DeliveryRoute::ClipboardHold", "false"),
+            ("capability_observation_forged", "helpers::observe_paste_target(frontmost.as_deref())",
+             "PasteTarget::UNOBSERVED"),
+            ("identity_transport_replaced", STOP_PASTE_CALL,
+             "clipboard::paste_and_restore(&paste_text)"),
+            ("restore_setting_ignored", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("config.restore_clipboard,", "true,")),
+            ("restore_delay_ignored", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("config.restore_clipboard_delay_ms,", "0,")),
+            ("await_after_target_observation", "let target = clipboard::StopPasteTarget::capture();",
+             "let target = clipboard::StopPasteTarget::capture(); self.get_config().await;"),
+            ("request_claimed_without_effect", "match " + STOP_PASTE_CALL,
+             "match fake_paste_receipt()"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("execute_clipboard_paste", old, new))
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "execute_clipboard_paste")
+                self.assertFalse(contract["accepted"], name)
+                self.assertFalse(evidence["accepted"], name)
+
+    def test_paste_mode_remains_bound_through_overlay_and_effect(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("overlay_mode_forged", "paste_text_from_overlay", "PasteMode::Comfort", "PasteMode::Safe"),
+            ("mode_parameter_removed", "execute_clipboard_paste", "paste_mode: PasteMode,", ""),
+            ("mode_parameter_ignored", "execute_clipboard_paste",
+             STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("paste_mode,", "PasteMode::Comfort,")),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate(symbol, old, new))
+                self.assertFalse(evidence["accepted"], name)
+                contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], name)
+
+    def test_paste_transport_rejects_transformations_after_tagging(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"],
+                        "mutants require an accepted current paste control")
+        cases = [
+            ("quote_transform_reintroduced", "let config = self.get_config().await;",
+             "let config = self.get_config().await;\n"
+             "let paste_text = crate::controller::delivery_route::writer_quotes_for_paste("
+             "&paste_text, config.whisper_language.as_str());"),
+            ("foreign_transform_reintroduced", "let config = self.get_config().await;",
+             "let config = self.get_config().await;\nlet paste_text = foreign_transform(&paste_text);"),
+            ("identity_guard_removed", "target.matches_app_name(name)", "true"),
+            ("paste_mode_forged", STOP_PASTE_CALL,
+             STOP_PASTE_CALL.replace("paste_mode,", "PasteMode::Comfort,")),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("execute_clipboard_paste", old, new))
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "execute_clipboard_paste")
+                self.assertFalse(contract["accepted"], name)
+                self.assertFalse(evidence["accepted"], name)
+
+    def test_refused_archive_link_requires_current_session_and_take(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("foreign_archive", "take_refused_take_archive(refusal.finality.session_id())",
+             'take_refused_take_archive("foreign-session")'),
+            ("archive_lookup_removed", "let archived = take_refused_take_archive(refusal.finality.session_id());", ""),
+            ("archive_link_removed", "self.link_live_archive(take_id.as_deref(), archived).await;", ""),
+            ("take_identity_removed", "self.link_live_archive(take_id.as_deref(), archived).await;",
+             "self.link_live_archive(None, archived).await;"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("process_terminal_stop_error", old, new))
+                self.assertFalse(evidence["accepted"], name)
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "process_terminal_stop_error")
+                self.assertFalse(contract["accepted"], name)
+
     def test_terminal_finality_authority_mutants_rejected(self):
         cases = [
-            ("stop_mints_seal", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
-            ("short_capture_guard_removed", "complete_stop", "captured_samples <= u64::from(self.sample_rate) * 3 / 10", "true"),
-            ("missing_authority_succeeds", "complete_stop", "match finality {", "if finality.is_none() { return Ok((transcript, audio_path)); } match finality {"),
+            ("stop_mints_seal", "finish", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
+            ("short_capture_guard_removed", "finish", "captured_samples <= u64::from(self.sample_rate) * 3 / 10", "true"),
+            ("missing_authority_succeeds", "finish", "match finality {", "if finality.is_none() { return Ok((transcript, audio_path)); } match finality {"),
             ("foreign_receipt", "terminal_finality", "receipt.coverage.capture_epoch == capture_epoch", "true"),
             ("stale_occurrence_set", "terminal_finality", "receipt.sealed_occurrences.contains(range)", "true"),
             ("silence_without_measurement", "terminal_finality", 'receipt.availability == "observed"', "true"),
@@ -2245,19 +2332,19 @@ class NeutralAstTests(unittest.TestCase):
     def test_control_scope_and_unknown_syntax_counterexamples(self):
         cases = [
             ("else_effect", "execute_clipboard_paste", "self.arm_or_copy_deferred_payload(", "clipboard::paste_and_restore(&paste_text)?; self.arm_or_copy_deferred_payload("),
-            ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::Pasted", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::Pasted"),
-            ("nested_false", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "if false { clipboard::paste_and_restore(&paste_text)?; } Ok::<(), Error>(())"),
-            ("closure_effect", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "(|| clipboard::paste_and_restore(&paste_text))()"),
-            ("closure_refusal", "complete_stop", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
-            ("unreachable_shutdown", "complete_stop", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
-            ("question_mark_stop", "stop", "self.recorder.stop().await", "self.recorder.stop().await?"),
-            ("unknown_macro", "complete_stop", "self.lifecycle_handle = None;", "unreviewed!(); self.lifecycle_handle = None;"),
+            ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::PasteRequested", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::PasteRequested"),
+            ("nested_false", "execute_clipboard_paste", STOP_PASTE_CALL, "if false { " + STOP_PASTE_CALL + "?; } Ok::<_, Error>(fake_receipt)"),
+            ("closure_effect", "execute_clipboard_paste", STOP_PASTE_CALL, "(|| " + STOP_PASTE_CALL + ")()"),
+            ("closure_refusal", "finish", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
+            ("unreachable_shutdown", "finish", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
+            ("question_mark_stop", "stop", "self.close_capture().await", "self.close_capture().await?"),
+            ("unknown_macro", "finish", "self.lifecycle_handle = None;", "unreviewed!(); self.lifecycle_handle = None;"),
             ("macro_argument_return", "stop", 'info!("Stopping streaming recorder...");', 'info!("{}", { return Ok((String::new(), None)); });'),
-            ("unknown_callee", "complete_stop", "self.lifecycle_handle = None;", "unreviewed(); self.lifecycle_handle = None;"),
-            ("unknown_loop", "stop", "let stopped =", "while condition { return Err(error); } let stopped ="),
+            ("unknown_callee", "finish", "self.lifecycle_handle = None;", "unreviewed(); self.lifecycle_handle = None;"),
+            ("unknown_loop", "stop", "let was_active =", "while condition { return Err(error); } let was_active ="),
             ("shadow_guard", "execute_clipboard_paste", "let preflight =", "let focus_confirmed = true; let preflight ="),
-            ("false_receipt", "complete_stop", "committed_text: transcript,", "committed_text: String::new(),"),
-            ("else_success", "complete_stop", "if empty_capture {", "if !empty_capture {"),
+            ("false_receipt", "finish", "committed_text: transcript,", "committed_text: String::new(),"),
+            ("else_success", "finish", "if empty_capture {", "if !empty_capture {"),
             ("attribute", "stop", "pub async fn stop", "#[cfg(any())] pub async fn stop"),
         ]
         for name, symbol, old, new in cases:
@@ -2423,7 +2510,7 @@ class NeutralAstTests(unittest.TestCase):
             contracts.append({"name": corridor["name"], "hops": hops,
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
-                    {"execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"}]})
+                    {"execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"}]})
         return contracts
 
     def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
@@ -2440,17 +2527,17 @@ class NeutralAstTests(unittest.TestCase):
         self.assertIn("only empty/archive early success is Noop", overlay["events"])
         noop = next(row for row in evidence["contracts"] if row["symbol"] == "noop")
         self.assertTrue(noop["accepted"], noop)
-        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::Pasted, "
+        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::PasteRequested, "
                         "target_app_name: None, frontmost_app_name: None, "
                         "deferred_insert_shortcut: None, deferred_insert_failure: None, }")
         cases = [
-            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"),
+            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::PasteRequested"),
             ("noop_reports_target", "noop", "target_app_name: None", "target_app_name: Some(String::new())"),
             ("noop_public_surface", "noop", "pub(crate) fn noop", "pub fn noop"),
             ("renamed_constructor", "paste_text_from_overlay", "OverlayPasteResult::noop()", "OverlayPasteResult::pasted()"),
             ("inline_transport_result", "paste_text_from_overlay", "OverlayPasteResult::noop()", inline_paste),
             ("widened_guard", "paste_text_from_overlay",
-             "trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly", "true"),
+             "trimmed.is_empty()", "true"),
         ]
         for name, symbol, old, new in cases:
             with self.subTest(mutation=name):
@@ -2461,7 +2548,7 @@ class NeutralAstTests(unittest.TestCase):
 
     def test_overlay_hop_refuses_when_only_the_noop_constructor_is_refused(self):
         refused = self.run_payload(self.mutate(
-            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"))
+            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::PasteRequested"))
         overlay = next(row for row in refused["contracts"]
                        if row["symbol"] == "paste_text_from_overlay")
         self.assertTrue(overlay["accepted"], overlay)
@@ -2478,7 +2565,7 @@ class NeutralAstTests(unittest.TestCase):
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
         self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 4)
-        for symbol in ("execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"):
+        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"):
             original = live.occurrences(symbol)
             missing = copy.deepcopy(original)
             missing["occurrences"] = [row for row in missing["occurrences"] if row.get("match_role") != "reference"]
@@ -2488,6 +2575,57 @@ class NeutralAstTests(unittest.TestCase):
                 self.assertTrue(failures, symbol)
             finally:
                 live._occurrences[symbol] = original
+
+    def test_finish_invocation_requires_unique_typed_body_and_matching_reference(self):
+        contracts = self.ast_corridor_contracts()
+        live = VERIFIER.StructuralVerifier(self.repo)
+        _, failures = VERIFIER.verify_code_corridors(live, contracts)
+        self.assertFalse(failures, failures)
+        file, symbol = "core/audio/streaming_recorder.rs", "finish"
+        original = copy.deepcopy(live.body(symbol, file))
+        selected = VERIFIER.corridor_body_rows(
+            original, symbol=symbol, file=file,
+            signature_contains=VERIFIER.AST_SIGNATURES[symbol],
+        )
+        self.assertEqual(len(selected), 1)
+        start, end = selected[0]["start_line"], selected[0]["end_line"]
+        borrowed = next(row for row in original["bodies"] if row["start_line"] == start)
+        wrong_type = copy.deepcopy(original)
+        wrong_type["bodies"] = [row for row in wrong_type["bodies"] if row["start_line"] != start]
+        self.assertTrue(wrong_type["bodies"], "the consuming overload is the negative control")
+        duplicate = copy.deepcopy(original)
+        duplicate["bodies"].append(copy.deepcopy(borrowed))
+        for name, payload in [("wrong_type_only", wrong_type), ("duplicate_borrowed", duplicate)]:
+            with self.subTest(mutation=name):
+                live._bodies[(symbol, file)] = payload
+                try:
+                    _, failures = VERIFIER.verify_code_corridors(live, contracts)
+                    self.assertTrue(any("invocation finish -> terminal_finality" in failure
+                                        and "observed 0" in failure for failure in failures), failures)
+                finally:
+                    live._bodies[(symbol, file)] = original
+        original_occurrences = copy.deepcopy(live.occurrences("terminal_finality"))
+        for name in ("outside_body", "wrong_caller"):
+            mutated = copy.deepcopy(original_occurrences)
+            changed = 0
+            for row in mutated["occurrences"]:
+                enclosing = row.get("enclosing_symbol", {})
+                if (row.get("file") == file and row.get("match_role") == "reference"
+                        and enclosing.get("name") == symbol):
+                    changed += 1
+                    if name == "outside_body":
+                        row["line"] = end + 1
+                    else:
+                        enclosing["name"] = "unrelated_method"
+            self.assertGreater(changed, 0)
+            with self.subTest(mutation=name):
+                live._occurrences["terminal_finality"] = mutated
+                try:
+                    _, failures = VERIFIER.verify_code_corridors(live, contracts)
+                    self.assertTrue(any("invocation finish -> terminal_finality" in failure
+                                        and "observed 0" in failure for failure in failures), failures)
+                finally:
+                    live._occurrences["terminal_finality"] = original_occurrences
 
 
 class RustModuleResolutionTests(unittest.TestCase):
@@ -2642,6 +2780,28 @@ class CurrentChainMutantTests(unittest.TestCase):
     def test_positive_current_chains_pass(self):
         self.assertEqual(self.positive_failures, [])
 
+    def test_replay_envelope_keeps_exact_owner_and_request_guards(self):
+        self.assertEqual(self.positive_failures, [], "mutants require an accepted replay control")
+        cases = [
+            ("foreign_decode_range", "let range = &payload.identity.range;",
+             "let range = &foreign.identity.range;"),
+            ("lower_bound_uses_maximum", ".min()", ".max()"),
+            ("upper_bound_uses_minimum", ".max()", ".min()"),
+            ("lower_envelope_removed", "range.sample_start < envelope_end", "true"),
+            ("upper_envelope_removed", "envelope_start < range.sample_end", "true"),
+            ("owner_overlap_removed", "range_overlaps_occurrence(range, owner)", "true"),
+            ("foreign_owner_receipt", ".contains(&(payload.identity.request_id, owner.clone()))",
+             ".contains(&(payload.identity.request_id, foreign_owner.clone()))"),
+            ("replay_claimed_fresh", "self.admit_completed_window(ev_tx, &payload, false);",
+             "self.admit_completed_window(ev_tx, &payload, true);"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated("replay_completed_windows",
+                    "core/pipeline/streaming/apple_live_session.rs", old, new)
+                self.assertTrue(any("replay_completed_windows" in row for row in failures),
+                                (name, failures))
+
     def test_captured_input_chain_bypasses_are_rejected(self):
         cases = [
             # Capture is disconnected from the resolver: the snapshot is sealed
@@ -2701,8 +2861,35 @@ class CurrentChainMutantTests(unittest.TestCase):
                     any("settings_to_capture_admission" in failure and obligation in failure
                         for failure in failures), (name, failures))
 
+    def test_inline_take_archive_ownership_cannot_be_removed_or_reordered(self):
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = "start_event_session", "core/audio/streaming_recorder.rs"
+        cases = [
+            ("archive_feed_removed", [("archive: Some(archive_feed)", "archive: None")]),
+            ("take_subscriber_removed", [("self.take_subscriber = Some(take_subscriber);", "")]),
+            ("archive_not_retained", [("self.take_archive = Some(archive);", "")]),
+            ("archive_retained_after_publication", [
+                ("self.take_archive = Some(archive);", ""),
+                ("event_sink.on_capture_opened(&session_id, next_capture_epoch);",
+                 "event_sink.on_capture_opened(&session_id, next_capture_epoch); self.take_archive = Some(archive);"),
+            ]),
+        ]
+        for name, pairs in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutations(symbol, file, pairs)
+                self.assertTrue(any("capture_to_ledger" in failure and symbol in failure
+                                    for failure in failures), (name, failures))
+
     def test_acoustic_chain_bypasses_are_rejected(self):
         cases = [
+            ("qualified_owner_subtraction_bypassed",
+             "uncovered_gap_ranges", "core/pipeline/streaming/apple_live_session.rs",
+             "if !range_overlaps_occurrence(&gap, owner) {", "if true {",
+             "uncovered_gap_ranges"),
+            ("qualified_owner_tail_geometry_forged",
+             "uncovered_gap_ranges", "core/pipeline/streaming/apple_live_session.rs",
+             "sample_start: owner.sample_end,", "sample_start: owner.sample_start,",
+             "uncovered_gap_ranges"),
             # Invalid capture measurement no longer wins over Silero speech, so
             # unreadable PCM can be certified by a later observer.
             ("invalid_capture_precedence_bypassed",
@@ -2777,6 +2964,14 @@ class CurrentChainMutantTests(unittest.TestCase):
             # The armed branch stops routing into the physical lane at all.
             ("armed_routing_removed", "seal_utterance_final",
              [("        seal_sliced_by_silero(state, ev_tx, &segments);\n        return true;\n", "")]),
+            # Raw capture PCM and processed decoder PCM have separate roles.
+            # Neither lane may silently replace the other's input.
+            ("silero_raw_capture_replaced_by_processed_pcm", "apple_stream_worker",
+             [("fusion.ingest(raw_samples, samples, samples_seen)",
+               "fusion.ingest(samples, samples, samples_seen)")]),
+            ("silero_processed_pcm_replaced_by_raw_capture", "apple_stream_worker",
+             [("fusion.ingest(raw_samples, samples, samples_seen)",
+               "fusion.ingest(raw_samples, raw_samples, samples_seen)")]),
             # The armed branch forwards cursor-filtered segments instead of the
             # original timed ones, so revised earlier coordinates are lost.
             ("armed_branch_forwards_filtered_input", "seal_utterance_final",
@@ -2981,6 +3176,131 @@ class CurrentChainMutantTests(unittest.TestCase):
                         "select_coverage_speech_source",
                         "coverage_speech_ranges"):
             self.assertNotIn(f'"{retired}"', manifest, retired)
+
+
+class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
+    """Judge clipboard and projection contracts against current Loctree bodies."""
+
+    CORRIDORS = ("seal_to_delivery", "ledger_to_bus_projection")
+
+    @classmethod
+    def setUpClass(cls):
+        # Reuse the same live cache and mutation boundary, without inheriting
+        # the capture-specific test cases.
+        CurrentChainMutantTests.setUpClass.__func__(cls)
+
+    run_mutations = CurrentChainMutantTests.run_mutations
+    run_mutated = CurrentChainMutantTests.run_mutated
+
+    def test_current_delivery_and_projection_chains_pass(self):
+        self.assertEqual(self.positive_failures, [])
+
+    def test_tail_patch_retains_exact_owners_and_rejects_a_fourth_constructor(self):
+        literal = "TailPatchRequest {"
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        contract = next(
+            row for row in manifest["stages"]["wired"]["exclusive_production_literal_owners"]
+            if row["literal"] == literal
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            self.seed, [contract]
+        )
+        self.assertEqual(failures, [])
+        rows = copy.deepcopy(VERIFIER.require_complete_literal_evidence(
+            self.seed.literal_occurrences(literal), literal
+        ))
+        rows.append(occurrence(
+            literal, file="core/pipeline/streaming/apple_live_session.rs",
+            line=99_999, enclosing_symbol="unowned_trial_transport",
+        ))
+        mutant = StubVerifier(
+            self.repo, literal_responses={literal: literal_payload(literal, *rows)}
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            mutant, [contract]
+        )
+        self.assertTrue(any("competing or missing owners" in row for row in failures))
+
+    def test_stop_paste_requires_both_identity_checks_and_optional_epoch(self):
+        for label, old, new in (
+            ("before_check_removed", "let before = check_target();", ""),
+            ("refusal_borrows_clipboard", "return Ok((receipt, None));",
+             "return Ok((receipt, Some(epoch)));"),
+            ("second_check_removed", "let target = check_target();", ""),
+            ("second_refusal_removed", "return Ok((receipt, Some(epoch)));", ""),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "write_stop_paste", "app/os/clipboard.rs", old, new
+                ))
+        self.assertTrue(self.run_mutations(
+            "write_stop_paste", "app/os/clipboard.rs",
+            [("let epoch = write(text)?;", ""),
+             ("let before = check_target();",
+              "let epoch = write(text)?; let before = check_target();")],
+        ), "clipboard ownership must be checked before the write")
+
+    def test_stop_paste_retains_immediate_recovery_delayed_restore_and_mode(self):
+        for label, old, new in (
+            ("error_restore_removed",
+             "schedule_clipboard_restore(snapshot, epoch, Duration::ZERO);", ""),
+            ("success_restore_removed",
+             "schedule_clipboard_restore(snapshot, epoch, delay);", ""),
+            ("mode_ignored", "|| target.check_current(mode)",
+             "|| target.check_current(PasteMode::Comfort)"),
+            ("deferred_restore_delayed", "} else {\n            Duration::ZERO\n        };",
+             "} else {\n            get_restore_delay()\n        };"),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "paste_to_stop_target", "app/os/clipboard.rs", old, new
+                ))
+
+    def test_stop_target_keeps_safe_canvas_and_input_capability_checks(self):
+        for label, old, new in (
+            ("canvas_downgrade_removed", "PasteMode::Safe", "PasteMode::Comfort"),
+            ("input_capability_bypassed",
+             "check.with_input_capability(mode, self.field, current.field)", "check"),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(
+                    "check_current", "app/os/clipboard.rs", old, new
+                ))
+
+    def test_input_capability_helper_cannot_ignore_fields_or_erase_the_refusal(self):
+        symbol, file = "with_input_capability", "app/os/clipboard.rs"
+        row = next(
+            row for row in self.seed.body(symbol, file)["bodies"]
+            if row["symbol"] == symbol
+        )
+        source = row["source"]
+        noop = source[:source.index("{") + 1] + "\nself\n}"
+        self.assertTrue(self.run_mutated(symbol, file, source, noop))
+        tail = source.rfind("self")
+        reset = source[:tail] + "self.changed = false;\n" + source[tail:]
+        self.assertTrue(self.run_mutated(symbol, file, source, reset))
+        for old in (
+            "stopped == Secure", "current == Secure",
+            "stopped != Text", "current != Text",
+            "mode != PasteMode::Comfort",
+        ):
+            with self.subTest(old=old):
+                self.assertTrue(self.run_mutated(symbol, file, old, "false"))
+
+    def test_insert_requires_actual_facts_and_proposals_keep_derived_publication(self):
+        for label, symbol, file, old, new in (
+            ("target_fact_bypassed", "overlay_insert_route",
+             "app/controller/delivery_route.rs", "facts.paste_target", "fake_target"),
+            ("payload_fact_bypassed", "overlay_insert_route",
+             "app/controller/delivery_route.rs", "facts.executable_payload", "true"),
+            ("paste_gate_ignored", "overlay_insert_route",
+             "app/controller/delivery_route.rs",
+             "gate.route == DeliveryRoute::ClipboardPaste", "true"),
+            ("derived_publication_removed", "on_event", "app/presentation/emitter.rs",
+             "bus.record_derived_projection(&projection);", ""),
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(self.run_mutated(symbol, file, old, new))
 
 
 class CaptureOrderingProofTests(unittest.TestCase):

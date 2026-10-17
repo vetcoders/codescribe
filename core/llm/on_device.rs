@@ -94,6 +94,139 @@ pub const FORMAT_ON_DEVICE_ENV: &str = "CODESCRIBE_FORMAT_ON_DEVICE";
 mod tests {
     use super::*;
 
+    struct RestoreFormatter(Option<Arc<dyn OnDeviceFormatter>>);
+
+    impl Drop for RestoreFormatter {
+        fn drop(&mut self) {
+            *shared_formatter().write().unwrap() = self.0.take();
+        }
+    }
+
+    async fn prompt_authority_case(
+        raw: &str,
+        answer: Result<String, OnDeviceFormatError>,
+        expected_status: crate::llm::ai_formatting::AiFormatStatus,
+        expected_text: &str,
+    ) {
+        use crate::config::{CapturedRuntimeInputs, Config};
+        use crate::llm::ai_formatting::format_text_with_status_for_policy;
+        use std::sync::Mutex;
+
+        type Calls = Arc<Mutex<Vec<(String, String)>>>;
+        struct Host {
+            answer: Result<String, OnDeviceFormatError>,
+            calls: Calls,
+        }
+        #[async_trait::async_trait]
+        impl OnDeviceFormatter for Host {
+            async fn format(
+                &self,
+                instructions: &str,
+                message: &str,
+            ) -> Result<String, OnDeviceFormatError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((instructions.into(), message.into()));
+                self.answer.clone()
+            }
+        }
+        let _restore = RestoreFormatter(shared_formatter().write().unwrap().take());
+        let calls: Calls = Arc::default();
+        register_on_device_formatter(Arc::new(Host {
+            answer,
+            calls: calls.clone(),
+        }));
+        let root = tempfile::tempdir().unwrap();
+        for policy in ["correction", "smart"] {
+            let mut input = CapturedRuntimeInputs::defaults_at(root.path().into(), 0);
+            input.user_settings.llm_formatting_provider =
+                Some("custom:unconfigured-formatter".into());
+            input.user_settings.formatting_level = Some(policy.into());
+            input.user_settings.format_on_device = Some(true);
+            input.values.format_on_device = true;
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            assert!(!snapshot.llm_lanes().formatting().available());
+            let prompt = snapshot
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content()
+                .to_string();
+            let result = format_text_with_status_for_policy(raw, Some("pl"), &snapshot, None).await;
+            assert_eq!(result.status, expected_status, "{policy}");
+            assert_eq!(result.text, expected_text, "{policy}");
+            let actual = calls.lock().unwrap().last().unwrap().clone();
+            assert_eq!(actual, (prompt, format!("[Language: pl]\n\n{raw}")));
+        }
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_preserves_provider_input_and_accepts_lexical_edits() {
+        prompt_authority_case(
+            "Iwo Iwo Iwo plan był dobry i naprawdę ważny",
+            Ok("Dobry plan był ważny.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "Dobry plan był ważny.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_publishes_paragraph_only_changes() {
+        prompt_authority_case(
+            "To jest pierwsze zdanie. To jest drugie zdanie.",
+            Ok("To jest pierwsze zdanie.\n\nTo jest drugie zdanie.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "To jest pierwsze zdanie.\n\nTo jest drugie zdanie.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_does_not_censor_quoted_refusal_words() {
+        prompt_authority_case(
+            "Please quote the phrase I cannot help in this sentence",
+            Ok("The phrase is: I cannot help.".into()),
+            crate::llm::ai_formatting::AiFormatStatus::Applied,
+            "The phrase is: I cannot help.",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_exact_echo_is_noop() {
+        let raw = "Iwo Iwo Iwo plan był dobry i naprawdę ważny";
+        prompt_authority_case(
+            raw,
+            Ok(raw.into()),
+            crate::llm::ai_formatting::AiFormatStatus::AiNoop,
+            raw,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_authority_actual_provider_error_keeps_original_repetitions() {
+        let raw = "Iwo Iwo Iwo plan był dobry i naprawdę ważny";
+        prompt_authority_case(
+            raw,
+            Err(OnDeviceFormatError::Unavailable(
+                "synthetic host failure".into(),
+            )),
+            crate::llm::ai_formatting::AiFormatStatus::Failed,
+            raw,
+        )
+        .await;
+    }
+
     struct Fixed(&'static str);
 
     #[async_trait::async_trait]
@@ -108,6 +241,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn a_registered_formatter_is_shared_and_replaceable() {
         register_on_device_formatter(Arc::new(Fixed("first")));
         let first = on_device_formatter().expect("registered");
@@ -116,5 +250,82 @@ mod tests {
         register_on_device_formatter(Arc::new(Fixed("second")));
         let second = on_device_formatter().expect("still registered");
         assert_eq!(second.format("i", "u").await.unwrap(), "second");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn apple_formats_text_without_cloud_audio_or_seal_and_off_refuses_missing_cloud() {
+        use crate::config::{CapturedRuntimeInputs, Config};
+        use crate::llm::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Host(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl OnDeviceFormatter for Host {
+            async fn format(
+                &self,
+                instructions: &str,
+                user_message: &str,
+            ) -> Result<String, OnDeviceFormatError> {
+                assert!(!instructions.is_empty());
+                assert!(user_message.contains("please preserve every word in this sentence"));
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("Please preserve every word in this sentence.".into())
+            }
+        }
+        struct Restore(Option<Arc<dyn OnDeviceFormatter>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                *shared_formatter().write().unwrap() = self.0.take();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _restore = Restore(shared_formatter().write().unwrap().take());
+        let calls = Arc::new(AtomicUsize::new(0));
+        register_on_device_formatter(Arc::new(Host(calls.clone())));
+        // The routing contract consumes an immutable captured snapshot. Avoid
+        // a process-global settings/env read racing other loader fixtures.
+        let mut input = CapturedRuntimeInputs::defaults_at(root.path().to_path_buf(), 0);
+        input.user_settings.llm_formatting_provider = Some("custom:unconfigured-formatter".into());
+        input.user_settings.llm_assistive_provider = Some("custom:unconfigured-agent".into());
+        let raw = "please preserve every word in this sentence";
+        for policy in ["correction", "smart"] {
+            input.user_settings.formatting_level = Some(policy.into());
+            input.user_settings.format_on_device = Some(true);
+            input.values.format_on_device = true;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            // Credential availability can refresh from other test fixtures;
+            // this deliberately missing provider makes cloud requests refuse
+            // regardless of any key present in the process.
+            assert!(!snapshot.llm_lanes().formatting().available());
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .request_unavailable_reason()
+                    .is_some()
+            );
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .formatting()
+                    .credential()
+                    .api_key()
+                    .is_none()
+            );
+            assert!(
+                crate::llm::ai_formatting::text_formatting_unavailable_reason(&snapshot).is_none()
+            );
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Applied);
+            assert_eq!(output.text, "Please preserve every word in this sentence.");
+            input.user_settings.format_on_device = Some(false);
+            input.values.format_on_device = false;
+            let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+            let output = format_text_with_status_for_policy(raw, Some("en"), &snapshot, None).await;
+            assert_eq!(output.status, AiFormatStatus::Failed);
+            assert!(output.text.to_lowercase().contains(raw));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

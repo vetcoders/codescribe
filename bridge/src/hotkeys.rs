@@ -10,13 +10,15 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use codescribe::controller::{
-    AgentArchiveRequest, CaptureStopOutcome, HotkeyAction, HotkeyInput, HotkeyType,
-    RecordingController, State, admission,
+    AgentArchiveRequest, CaptureStopOutcome, ChannelOpenRefusal, HotkeyAction, HotkeyInput,
+    HotkeyType, RecordingController, State, admission,
 };
 use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
-use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
+use codescribe::os::shortcut_registry::{
+    detect_hotkey_conflicts, fn_tap_intercept_note, unreachable_binding_message,
+};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe::os::{clipboard, notifications};
 use codescribe::presentation::transcript_bus::{self, DocumentHistoryEntry};
@@ -51,6 +53,90 @@ impl From<DocumentHistoryEntry> for CsDocumentHistoryEntry {
             rendered_text: entry.rendered_text,
             provenance: entry.provenance,
             emitted_at: entry.emitted_at,
+        }
+    }
+}
+
+/// One accepted operation of the take: the base transcript, a format, a
+/// retranscription or a committed edit. Navigation never adds a version.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentVersion {
+    /// Position in the linear history; Undo and Redo move between positions.
+    pub step: u64,
+    /// `raw`, `light-plus`, `formatter`, `retranscribe` or `user-edit`.
+    pub provenance: String,
+    /// Formatter level for a formatted version.
+    pub detail: Option<String>,
+    /// Bytes this version shows and delivers.
+    pub rendered_text: String,
+    pub emitted_at: String,
+    pub receipt_id: String,
+}
+
+/// The take's linear history: every accepted version, oldest first, and the
+/// selected one. `source_revision` is the CAS a navigation must name.
+/// Why a take's versions are no longer saved to its archived transcript.
+/// A code only: Swift owns the sentence (LOCALIZATION_LEDGER.md §4); the
+/// error chain behind it is in the app log.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchiveRefusal {
+    ArchiveUnreadable,
+    ArchiveChangedOutside,
+    ArchiveHasForeignHistory,
+    StepNotAdmitted,
+    VersionNotArchived,
+    VersionNotSelected,
+    MirrorFailed,
+}
+
+impl From<codescribe::controller::ArchiveRefusal> for CsArchiveRefusal {
+    fn from(value: codescribe::controller::ArchiveRefusal) -> Self {
+        use codescribe::controller::ArchiveRefusal as R;
+        match value {
+            R::ArchiveUnreadable => Self::ArchiveUnreadable,
+            R::ArchiveChangedOutside => Self::ArchiveChangedOutside,
+            R::ArchiveHasForeignHistory => Self::ArchiveHasForeignHistory,
+            R::StepNotAdmitted => Self::StepNotAdmitted,
+            R::VersionNotArchived => Self::VersionNotArchived,
+            R::VersionNotSelected => Self::VersionNotSelected,
+            R::MirrorFailed => Self::MirrorFailed,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentVersions {
+    pub source_revision: u64,
+    pub cursor: u64,
+    pub versions: Vec<CsDocumentVersion>,
+    /// Why these versions are no longer saved to the take's archived
+    /// transcript. `None` while every accepted step is durable.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<CsArchiveRefusal>,
+}
+
+impl CsDocumentVersions {
+    fn from_timeline(
+        source_revision: u64,
+        timeline: &codescribe::presentation::emitter::DocumentTimeline,
+    ) -> Self {
+        Self {
+            source_revision,
+            archive_refusal: None,
+            cursor: timeline.cursor() as u64,
+            versions: timeline
+                .steps()
+                .iter()
+                .enumerate()
+                .map(|(step, version)| CsDocumentVersion {
+                    step: step as u64,
+                    provenance: version.provenance.clone(),
+                    detail: version.detail.clone(),
+                    rendered_text: version.rendered_text.clone(),
+                    emitted_at: version.emitted_at.clone(),
+                    receipt_id: version.receipt_id.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -122,7 +208,7 @@ fn event_targets_agent_ui(event: &HotkeyEvent) -> bool {
 }
 
 /// Process-global slot for the lazily-created `RecordingController`.
-fn shared_controller() -> SharedController {
+pub(crate) fn shared_controller() -> SharedController {
     /// Once-initialized shared controller store for this process.
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
     Arc::clone(CONTROLLER.get_or_init(|| Arc::new(Mutex::new(None))))
@@ -194,9 +280,34 @@ fn route_hotkey_event<F, G>(
 /// happened — a silent no-op on an explicit user gesture reads as a broken
 /// hotkey, so nothing-to-insert and expiry both surface a notification.
 fn deliver_deferred_insert_and_notify() {
-    match clipboard::deliver_deferred_insert() {
+    // The hotkey tap holds no controller; the runtime snapshot carries the same
+    // clipboard restore settings the controller passes on its own paste path.
+    let (restore_clipboard, restore_clipboard_delay_ms) =
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(settings) => (
+                settings.values().restore_clipboard,
+                settings.values().restore_clipboard_delay_ms,
+            ),
+            Err(error) => {
+                let defaults = Config::default();
+                tracing::warn!(
+                    %error,
+                    restore_clipboard = defaults.restore_clipboard,
+                    "Runtime settings snapshot refused; deferred insert uses the default clipboard restore"
+                );
+                (
+                    defaults.restore_clipboard,
+                    defaults.restore_clipboard_delay_ms,
+                )
+            }
+        };
+    match clipboard::deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms) {
         Ok(clipboard::DeferredInsertDelivery::Delivered) => {
-            tracing::info!("Deferred transcript delivered and clipboard restore scheduled");
+            tracing::info!(
+                restore_clipboard,
+                restore_clipboard_delay_ms,
+                "Deferred transcript delivered"
+            );
         }
         Ok(
             clipboard::DeferredInsertDelivery::NothingToInsert
@@ -250,7 +361,9 @@ fn spawn_max_approval_forwarder(controller: &RecordingController, handle: Handle
 
 /// Snapshot the shared controller WITHOUT creating one. Query surfaces use this
 /// so a mere status read never triggers controller construction.
-fn current_controller(controller_store: &SharedController) -> Option<Arc<RecordingController>> {
+pub(crate) fn current_controller(
+    controller_store: &SharedController,
+) -> Option<Arc<RecordingController>> {
     controller_store
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -785,6 +898,13 @@ pub struct CsMaxConsultationSnapshot {
     pub retained_inputs: Vec<CsMaxRetainedInput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CsMaxPreparation {
+    Disabled,
+    StoredChain,
+    ReplayOnly,
+}
+
 impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot>
     for CsMaxConsultationSnapshot
 {
@@ -887,9 +1007,7 @@ impl CodescribeHotkeys {
                     let dispatch =
                         dispatch_recording_with_capture_gate(recording_event, controller).await;
                     if let Err(error) = dispatch {
-                        tray_status::update_tray_status(TrayStatus::Error);
-                        notifications::notify("Codescribe", &error.to_string());
-                        tracing::error!(%error, "Hotkey event dispatch failed");
+                        report_hotkey_dispatch_error(&error, notifications::notify);
                     }
                 }
             });
@@ -965,22 +1083,46 @@ impl CodescribeHotkeys {
     /// dictation does not sit in the overlay's `starting` state for seconds.
     pub async fn prewarm_recording(&self) -> Result<(), CsError> {
         application_runtime::run(async move {
-            let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-            // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
-            // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
-            // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
-            // so the first user dictation pays neither model-load nor Metal
-            // kernel-compilation latency. Idempotent; safe to race the controller's own
-            // background prewarm.
-            tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
-                .await
-                .map_err(|error| CsError::Recording {
-                    msg: format!("STT prewarm task failed: {error}"),
-                })?
-                .map_err(|error| CsError::Recording {
-                    msg: format!("STT prewarm failed: {error}"),
-                })?;
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            let runtime_settings = controller.runtime_settings_arc().await;
+            // Use the controller's frozen settings for both the primary and
+            // any selected in-process live refiner. No second config load.
+            tokio::task::spawn_blocking(move || {
+                codescribe::stt::prewarm_active_engine(&runtime_settings)
+            })
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: format!("STT prewarm task failed: {error}"),
+            })?
+            .map_err(|error| CsError::Recording {
+                msg: format!("STT prewarm failed: {error}"),
+            })?;
             Ok(())
+        })
+        .await?
+    }
+
+    /// Prepare the retained Max owner and send a tool-free startup request.
+    /// Recording and historic tools never execute; unresolved effects refuse.
+    pub async fn prepare_max_consultation(&self) -> Result<CsMaxPreparation, CsError> {
+        application_runtime::run(async move {
+            let controller = ensure_controller(&shared_controller(), Handle::current());
+            controller
+                .prepare_max_consultation()
+                .await
+                .map(|ready| match ready {
+                    None => CsMaxPreparation::Disabled,
+                    Some(
+                        codescribe_core::agent::consultation::ConsultationPreparation::StoredChain,
+                    ) => CsMaxPreparation::StoredChain,
+                    Some(
+                        codescribe_core::agent::consultation::ConsultationPreparation::ReplayOnly,
+                    ) => CsMaxPreparation::ReplayOnly,
+                })
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Max preparation failed: {error:#}"),
+                })
         })
         .await?
     }
@@ -1150,7 +1292,7 @@ impl CodescribeHotkeys {
             controller
                 .apply_user_revision_from_overlay(session_id, source_revision, rendered_text)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1178,44 +1320,51 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Restore a selected journal version as a fresh ledger UserEdit revision.
-    /// The historical bytes are selected in Rust, then submitted through the
-    /// existing session/revision compare-and-swap corridor.
-    pub async fn restore_document_revision(
+    /// The take's accepted versions and the selected one, read from the
+    /// reducer that owns them. Swift keeps no copy it could restore from.
+    pub async fn document_versions(
+        &self,
+        session_id: String,
+    ) -> Result<CsDocumentVersions, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return CsDocumentVersions {
+                    source_revision: 0,
+                    cursor: 0,
+                    versions: Vec::new(),
+                    archive_refusal: None,
+                };
+            };
+            let (revision, timeline) = controller.document_versions(&session_id).await;
+            CsDocumentVersions {
+                archive_refusal: controller.live_archive_refusal(&session_id).map(Into::into),
+                ..CsDocumentVersions::from_timeline(revision, &timeline)
+            }
+        })
+        .await
+    }
+
+    /// Undo, Redo or a version pick: re-select accepted version `step` under
+    /// the session/revision CAS. Saved bytes only; Whisper and the formatter
+    /// do not run. Swift repaints from the projection callback alone.
+    pub async fn navigate_document_version(
         &self,
         session_id: String,
         source_revision: u64,
-        restore_revision: u64,
+        step: u64,
     ) -> Result<CsUserRevisionResult, CsError> {
+        let step = usize::try_from(step).map_err(|_| CsError::Recording {
+            msg: "Selected transcript version is out of range".to_string(),
+        })?;
         application_runtime::run(async move {
-            let history_session_id = session_id.clone();
-            let selected = tokio::task::spawn_blocking(move || {
-                transcript_bus::document_history(&history_session_id)
-            })
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })?
-            .map_err(|error| CsError::Recording {
-                msg: format!("Transcript history unavailable: {error}"),
-            })?
-            .into_iter()
-            .find(|entry| entry.revision == restore_revision)
-            .ok_or_else(|| CsError::Recording {
-                msg: "Selected transcript revision is not in the Bus history".to_string(),
-            })?;
             let controller =
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
-                    msg: "no recording controller for transcript restoration".to_string(),
+                    msg: "no recording controller for transcript navigation".to_string(),
                 })?;
             controller
-                .apply_user_revision_from_overlay(
-                    session_id,
-                    source_revision,
-                    selected.rendered_text,
-                )
+                .navigate_document_from_overlay(session_id, source_revision, step)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
@@ -1241,7 +1390,7 @@ impl CodescribeHotkeys {
                     rendered_text,
                 )
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| {
                     tracing::warn!(refusal = %error, "retranscription revision refused");
                     CsError::Recording {
@@ -1288,10 +1437,59 @@ impl CodescribeHotkeys {
             controller
                 .apply_formatter_revision_from_overlay(session_id, source_revision, level)
                 .await
-                .map(CsUserRevisionResult::from)
+                .map(|commit| CsUserRevisionResult::acknowledged(commit, &controller))
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })
+        })
+        .await?
+    }
+
+    /// Format one revision of a transcript reopened from history with the
+    /// production formatter and an optional one-shot level. The source text is
+    /// read in Rust from the archive's revision chain; an applied result is
+    /// committed to that archive only, never to the reducer, the Bus or the
+    /// latest take.
+    pub async fn format_archived_transcript(
+        &self,
+        archive_path: String,
+        source_revision: u64,
+        level: Option<String>,
+    ) -> Result<CsArchivedFormat, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for archived transcript formatting".to_string(),
+                })?;
+            let receipt = controller
+                .format_archived_transcript(archive_path.clone(), source_revision, level)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("{error:#}"),
+                })?;
+            let document = match receipt.revision {
+                Some(_) => Some(
+                    tokio::task::spawn_blocking(move || {
+                        crate::threads::CsArchivedDocument::read(archive_path)
+                    })
+                    .await
+                    .map_err(|error| CsError::Recording {
+                        msg: error.to_string(),
+                    })??,
+                ),
+                None => None,
+            };
+            Ok(CsArchivedFormat {
+                outcome: (&receipt.outcome).into(),
+                document,
+            })
         })
         .await?
     }
@@ -1391,6 +1589,24 @@ impl CodescribeHotkeys {
         }
     }
 
+    /// Per-process restart handshakes live beside the canonical runtime lease.
+    pub fn idle_restart_directory(&self) -> String {
+        codescribe_core::config::install_interlock_path()
+            .with_file_name("restart-if-idle")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Atomically reject busy capture or close future admission for this process.
+    /// This never constructs a new controller and never stops an active take.
+    pub async fn reserve_idle_restart(&self) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            current_controller(&shared_controller())
+                .is_some_and(|controller| controller.reserve_idle_restart())
+        })
+        .await
+    }
+
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
         match application_runtime::run(async move {
@@ -1414,13 +1630,12 @@ impl CodescribeHotkeys {
         }
     }
 
-    /// True when the configured formatting provider can handle a user-triggered
-    /// overlay format action.
+    /// True when a user-triggered overlay format action has an engine: Max
+    /// needs the Agent lane; Smart/Corrections need Apple on-device (when
+    /// selected) or the configured formatting lane.
     pub fn is_formatting_available(&self) -> bool {
         Config::load_runtime_snapshot().is_ok_and(|runtime_settings| {
-            codescribe::ai_formatting::is_formatting_available(
-                runtime_settings.llm_lanes().formatting(),
-            )
+            codescribe::agent::formatting_unavailable_reason(&runtime_settings).is_none()
         })
     }
 
@@ -1510,6 +1725,22 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Send a transcript reopened from history to Agent on an explicit click.
+    /// The live take's pending assistive context is never taken by this send.
+    pub async fn send_archived_transcript(&self, text: String) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .deliver_archived_transcript_to_agent(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
@@ -1553,6 +1784,11 @@ pub struct CsChannelRosterState {
     pub autoseal_deadline_unix_ms: Option<i64>,
     /// `None` = the snapshot made no liveness claim for this row.
     pub follower_alive: Option<bool>,
+    /// Milliseconds since the Unix epoch of the live follower's oldest
+    /// unacknowledged delivery; `None` = no backlog or no follower. The
+    /// overlay's "alive but not reading" layer: a process heartbeat proves
+    /// the reader, not the conversation behind it.
+    pub unread_since_unix_ms: Option<i64>,
 }
 
 /// Frozen owner and verified helper paths supplied by the app's archive action.
@@ -1565,6 +1801,9 @@ pub struct CsAgentArchiveRequest {
     pub bus: String,
     pub executable: String,
     pub bridge_home: String,
+    /// Stop the owner's own live follower first (drawer click on an agent
+    /// that is alive but no longer reads); off keeps the live-reader refusal.
+    pub release_reader: bool,
 }
 
 #[uniffi::export]
@@ -1589,6 +1828,7 @@ impl CodescribeHotkeys {
                     bus: request.bus.into(),
                     executable: request.executable.into(),
                     bridge_home: request.bridge_home.into(),
+                    release_reader: request.release_reader,
                 })
                 .await
                 .map_err(|error| CsError::Recording {
@@ -1643,6 +1883,12 @@ impl CodescribeHotkeys {
                             .map(|since| since.as_millis() as i64)
                     }),
                     follower_alive: state.follower_alive,
+                    unread_since_unix_ms: state.unread_since.and_then(|since| {
+                        since
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|epoch| epoch.as_millis() as i64)
+                    }),
                 })
                 .collect()
         })
@@ -1656,7 +1902,7 @@ impl CodescribeHotkeys {
 /// clipboard copy.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsPasteOutcome {
-    Pasted,
+    PasteRequested,
     CopiedToClipboard,
     AccessibilityPermissionNeeded,
     DeferredInsertArmed,
@@ -1667,7 +1913,7 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
     /// Map core overlay paste delivery into the UniFFI `CsPasteOutcome` enum.
     fn from(value: codescribe::controller::OverlayPasteDelivery) -> Self {
         match value {
-            codescribe::controller::OverlayPasteDelivery::Pasted => Self::Pasted,
+            codescribe::controller::OverlayPasteDelivery::PasteRequested => Self::PasteRequested,
             codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
                 Self::CopiedToClipboard
             }
@@ -1703,6 +1949,27 @@ pub struct CsUserRevisionResult {
     pub revision: u64,
     pub rendered_text: String,
     pub provenance_receipt: String,
+    /// The operation was accepted on the live take, but its versions are no
+    /// longer saved to the take's archived transcript: why. `None` while the
+    /// archive holds every accepted step.
+    #[uniffi(default = None)]
+    pub archive_refusal: Option<CsArchiveRefusal>,
+}
+
+impl CsUserRevisionResult {
+    /// The acknowledgement, with the durable-history refusal when there is
+    /// one, so an accepted operation never reads as saved when it is not.
+    fn acknowledged(
+        value: codescribe::presentation::emitter::UserRevisionCommit,
+        controller: &RecordingController,
+    ) -> Self {
+        Self {
+            archive_refusal: controller
+                .live_archive_refusal(&value.session_id)
+                .map(Into::into),
+            ..Self::from(value)
+        }
+    }
 }
 
 impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevisionResult {
@@ -1713,6 +1980,37 @@ impl From<codescribe::presentation::emitter::UserRevisionCommit> for CsUserRevis
             revision: value.revision,
             rendered_text: value.rendered_text,
             provenance_receipt: value.provenance_receipt,
+            archive_refusal: None,
+        }
+    }
+}
+
+/// How the production formatter settled a reopened archive transcript.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsArchivedFormatOutcome {
+    Applied,
+    Failed,
+    Unavailable,
+    Unchanged,
+}
+
+/// Formatter outcome for one archived transcript. `document` is the archive
+/// as its history owner holds it after an applied format committed a new
+/// revision; it is `None` for every other outcome, which changed nothing.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsArchivedFormat {
+    pub outcome: CsArchivedFormatOutcome,
+    pub document: Option<crate::threads::CsArchivedDocument>,
+}
+
+impl From<&codescribe::controller::ArchivedFormatOutcome> for CsArchivedFormatOutcome {
+    fn from(value: &codescribe::controller::ArchivedFormatOutcome) -> Self {
+        use codescribe::controller::ArchivedFormatOutcome;
+        match value {
+            ArchivedFormatOutcome::Applied(_) => Self::Applied,
+            ArchivedFormatOutcome::Failed => Self::Failed,
+            ArchivedFormatOutcome::Unavailable => Self::Unavailable,
+            ArchivedFormatOutcome::Unchanged => Self::Unchanged,
         }
     }
 }
@@ -1742,6 +2040,25 @@ async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
         })
 }
 
+/// Present a dispatch failure through the existing tray and notification paths.
+/// The notification callback keeps this boundary testable without host alerts.
+fn report_hotkey_dispatch_error(error: &anyhow::Error, notify: impl FnOnce(&str, &str)) {
+    if matches!(
+        error.downcast_ref::<ChannelOpenRefusal>(),
+        Some(ChannelOpenRefusal::DigitUnbound { .. } | ChannelOpenRefusal::BindingMissing { .. })
+    ) {
+        // A vacant slot is a refused user action, not a broken runtime; the
+        // controller already answered it with the refusal sound and a pointer
+        // flash. Leave the current tray state (including any genuine earlier
+        // error) intact.
+        tracing::warn!(%error, "Agent channel shortcut has no connected agent");
+    } else {
+        tray_status::update_tray_status(TrayStatus::Error);
+        tracing::error!(%error, "Hotkey event dispatch failed");
+    }
+    notify("Codescribe", &error.to_string());
+}
+
 /// Wrap a recording dispatch in the one-controller capture lifecycle: claim on
 /// a session-starting event, dispatch, compensate an orphaned "preparing", and
 /// release ownership once the controller is back at `Idle`.
@@ -1768,7 +2085,10 @@ async fn dispatch_recording_with_capture_gate(
     optimistically_show_overlay(&event).await;
     let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
     compensate_orphaned_preparing(&controller).await;
-    if controller.current_state().await == State::Idle {
+    let state_after = controller.current_state().await;
+    if state_after == State::Idle
+        || (state_after == State::Busy && controller.stopped_capture_feed_closed())
+    {
         let _ = CAPTURE_OWNER.compare_exchange(
             CAPTURE_OWNER_CONTROLLER,
             CAPTURE_OWNER_NONE,
@@ -1847,7 +2167,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::HoldUpdate { mode } => {
             let input = HotkeyInput {
@@ -1858,7 +2178,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::AttachSelection => {
             controller.attach_hold_selection().await?;
@@ -1872,7 +2192,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: true,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::ToggleRaw => {
             let input = HotkeyInput {
@@ -1883,7 +2203,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: true,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::ToggleAssistive => {
             let input = HotkeyInput {
@@ -1894,7 +2214,7 @@ async fn dispatch_recording_hotkey_event(
                 force_raw: false,
                 force_ai: false,
             };
-            controller.handle_hotkey_event(input).await?;
+            controller.admit_hotkey_event(input).await?;
         }
         HotkeyEvent::AgentChannel { digit } => {
             controller.toggle_agent_channel(digit).await?;
@@ -2060,6 +2380,64 @@ mod application_shutdown_tests {
 mod dispatch_tests {
     use super::*;
     use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
+
+    #[test]
+    #[serial_test::serial]
+    fn empty_channel_warns_once_and_preserves_existing_tray_status() {
+        for refusal in [
+            ChannelOpenRefusal::DigitUnbound { digit: 2 },
+            ChannelOpenRefusal::BindingMissing {
+                path: "fixture.json".into(),
+            },
+        ] {
+            for status in [
+                TrayStatus::Idle,
+                TrayStatus::Listening,
+                TrayStatus::Thinking,
+                TrayStatus::Error,
+            ] {
+                tray_status::update_tray_status(status);
+                let before = tray_status::current_tray_status_snapshot();
+                let error =
+                    anyhow::Error::new(refusal.clone()).context("dispatching agent shortcut");
+                let mut notices = Vec::new();
+                report_hotkey_dispatch_error(&error, |title, body| {
+                    notices.push((title.to_owned(), body.to_owned()));
+                });
+                assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+                assert_eq!(
+                    tray_status::current_tray_status_snapshot(),
+                    before,
+                    "{refusal:?}"
+                );
+            }
+        }
+        tray_status::update_tray_status(TrayStatus::Idle);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dispatch_failures_still_publish_persistent_error() {
+        for error in [
+            anyhow::Error::new(ChannelOpenRefusal::BindingMalformed {
+                path: "fixture.json".into(),
+                detail: "invalid JSON".into(),
+            }),
+            anyhow::Error::new(ChannelOpenRefusal::InvalidDigit),
+            anyhow::anyhow!("recorder unavailable"),
+            // Identical text without the refusal type must not hide a real failure.
+            anyhow::anyhow!(ChannelOpenRefusal::DigitUnbound { digit: 2 }.to_string()),
+        ] {
+            tray_status::update_tray_status(TrayStatus::Idle);
+            let mut notices = Vec::new();
+            report_hotkey_dispatch_error(&error, |title, body| {
+                notices.push((title.to_owned(), body.to_owned()));
+            });
+            assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+            assert_eq!(tray_status::current_tray_status(), TrayStatus::Error);
+        }
+        tray_status::update_tray_status(TrayStatus::Idle);
+    }
 
     /// Detector already owns blocked-double-tap tray truth; bridge stays silent.
     #[tokio::test]
@@ -2376,6 +2754,21 @@ const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::DoubleRightOption,
 ];
 
+/// Pure picker projection of the detector's routing table. No settings or
+/// runtime handle is needed to enumerate gestures reachable for one mode.
+#[uniffi::export]
+pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
+    ALL_SHORTCUT_BINDINGS
+        .iter()
+        .copied()
+        .filter(|&binding| hotkeys::mode_binding_reachable(mode.into(), binding))
+        .map(|binding| CsBindingOption {
+            binding: binding.into(),
+            label: binding.label().to_string(),
+        })
+        .collect()
+}
+
 /// Pair a mode with its binding and attach the display copy sourced from the
 /// core, so the Settings UI never re-invents labels that live in
 /// `docs/HOTKEYS_CONTRACT.md`.
@@ -2474,9 +2867,7 @@ impl CodescribeHotkeys {
             let report = controller
                 .capture_energy_calibration(duration)
                 .await
-                .map_err(|error| CsError::Recording {
-                    msg: error.to_string(),
-                })?;
+                .map_err(|error| CsError::from_calibration(&error))?;
             Ok(CsEnergyCalibrationReport {
                 device_name: report.device_name,
                 sample_rate: report.sample_rate,
@@ -2766,9 +3157,8 @@ impl CodescribeHotkeys {
             .collect()
     }
 
-    /// The closed set of gestures a mode can bind to, with display labels. Drives
-    /// the Settings picker (no free-form key capture — the binding space is a
-    /// fixed enum, see `HOTKEYS_CONTRACT`).
+    /// Label catalog for draft edits and conflict presentation. Picker choices
+    /// come from `available_bindings_for_mode`, never this unfiltered catalog.
     pub fn available_bindings(&self) -> Vec<CsBindingOption> {
         ALL_SHORTCUT_BINDINGS
             .iter()
@@ -2786,19 +3176,11 @@ impl CodescribeHotkeys {
         mode: CsWorkMode,
         binding: CsShortcutBinding,
     ) -> Result<(), CsError> {
-        if mode == CsWorkMode::Assistive
-            && matches!(
-                binding,
-                CsShortcutBinding::HoldFn
-                    | CsShortcutBinding::HoldCtrl
-                    | CsShortcutBinding::HoldCtrlAlt
-                    | CsShortcutBinding::HoldCtrlShift
-                    | CsShortcutBinding::HoldCtrlCmd
-            )
-        {
+        // The detector owns reachability: a mode/gesture cell it never routes
+        // is refused here too, so no write path persists a dead binding.
+        if let Some(reason) = unreachable_binding_message(mode.into(), binding.into()) {
             return Err(CsError::Config {
-                msg: "Assistive hold uses the dictation hold plus Shift; a second hold binding is released"
-                    .to_string(),
+                msg: reason.to_string(),
             });
         }
         let mut settings = UserSettings::load();
@@ -3016,6 +3398,54 @@ mod mode_binding_tests {
         );
     }
 
+    /// P2-007 (linked: hotkeys-dead-binding-cells): Dictation and Formatting on
+    /// double-tap left Option is a blocking conflict that names the precedence,
+    /// in the same validation the Settings Save button is gated on.
+    #[test]
+    fn validate_blocks_duplicate_left_option_with_formatting_precedence() {
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleRightOption,
+        ));
+        assert!(
+            conflicts.iter().any(|c| c.blocking
+                && c.gesture_label == "Double-tap Left Option"
+                && c.message
+                    == "This gesture only starts Formatting, so Dictation would never start from it."),
+            "duplicate left Option must block with the Formatting precedence, got {conflicts:?}"
+        );
+    }
+
+    /// The Fn-tap note is informational on every machine: whatever the macOS
+    /// registry says, the default profile carries no blocking entry from
+    /// Codescribe's own rules, and a note never blocks.
+    #[test]
+    fn validate_defaults_never_block_on_the_fn_tap_note() {
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::HoldFn,
+            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleRightOption,
+        ));
+        for conflict in conflicts
+            .iter()
+            .filter(|c| c.gesture_label == "Hold Fn/Globe")
+        {
+            if conflict
+                .message
+                .starts_with("Fn/Globe tap is configured by macOS")
+            {
+                assert!(!conflict.blocking, "the Fn-tap note must not block Save");
+            }
+        }
+        assert!(
+            !conflicts
+                .iter()
+                .any(|c| c.blocking && c.message.starts_with("This gesture only starts")),
+            "defaults are routed cells, got {conflicts:?}"
+        );
+    }
+
     /// Persist/read-back cycle against an isolated `CODESCRIBE_DATA_DIR`.
     #[test]
     #[serial]
@@ -3040,6 +3470,58 @@ mod mode_binding_tests {
             .find(|b| b.mode == CsWorkMode::Dictation)
             .expect("dictation binding present");
         assert_eq!(dictation.binding, CsShortcutBinding::HoldCtrlAlt);
+
+        // P2-007 (linked: hotkeys-dead-binding-cells): unrouted cells are
+        // refused by the setter and never reach disk. The audited duplicate
+        // keeps Formatting on double-tap left Option; Dictation is refused and
+        // keeps its persisted hold.
+        let binding_of = |mode: CsWorkMode| {
+            hotkeys
+                .get_mode_bindings()
+                .into_iter()
+                .find(|b| b.mode == mode)
+                .map(|b| b.binding)
+        };
+        let refused = hotkeys
+            .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleLeftOption)
+            .expect_err("dictation never starts from double-tap left Option");
+        assert!(
+            format!("{refused:?}").contains("only starts Formatting"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            binding_of(CsWorkMode::Dictation),
+            Some(CsShortcutBinding::HoldCtrlAlt)
+        );
+        assert_eq!(
+            binding_of(CsWorkMode::Formatting),
+            Some(CsShortcutBinding::DoubleLeftOption)
+        );
+        for (mode, binding) in [
+            (CsWorkMode::Formatting, CsShortcutBinding::HoldCtrl),
+            (CsWorkMode::Assistive, CsShortcutBinding::HoldCtrlCmd),
+            (CsWorkMode::Assistive, CsShortcutBinding::DoubleCtrl),
+        ] {
+            assert!(
+                hotkeys.set_mode_binding(mode, binding).is_err(),
+                "{mode:?} × {binding:?} must be refused"
+            );
+        }
+        assert_eq!(
+            binding_of(CsWorkMode::Formatting),
+            Some(CsShortcutBinding::DoubleLeftOption)
+        );
+        assert_eq!(
+            binding_of(CsWorkMode::Assistive),
+            Some(CsShortcutBinding::DoubleRightOption)
+        );
+        hotkeys
+            .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleCtrl)
+            .expect("dictation double-tap Ctrl is routed");
+        assert_eq!(
+            binding_of(CsWorkMode::Dictation),
+            Some(CsShortcutBinding::DoubleCtrl)
+        );
 
         // Reset restores defaults through the same path.
         hotkeys
@@ -3265,6 +3747,7 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            voice: codescribe::presentation::emitter::CursorVoice::Lagging,
             evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
                 sample_start: 16_000,
                 sample_end: 32_000,

@@ -56,7 +56,9 @@ if publisher is not None and (
     raise SystemExit("canonical publisher must be an ordinary executable artifact")
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
-entrypoints = [helper_source, repo / "scripts" / "cs-bus", repo / "scripts" / "cs-say"]
+entrypoints = [helper_source, *(repo / "scripts" / name for name in (
+    "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-dot-mcp.py",
+    "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (
@@ -66,7 +68,10 @@ if (
     or repo.is_relative_to(destination)
 ):
     raise SystemExit(f"refusing unsafe agent bridge destination: {destination}")
-source_paths = [skill_source, *entrypoints, *skill_source.rglob("*")]
+plugin_source = repo / "plugins"
+if not (plugin_source / ".claude-plugin/marketplace.json").is_file():
+    raise SystemExit("native extension source is incomplete")
+source_paths = [skill_source, *entrypoints, *skill_source.rglob("*"), plugin_source, *plugin_source.rglob("*")]
 source_symlinks = [path for path in source_paths if path.is_symlink()]
 if source_symlinks:
     raise SystemExit(
@@ -90,6 +95,7 @@ shutil.copytree(
     ignore=shutil.ignore_patterns(".DS_Store"),
 )
 (stage / "bin").mkdir(mode=0o755)
+shutil.copytree(plugin_source, stage / "plugins", ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
 for source in entrypoints:
     target = stage / "bin" / source.name
     shutil.copy2(source, target)
@@ -394,7 +400,8 @@ run_app_xcodebuild() {
     LIBRARY_SEARCH_PATHS="\"$TARGET_DIR\"" \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
     MARKETING_VERSION="$STAMP_VERSION" \
-    CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
+    CURRENT_PROJECT_VERSION="$STAMP_VERSION" \
+    CS_BUILD_NUMBER="$STAMP_BUILD_NUM" \
     CS_BUILD_COMMIT="$STAMP_COMMIT" \
     CS_BUILT_AT="$STAMP_BUILT_AT" \
     SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
@@ -509,20 +516,36 @@ if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
 fi
+# Entitlements for the hardened-runtime signing path below. Same default path
+# as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from
+# env if the caller already exported it.
+ENTITLEMENTS_PATH="${CODESCRIBE_ENTITLEMENTS:-$REPO_ROOT/scripts/entitlements.plist}"
 # Resource executables are outside codesign's automatic nested-code paths.
 # Sign the canonical publisher explicitly before the outer resource seal.
-codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+# With a real identity, enable the hardened runtime (notarization requires it
+# on every executable in the bundle); ad-hoc stays plain since ad-hoc +
+# hardened runtime breaks local TCC (Accessibility/Input Monitoring) testing.
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+else
+  codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
-  codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"
 # Publisher signing changes its Mach-O bytes. Seal its refreshed digest
-# with the outer signature without signing that child a second time.
-codesign --force --sign "${SIGN_ID:--}" --identifier "$BUNDLE_ID" "$APP"
+# with the outer signature without signing that child a second time (no
+# --deep here by design: the nested code is already sealed above).
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+else
+  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+fi
 if [ "$INSTALL_LANE" = "1" ]; then
   # The stamped plist must sit inside the seal, not beside it.
   codesign --verify --deep --strict "$APP"

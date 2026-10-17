@@ -10,27 +10,40 @@ import XCTest
 /// while the enforced behavior stays described truthfully.
 @MainActor
 final class CloudPrivacyCopyTests: XCTestCase {
-  /// Every rendered line is non-empty and every block is headed, so a block
-  /// cannot ship as an unlabelled wall of text.
-  func testBlocksAreHeadedAndNonEmpty() {
-    XCTAssertFalse(CloudPrivacyCopy.blocks.isEmpty)
-    for block in CloudPrivacyCopy.blocks {
+  /// Every detail subsection is headed and non-empty, and collapsing the
+  /// details did not drop a safeguard: all four enforced promises still render.
+  func testDetailBlocksAreHeadedAndKeepEverySafeguard() {
+    XCTAssertFalse(CloudPrivacyCopy.detailBlocks.isEmpty)
+    for block in CloudPrivacyCopy.detailBlocks {
       XCTAssertFalse(block.heading.isEmpty, "block \(block.id) needs a heading")
       XCTAssertFalse(block.lines.isEmpty, "block \(block.id) needs at least one line")
       for line in block.lines {
         XCTAssertFalse(line.isEmpty, "block \(block.id) carries an empty line")
       }
     }
+    let rendered = CloudPrivacyCopy.detailBlocks.flatMap(\.lines)
+    for safeguard in [
+      CloudPrivacyCopy.diagnostics, CloudPrivacyCopy.apiKeys,
+      CloudPrivacyCopy.withoutConsent, CloudPrivacyCopy.localPowerInstall,
+    ] {
+      XCTAssertTrue(
+        rendered.contains(safeguard),
+        "hiding the details behind a disclosure must not remove a safeguard")
+    }
+    // Round 14: the details caption is gone — the expanded subsection
+    // headings carry that information now.
+    XCTAssertFalse(CloudPrivacyCopy.configureCloudServices.isEmpty)
   }
 
   /// Cloud audio egress is consent-gated, and the copy says the consent is
-  /// explicit rather than implied by picking a mode.
+  /// explicit rather than implied by picking a mode. The arming condition
+  /// reads on the Audio egress row.
   func testCopyStatesConsentGatesCloudAudioEgress() {
     XCTAssertTrue(
       CloudPrivacyCopy.withoutConsent.localizedCaseInsensitiveContains("without your consent"),
       "the refusal line must name the missing consent as the cause")
     XCTAssertTrue(
-      CloudPrivacyCopy.consentIsNotLiveEgress.localizedCaseInsensitiveContains("cloud mode"),
+      CloudPrivacyCopy.egressAudioDetail.localizedCaseInsensitiveContains("cloud mode"),
       "the egress condition must name the mode that arms it")
   }
 
@@ -46,13 +59,12 @@ final class CloudPrivacyCopyTests: XCTestCase {
       "a saved grant must be separated from live egress in words, not only in layout")
   }
 
-  /// A refusal resolves to Apple on-device plus the dictionary, and the copy
-  /// rules out a local model loaded as a silent substitute.
+  /// A refusal resolves to Apple on-device, and the copy rules out a local
+  /// model loaded as a silent substitute (round 14: one sentence).
   func testRefusalResolvesToAppleOnDeviceWithoutLoadingLocalWeights() {
     let line = CloudPrivacyCopy.withoutConsent
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("Cloud never arms"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("does not use the cloud"))
     XCTAssertTrue(line.localizedCaseInsensitiveContains("Apple on-device"))
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("dictionary"))
     XCTAssertTrue(
       line.localizedCaseInsensitiveContains("no local model is loaded"),
       "the copy must deny the hidden local substitution")
@@ -70,14 +82,15 @@ final class CloudPrivacyCopyTests: XCTestCase {
   /// explicit re-transcription of a finished recording, which does not run
   /// through the mode picker.
   func testEgressNamesBothCloudModeAndExplicitRetranscription() {
-    let audio = CloudPrivacyCopy.egressAudio
+    let audio = CloudPrivacyCopy.egressAudioDetail
     XCTAssertTrue(audio.localizedCaseInsensitiveContains("Cloud mode"))
     XCTAssertTrue(
       audio.localizedCaseInsensitiveContains("re-transcription"),
       "the second audio egress must be named, not folded into Cloud mode")
     XCTAssertTrue(
-      CloudPrivacyCopy.egressText.localizedCaseInsensitiveContains("AI requests"),
+      CloudPrivacyCopy.egressTextDetail.localizedCaseInsensitiveContains("AI requests"),
       "text egress belongs to configured AI providers")
+    XCTAssertNotEqual(CloudPrivacyCopy.egressAudioTitle, CloudPrivacyCopy.egressTextTitle)
   }
 
   /// Telemetry is bounded exactly like the typed core telemetry: identifiers
@@ -86,7 +99,7 @@ final class CloudPrivacyCopyTests: XCTestCase {
     let line = CloudPrivacyCopy.diagnostics
     XCTAssertTrue(line.localizedCaseInsensitiveContains("Never audio"))
     XCTAssertTrue(line.localizedCaseInsensitiveContains("never transcript text"))
-    for field in ["identifiers", "counts", "seconds of audio", "error"] {
+    for field in ["identifiers", "session statistics", "error"] {
       XCTAssertTrue(
         line.localizedCaseInsensitiveContains(field),
         "diagnostics copy must enumerate the recorded field: \(field)")
@@ -98,10 +111,13 @@ final class CloudPrivacyCopyTests: XCTestCase {
   func testKeyCopyNamesTheKeychainAndBoundsTheGatewayPromise() {
     let line = CloudPrivacyCopy.apiKeys
     XCTAssertTrue(line.localizedCaseInsensitiveContains("macOS Keychain"))
-    XCTAssertTrue(line.localizedCaseInsensitiveContains("Libraxis gateway"))
+    // Round 14: the Founder's sentence says "through Libraxis"; the
+    // session-token clause carries the gateway promise.
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("Libraxis"))
+    XCTAssertTrue(line.localizedCaseInsensitiveContains("short-lived session token"))
     if let keyFree = line.range(of: "no vendor key", options: .caseInsensitive) {
       XCTAssertTrue(
-        line[keyFree.upperBound...].localizedCaseInsensitiveContains("Libraxis gateway"),
+        line[keyFree.upperBound...].localizedCaseInsensitiveContains("Libraxis"),
         "a no-vendor-key claim must be bounded to the gateway lane that earns it")
     }
   }
@@ -109,8 +125,13 @@ final class CloudPrivacyCopyTests: XCTestCase {
   /// The copy stays provider-neutral: the vendor lives behind the gateway.
   func testCopyNeverNamesACloudVendor() {
     let vendors = ["OpenAI", "Deepgram", "AssemblyAI", "Google", "Azure", "Speechmatics", "Groq"]
-    var lines = CloudPrivacyCopy.blocks.flatMap(\.lines)
-    lines.append(CloudPrivacyCopy.consentIsNotLiveEgress)
+    var lines = CloudPrivacyCopy.detailBlocks.flatMap(\.lines)
+    lines.append(contentsOf: [
+      CloudPrivacyCopy.consentIsNotLiveEgress,
+      CloudPrivacyCopy.egressAudioDetail,
+      CloudPrivacyCopy.egressTextDetail,
+      CloudPrivacyCopy.configureCloudServices,
+    ])
     for line in lines {
       for vendor in vendors {
         XCTAssertFalse(
@@ -119,16 +140,20 @@ final class CloudPrivacyCopyTests: XCTestCase {
     }
   }
 
-  /// Selecting Cloud on the Engine picker is the explicit grant: it writes the
-  /// consent record and the mode together. The copy above describes this write.
-  func testPickerPersistsCloudOnlyAfterExplicitGrant() {
+  /// A bare Cloud selection on the Engine picker writes nothing (CS160-F013):
+  /// the consent record and the mode are written together only by the
+  /// confirmation that names the effect, and leaving Cloud revokes the grant.
+  func testCloudIsGrantedOnlyByTheConfirmationAndRevokedOnLeave() {
     var writes: [(String, String)] = []
     var persisted = CsSettings.sample
     persisted.asrMode = nil
     persisted.cloudConsent = nil
     let applyWrite: (String, String) -> Void = { key, value in
       writes.append((key, value))
-      if key == "CODESCRIBE_ASR_MODE" { persisted.asrMode = value }
+      if key == "CODESCRIBE_ASR_MODE" {
+        persisted.asrMode = value
+        persisted.resolvedAsrMode = value
+      }
       if key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = value }
     }
     let model = SettingsViewModel(
@@ -142,10 +167,79 @@ final class CloudPrivacyCopyTests: XCTestCase {
       permissionProbe: MockPermissionProbe()
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
+
     model.setAsrMode("cloud")
+    XCTAssertTrue(writes.isEmpty, "selecting Cloud without confirming must not write")
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.confirmCloudConsent()
     XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
     XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
+    XCTAssertTrue(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.setAsrMode("local_power")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "local_power"])
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    writes.removeAll()
+    model.confirmCloudConsent()
+    writes.removeAll()
+    model.setAsrMode("apple_only")
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["denied", "apple_only"])
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertFalse(model.cloudConsentGranted)
+  }
+
+  /// PR #173 review: a revocation whose write fails leaves the grant visible,
+  /// and the next selection of the same lane retries the revocation instead of
+  /// writing only the mode — for both on-device lanes.
+  func testFailedRevocationStaysGrantedAndTheRetryRevokes() {
+    for lane in ["local_power", "apple_only"] {
+      var batches: [[String]] = []
+      var failNextBatch = false
+      var persisted = CsSettings.sample
+      persisted.asrMode = "cloud"
+      persisted.resolvedAsrMode = "cloud"
+      persisted.cloudConsent = "granted"
+      let model = SettingsViewModel(
+        engine: MockSettingsEngine(
+          settingsLoader: { persisted },
+          updateConfigManyObserver: { entries in
+            batches.append(entries.map(\.key))
+            if failNextBatch {
+              failNextBatch = false
+              throw NSError(domain: "CloudPrivacyCopyTests", code: 1)
+            }
+            for entry in entries {
+              if entry.key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = entry.value }
+              if entry.key == "CODESCRIBE_ASR_MODE" {
+                persisted.asrMode = entry.value
+                persisted.resolvedAsrMode = entry.value
+              }
+            }
+          }
+        ),
+        permissionProbe: MockPermissionProbe()
+      )
+      XCTAssertTrue(model.cloudConsentGranted, lane)
+
+      failNextBatch = true
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertTrue(model.cloudConsentGranted, "\(lane): a failed revocation must not look revoked")
+      XCTAssertEqual(persisted.cloudConsent, "granted", lane)
+
+      model.setAsrMode(lane)
+      XCTAssertEqual(batches.count, 2, "\(lane): the retry writes the revocation again")
+      XCTAssertEqual(batches.last, ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"], lane)
+      XCTAssertEqual(persisted.cloudConsent, "denied", lane)
+      XCTAssertFalse(model.cloudConsentGranted, lane)
+    }
   }
 
   /// The status rows render the live mode label and a consent state that

@@ -17,7 +17,15 @@
 //! required Layer 1 observer on capture-clock 9-second windows every 3 seconds.
 //! Stop drains that same plan, including at most one next-grid partial window.
 //! Original returns are shared with qualified owners through `AcousticLedger`;
-//! neither word conflicts nor Stop can schedule another decode or mutate a seal.
+//! Conflicts may use one planner-budgeted bounded witness before their horizon
+//! closes. Stop cannot open work outside its last nine seconds or mutate a seal.
+//! One deliberate exception: the terminal DictationTranscriber witness. When
+//! the armed opt-in lane is available, Stop may run a bounded number of final
+//! DT decodes over the recorder-owned terminal archive, aimed only at ranges
+//! still unresolved after every retained replay (pending text recovery and
+//! material speech gaps). Its segments enter through the same occurrence
+//! admission as any producer; the whole-take DT text never replaces the
+//! document and never reopens a seal.
 //! Apple-only deliberately omits this lane; explicit off/invalid overrides in
 //! Local Power produce a typed degraded state.
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
@@ -58,6 +66,9 @@ use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
     CapturePathMeta, emit_capture_level_receipt,
 };
+use crate::audio::speech_input::{
+    SpeechInputArchive, SpeechInputFrame, SpeechInputPlan, SpeechInputStream,
+};
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
@@ -81,8 +92,8 @@ use crate::pipeline::contracts::{
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
-    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
-    TimedTailSegment,
+    TailEvidenceSource, TailProviderPayload, TailProviderRequest, TailRequestIdentity,
+    TailSampleRange, TimedTailSegment,
 };
 
 use super::layer1_window::CaptureWindowPlan;
@@ -99,6 +110,12 @@ use super::stream_log::append_to_stream_log;
 /// Bounded transport for capture-plan windows. A full queue retains the exact
 /// pending request without blocking the worker that forwards PCM to SFSpeech.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
+/// The bounded word-trial scan walks every open word component against the
+/// whole slot-operation history. The Apple worker loop reaches it on every
+/// PCM chunk and partial, so without a bound a long take spends one core on
+/// the scan alone (2026-10-12: a 19-minute take, 91 % of the worker thread).
+/// A trial is a 9 s window; a quarter second between scans costs nothing.
+const WORD_TRIAL_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bounded transport ownership for occurrence formatter jobs. Saturation skips
 /// Formatter scheduling for that occurrence; it never backpressures PCM.
@@ -425,6 +442,16 @@ fn deliver_consultation_result(
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Closure budget when this session's local engine has not yet completed a
+/// single window. The warm assumption behind [`TAIL_PATCH_CLOSURE_TIMEOUT`]
+/// does not hold on first use: the one accepted job may still be paying the
+/// model cold-load, and expiring it discards the only text the take has
+/// (measured 2026-10-16, take 30ac82b4: 3.99s load + 8.755s encoder, while
+/// the 5s budget expired and the receipt closed submitted=3/applied=0).
+/// A stop that owes nothing still pays nothing: the budget is consulted only
+/// while accepted work is outstanding.
+const TAIL_PATCH_COLD_START_CLOSURE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
 /// 250 ms is not allowed to become terminal transcript truth.
 pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
@@ -578,9 +605,10 @@ struct FormatterRequest {
     policy: FormattingPolicy,
 }
 
-/// Provider outcome bound to one request. The worker receives it as a
-/// completion only after its typed proposal reached PresentationEmitter.
-/// Returning the formatter job does not certify acoustic finality.
+/// Provider outcome bound to one request over an already sealed label. It
+/// travels only to PresentationEmitter as a source-bound text result; the
+/// seal worker never waits for it, and it never certifies or delays acoustic
+/// finality.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FormatterCompletion {
     occurrence: OccurrenceIdentity,
@@ -639,6 +667,169 @@ async fn bound_formatter_reply(
             reasoning_text: None,
             status: AiFormatStatus::Failed,
         })
+}
+
+/// Build one bounded text job over an already sealed label. The policy and
+/// every provider knob come from the take's immutable settings generation; the
+/// reply is bounded by that generation's attempt timeout and a timeout keeps
+/// the raw label.
+fn formatter_job(
+    mut request: FormatterRequest,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    language: Option<String>,
+) -> BoxFuture<'static, FormatterCompletion> {
+    request.policy = runtime_settings.formatting_policy();
+    Box::pin(async move {
+        let deadline = runtime_settings
+            .ai_execution()
+            .request_timing()
+            .attempt_timeout();
+        let result = bound_formatter_reply(
+            &request.existing_label,
+            deadline,
+            format_text_with_status_for_policy(
+                &request.existing_label,
+                language.as_deref(),
+                runtime_settings.as_ref(),
+                None,
+            ),
+        )
+        .await;
+        FormatterCompletion::from_result(request, result)
+    })
+}
+
+/// Hand one completed text job to the take's PresentationEmitter. The emitter
+/// admits the derived text only against its exact sealed source (CAS); the
+/// seal worker is not involved because the occurrence was sealed before the
+/// job was scheduled. A completion whose proposal lost its PCM identity fails
+/// closed here.
+fn deliver_formatter_completion(
+    completion: FormatterCompletion,
+    event_sink: &dyn EventSink,
+    stream_log_path: Option<&std::path::Path>,
+) -> bool {
+    if !completion.carries_same_occurrence() {
+        let occurrence = &completion.occurrence;
+        warn!(
+            session = occurrence.session,
+            capture_epoch = occurrence.capture_epoch,
+            sample_start = occurrence.sample_start,
+            sample_end = occurrence.sample_end,
+            "Formatter completion refused — proposal changed exact PCM identity"
+        );
+        return false;
+    }
+    deliver_event(
+        &EngineEvent::OccurrenceLabelProposal {
+            proposal: completion.proposal,
+        },
+        event_sink,
+        stream_log_path,
+    );
+    true
+}
+
+/// Waves of text work a stopped take may still owe: at most one full queue
+/// already in flight plus one full queue accepted behind it.
+const RETAINED_FORMATTER_WAVES: u32 = 2;
+
+/// Text jobs a take accepted while it was live, carried past the end of its
+/// acoustic session.
+///
+/// Formatting is text processing over committed labels, so its lifetime is not
+/// the microphone's: Stop, PCM coverage and the terminal events never wait for
+/// it, and it never holds a seal or the frontier. It is still owned work, not
+/// a detached spawn: one task per stopped take, holding exactly the bounded
+/// queue (`FORMATTER_QUEUE_CAP` requests) and the jobs already in flight
+/// (`FORMATTER_QUEUE_CAP`), every reply bounded by the generation's attempt
+/// timeout and the whole owner by [`RETAINED_FORMATTER_WAVES`] of it. Results
+/// go only to this take's own emitter, whose reducer is the document
+/// authority and whose source CAS refuses a result after a user edit. A
+/// successor take has its own emitter, so a late result can never reach it or
+/// route a paste.
+struct RetainedFormatterJobs {
+    requests: mpsc::Receiver<FormatterRequest>,
+    jobs: FuturesOrdered<BoxFuture<'static, FormatterCompletion>>,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    language: Option<String>,
+    event_sink: Arc<dyn EventSink>,
+    stream_log_path: Option<PathBuf>,
+}
+
+impl RetainedFormatterJobs {
+    /// Start the owner when accepted work remains. Returns `None` when nothing
+    /// is queued or in flight, so a take without text work spawns nothing.
+    fn retain(mut self) -> Option<tokio::task::JoinHandle<()>> {
+        // The seal worker has finished scheduling. Closing refuses any later
+        // send while keeping every already accepted request drainable, so the
+        // owner never waits on a sender the worker thread has not dropped yet.
+        self.requests.close();
+        if self.jobs.is_empty() && self.requests.is_empty() {
+            return None;
+        }
+        let deadline = self
+            .runtime_settings
+            .ai_execution()
+            .request_timing()
+            .attempt_timeout()
+            .saturating_mul(RETAINED_FORMATTER_WAVES);
+        info!(
+            in_flight = self.jobs.len(),
+            queued = self.requests.len(),
+            deadline_ms = deadline.as_millis() as u64,
+            "Formatter text jobs retained beyond the acoustic session"
+        );
+        Some(tokio::spawn(self.run(deadline)))
+    }
+
+    async fn run(mut self, deadline: Duration) {
+        let mut delivered = 0u64;
+        let mut refused = 0u64;
+        let drained = tokio::time::timeout(deadline, async {
+            loop {
+                tokio::select! {
+                    Some(request) = self.requests.recv(), if self.jobs.len() < FORMATTER_QUEUE_CAP => {
+                        self.jobs.push_back(formatter_job(
+                            request,
+                            Arc::clone(&self.runtime_settings),
+                            self.language.clone(),
+                        ));
+                    }
+                    Some(completion) = self.jobs.next() => {
+                        if deliver_formatter_completion(
+                            completion,
+                            self.event_sink.as_ref(),
+                            self.stream_log_path.as_deref(),
+                        ) {
+                            delivered = delivered.saturating_add(1);
+                        } else {
+                            refused = refused.saturating_add(1);
+                        }
+                    }
+                    else => break,
+                }
+            }
+        })
+        .await
+        .is_ok();
+        // On the owner deadline the remaining provider futures are dropped,
+        // which cancels their requests; raw labels were never touched.
+        let abandoned = (self.jobs.len() + self.requests.len()) as u64;
+        if drained {
+            info!(
+                delivered,
+                refused, "Retained formatter text jobs settled after the acoustic session"
+            );
+        } else {
+            warn!(
+                delivered,
+                refused,
+                abandoned,
+                "Retained formatter text jobs hit the owner deadline; raw labels kept"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -830,13 +1021,13 @@ const fn formatter_lane_is_armed(
 ///
 /// A one-turn composer take answers no. It is not deduplicated downstream and
 /// it is not counted and discarded — the sender simply never exists, so
-/// `schedule_formatter_after_terminal_label` cannot reserve a permit and no
-/// `Formatter` observer is ever scheduled on the ledger frontier. The turn is
-/// formatted once at terminal processing by the controller instead.
-/// Max also refuses this occurrence lane: consultation admission reads sealed
-/// groups, so scheduling its execution as a pre-seal observer would reverse
-/// that dependency and could run tools on isolated words. Its retained Agent
-/// capability belongs to the grouped consultation path, not this sender.
+/// `schedule_formatter_for_sealed_label` cannot reserve a permit and no
+/// sealed label is handed to a formatter. The turn is formatted once at
+/// terminal processing by the controller instead.
+/// Max also refuses this occurrence lane: it is the Agent, and consultation
+/// admission reads sealed groups so tools never run on isolated words. Its
+/// retained Agent capability belongs to the grouped consultation path, not
+/// this sender.
 fn live_formatter_lane_is_armed(
     capture_turn: CaptureTurnIntent,
     ai_formatting_enabled: bool,
@@ -968,7 +1159,7 @@ fn tail_patch_receipt_after_stop(
 
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
-    mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
+    chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
@@ -994,7 +1185,15 @@ pub(crate) async fn apple_stream_transcription_session(
     // the same handle, so no process-global slot and no reset entrypoint sit
     // between them.
     let capture_energy = CaptureEnergyOwner::bind(session_id.clone(), capture_epoch);
-    let mut capture_level = CaptureLevelAccumulator::bound_to(&capture_energy);
+    let mut capture_level = CaptureLevelAccumulator::bound_to_at_rate(&capture_energy, sample_rate);
+    let input_plan = SpeechInputPlan::for_capture(
+        &runtime_settings,
+        capture_device_name.as_deref(),
+        sample_rate,
+    );
+    let input_enhanced = input_plan.is_enhanced();
+    let mut chunk_receiver = SpeechInputStream::open(chunk_receiver, input_plan, &session_id);
+    let input_archive = chunk_receiver.archive();
     // Hands-free silence is the ENGINE LIFECYCLE on this lane, not a chunker
     // knob: SFSpeech still owns phrase boundaries inside an utterance, but the
     // threshold decides when the engine rests (mic + Silero keep watching) and
@@ -1036,7 +1235,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // PCM → worker (None = EOF). Unbounded so the async select loop never
     // blocks on a full sync_channel while live Preview events wait to drain
     // (bounded sync_channel + blocking send would re-stall presentation).
-    let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
+    let (pcm_tx, pcm_rx) = std_mpsc::channel::<Result<Option<SpeechInputFrame>, String>>();
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
     let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
@@ -1087,17 +1286,16 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     // Formatting consumes only facts frozen into this exact per-take snapshot.
-    // Arming the transport does not schedule a ledger observer; a concrete
-    // occurrence must acquire a bounded queue permit first.
+    // Arming the transport schedules nothing; a sealed occurrence must acquire
+    // a bounded queue permit first. Apple on-device counts as an engine on its
+    // own: it needs no cloud key, endpoint or account.
     let formatter_on = live_formatter_lane_is_armed(
         capture_turn,
         runtime_settings.values().ai_formatting_enabled,
         runtime_settings.formatting_policy(),
         || {
-            runtime_settings
-                .llm_lanes()
-                .formatting()
-                .request_available()
+            crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
+                .is_none()
         },
     );
     if !capture_turn.schedules_live_formatting() {
@@ -1110,7 +1308,6 @@ pub(crate) async fn apple_stream_transcription_session(
     let formatter_runtime_settings = Arc::clone(&runtime_settings);
     let formatter_language = language.clone();
     let (formatter_tx, mut formatter_rx) = mpsc::channel::<FormatterRequest>(FORMATTER_QUEUE_CAP);
-    let (formatter_done_tx, formatter_done_rx) = std_mpsc::channel::<FormatterCompletion>();
     let worker_formatter_tx = formatter_on.then_some(formatter_tx);
 
     let cloud_on = layer1_lane.is_live()
@@ -1168,9 +1365,10 @@ pub(crate) async fn apple_stream_transcription_session(
             worker_tp_tx,
             tp_done_rx,
             worker_formatter_tx,
-            formatter_done_rx,
             AppleWorkerConfig {
                 local_execution: worker_execution,
+                input_enhanced,
+                input_archive,
                 sample_rate,
                 capture_device_name,
                 language: language.as_deref(),
@@ -1199,6 +1397,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // until EOF. The engine had letter-level partials; the overlay saw nothing
     // until the session ended. Product truth: presentation was missing, not STT.
     let mut audio_eof = false;
+    let mut input_eof = false;
     let mut worker_finished = false;
     let mut close_ack_pending = true;
     let mut apple_finish_pending = true;
@@ -1357,31 +1556,39 @@ pub(crate) async fn apple_stream_transcription_session(
             }
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
-                    Some(chunk) => {
+                    Some(Ok(frame)) => {
                         if let Some(receiver) = cloud_commit_rx.as_mut() {
                             while let Ok(sample) = receiver.try_recv() {
                                 let _late = layer1_lane.commit_through(sample);
                             }
                         }
-                        capture_level.push_samples(&chunk);
+                        capture_level.push_samples(frame.raw_samples());
+                        let chunk = &frame.samples;
                         // C1 fan-out: offer the frame to the Layer 1 lane
                         // before forwarding to the Apple worker. The offer
                         // returns immediately, always — a refiner that cannot
                         // keep up costs refinement frames, never capture, and
                         // sustained overflow degrades the lane instead of
                         // exerting backpressure here.
-                        layer1_lane.offer_pcm(&chunk);
-                        if pcm_tx.send(Some(chunk)).is_err() {
+                        layer1_lane.offer_pcm(chunk);
+                        if pcm_tx.send(Ok(Some(frame))).is_err() {
                             warn!("Apple live stream worker dropped PCM channel");
                             audio_eof = true;
                         }
                     }
+                    Some(Err(error)) => {
+                        // The worker closes with an explicit failure; preserve
+                        // the existing capture-drain and SessionFinalised path.
+                        let _ = pcm_tx.send(Err(error));
+                        audio_eof = true;
+                    }
                     None => {
+                        input_eof = true;
                         // Capture stopped — push the held tail, then signal EOF.
                         // `end` is the lane's close after the worker has admitted
                         // the commits this flush makes possible.
                         layer1_lane.flush_holdback();
-                        let _ = pcm_tx.send(None);
+                        let _ = pcm_tx.send(Ok(None));
                         audio_eof = true;
                     }
                 }
@@ -1460,7 +1667,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     );
                 }
             }
-            Some(mut request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
+            Some(request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
                 // The request channel is independent from `ev_rx`. Drain every
                 // already-enqueued ledger observation before provider work can
                 // complete, so a fast formatter cannot overtake the reducer
@@ -1472,62 +1679,18 @@ pub(crate) async fn apple_stream_transcription_session(
                         stream_log_path.as_deref(),
                     );
                 }
-                let runtime_settings = Arc::clone(&formatter_runtime_settings);
-                let language = formatter_language.clone();
-                request.policy = runtime_settings.formatting_policy();
-                formatter_jobs.push_back(Box::pin(async move {
-                    let deadline = runtime_settings.ai_execution().request_timing().attempt_timeout();
-                    let result = bound_formatter_reply(&request.existing_label, deadline, format_text_with_status_for_policy(
-                        &request.existing_label,
-                        language.as_deref(),
-                        runtime_settings.as_ref(),
-                        None,
-                    ))
-                    .await;
-                    FormatterCompletion::from_result(request, result)
-                }));
+                formatter_jobs.push_back(formatter_job(
+                    request,
+                    Arc::clone(&formatter_runtime_settings),
+                    formatter_language.clone(),
+                ));
             }
-            Some(mut completion) = formatter_jobs.next() => {
-                let occurrence = completion.occurrence.clone();
-                if !completion.carries_same_occurrence() {
-                    warn!(
-                        session = occurrence.session,
-                        capture_epoch = occurrence.capture_epoch,
-                        sample_start = occurrence.sample_start,
-                        sample_end = occurrence.sample_end,
-                        "Formatter completion refused — proposal changed exact PCM identity"
-                    );
-                    // The immutable request owner is still ours. Discard the
-                    // malformed proposal and return only its no-label job.
-                    completion.proposal = OccurrenceLabelProposal::for_existing_occurrence(
-                        occurrence.session.clone(),
-                        occurrence.capture_epoch,
-                        occurrence.sample_start,
-                        occurrence.sample_end,
-                        String::new(),
-                        LabelProposalDisposition::Refuse,
-                    );
-                }
-                let event = EngineEvent::OccurrenceLabelProposal {
-                    proposal: completion.proposal.clone(),
-                };
-                // PresentationEmitter applies the typed disposition and
-                // returns this exact Formatter obligation synchronously.
-                // A pending acoustic trial may still prevent sealing.
-                deliver_event(
-                    &event,
+            Some(completion) = formatter_jobs.next() => {
+                let _ = deliver_formatter_completion(
+                    completion,
                     event_sink.as_ref(),
                     stream_log_path.as_deref(),
                 );
-                if formatter_done_tx.send(completion).is_err() {
-                    warn!(
-                        session = occurrence.session,
-                        capture_epoch = occurrence.capture_epoch,
-                        sample_start = occurrence.sample_start,
-                        sample_end = occurrence.sample_end,
-                        "Formatter completion rejected — Apple seal worker already closed"
-                    );
-                }
             }
         }
         // C1: drain whatever the Layer 1 provider has ready. Partials stay
@@ -1565,6 +1728,21 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
+    // The acoustic session is over; accepted text jobs are not. Every ledger
+    // event was delivered before `ev_rx` closed, so no result can overtake the
+    // revision that established its label. The owner runs beside the teardown
+    // below and is never awaited: microphone release, PCM coverage and
+    // SessionFinalised do not wait for a provider.
+    let _retained_formatter = RetainedFormatterJobs {
+        requests: formatter_rx,
+        jobs: formatter_jobs,
+        runtime_settings: Arc::clone(&formatter_runtime_settings),
+        language: formatter_language.clone(),
+        event_sink: Arc::clone(&event_sink),
+        stream_log_path: stream_log_path.clone(),
+    }
+    .retain();
+
     // Worker exited (event channel closed). If audio is still open, keep
     // consuming to EOF so upstream capture senders never hit a dropped
     // channel — an early engine death (e.g. bridge spawn failure) must not
@@ -1574,7 +1752,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // This comes before the Layer 1 backlog on purpose: capture-sender safety
     // is the older, harder contract, and Whisper must never run while live
     // audio is still being drained.
-    if !audio_eof {
+    if !input_eof {
         while chunk_receiver.recv().await.is_some() {}
     }
 
@@ -1741,6 +1919,9 @@ struct AppleSealState {
     /// Raw capture PCM used to materialize exact planned ranges.
     audio: LiveAudioBuffer,
     terminal_pcm: Option<super::live_audio_buffer::OwnedTerminalPcm>,
+    /// Derived ASR values at the same raw capture indices; never energy proof.
+    recognizer_audio: Option<LiveAudioBuffer>,
+    recognizer_archive: SpeechInputArchive,
     /// End of the last Apple segment admitted to committed canvas. Unlike the
     /// PCM retention cursor, this advances even when Layer 1 audio lookup is
     /// unavailable: Apple segment time is the authority for text disjointness.
@@ -1761,6 +1942,7 @@ struct AppleSealState {
     /// The only authority that offers new inference ranges on capture PCM.
     window_plan: CaptureWindowPlan,
     capture_stopping: bool,
+    word_trial_requests: BTreeMap<u64, WordTrial>,
     terminal_archive_pending: bool,
     refinement_pending: VecDeque<TailPatchRequest>,
     /// Original returns retained until closed physical owners can consume them.
@@ -1779,17 +1961,19 @@ struct AppleSealState {
     /// Utterance-grain straddles still refuse whole-span replacement.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
+    word_trial_scan_at: Option<Instant>,
     refinement_lane_lost: bool,
+    /// A matched provider completion returned at least once this session, so
+    /// the local engine is demonstrably past cold start. Gates the choice
+    /// between the warm and cold-start closure budgets at stop.
+    first_whisper_window_completed: bool,
     refinement_started: Instant,
     /// Occurrence formatter hand-off. Presence means the frozen snapshot
     /// permits jobs; it is not itself a scheduled ledger return.
     formatter: Option<mpsc::Sender<FormatterRequest>>,
-    /// Exact accepted formatter jobs not yet acknowledged after reducer/seal
-    /// delivery. This identity is deliberately independent of `pending_events`:
-    /// a concurrently completed observer may publish and remove the pending
-    /// payload before the formatter acknowledgement reaches the worker.
-    formatter_in_flight: BTreeSet<OccurrenceIdentity>,
-    formatter_awaiting_completion: u64,
+    /// Sealed occurrences already handed to the formatter, so one committed
+    /// label is formatted at most once. Never consulted by sealing or Stop.
+    formatter_requested: BTreeSet<OccurrenceIdentity>,
     /// Concatenation of already progressive-sealed text — left context for
     /// Light+ casing on the next seal (w2-b).
     sealed_prefix: String,
@@ -1854,6 +2038,26 @@ struct AppleSealState {
     cloud_live_lane_lost: u64,
     cloud_live_timed_out: u64,
     cloud_live_unmatched_final: u64,
+    /// Witness arming. Construction reads the developer env gate; the worker
+    /// then applies the immutable settings snapshot verdict (Voice Lab key
+    /// with the same env as its power-user override). Nothing re-reads either
+    /// source mid-take.
+    dictation_witness_armed: bool,
+    /// Sender half of the per-utterance witness return lane; the worker owns
+    /// the receiver. Witness threads never touch the ledger directly.
+    dictation_witness_return: Option<std_mpsc::Sender<DictationWitnessReturn>>,
+    /// One witness request in flight per session; the next seal re-checks
+    /// whatever debt is still open then.
+    dictation_witness_inflight: bool,
+    /// Target ranges already asked and their attempt counts. A range is asked
+    /// at most twice per session; persistent debt stays honestly unresolved
+    /// instead of charging the decoder at every seal.
+    dictation_witness_attempts: Vec<((u64, u64), u8)>,
+    /// Live witness requests mint ids in their own band above the terminal
+    /// ordinals, so a return can never pose as a terminal-phase answer.
+    dictation_witness_requests: u64,
+    /// Locale handed to the witness decode, captured at session start.
+    dictation_witness_language: Option<String>,
 }
 
 /// Capture-clock allowance for a final; the scheduled frontier is the hold.
@@ -1992,6 +2196,8 @@ impl AppleSealState {
         let mut words = Vec::new();
         // The pin is diagnostic only, including when Apple supplied segments.
         // Repeated lexical words in one phrase must retain their multiplicity.
+        // Untimed words remain explicitly uncertain. Neither arrival order
+        // nor their index in a revised partial proves PCM coverage.
         words.extend(
             self.open_partial
                 .split_whitespace()
@@ -2021,10 +2227,10 @@ impl AppleSealState {
                     }),
             );
         for candidate in ranged {
-            if let Some(index) = current_ranged
-                .iter()
-                .position(|(held, _)| same_fusion_pcm_slot(held, &candidate.0))
-            {
+            if let Some(index) = current_ranged.iter().position(|(held, _)| {
+                held.sample_start == candidate.0.sample_start
+                    && held.sample_end == candidate.0.sample_end
+            }) {
                 current_ranged[index] = candidate;
             } else {
                 current_ranged.push(candidate);
@@ -2117,10 +2323,12 @@ impl AppleSealState {
             self.speech_progress.phase(self.sample_rate)
         };
         let debt_ms = self.speech_progress.debt_ms(self.sample_rate);
+        let speech_live = self.speech_progress.speech_live();
         if self.last_integrity.as_ref().is_some_and(|previous| {
             previous.phase == phase
                 && previous.pending_occurrences == debts.len() as u64
                 && previous.acoustic_speech_ms_since_text_advance / 100 == debt_ms / 100
+                && previous.speech_live == speech_live
         }) {
             return;
         }
@@ -2134,6 +2342,7 @@ impl AppleSealState {
             acoustic_speech_ms_since_text_advance: debt_ms,
             pending_occurrences: debts.len() as u64,
             phase,
+            speech_live,
         };
         self.last_integrity = Some(evidence.clone());
         let _ = ev_tx.send(EngineEvent::SpeechIntegrity { evidence });
@@ -2158,6 +2367,26 @@ impl AppleSealState {
         }
     }
 
+    /// Decoder-only view. Acoustic qualification and fence measurements keep
+    /// using window_by_samples, whose raw authority is unchanged.
+    fn recognizer_window_by_samples(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
+        let Some(audio) = self.recognizer_audio.as_ref() else {
+            return self.window_by_samples(start, end);
+        };
+        if let Some(window) = self.recognizer_archive.window(start, end) {
+            return match window {
+                Ok(window) => Some(window),
+                Err(error) => {
+                    warn!(%error, start, end, "recognizer projection range unavailable");
+                    None
+                }
+            };
+        }
+        audio
+            .window_by_samples(start, end)
+            .filter(|window| window.sample_start == start && window.sample_end == end)
+    }
+
     /// Resolve one full alignment-uncertainty interval inside the issued edge.
     /// Keep no waveform in the ledger or on individual Words.
     fn record_decode_fence_measurement(
@@ -2166,29 +2395,50 @@ impl AppleSealState {
         decode_window: Option<(u64, u64)>,
     ) {
         let resolution = u64::from(self.sample_rate).div_ceil(50).saturating_add(1);
-        let edge = decode_window.and_then(|(start, end)| {
-            let edge_start = end.checked_sub(resolution)?;
-            (edge_start >= start)
-                .then(|| self.window_by_samples(edge_start, end))
-                .flatten()
-                .filter(|window| window.sample_start == edge_start && window.sample_end == end)
-        });
-        let range = edge.as_ref().map(|window| {
-            OccurrenceIdentity::new(
-                &self.session_id,
-                self.capture_epoch,
-                window.sample_start,
-                window.sample_end,
-            )
+        let read_edge = |start, end| {
+            self.window_by_samples(start, end)
+                .filter(|window| window.sample_start == start && window.sample_end == end)
+        };
+        let edges = decode_window
+            .map(|(start, end)| {
+                [
+                    start
+                        .checked_add(resolution)
+                        .filter(|edge_end| *edge_end <= end)
+                        .and_then(|edge_end| read_edge(start, edge_end)),
+                    end.checked_sub(resolution)
+                        .filter(|edge_start| *edge_start >= start)
+                        .and_then(|edge_start| read_edge(edge_start, end)),
+                ]
+            })
+            .unwrap_or([None, None]);
+        let ranges = edges.each_ref().map(|edge| {
+            edge.as_ref().map(|window| {
+                OccurrenceIdentity::new(
+                    &self.session_id,
+                    self.capture_epoch,
+                    window.sample_start,
+                    window.sample_end,
+                )
+            })
         });
         ledger.record_decode_fence_energy(
             &self.capture_energy,
             self.audio.session_sample_end(),
-            range
-                .as_ref()
-                .zip(edge.as_ref())
-                .map(|(range, window)| (range, window.samples.as_slice())),
+            std::array::from_fn(|index| {
+                ranges[index]
+                    .as_ref()
+                    .zip(edges[index].as_ref())
+                    .map(|(range, window)| (range, window.samples.as_slice()))
+            }),
         );
+        if self.capture_stopping {
+            ledger.close_speech_anchor_capture(
+                &self.session_id,
+                self.capture_epoch,
+                self.audio.session_sample_end(),
+            );
+        }
     }
 
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
@@ -2221,6 +2471,8 @@ impl AppleSealState {
             lexicon_entries_custom: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             terminal_pcm: None,
+            recognizer_audio: None,
+            recognizer_archive: SpeechInputArchive::default(),
             last_apple_segment_end: 0.0,
             unresolved_windows: 0,
             windows_admitted: 0,
@@ -2234,6 +2486,7 @@ impl AppleSealState {
                 sample_rate,
             ),
             capture_stopping: false,
+            word_trial_requests: BTreeMap::new(),
             terminal_archive_pending: false,
             refinement_pending: VecDeque::new(),
             retained_word_decodes: VecDeque::new(),
@@ -2244,11 +2497,12 @@ impl AppleSealState {
             admission_horizon: 0,
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
+            word_trial_scan_at: None,
             refinement_lane_lost: false,
+            first_whisper_window_completed: false,
             refinement_started: Instant::now(),
             formatter: None,
-            formatter_in_flight: BTreeSet::new(),
-            formatter_awaiting_completion: 0,
+            formatter_requested: BTreeSet::new(),
             sealed_prefix: String::new(),
             pending_events: BTreeMap::new(),
             tail_patch_replacements: 0,
@@ -2285,6 +2539,12 @@ impl AppleSealState {
             cloud_live_lane_lost: 0,
             cloud_live_timed_out: 0,
             cloud_live_unmatched_final: 0,
+            dictation_witness_armed: crate::stt::apple_stt::dictation_transcriber_enabled(),
+            dictation_witness_return: None,
+            dictation_witness_inflight: false,
+            dictation_witness_attempts: Vec::new(),
+            dictation_witness_requests: 0,
+            dictation_witness_language: None,
         };
         state
             .acoustic_ledger
@@ -2449,7 +2709,11 @@ impl AppleSealState {
     ) {
         match notice {
             CloudWorkerNotice::LaneLost => self.return_cloud_live_lost(ev_tx),
-            CloudWorkerNotice::Final(event) => self.admit_cloud_final(ev_tx, *event),
+            CloudWorkerNotice::Final(event) => {
+                self.admit_cloud_final(ev_tx, *event);
+                // A cloud final commits speech the open partial may restate.
+                self.publish_unadmitted_words(ev_tx);
+            }
             CloudWorkerNotice::EndSettled => {}
         }
     }
@@ -2765,21 +3029,16 @@ impl AppleSealState {
         }) {
             return;
         }
-        let scheduled = schedule_formatter_after_terminal_label(
-            &mut ledger,
-            self.formatter.as_ref(),
-            occurrence,
-            Some(LedgerObservationProducer::CloudLive),
-        );
         let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::CloudLive);
         if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
         }
-        drop(ledger);
-        if scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
-            self.formatter_awaiting_completion =
-                self.formatter_awaiting_completion.saturating_add(1);
-        }
+        schedule_formatter_for_sealed_label(
+            &ledger,
+            self.formatter.as_ref(),
+            &mut self.formatter_requested,
+            occurrence,
+        );
     }
 
     /// Occurrence qualification registers an observer, never an inference range.
@@ -2834,7 +3093,8 @@ impl AppleSealState {
             grid_ordinal = range.sample_start / (u64::from(self.sample_rate).max(1) * 3),
             phase = if self.capture_stopping { "stop" } else { "live" },
             disposition,
-            pass_limit = 3,
+            grid_pass_limit = 3,
+            bounded_trials_per_nine_seconds = 1,
             "capture_window_plan"
         );
     }
@@ -2865,7 +3125,7 @@ impl AppleSealState {
                 continue;
             }
             let window = self
-                .window_by_samples(range.sample_start, range.sample_end)
+                .recognizer_window_by_samples(range.sample_start, range.sample_end)
                 .filter(|window| {
                     window.sample_start == range.sample_start
                         && window.sample_end == range.sample_end
@@ -2984,12 +3244,12 @@ impl AppleSealState {
         if matches!(reason, RefinementFailure::NotScheduled) {
             // One code covers "never sent" and "matched, then refused".
             // A blank owner still owes a witness, so the frontier stays open.
-            let blank = !self
+            let blank = self
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .text_of(occurrence)
-                .is_some_and(|label| !label.trim().is_empty());
+                .is_none_or(|label| label.trim().is_empty());
             if !blank {
                 self.return_whisper_without_label(ev_tx, id, occurrence);
                 self.emit_pending_seal(ev_tx, id);
@@ -3052,7 +3312,6 @@ impl AppleSealState {
             || !self.refinement_submitted.is_empty()
             || !self.pending_whisper_stubs.is_empty()
             || self.planned_work_pending()
-            || !self.formatter_in_flight.is_empty()
             || !self.cloud_inflight.is_empty()
             || !self.cloud_uncommitted.is_empty()
             || !self.cloud_commit_retry.is_empty()
@@ -3115,22 +3374,46 @@ impl AppleSealState {
     /// original witness and replay it only into newly qualified owners.
     fn replay_completed_windows(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let owners = self.unsealed_word_owners();
+        if owners.is_empty() {
+            return;
+        }
+        // Retained decodes only grow during a take while the unsealed owners
+        // sit near the live edge. One pass over the owners' sample envelope
+        // lets most decodes skip the owner product entirely; the result is
+        // the same set the full product would return.
+        let envelope_start = owners
+            .iter()
+            .map(|(_, owner)| owner.sample_start)
+            .min()
+            .unwrap_or(0);
+        let envelope_end = owners
+            .iter()
+            .map(|(_, owner)| owner.sample_end)
+            .max()
+            .unwrap_or(0);
         let returned = self
             .retained_word_decodes
             .iter()
             .filter(|payload| {
-                owners.iter().any(|(_, owner)| {
-                    range_overlaps_occurrence(&payload.identity.range, owner)
-                        && !self
-                            .replayed_window_owners
-                            .contains(&(payload.identity.request_id, owner.clone()))
-                })
+                let range = &payload.identity.range;
+                range.sample_start < envelope_end
+                    && envelope_start < range.sample_end
+                    && owners.iter().any(|(_, owner)| {
+                        range_overlaps_occurrence(range, owner)
+                            && !self
+                                .replayed_window_owners
+                                .contains(&(payload.identity.request_id, owner.clone()))
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
+        if returned.is_empty() {
+            return;
+        }
         for payload in returned {
             self.admit_completed_window(ev_tx, &payload, false);
         }
+        self.publish_unadmitted_words(ev_tx);
     }
 
     fn complete_word_trial(
@@ -3311,7 +3594,7 @@ impl AppleSealState {
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let owners = self.unsealed_word_owners();
         for (id, owner) in owners {
-            let (scheduled, seal) = {
+            let seal = {
                 let mut ledger = self
                     .acoustic_ledger
                     .lock()
@@ -3320,22 +3603,23 @@ impl AppleSealState {
                     continue;
                 }
                 // A lexical trial may have been the last outstanding owner
-                // after ASR returned. Only now can formatting consume its
-                // resolved text; unrelated occurrences never wait for it.
-                let scheduled = schedule_formatter_after_terminal_label(
-                    &mut ledger,
-                    self.formatter.as_ref(),
-                    &owner,
-                    None,
-                );
-                (scheduled, ledger.seal(&owner).cloned().ok())
+                // after ASR returned. The seal does not wait for formatting;
+                // formatting reads the label only once it is committed.
+                ledger.seal(&owner).cloned().ok()
             };
-            if scheduled && self.formatter_in_flight.insert(owner.clone()) {
-                self.formatter_awaiting_completion =
-                    self.formatter_awaiting_completion.saturating_add(1);
-            }
             if let Some(receipt) = seal {
                 let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+                let ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                schedule_formatter_for_sealed_label(
+                    &ledger,
+                    self.formatter.as_ref(),
+                    &mut self.formatter_requested,
+                    &owner,
+                );
+                drop(ledger);
                 self.emit_pending_seal(ev_tx, id);
             }
         }
@@ -3356,6 +3640,12 @@ impl AppleSealState {
                 continue;
             }
             let Some(sender) = self.tail_patch.as_ref() else {
+                if let Some(trial) = self
+                    .word_trial_requests
+                    .remove(&request.provider_request.identity.request_id)
+                {
+                    self.close_word_trial(&trial, "trial_lane_unavailable");
+                }
                 self.window_plan_receipt(&range, "lane_unavailable");
                 self.window_plan.account(&range);
                 for (id, occurrence) in &request.member_occurrences {
@@ -3397,6 +3687,12 @@ impl AppleSealState {
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(request)) => {
+                    if let Some(trial) = self
+                        .word_trial_requests
+                        .remove(&request.provider_request.identity.request_id)
+                    {
+                        self.close_word_trial(&trial, "trial_lane_unavailable");
+                    }
                     self.window_plan.account(&range);
                     self.window_plan_receipt(&range, "lane_unavailable");
                     self.tail_patch = None;
@@ -3447,6 +3743,27 @@ impl AppleSealState {
         }
         self.pump_capture_windows(ev_tx);
         self.publish_resolved_word_seals(ev_tx);
+    }
+
+    /// Collect returned evidence while its request and producer reservations
+    /// still exist. Stop must do this before expiry can remove those identities:
+    /// a ready channel message is returned work, not a timed-out inference.
+    /// Validation and mutation remain with the same live admission methods.
+    fn collect_ready_refinement_returns(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        tail_patch_done: &std_mpsc::Receiver<TailPatchCompletion>,
+        cloud_notice: Option<&std_mpsc::Receiver<CloudWorkerNotice>>,
+        audio_secs: f32,
+    ) {
+        if let Some(notices) = cloud_notice {
+            while let Ok(notice) = notices.try_recv() {
+                self.handle_cloud_notice(ev_tx, notice);
+            }
+        }
+        while let Ok(completion) = tail_patch_done.try_recv() {
+            self.complete_whisper_window(ev_tx, completion, audio_secs);
+        }
     }
 
     /// Return true while Stop still owns work. One absolute deadline applies
@@ -3535,46 +3852,14 @@ impl AppleSealState {
                     &open_members,
                     word_grain,
                 );
-                let same_word_replay = word_grain
-                    && (open_members.iter().any(|owner| {
-                        pin_intersects(&pin, owner)
-                            && ledger.slots_of(owner).is_some_and(|slots| {
-                                slots.iter().any(|slot| {
-                                    (slot.producer == LedgerObservationProducer::Whisper
-                                        || (producer == LedgerObservationProducer::CloudLive
-                                            && slot.producer
-                                                == LedgerObservationProducer::CloudLive))
-                                        && ledger.slot_source_ranges(slot).iter().any(|source| {
-                                            source.same_capture(owner)
-                                                && source.sample_start.max(owner.sample_start)
-                                                    == slot.sample_start
-                                                && source.sample_end.min(owner.sample_end)
-                                                    == slot.sample_end
-                                                && crate::pipeline::acoustic_ledger::same_word_pin(
-                                                    pin.sample_start,
-                                                    pin.sample_end,
-                                                    text,
-                                                    source.sample_start,
-                                                    source.sample_end,
-                                                    &slot.text,
-                                                )
-                                        })
-                                })
-                            })
-                    }) || routes.iter().any(|route| {
-                        route.exclusive.iter().any(|prior| {
-                            crate::pipeline::acoustic_ledger::same_word_pin(
-                                pin.sample_start,
-                                pin.sample_end,
-                                text,
-                                prior.pin.sample_start,
-                                prior.pin.sample_end,
-                                &prior.text,
-                            )
-                        })
-                    }));
-                if same_word_replay {
-                    class = OverlapPinClass::Replay;
+                // Routing chooses an open utterance, never word identity.
+                // Every word hypothesis reaches the ledger's anchor matcher;
+                // approximate model timestamps cannot deduplicate it here.
+                if word_grain
+                    && let Some(member_index) = ledger.word_owner_index(&pin, &open_members)
+                    && !ledger.is_sealed(&open_members[member_index])
+                {
+                    class = OverlapPinClass::ExclusiveTail { member_index };
                 }
                 let energy_silent = self
                     .capture_energy
@@ -3689,6 +3974,60 @@ impl AppleSealState {
                 match disposition {
                     SidePin::Replay => ledger.refuse_replayed_range(&observation, &text),
                     SidePin::Unanchored(reason) => {
+                        // An unrouted edge Word is not an accounted return.
+                        // Preserve its original decode/pin before ordinary
+                        // admission can retire the coarse source and seal it.
+                        // This is recovery debt, never word ownership or a
+                        // completeness receipt for the clipped hypothesis.
+                        let intersecting = open_members
+                            .iter()
+                            .filter(|owner| pin_intersects(&observation.occurrence, owner))
+                            .collect::<Vec<_>>();
+                        if word_grain
+                            && producer == LedgerObservationProducer::Whisper
+                            && text.split_whitespace().count() == 1
+                            && admit_sample_start < admit_sample_end
+                            && admit_sample_end.saturating_sub(admit_sample_start)
+                                <= u64::from(self.sample_rate) * 9
+                            && admit_sample_start <= observation.occurrence.sample_start
+                            && observation.occurrence.sample_end <= admit_sample_end
+                            && let [owner] = intersecting.as_slice()
+                            && ledger.is_qualified(owner)
+                            && !ledger.is_sealed(owner)
+                            && (!ledger.decode_word_onset_complete(
+                                owner,
+                                admit_sample_start,
+                                admit_sample_end,
+                                observation.occurrence.sample_start,
+                            ) || ledger.decode_word_fence_incomplete(
+                                owner,
+                                admit_sample_start,
+                                admit_sample_end,
+                                observation.occurrence.sample_start,
+                                observation.occurrence.sample_end,
+                            ))
+                            && self
+                                .capture_energy
+                                .voiced_hops_in(
+                                    &owner.session,
+                                    owner.capture_epoch,
+                                    observation.occurrence.sample_start.max(owner.sample_start),
+                                    observation.occurrence.sample_end.min(owner.sample_end),
+                                )
+                                .is_some_and(|hops| !hops.is_empty())
+                        {
+                            let mut recovery =
+                                ledger.next_word_observation(producer, request_id, owner);
+                            recovery.request = request_id;
+                            let mut pin = crate::pipeline::acoustic_ledger::WordPin::new(
+                                observation.occurrence.sample_start,
+                                observation.occurrence.sample_end,
+                                text.clone(),
+                            )
+                            .with_decode_window(admit_sample_start, admit_sample_end);
+                            pin.confidence = segments[index].confidence;
+                            ledger.retain_rejected_decode_word(&recovery, &pin);
+                        }
                         ledger.keep_visible_unanchored(&observation, &text, reason)
                     }
                     SidePin::NoVoicedHop => {
@@ -3817,6 +4156,9 @@ impl AppleSealState {
             .refinement_submitted
             .remove(&key.expect("matched key"))
             .expect("matched job");
+        // Any matched return, valid or not, proves the engine is past
+        // cold start; later stops may hold the warm closure budget.
+        self.first_whisper_window_completed = true;
         let valid = payload.as_ref().is_some_and(|payload| {
             payload.identity == job.request_identity
                 && payload.validate().is_ok()
@@ -3843,19 +4185,52 @@ impl AppleSealState {
                 );
             }
         }
+        let trial = self
+            .word_trial_requests
+            .remove(&job.request_identity.request_id);
         if let Some(payload) = payload.filter(|_| valid) {
+            if let Some(trial) = &trial {
+                self.complete_word_trial(ev_tx, trial, Some(&payload));
+            }
             self.window_plan_receipt(&job.request_identity.range, "returned");
             self.retain_word_decode(&payload);
             self.admit_completed_window(ev_tx, &payload, true);
+            // An observed Silero onset fixes the past before that onset.
+            // Recover complete Words in those older gaps now, without owning
+            // the open utterance that Silero may still extend or split.
+            let past_onset = self.fusion.as_ref().and_then(|fusion| {
+                fusion
+                    .ledger()
+                    .utterances()
+                    .last()
+                    .filter(|utterance| {
+                        utterance.range.session == self.session_id
+                            && utterance.range.capture_epoch == self.capture_epoch
+                    })
+                    .map(|utterance| utterance.range.sample_start)
+            });
+            if let Some(before) = past_onset
+                && admit_retained_unowned_words(self, ev_tx, &payload, Some(before))
+            {
+                // Retained windows supply existing witnesses before the
+                // admission horizon can close a newly qualified owner.
+                self.replay_completed_windows(ev_tx);
+            }
         } else {
             // A matched provider failure is not measured uncovered speech.
             // Debt already recorded by qualification or reconciliation stays.
             // This return must not invent recovery debt over an admitted floor.
+            if let Some(trial) = &trial {
+                self.close_word_trial(trial, "inference_failed");
+            }
             self.window_plan_receipt(&job.request_identity.range, "failed");
             self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
             self.settle_failed_window_members(ev_tx, &job.member_occurrences);
         }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
+        // Committed words may now hold speech the open partial restates. A
+        // silent pause sends no new partial, so the mirror is refreshed here.
+        self.publish_unadmitted_words(ev_tx);
     }
 
     /// One authenticated returned frame, shared by physical owners. Replay
@@ -4230,6 +4605,7 @@ impl AppleSealState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(label) = ledger.text_of(owner)
             && let Some(pending) = self.pending_events.get_mut(&id)
+            && pending.occurrence == *owner
         {
             pending.layer1_baseline = label.to_string();
         }
@@ -4316,6 +4692,144 @@ impl AppleSealState {
         }
     }
 
+    /// Fuzzy retrieval can label only settled, exact current word targets.
+    /// Two independent complete Whisper frames must retrieve the same canonical
+    /// from the raw labels for every source; at least one must actually hear a
+    /// registered form of that canonical. Agreement on a fuzzy-only source is
+    /// not evidence for replacing it. No guessed label becomes ASR input.
+    fn apply_corroborated_lexicon(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        owner: &OccurrenceIdentity,
+        request: u64,
+    ) {
+        use crate::pipeline::acoustic_ledger::{DictionarySlotRule, SlotTarget};
+        if self.capture_stopping {
+            return;
+        }
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.is_sealed(owner) {
+            return;
+        }
+        let sources = ledger.slots_of(owner).unwrap_or(&[]).to_vec();
+        let lexicon = super::live_lexicon::FuzzyLexicon::load(&self.lexicon_custom_path);
+        let mut cursor = 0;
+        while cursor < sources.len() {
+            let mut consumed = 1;
+            for count in (1..=3.min(sources.len() - cursor)).rev() {
+                let selected = &sources[cursor..cursor + count];
+                if selected.iter().any(|source| {
+                    source.producer == LedgerObservationProducer::ManualHuman
+                        || source.surface_rewritten
+                        || source.text.split_whitespace().count() != 1
+                }) || selected.windows(2).any(|pair| {
+                    pair[0].sample_end > pair[1].sample_start
+                        || pair[0]
+                            .text
+                            .trim_matches(|c: char| !c.is_alphanumeric())
+                            .to_lowercase()
+                            == pair[1]
+                                .text
+                                .trim_matches(|c: char| !c.is_alphanumeric())
+                                .to_lowercase()
+                }) {
+                    continue;
+                }
+                let input = selected
+                    .iter()
+                    .map(|source| source.text.clone())
+                    .collect::<Vec<_>>();
+                let text = input.join(" ");
+                // No internal sentence boundary can be swallowed by a merge.
+                if selected[..count - 1].iter().any(|source| {
+                    source
+                        .text
+                        .chars()
+                        .any(|c| matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '…'))
+                }) {
+                    continue;
+                }
+                let targets = selected.iter().map(SlotTarget::from).collect::<Vec<_>>();
+                let witnesses = ledger.dictionary_witnesses(owner, &targets);
+                if witnesses.len() < 2 {
+                    continue;
+                }
+                let Some(canonical) = lexicon.candidate(&text) else {
+                    continue;
+                };
+                if text.trim_matches(|c: char| !c.is_alphanumeric()) == canonical {
+                    continue;
+                }
+                if witnesses
+                    .iter()
+                    .any(|(_, raw)| lexicon.candidate(raw).as_deref() != Some(canonical.as_str()))
+                    || !witnesses.iter().any(|(_, raw)| {
+                        lexicon.registered_candidate(raw).as_deref() == Some(canonical.as_str())
+                    })
+                {
+                    continue;
+                }
+                let prefix = text
+                    .chars()
+                    .take_while(|c| !c.is_alphanumeric())
+                    .collect::<String>();
+                let suffix = text
+                    .chars()
+                    .rev()
+                    .take_while(|c| !c.is_alphanumeric())
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                let rule = DictionarySlotRule {
+                    id: format!(
+                        "corroborated-lexicon/v1/{:?}/{}=>{}",
+                        witnesses, text, canonical
+                    ),
+                    input,
+                    canonical: format!("{prefix}{canonical}{suffix}"),
+                };
+                let observation = ledger.next_word_observation(
+                    LedgerObservationProducer::Lexicon,
+                    request,
+                    owner,
+                );
+                let receipt = if count == 1 {
+                    ledger
+                        .rewrite_dictionary_slots(&observation, &[(targets[0].clone(), rule)])
+                        .ok()
+                        .filter(MutationReceipt::grants_mutation)
+                } else {
+                    ledger
+                        .merge_word_slots(&observation, &targets, &rule)
+                        .ok()
+                        .and_then(|_| {
+                            ledger
+                                .layer_trail()
+                                .last()
+                                .map(|entry| entry.decision.clone())
+                        })
+                };
+                let Some(receipt) = receipt else {
+                    continue;
+                };
+                let label = ledger.text_of(owner).unwrap_or("").to_string();
+                self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(1);
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                });
+                consumed = count;
+                break;
+            }
+            cursor += consumed;
+        }
+    }
+
     /// Dictionary shape changes are separate from ASR admission. Only settled
     /// committed sources can be merged; the ledger retains their exact PCM and
     /// refuses sealed, stale, or protected targets. No new ASR witness is minted.
@@ -4325,6 +4839,7 @@ impl AppleSealState {
         owner: &OccurrenceIdentity,
         request: u64,
     ) {
+        self.apply_corroborated_lexicon(ev_tx, owner, request);
         use crate::pipeline::acoustic_ledger::SlotTarget;
         let mut ledger = self
             .acoustic_ledger
@@ -4437,7 +4952,7 @@ impl AppleSealState {
         // A measured group refinement needs the capture's own speech ranges and
         // this batch's neighbour geometry; without them the group is kept.
         let speech = coverage_speech_evidence(self);
-        let (observation, receipt, label) = {
+        let (observation, receipt, label, child_receipts) = {
             let mut ledger = self
                 .acoustic_ledger
                 .lock()
@@ -4467,12 +4982,18 @@ impl AppleSealState {
                     .flatten(),
             );
             ledger.record_assigned_word_pins(&observation, neighbours);
+            let trail_start = ledger.layer_trail().len();
             let receipt = ledger.admit_word_slots(&observation, &words);
+            let child_receipts = ledger.layer_trail()[trail_start..]
+                .iter()
+                .filter(|entry| entry.observation != observation)
+                .cloned()
+                .collect::<Vec<_>>();
             let label = match &receipt {
                 MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
                 _ => ledger.text_of(owner).unwrap_or("").to_string(),
             };
-            (observation, receipt, label)
+            (observation, receipt, label, child_receipts)
         };
         if let MutationReceipt::KeepVisibleUnanchored { reason, .. } = &receipt {
             let _ = ev_tx.send(EngineEvent::Warning {
@@ -4481,6 +5002,13 @@ impl AppleSealState {
                     "owner={}..{} request={request}",
                     owner.sample_start, owner.sample_end
                 ),
+            });
+        }
+        for entry in child_receipts {
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation: entry.observation,
+                label: entry.candidate_label,
+                receipt: entry.decision,
             });
         }
         let admitted = receipt.grants_mutation();
@@ -4633,6 +5161,107 @@ impl AppleSealState {
         }
     }
 
+    /// Before expiring a live dispute, ask the sole range planner for one new
+    /// bounded witness. The ledger chooses the component; transport and return
+    /// retain the exact trial and capture identity. Context quality is not a vote.
+    fn schedule_bounded_word_trial(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if self.capture_stopping
+            || self.tail_patch.is_none()
+            || self.refinement_lane_lost
+            || !self.refinement_pending.is_empty()
+            || !self.word_trial_requests.is_empty()
+        {
+            return;
+        }
+        if self
+            .word_trial_scan_at
+            .is_some_and(|at| self.refinement_clock < at + WORD_TRIAL_SCAN_INTERVAL)
+        {
+            return;
+        }
+        self.word_trial_scan_at = Some(self.refinement_clock);
+        let head = self.audio.session_sample_end();
+        let padding = u64::from(self.sample_rate) * 3;
+        let retained_start = if self.terminal_pcm.is_some() {
+            0
+        } else {
+            self.audio.retained_start_sample()
+        };
+        // Unrelated later jobs must not suppress a dispute's last opportunity.
+        // A covering earlier job retains first refusal as the ordinary witness.
+        let trial_horizon = self
+            .refinement_submitted
+            .values()
+            .map(|job| job.request_identity.range.sample_start)
+            .min()
+            .unwrap_or(u64::MAX)
+            .min(self.admission_horizon);
+        let trial = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_word_trial_before_horizon(
+                false,
+                None,
+                Some((padding, retained_start..head)),
+                trial_horizon,
+            );
+        let Some(trial) = trial else {
+            return;
+        };
+        let start = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_start)
+            .min()
+            .unwrap_or(trial.owner.sample_start)
+            .saturating_sub(padding)
+            .max(retained_start);
+        let end = trial
+            .source_ranges
+            .iter()
+            .map(|r| r.sample_end)
+            .max()
+            .unwrap_or(trial.owner.sample_end)
+            .saturating_add(padding)
+            .min(head);
+        let Some(range) = self
+            .window_plan
+            .offer_trial(start, end, head, self.capture_stopping)
+        else {
+            self.close_word_trial(&trial, "trial_budget_or_scope_refused");
+            return;
+        };
+        let Some(window) = self.recognizer_window_by_samples(start, end) else {
+            self.window_plan.account(&range);
+            self.close_word_trial(&trial, "trial_pcm_unavailable");
+            return;
+        };
+        let request_id = (1_u64 << 63) | trial.id;
+        let member_occurrences = self
+            .unsealed_word_owners()
+            .into_iter()
+            .filter(|(_, owner)| range_overlaps_occurrence(&range, owner))
+            .collect();
+        self.word_trial_requests.insert(request_id, trial);
+        self.refinement_pending.push_back(TailPatchRequest {
+            submission_sequence: 0,
+            utterance_id: request_id,
+            committed_text: String::new(),
+            neighbour_context: self.sealed_prefix.clone(),
+            audio: window.samples,
+            admit_sample_start: start,
+            admit_sample_end: end,
+            member_occurrences,
+            provider_request: TailProviderRequest {
+                identity: TailRequestIdentity { request_id, range },
+                sample_rate: self.sample_rate,
+                language: None,
+            },
+        });
+        self.retry_refinements(ev_tx);
+    }
+
     /// Monotonic evidence about future window starts. A completed newer job
     /// cannot seal ahead of an older submitted or queued job that may own words.
     fn close_admission_horizon(
@@ -4642,6 +5271,7 @@ impl AppleSealState {
     ) {
         let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
+        self.schedule_bounded_word_trial(ev_tx);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
         for (id, owner) in owners {
@@ -4712,21 +5342,16 @@ impl AppleSealState {
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let scheduled = schedule_formatter_after_terminal_label(
-            &mut ledger,
-            self.formatter.as_ref(),
-            occurrence,
-            Some(LedgerObservationProducer::Whisper),
-        );
         let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::Whisper);
         if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
         }
-        drop(ledger);
-        if scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
-            self.formatter_awaiting_completion =
-                self.formatter_awaiting_completion.saturating_add(1);
-        }
+        schedule_formatter_for_sealed_label(
+            &ledger,
+            self.formatter.as_ref(),
+            &mut self.formatter_requested,
+            occurrence,
+        );
     }
 
     /// Return one launched Whisper slot with an explicit no-label receipt.
@@ -4767,105 +5392,6 @@ impl AppleSealState {
         }
         drop(ledger);
         self.finish_whisper_frontier(ev_tx, occurrence);
-    }
-
-    /// Accept one completion only after PresentationEmitter returned the same
-    /// exact Formatter slot. Acoustic sealing remains independent: a word
-    /// trial can still own the occurrence after this task has finished.
-    fn complete_formatter(
-        &mut self,
-        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        completion: FormatterCompletion,
-    ) -> bool {
-        if !completion.carries_same_occurrence() {
-            return false;
-        }
-        if !self.formatter_in_flight.contains(&completion.occurrence) {
-            return false;
-        }
-        let utterance_id = self
-            .pending_events
-            .iter()
-            .find_map(|(id, pending)| (pending.occurrence == completion.occurrence).then_some(*id));
-        let canonical_label = {
-            let ledger = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let settled = ledger
-                .frontier_of(&completion.occurrence)
-                .is_some_and(|frontier| {
-                    !frontier
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::Formatter)
-                });
-            settled
-                .then(|| ledger.text_of(&completion.occurrence).map(str::to_owned))
-                .flatten()
-        };
-        let Some(canonical_label) = canonical_label else {
-            return false;
-        };
-        if self.formatter_awaiting_completion == 0 {
-            return false;
-        }
-        if !self.formatter_in_flight.remove(&completion.occurrence) {
-            return false;
-        }
-        if let Some(utterance_id) = utterance_id {
-            if let Some(pending) = self.pending_events.get_mut(&utterance_id) {
-                pending.layer1_baseline = canonical_label;
-            }
-            self.emit_pending_seal(ev_tx, utterance_id);
-        }
-        self.formatter_awaiting_completion = self.formatter_awaiting_completion.saturating_sub(1);
-        true
-    }
-
-    /// Contain a refused optional result to its registered job. The emitter
-    /// receives a no-label disposition for that exact owner; the worker never
-    /// fabricates acoustic finality or stops consuming PCM for this refusal.
-    fn cancel_formatter_job(
-        &mut self,
-        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        occurrence: &OccurrenceIdentity,
-        reason: &str,
-    ) {
-        let owned = self.formatter_in_flight.remove(occurrence);
-        if owned {
-            self.formatter_awaiting_completion =
-                self.formatter_awaiting_completion.saturating_sub(1);
-            let _ = ev_tx.send(EngineEvent::OccurrenceLabelProposal {
-                proposal: OccurrenceLabelProposal::for_existing_occurrence(
-                    occurrence.session.clone(),
-                    occurrence.capture_epoch,
-                    occurrence.sample_start,
-                    occurrence.sample_end,
-                    String::new(),
-                    LabelProposalDisposition::Refuse,
-                ),
-            });
-        }
-        warn!(
-            session = %occurrence.session,
-            capture_epoch = occurrence.capture_epoch,
-            sample_start = occurrence.sample_start,
-            sample_end = occurrence.sample_end,
-            owned,
-            reason,
-            "Formatter result refused locally; live PCM processing continues"
-        );
-    }
-
-    fn settle_formatter_completion(
-        &mut self,
-        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        completion: FormatterCompletion,
-    ) {
-        let occurrence = completion.occurrence.clone();
-        if !self.complete_formatter(ev_tx, completion) {
-            self.cancel_formatter_job(ev_tx, &occurrence, "completion_refused");
-        }
     }
 
     /// Return every still-open launched Whisper slot after the bounded stop
@@ -4920,6 +5446,9 @@ impl AppleSealState {
         }
         for job in self.refinement_submitted.values() {
             self.window_plan_receipt(&job.request_identity.range, "expired_after_acceptance");
+        }
+        for (_, trial) in std::mem::take(&mut self.word_trial_requests) {
+            self.close_word_trial(&trial, "stop_deadline");
         }
         self.refinement_pending.clear();
         self.refinement_submitted.clear();
@@ -5428,32 +5957,17 @@ fn admit_late_apple_words(
     outcome
 }
 
-/// Arrival order chooses the current Apple hypothesis for a PCM word slot.
-/// Distinct adjacent words keep their own slots even if timestamp edges cross.
-fn same_fusion_pcm_slot(held: &FusionWord, word: &FusionWord) -> bool {
-    let middle = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
-    let held_middle = held.sample_start + held.sample_end.saturating_sub(held.sample_start) / 2;
-    let overlap = held
-        .sample_end
-        .min(word.sample_end)
-        .saturating_sub(held.sample_start.max(word.sample_start));
-    let shorter = held
-        .sample_end
-        .saturating_sub(held.sample_start)
-        .min(word.sample_end.saturating_sub(word.sample_start));
-    overlap >= shorter / 2 + shorter % 2
-        && ((held.sample_start <= middle && middle < held.sample_end)
-            || (word.sample_start <= held_middle && held_middle < word.sample_end))
-}
-
+/// Arrival order chooses the current Apple hypothesis for one PCM slot.
+/// Only exact native callback coordinates identify a revised transport row.
+/// Physical word identity is decided later by the ledger's speech anchors.
+/// even when timestamp edges cross.
 fn select_current_apple_words(words: Vec<FusionWord>) -> (Vec<FusionWord>, Vec<FusionWord>) {
     let mut selected: Vec<FusionWord> = Vec::new();
     let mut superseded = Vec::new();
     for word in words {
-        if let Some(index) = selected
-            .iter()
-            .position(|held| same_fusion_pcm_slot(held, &word))
-        {
+        if let Some(index) = selected.iter().position(|held| {
+            held.sample_start == word.sample_start && held.sample_end == word.sample_end
+        }) {
             if selected[index] == word {
                 continue;
             }
@@ -5903,8 +6417,8 @@ enum EnergyAdmission {
     /// Measure the owned capture window and qualify it through the calibration.
     QualifyFromOwnedPcm,
     /// A terminal final-pass job owns an uncovered measured speech range. It
-    /// qualifies that PCM and schedules only the Whisper observer that
-    /// actually ran; Apple/Lexicon never observed this occurrence.
+    /// qualifies that PCM and schedules only the observer whose evidence is
+    /// being admitted; Apple/Lexicon never observed this occurrence.
     QualifyFinalPassGap,
     /// Refuse unless the ledger already qualified this exact occurrence.
     RequireExistingQualification,
@@ -6017,6 +6531,7 @@ fn admit_ledger_label<'a>(
         LedgerObservationProducer::Lexicon
             | LedgerObservationProducer::Whisper
             | LedgerObservationProducer::CloudLive
+            | LedgerObservationProducer::AppleDictation
     ) {
         let (text, counts) = super::live_lexicon::rewrite(label, &state.lexicon_custom_path);
         state.lexicon_entries_custom = counts.custom;
@@ -6045,7 +6560,11 @@ fn admit_ledger_label<'a>(
     }
     if ledger.frontier_of(&occurrence).is_none() {
         let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
-            vec![LedgerObservationProducer::Whisper]
+            // A terminal gap qualifies only the observer whose evidence is
+            // being admitted: Whisper for a Whisper final pass, the DT witness
+            // for a DictationTranscriber return. Apple/Lexicon never observed
+            // this occurrence.
+            vec![producer]
         } else {
             let mut producers = vec![
                 LedgerObservationProducer::Apple,
@@ -6160,20 +6679,17 @@ fn admit_ledger_label<'a>(
     {
         return Some(receipt);
     }
-    let formatter_scheduled = schedule_formatter_after_terminal_label(
-        &mut ledger,
-        formatter.as_ref(),
-        &occurrence,
-        Some(producer),
-    );
     let closed = ledger.note_frontier_return(&occurrence, producer);
     if closed && let Ok(seal) = ledger.seal(&occurrence).cloned() {
         let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt: seal });
     }
+    schedule_formatter_for_sealed_label(
+        &ledger,
+        formatter.as_ref(),
+        &mut state.formatter_requested,
+        &occurrence,
+    );
     drop(ledger);
-    if formatter_scheduled && state.formatter_in_flight.insert(occurrence) {
-        state.formatter_awaiting_completion = state.formatter_awaiting_completion.saturating_add(1);
-    }
     Some(receipt)
 }
 
@@ -6185,6 +6701,10 @@ fn admit_ledger_label<'a>(
 /// a committed Apple occurrence, so admitting its text against the whole gap
 /// would duplicate speech. Such a segment is diagnostic evidence only and the
 /// terminal coverage remains incomplete.
+///
+/// The observation producer follows the payload's own evidence source: a
+/// Whisper final pass names Whisper, a DictationTranscriber witness names
+/// AppleDictation. Nothing here may relabel one engine's return as another's.
 fn admit_full_pass_gap_segments(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -6193,6 +6713,17 @@ fn admit_full_pass_gap_segments(
     threshold_samples: u64,
     gap_energy: EnergyAdmission,
 ) -> usize {
+    let producer = match full_pass.evidence.source {
+        TailEvidenceSource::Whisper => LedgerObservationProducer::Whisper,
+        TailEvidenceSource::AppleDictation => LedgerObservationProducer::AppleDictation,
+        TailEvidenceSource::AppleSpeech => {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "seal_coverage_untrusted_producer".into(),
+                message: "gap evidence from a non-decoder source cannot qualify speech".into(),
+            });
+            return 0;
+        }
+    };
     let exact_timing = full_pass.evidence.timing_quality
         == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
         || (cfg!(test)
@@ -6235,7 +6766,7 @@ fn admit_full_pass_gap_segments(
         contained = contained.saturating_add(1);
 
         let observation = LedgerObservationIdentity::new(
-            LedgerObservationProducer::Whisper,
+            producer,
             full_pass.identity.request_id,
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
@@ -6441,45 +6972,146 @@ fn sum_range_samples(ranges: &[TailSampleRange]) -> u64 {
         .sum()
 }
 
-fn drain_formatter_observers(
-    state: &mut AppleSealState,
-    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    done: &std_mpsc::Receiver<FormatterCompletion>,
-    deadline: Instant,
-) {
-    while state.formatter_awaiting_completion > 0 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let refusal = if remaining.is_zero() {
-            Some("stop_deadline")
-        } else {
-            match done.recv_timeout(remaining.min(LIVE_WORKER_QUANTUM)) {
-                Ok(completion) => {
-                    state.settle_formatter_completion(ev_tx, completion);
-                    None
-                }
-                Err(std_mpsc::RecvTimeoutError::Timeout) => None,
-                Err(std_mpsc::RecvTimeoutError::Disconnected) => Some("channel_closed"),
-            }
-        };
-        if let Some(reason) = refusal {
-            let owners = state
-                .formatter_in_flight
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            for owner in owners {
-                state.cancel_formatter_job(ev_tx, &owner, reason);
-            }
-            break;
-        }
-    }
+fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIdentity) -> bool {
+    // Integer tests first: this runs for every retained decode against every
+    // unsealed owner on each worker tick, and the session string compare was
+    // the hottest leaf of that product (CPU samples 2026-10-14, builds 982/983).
+    range.sample_start < occurrence.sample_end
+        && occurrence.sample_start < range.sample_end
+        && range.capture_epoch == occurrence.capture_epoch
+        && range.session == occurrence.session
 }
 
-fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIdentity) -> bool {
-    range.session == occurrence.session
-        && range.capture_epoch == occurrence.capture_epoch
-        && range.sample_start < occurrence.sample_end
-        && occurrence.sample_start < range.sample_end
+// Returned Word clocks can precede the first VAD owner or fall in an owner
+// gap. Keep the same ledger qualification and measured-word admission paths;
+// a decoder label alone cannot own PCM or rewrite an existing occurrence.
+fn admit_retained_unowned_words(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    payload: &TailProviderPayload,
+    live_before: Option<u64>,
+) -> bool {
+    use crate::stt::tail_provider::{TailEvidenceSource, TailEvidenceStability, TailSegmentGrain};
+
+    let decode = &payload.identity.range;
+    if payload.validate().is_err()
+        || payload.evidence.source != TailEvidenceSource::Whisper
+        || payload.evidence.stability != TailEvidenceStability::Final
+        || payload.evidence.timing_quality
+            != crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+        || decode.session != state.session_id
+        || decode.capture_epoch != state.capture_epoch
+        || decode.sample_end > state.audio.session_sample_end()
+        || decode.sample_end.saturating_sub(decode.sample_start) > u64::from(state.sample_rate) * 9
+    {
+        return false;
+    }
+    let mut qualified = false;
+    for (index, segment) in payload.segments.iter().enumerate() {
+        if segment.grain != TailSegmentGrain::Word
+            || segment.text.split_whitespace().count() != 1
+            || !decode.contains(&segment.range)
+            || state
+                .capture_energy
+                .voiced_hops_in(
+                    &segment.range.session,
+                    segment.range.capture_epoch,
+                    segment.range.sample_start,
+                    segment.range.sample_end,
+                )
+                .is_none_or(|hops| hops.is_empty())
+        {
+            continue;
+        }
+        let already_owned = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .qualified_occurrences()
+            .any(|owner| range_overlaps_occurrence(&segment.range, owner));
+        if already_owned {
+            continue;
+        }
+        let owner = OccurrenceIdentity::from(&segment.range);
+        if let Some(before) = live_before {
+            if owner.sample_end > before
+                || state.fusion.as_ref().is_none_or(|fusion| {
+                    fusion
+                        .ledger()
+                        .utterances()
+                        .iter()
+                        .any(|utterance| range_overlaps_occurrence(&utterance.range, &owner))
+                })
+            {
+                continue;
+            }
+            let speech = coverage_speech_evidence(state);
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.record_speech_evidence(&speech);
+            state.record_decode_fence_measurement(
+                &mut ledger,
+                Some((decode.sample_start, decode.sample_end)),
+            );
+            // A non-origin left edge needs the same authenticated quiet
+            // onset as admission. Keep origin visibility separate: an unknown
+            // capture onset still cannot become a complete acoustic witness.
+            if (owner.sample_start != 0
+                && !ledger.decode_word_onset_complete(
+                    &owner,
+                    decode.sample_start,
+                    decode.sample_end,
+                    owner.sample_start,
+                ))
+                || ledger.decode_word_fence_incomplete(
+                    &owner,
+                    decode.sample_start,
+                    decode.sample_end,
+                    owner.sample_start,
+                    owner.sample_end,
+                )
+            {
+                continue;
+            }
+        }
+        if !qualify_owned_occurrence(state, &owner) {
+            continue;
+        }
+        qualified = true;
+        {
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.bind_word_provider(payload);
+            ledger.schedule_frontier(owner.clone(), vec![LedgerObservationProducer::Whisper]);
+        }
+        let pin = RoutedPin {
+            index,
+            pin: owner.clone(),
+            text: segment.text.trim().to_string(),
+            confidence: segment.confidence,
+        };
+        state.admit_routed_words_with_decode_window(
+            ev_tx,
+            0,
+            &owner,
+            (
+                payload.identity.request_id,
+                Some((decode.sample_start, decode.sample_end)),
+            ),
+            RoutedWords {
+                pins: std::slice::from_ref(&pin),
+                neighbours: &[],
+            },
+            LedgerObservationProducer::Whisper,
+        );
+        // Leave Whisper open until all already-returned windows have had
+        // their turn. Arrival order cannot seal the first spelling here.
+    }
+    qualified
 }
 
 /// Reconcile completed planned returns and publish the remaining acoustic debt.
@@ -6497,45 +7129,25 @@ fn reconcile_terminal_coverage(
         .iter()
         .cloned()
         .collect::<Vec<_>>();
+    for payload in &retained {
+        admit_retained_unowned_words(state, ev_tx, payload, None);
+    }
+    // These are retained results, not new model jobs. Newly qualified owners
+    // now receive their original overlapping windows before frontier closure.
+    state.replay_completed_windows(ev_tx);
     for payload in retained {
         let uncovered = {
             let ledger = state
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut gaps = ledger
-                .assess_seal_coverage(
-                    &state.session_id,
-                    state.capture_epoch,
-                    &speech,
-                    threshold_samples,
-                )
-                .uncovered_speech_ranges;
-            for owner in ledger.qualified_occurrences() {
-                gaps = gaps
-                    .into_iter()
-                    .flat_map(|gap| {
-                        if !range_overlaps_occurrence(&gap, owner) {
-                            return vec![gap];
-                        }
-                        let mut remaining = Vec::new();
-                        if gap.sample_start < owner.sample_start {
-                            remaining.push(TailSampleRange {
-                                sample_end: owner.sample_start,
-                                ..gap.clone()
-                            });
-                        }
-                        if owner.sample_end < gap.sample_end {
-                            remaining.push(TailSampleRange {
-                                sample_start: owner.sample_end,
-                                ..gap
-                            });
-                        }
-                        remaining
-                    })
-                    .collect();
-            }
-            gaps
+            uncovered_gap_ranges(
+                &ledger,
+                &state.session_id,
+                state.capture_epoch,
+                &speech,
+                threshold_samples,
+            )
         };
         admit_full_pass_gap_segments(
             state,
@@ -6573,32 +7185,640 @@ fn reconcile_terminal_coverage(
     receipt
 }
 
-/// Hand one exact occurrence to Formatter only after lexical settlement, when
-/// the returning producer is the last earlier observer (or all have returned),
-/// and bounded transport ownership is already held.
-/// Configuration intent, label equality, and queue availability alone never
-/// change the ledger frontier.
-fn schedule_formatter_after_terminal_label(
-    ledger: &mut AcousticLedger,
-    formatter: Option<&mpsc::Sender<FormatterRequest>>,
-    occurrence: &OccurrenceIdentity,
-    returning: Option<LedgerObservationProducer>,
-) -> bool {
-    if ledger.is_sealed(occurrence)
-        || ledger.text_recovery_pending(occurrence)
-        || !ledger.word_labels_settled(occurrence)
-    {
-        return false;
+/// Uncovered measured speech with every qualified owner's PCM subtracted.
+///
+/// This is the same gap arithmetic the terminal reconcile loop applies before
+/// admitting final-pass evidence: a pending owner still punches its own debt
+/// out of coverage inside `assess_seal_coverage`, so what remains here is
+/// speech no committed or debt-held range can account for.
+fn uncovered_gap_ranges(
+    ledger: &AcousticLedger,
+    session: &str,
+    capture_epoch: u64,
+    speech: &AcousticSpeechEvidence,
+    threshold_samples: u64,
+) -> Vec<TailSampleRange> {
+    let mut gaps = ledger
+        .assess_seal_coverage(session, capture_epoch, speech, threshold_samples)
+        .uncovered_speech_ranges;
+    for owner in ledger.qualified_occurrences() {
+        gaps = gaps
+            .into_iter()
+            .flat_map(|gap| {
+                if !range_overlaps_occurrence(&gap, owner) {
+                    return vec![gap];
+                }
+                let mut remaining = Vec::new();
+                if gap.sample_start < owner.sample_start {
+                    remaining.push(TailSampleRange {
+                        sample_end: owner.sample_start,
+                        ..gap.clone()
+                    });
+                }
+                if owner.sample_end < gap.sample_end {
+                    remaining.push(TailSampleRange {
+                        sample_start: owner.sample_end,
+                        ..gap
+                    });
+                }
+                remaining
+            })
+            .collect();
     }
-    let Some(frontier) = ledger.frontier_of(occurrence) else {
+    gaps
+}
+
+/// Closed-take context added on each side of a witness target. The read stays
+/// inside the recorder-owned archive; the wider window lets the decoder hear
+/// the phrase that contains the unresolved range.
+const DICTATION_WITNESS_CONTEXT_SECS: u64 = 3;
+/// One witness decode never reads more than this much capture PCM.
+const DICTATION_WITNESS_MAX_WINDOW_SECS: u64 = 30;
+/// One take issues at most this many witness decodes, in capture order.
+const DICTATION_WITNESS_MAX_REQUESTS: usize = 4;
+/// Per-request wall clock. The bridge child is killed and reaped past it.
+const DICTATION_WITNESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Whole terminal witness phase. Whatever is undecoded past it stays an
+/// explicit unresolved outcome; the take never parks on the witness.
+const DICTATION_WITNESS_TOTAL_BUDGET: Duration = Duration::from_secs(90);
+/// Request-id band for terminal witness decodes. The capture plan owns small
+/// ids and lexical trials live above `1 << 63`; this band keeps a witness
+/// return acoustically distinct from both.
+const DICTATION_WITNESS_REQUEST_BASE: u64 = 1 << 62;
+/// Live per-utterance witness requests mint ids in their own band, distinct
+/// from the terminal ordinals sharing the witness base.
+const DICTATION_WITNESS_LIVE_REQUEST_BASE: u64 = DICTATION_WITNESS_REQUEST_BASE | (1 << 61);
+/// One target range is re-asked at most this many times per session.
+const DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE: u8 = 2;
+
+/// A witness thread's answer: the request identity on the capture clock and
+/// the decode outcome, stringified on failure. The worker thread admits it.
+type DictationWitnessReturn = (TailRequestIdentity, Result<TailProviderPayload, String>);
+
+/// Outstanding recovery debt the witness may still answer: unsealed
+/// recovery-pending owners plus material measured-speech gaps. Both witness
+/// triggers (per-utterance and terminal) aim from this one picture.
+fn witness_recovery_targets(
+    state: &AppleSealState,
+    threshold_samples: u64,
+) -> (Vec<OccurrenceIdentity>, Vec<TailSampleRange>) {
+    let speech = coverage_speech_evidence(state);
+    let ledger = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pending = ledger
+        .pending_text_recoveries(&state.session_id, state.capture_epoch)
+        .into_iter()
+        .filter(|owner| !ledger.is_sealed(owner))
+        .collect::<Vec<_>>();
+    let gaps = uncovered_gap_ranges(
+        &ledger,
+        &state.session_id,
+        state.capture_epoch,
+        &speech,
+        threshold_samples,
+    )
+    .into_iter()
+    .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
+    .collect::<Vec<_>>();
+    (pending, gaps)
+}
+
+/// Debit only debt actually covered by the issued witness question.
+fn record_dictation_witness_attempts(
+    attempts: &mut Vec<((u64, u64), u8)>,
+    targets: &[(u64, u64)],
+    window_start: u64,
+    window_end: u64,
+    max_window: u64,
+) {
+    for (index, target) in targets.iter().enumerate() {
+        // An attempt binds only when the question was actually asked: the
+        // issued window covers the whole target, or the target leads the
+        // window while being wider than any legal window — its leading read
+        // counts and the range still ends honestly unresolved. A sliver of
+        // coverage, or an oversized range outside the window, costs nothing.
+        let covered_whole = target.0 >= window_start && target.1 <= window_end;
+        let leading_oversized = index == 0 && target.1.saturating_sub(target.0) > max_window;
+        if !covered_whole && !leading_oversized {
+            continue;
+        }
+        let entry = attempts.iter_mut().find(|(range, _)| range == target);
+        match entry {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => attempts.push((*target, 1)),
+        }
+    }
+}
+
+/// Per-utterance witness trigger: after a seal commits, re-ask outstanding
+/// recovery debt on closed PCM in the background. One request in flight; a
+/// target range is asked at most twice per session; the worker admits the
+/// return through the ordinary guarded corridor.
+fn maybe_spawn_utterance_witness(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    sealed_end: u64,
+) {
+    if !state.dictation_witness_armed
+        || state.dictation_witness_inflight
+        || sealed_end == 0
+        || state.dictation_witness_return.is_none()
+    {
+        return;
+    }
+    let threshold_samples =
+        u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    // Only closed PCM may be asked about: the decoder never reads past the
+    // seal that just landed.
+    let mut targets: Vec<(u64, u64)> = pending_owners
+        .iter()
+        .map(|owner| (owner.sample_start, owner.sample_end))
+        .chain(
+            gaps.iter()
+                .map(|range| (range.sample_start, range.sample_end)),
+        )
+        .filter(|&(start, end)| start < sealed_end && end > start)
+        .map(|(start, end)| (start, end.min(sealed_end)))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    // Debt already asked twice stays unresolved rather than re-charging the
+    // decoder on every seal.
+    targets.retain(|target| {
+        !state
+            .dictation_witness_attempts
+            .iter()
+            .any(|(range, attempts)| {
+                *range == *target && *attempts >= DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE
+            })
+    });
+    if targets.is_empty() {
+        return;
+    }
+    let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
+    let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let first_start = targets.first().expect("nonempty targets").0;
+    let last_end = targets.last().expect("nonempty targets").1;
+    let window_start = first_start.saturating_sub(context);
+    let window_end = last_end
+        .saturating_add(context)
+        .min(sealed_end)
+        .min(window_start.saturating_add(max_window));
+    if window_end <= window_start {
+        return;
+    }
+    let Some(window) = state.window_by_samples(window_start, window_end) else {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "dictation_witness_pcm_unavailable".into(),
+            message: format!(
+                "live window {window_start}..{window_end} is not in the retained capture"
+            ),
+        });
+        return;
+    };
+    record_dictation_witness_attempts(
+        &mut state.dictation_witness_attempts,
+        &targets,
+        window_start,
+        window_end,
+        max_window,
+    );
+    let identity = TailRequestIdentity {
+        request_id: DICTATION_WITNESS_LIVE_REQUEST_BASE | state.dictation_witness_requests,
+        range: TailSampleRange {
+            session: state.session_id.clone(),
+            capture_epoch: state.capture_epoch,
+            sample_start: window.sample_start,
+            sample_end: window.sample_end,
+        },
+    };
+    state.dictation_witness_requests = state.dictation_witness_requests.saturating_add(1);
+    state.dictation_witness_inflight = true;
+    let return_tx = state
+        .dictation_witness_return
+        .clone()
+        .expect("armed witness holds a return channel");
+    let language = state.dictation_witness_language.clone();
+    let sample_rate = state.sample_rate;
+    let samples = window.samples;
+    let thread_identity = identity.clone();
+    std::thread::spawn(move || {
+        let result = crate::stt::apple_stt::transcribe_dictation_witness(
+            &thread_identity,
+            &samples,
+            sample_rate,
+            language.as_deref(),
+            DICTATION_WITNESS_REQUEST_TIMEOUT,
+        )
+        .map_err(|error| format!("{error:#}"));
+        let _ = return_tx.send((thread_identity, result));
+    });
+    info!(
+        session = %state.session_id,
+        capture_epoch = state.capture_epoch,
+        request_id = identity.request_id,
+        sample_start = identity.range.sample_start,
+        sample_end = identity.range.sample_end,
+        "dictation_witness_live_request"
+    );
+}
+
+/// Admit witness returns on the worker thread. The document may have moved
+/// since the ask, so targets are recomputed at answer time; an owner that
+/// settled meanwhile is skipped by admission itself.
+fn drain_dictation_witness_returns(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
+) {
+    while let Ok((identity, result)) = witness_done.try_recv() {
+        state.dictation_witness_inflight = false;
+        let payload = match result {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "dictation_witness_unavailable".into(),
+                    message: format!(
+                        "window {}..{}: {error}",
+                        identity.range.sample_start, identity.range.sample_end
+                    ),
+                });
+                continue;
+            }
+        };
+        info!(
+            session = %state.session_id,
+            capture_epoch = state.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            segments = payload.segments.len(),
+            elapsed_ms = payload.elapsed_ms,
+            "dictation_witness_return"
+        );
+        let threshold_samples =
+            u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+        let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+        let pending_owners = pending_owners
+            .into_iter()
+            .filter(|owner| {
+                owner.sample_end > identity.range.sample_start
+                    && owner.sample_start < identity.range.sample_end
+            })
+            .collect::<Vec<_>>();
+        let gaps = gaps
+            .into_iter()
+            .filter(|range| {
+                range.sample_end > identity.range.sample_start
+                    && range.sample_start < identity.range.sample_end
+            })
+            .collect::<Vec<_>>();
+        admit_dictation_witness_payload(
+            state,
+            ev_tx,
+            &identity,
+            &payload,
+            &pending_owners,
+            &gaps,
+            threshold_samples,
+        );
+    }
+}
+
+/// Run the bounded terminal DictationTranscriber witness over the take's
+/// remaining unresolved acoustic debt: committed owners whose text recovery is
+/// still pending, and material measured-speech gaps no qualified owner covers.
+///
+/// The witness reads only the recorder-owned terminal PCM on this take's
+/// session/epoch clock, decodes it through the bridge's pinned DT lane, and
+/// hands the result to the ordinary ledger admission corridors:
+///
+/// - a single-word segment whose midpoint sits inside an unsealed
+///   recovery-pending owner is offered to that owner as a measured word pin;
+/// - a segment wholly contained in a material gap is admitted through the
+///   same containment path a retained final pass uses;
+/// - everything else stays diagnostic payload text and never mutates the
+///   document. The witness never replaces a whole take and never reopens a
+///   sealed occurrence.
+///
+/// Every request is deduplicated by its acoustic window, executed under the
+/// process-wide bridge lock, bounded per request and in total. An unarmed
+/// lane, a missing archive, a bridge error or a timeout leaves the debt
+/// exactly as it was — the coverage receipt recomputed after this pass keeps
+/// reporting the gap.
+fn run_terminal_dictation_witness(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    language: Option<&str>,
+    witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
+) {
+    if !state.dictation_witness_armed {
+        return;
+    }
+    // Live witness answers that already returned land first; the terminal
+    // target picture below then sees the debt they resolved.
+    drain_dictation_witness_returns(state, ev_tx, witness_done);
+    let threshold_samples =
+        u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    if pending_owners.is_empty() && gaps.is_empty() {
+        return;
+    }
+    let capture_samples = state.audio.session_sample_end();
+    if state.terminal_pcm.is_none() {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "dictation_witness_pcm_unavailable".into(),
+            message: "terminal archive PCM is unavailable; witness targets stay unresolved".into(),
+        });
+        return;
+    }
+
+    // Witness targets on the capture clock: pending-recovery owners and
+    // material gaps, deduplicated and ordered. Two targets naming the same
+    // PCM are one question, not two witnesses.
+    let mut targets: Vec<(u64, u64)> = pending_owners
+        .iter()
+        .map(|owner| (owner.sample_start, owner.sample_end))
+        .chain(
+            gaps.iter()
+                .map(|range| (range.sample_start, range.sample_end)),
+        )
+        .filter(|(start, end)| *end > *start && *start < capture_samples)
+        .map(|(start, end)| (start, end.min(capture_samples)))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+
+    // Cluster targets into disjoint witness windows with bounded context.
+    let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
+    let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let mut clusters: Vec<(u64, u64)> = Vec::new();
+    for (start, end) in targets {
+        let extend = match clusters.last() {
+            Some(&(first_start, last_end)) => {
+                start <= last_end.saturating_add(2 * context)
+                    && end
+                        .saturating_add(context)
+                        .saturating_sub(first_start.saturating_sub(context))
+                        <= max_window
+            }
+            None => false,
+        };
+        if extend {
+            let last_end = &mut clusters
+                .last_mut()
+                .expect("a cluster matched the extension check")
+                .1;
+            *last_end = (*last_end).max(end);
+        } else {
+            clusters.push((start, end));
+        }
+    }
+    let windows: Vec<(u64, u64)> = clusters
+        .iter()
+        .map(|&(first_start, last_end)| {
+            let window_start = first_start.saturating_sub(context);
+            // A single oversized target must not widen the window past the
+            // cap either: the witness reads from the target's leading edge —
+            // the lost-beginning failure mode — and whatever does not fit
+            // stays honestly unresolved instead of silently exceeding the
+            // per-request PCM bound.
+            let window_end = last_end
+                .saturating_add(context)
+                .min(capture_samples)
+                .min(window_start.saturating_add(max_window));
+            (window_start, window_end)
+        })
+        .filter(|&(start, end)| end > start)
+        .collect();
+
+    let budget_start = Instant::now();
+    let mut requests_issued = 0usize;
+    for (ordinal, (window_start, window_end)) in windows.iter().copied().enumerate() {
+        // The total budget binds every request, including the one in flight:
+        // its deadline is clipped to what the budget still owns, so a late
+        // request cannot overrun the terminal phase past the declared cap.
+        let remaining = DICTATION_WITNESS_TOTAL_BUDGET.saturating_sub(budget_start.elapsed());
+        if requests_issued >= DICTATION_WITNESS_MAX_REQUESTS || remaining < Duration::from_secs(1) {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "dictation_witness_budget_exhausted".into(),
+                message: format!(
+                    "{} witness window(s) stay unresolved beyond the terminal budget",
+                    windows.len() - ordinal
+                ),
+            });
+            break;
+        }
+        let request_timeout = DICTATION_WITNESS_REQUEST_TIMEOUT.min(remaining);
+        let Some(window) = state
+            .terminal_pcm
+            .as_ref()
+            .and_then(|pcm| pcm.window(window_start, window_end))
+        else {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "dictation_witness_pcm_unavailable".into(),
+                message: format!("window {window_start}..{window_end} is not in the owned archive"),
+            });
+            continue;
+        };
+        let identity = TailRequestIdentity {
+            request_id: DICTATION_WITNESS_REQUEST_BASE | ordinal as u64,
+            range: TailSampleRange {
+                session: state.session_id.clone(),
+                capture_epoch: state.capture_epoch,
+                sample_start: window.sample_start,
+                sample_end: window.sample_end,
+            },
+        };
+        requests_issued = requests_issued.saturating_add(1);
+        let payload = match crate::stt::apple_stt::transcribe_dictation_witness(
+            &identity,
+            &window.samples,
+            state.sample_rate,
+            language,
+            request_timeout,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "dictation_witness_unavailable".into(),
+                    message: format!(
+                        "window {}..{}: {error:#}",
+                        window.sample_start, window.sample_end
+                    ),
+                });
+                continue;
+            }
+        };
+        info!(
+            session = %state.session_id,
+            capture_epoch = state.capture_epoch,
+            request_id = identity.request_id,
+            sample_start = identity.range.sample_start,
+            sample_end = identity.range.sample_end,
+            segments = payload.segments.len(),
+            elapsed_ms = payload.elapsed_ms,
+            "dictation_witness_return"
+        );
+        admit_dictation_witness_payload(
+            state,
+            ev_tx,
+            &identity,
+            &payload,
+            &pending_owners,
+            &gaps,
+            threshold_samples,
+        );
+    }
+}
+
+/// Hand one returned witness payload to the ledger. Word pins go only to
+/// unsealed recovery-pending owners; gap segments go only where they are
+/// wholly contained. A pending owner an earlier window already settled is
+/// skipped — one question earns one answer.
+fn admit_dictation_witness_payload(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    identity: &TailRequestIdentity,
+    payload: &TailProviderPayload,
+    pending_owners: &[OccurrenceIdentity],
+    gaps: &[TailSampleRange],
+    threshold_samples: u64,
+) {
+    let decode_window = (identity.range.sample_start, identity.range.sample_end);
+    // Committed word-slot PCM for this capture. A witness pin may only speak
+    // for PCM no admitted word already owns: a pin intersecting a committed
+    // slot is re-heard context or a challenge the witness cannot adjudicate,
+    // never the birth of another occurrence over the same samples.
+    let committed_slot_ranges: Vec<(u64, u64)> = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger
+            .qualified_occurrences()
+            .filter(|occurrence| {
+                occurrence.session == identity.range.session
+                    && occurrence.capture_epoch == identity.range.capture_epoch
+            })
+            .flat_map(|occurrence| {
+                ledger
+                    .slots_of(occurrence)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|slot| (slot.sample_start, slot.sample_end))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    for owner in pending_owners {
+        if owner.sample_end <= identity.range.sample_start
+            || owner.sample_start >= identity.range.sample_end
+        {
+            continue;
+        }
+        let still_pending = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .text_recovery_pending(owner);
+        if !still_pending {
+            continue;
+        }
+        // Only a measured single-word span can be a word pin. A multi-word DT
+        // segment is honest phrase evidence, never divided into synthetic
+        // word timing.
+        let mut pins: Vec<RoutedPin> = Vec::new();
+        for (index, segment) in payload.segments.iter().enumerate() {
+            if segment.text.split_whitespace().count() != 1 {
+                continue;
+            }
+            let midpoint = segment
+                .range
+                .sample_start
+                .saturating_add(segment.range.sample_len().unwrap_or(0) / 2);
+            if !(owner.sample_start <= midpoint && midpoint < owner.sample_end) {
+                continue;
+            }
+            if committed_slot_ranges.iter().any(|&(start, end)| {
+                segment.range.sample_start < end && start < segment.range.sample_end
+            }) {
+                let label = segment.text.trim();
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::AppleDictation,
+                    identity.request_id,
+                    index as u64,
+                    OccurrenceIdentity::from(&segment.range),
+                );
+                let receipt = {
+                    let mut ledger = state
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ledger.refuse_replacement(
+                        &observation,
+                        label,
+                        RefuseReason::ReplayedRangeIdentity,
+                    )
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: label.to_string(),
+                    receipt,
+                });
+                continue;
+            }
+            pins.push(RoutedPin {
+                index,
+                pin: OccurrenceIdentity::from(&segment.range),
+                text: segment.text.clone(),
+                confidence: segment.confidence,
+            });
+        }
+        if pins.is_empty() {
+            continue;
+        }
+        let _ = state.admit_routed_words_with_decode_window(
+            ev_tx,
+            0,
+            owner,
+            (identity.request_id, Some(decode_window)),
+            RoutedWords {
+                pins: &pins,
+                neighbours: &[],
+            },
+            LedgerObservationProducer::AppleDictation,
+        );
+    }
+    admit_full_pass_gap_segments(
+        state,
+        ev_tx,
+        payload,
+        gaps,
+        threshold_samples,
+        EnergyAdmission::QualifyFinalPassGap,
+    );
+}
+
+/// Hand one sealed occurrence's committed label to the formatter as a text
+/// job. Formatting is not an acoustic observer: it never joins the ledger
+/// frontier, so a slow, failed or absent formatter cannot hold this seal, a
+/// later seal or Stop. Each sealed label is requested at most once, and only
+/// when bounded transport ownership is already held. Configuration intent and
+/// queue availability alone never change the ledger.
+fn schedule_formatter_for_sealed_label(
+    ledger: &AcousticLedger,
+    formatter: Option<&mpsc::Sender<FormatterRequest>>,
+    requested: &mut BTreeSet<OccurrenceIdentity>,
+    occurrence: &OccurrenceIdentity,
+) -> bool {
+    let Some(formatter) = formatter else {
         return false;
     };
-    let open_producers = frontier.open_producers();
-    let earlier_returned = match returning {
-        Some(producer) => open_producers.len() == 1 && open_producers.contains(&producer),
-        None => open_producers.is_empty(),
-    };
-    if !earlier_returned {
+    if !ledger.is_sealed(occurrence) || requested.contains(occurrence) {
         return false;
     }
     let Some(existing_label) = ledger
@@ -6608,28 +7828,24 @@ fn schedule_formatter_after_terminal_label(
     else {
         return false;
     };
-    let Some(formatter) = formatter else {
+    // The derived result is bound to the last mutation that produced this
+    // committed label; without that source the emitter could not prove CAS.
+    let Some(source_observation) = ledger
+        .layer_trail_for(occurrence)
+        .filter(|decision| decision.decision.grants_mutation())
+        .last()
+        .map(|decision| decision.observation.clone())
+    else {
         return false;
     };
     let Ok(permit) = formatter.try_reserve() else {
         return false;
     };
-    let scheduled = if returning.is_some() {
-        ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::Formatter)
-    } else {
-        ledger.schedule_settled_formatter(occurrence.clone())
-    };
-    if !scheduled {
-        return false;
-    }
+    requested.insert(occurrence.clone());
     permit.send(FormatterRequest {
         occurrence: occurrence.clone(),
         existing_label,
-        source_observation: ledger
-            .layer_trail_for(occurrence)
-            .filter(|decision| decision.decision.grants_mutation())
-            .last()
-            .map(|decision| decision.observation.clone()),
+        source_observation: Some(source_observation),
         // The selected immutable generation supplies the policy before execution.
         policy: FormattingPolicy::Off,
     });
@@ -7120,6 +8336,8 @@ fn close_apple_phrase(
     audio_secs: f32,
     closes_open: bool,
 ) -> (bool, Vec<EngineEvent>) {
+    // Every caller has already cleared the open partial; its word clock ends
+    // with it, so the next phrase cannot inherit stale arrivals.
     let timed = apple_segments_on_pcm_clock(state, &segments);
     let (seal_tx, mut seal_rx) = mpsc::unbounded_channel();
     let committed = seal_utterance_final(state, &seal_tx, raw, segments, audio_secs);
@@ -7129,6 +8347,10 @@ fn close_apple_phrase(
     if events.is_empty() && !closes_open {
         return (committed, events);
     }
+    // The next phrase is spoken after this one's last timed word. Committed
+    // words before that point belong to this phrase and can never be counted
+    // as speech the next partial restates. Untimed segments sit at zero and
+    // leave the floor where it was.
     let untimed = events.iter().any(|event| {
         matches!(event,
         EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing")
@@ -7270,6 +8492,16 @@ fn close_apple_phrase(
         }
     }
     state.publish_unadmitted_words(ev_tx);
+    // A committed seal closes this phrase's PCM; outstanding debt on it may be
+    // re-asked in the background without holding the next utterance.
+    if committed {
+        let sealed_end = timed
+            .iter()
+            .map(|word| word.range.sample_end)
+            .max()
+            .unwrap_or(0);
+        maybe_spawn_utterance_witness(state, ev_tx, sealed_end);
+    }
     (committed, events)
 }
 
@@ -7417,6 +8649,8 @@ fn drain_cloud_stop_finals(
 
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
+    input_enhanced: bool,
+    input_archive: SpeechInputArchive,
     capture_turn: CaptureTurnIntent,
     consultation: Option<LiveConsultationCapture>,
     local_execution: Arc<LocalExecutionOwner>,
@@ -7446,15 +8680,16 @@ struct AppleWorkerConfig<'a> {
 
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
 fn apple_stream_worker(
-    pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
+    pcm_rx: std_mpsc::Receiver<Result<Option<SpeechInputFrame>, String>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
     formatter: Option<mpsc::Sender<FormatterRequest>>,
-    formatter_done: std_mpsc::Receiver<FormatterCompletion>,
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
+        input_enhanced,
+        input_archive,
         capture_turn,
         mut consultation,
         local_execution,
@@ -7534,6 +8769,21 @@ fn apple_stream_worker(
         ),
     };
     state.bind_capture_energy(capture_energy);
+    if let Some(device) = capture_device_name.as_deref()
+        && let Ok(floor) = runtime_settings
+            .energy_calibration()
+            .speech_anchor_floor_for_capture(device, sample_rate)
+    {
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind_speech_anchor_floor(floor);
+    }
+    if input_enhanced {
+        state.recognizer_audio = Some(LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS));
+        state.recognizer_archive = input_archive;
+    }
     state.capture_turn = capture_turn;
     state.terminal_archive_pending = terminal_audio.is_some();
     state.formatter = formatter;
@@ -7544,6 +8794,12 @@ fn apple_stream_worker(
     // It is built whenever either consumer wants it — the fusion flag decides
     // whether identity reaches the seal, not whether the VAD exists.
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
+    // Voice Lab witness: the immutable snapshot verdict replaces the
+    // construction-time env read; the return lane belongs to this worker.
+    state.dictation_witness_armed = runtime_settings.dictation_witness_armed();
+    state.dictation_witness_language = language.map(str::to_owned);
+    let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
+    state.dictation_witness_return = Some(witness_done_tx);
     if state.fusion_seal_armed || utterance_silence_sec.is_some() {
         let ingress =
             SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);
@@ -7584,23 +8840,20 @@ fn apple_stream_worker(
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
         state.flush_cloud_commits(&ev_tx);
-        if let Some(notices) = cloud_notice.as_ref() {
-            while let Ok(notice) = notices.try_recv() {
-                state.handle_cloud_notice(&ev_tx, notice);
-            }
-        }
-        while let Ok(completion) = tail_patch_done.try_recv() {
-            let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-            state.complete_whisper_window(&ev_tx, completion, audio_secs);
-        }
-        while let Ok(completion) = formatter_done.try_recv() {
-            state.settle_formatter_completion(&ev_tx, completion);
-        }
+        state.collect_ready_refinement_returns(
+            &ev_tx,
+            &tail_patch_done,
+            cloud_notice.as_ref(),
+            samples_seen as f32 / sample_rate.max(1) as f32,
+        );
+        drain_dictation_witness_returns(&mut state, &ev_tx, &witness_done_rx);
         // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(LIVE_WORKER_QUANTUM) {
-            Ok(Some(samples)) => {
-                samples_seen += samples.len() as u64;
+            Ok(Ok(Some(frame))) => {
+                let samples = &frame.samples;
+                let raw_samples = frame.raw_samples();
+                samples_seen += raw_samples.len() as u64;
                 // Retain before forwarding, on the same counter `audio_secs` is
                 // derived from, so the buffer and the seal clock cannot drift.
                 // This is worker-side on purpose: the async select loop stays
@@ -7610,7 +8863,10 @@ fn apple_stream_worker(
                 // Retention runs in every lifecycle state, including while the
                 // engine rests: it is what the pre-roll of the next epoch is cut
                 // from, and what Layer 1 windows still resolve against.
-                state.audio.push(&samples);
+                state.audio.push(raw_samples);
+                if let Some(audio) = state.recognizer_audio.as_mut() {
+                    audio.push(samples);
+                }
                 state.pump_capture_windows(&ev_tx);
                 // A final may have queued while recv_timeout waited for PCM.
                 // Admit it before advancing the capture-clock expiry boundary.
@@ -7626,7 +8882,7 @@ fn apple_stream_worker(
                 let silero_ingest = state
                     .fusion
                     .as_mut()
-                    .map(|fusion| fusion.ingest(&samples, samples_seen));
+                    .map(|fusion| fusion.ingest(raw_samples, samples, samples_seen));
                 if let Some(ingest) = silero_ingest.as_ref() {
                     if let Some(owner) = consultation.as_mut()
                         && owner.observe(ingest, samples_seen).is_err()
@@ -7639,6 +8895,12 @@ fn apple_stream_worker(
                         });
                     }
                 }
+                publish_apple_phrase_at_valley(
+                    &mut state,
+                    &ev_tx,
+                    samples_seen as f32 / sample_rate.max(1) as f32,
+                    consultation.as_mut(),
+                );
                 if state.fusion_seal_armed {
                     if let Some(fusion) = state.fusion.as_ref() {
                         state.speech_progress.observe_speech(
@@ -7653,10 +8915,10 @@ fn apple_stream_worker(
                 }
                 let speech_live = silero_ingest.is_some_and(|ingest| ingest.speech_live);
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                match epoch.feed_pcm(&samples, samples_seen, speech_live) {
+                match epoch.feed_pcm(raw_samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
                         if let Some(session) = stream.as_mut() {
-                            session.write_pcm(&samples).inspect_err(|_| {
+                            session.write_pcm(samples).inspect_err(|_| {
                                 state.return_outstanding_cloud(&ev_tx);
                             })?;
                             let events = shift_events(
@@ -7675,7 +8937,7 @@ fn apple_stream_worker(
                         // off retention resolves to nothing, and basing the
                         // epoch on it would shift every timestamp in it earlier
                         // by the missing audio.
-                        let preroll = state.audio.window_by_samples(preroll_from, chunk_start);
+                        let preroll = state.recognizer_window_by_samples(preroll_from, chunk_start);
                         epoch_base_samples =
                             preroll.as_ref().map_or(chunk_start, |w| w.sample_start);
                         let preroll_samples =
@@ -7685,7 +8947,7 @@ fn apple_stream_worker(
                                 .write_pcm(&window.samples)
                                 .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         }
-                        session.write_pcm(&samples).inspect_err(|_| {
+                        session.write_pcm(samples).inspect_err(|_| {
                             state.return_outstanding_cloud(&ev_tx);
                         })?;
                         info!(
@@ -7728,7 +8990,11 @@ fn apple_stream_worker(
                     EpochDecision::Idle => {}
                 }
             }
-            Ok(None) => break, // EOF from async side
+            Ok(Ok(None)) => break, // EOF after the projection flushed its real tail
+            Ok(Err(error)) => {
+                state.return_outstanding_cloud(&ev_tx);
+                return Err(anyhow::anyhow!(error));
+            }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
                 if let Some(session) = stream.as_mut() {
@@ -7862,7 +9128,21 @@ fn apple_stream_worker(
     // measured 2026-08-12, `rec_stop=36.701s` of which 30.005s was this loop
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
-    let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
+    // The warm budget is honest only after the engine proved it executes:
+    // a session that still owes its first window may be paying the model
+    // cold-load with its only accepted text, so it gets the cold budget.
+    // When nothing is outstanding the loops below never wait, so the wider
+    // budget cannot slow an owing-nothing stop.
+    let owes_first_window = !state.first_whisper_window_completed
+        && (state.planned_work_pending()
+            || !state.refinement_submitted.is_empty()
+            || !state.refinement_pending.is_empty());
+    let closure_budget = if owes_first_window {
+        TAIL_PATCH_COLD_START_CLOSURE_TIMEOUT
+    } else {
+        TAIL_PATCH_CLOSURE_TIMEOUT
+    };
+    let stop_deadline = local_execution.begin_drain(closure_budget);
     if state.cloud_commit_tx.is_none()
         && state.cloud_uncommitted.is_empty()
         && state.cloud_commit_retry.is_empty()
@@ -7872,6 +9152,14 @@ fn apple_stream_worker(
             || !state.refinement_submitted.is_empty()
             || !state.refinement_pending.is_empty()
         {
+            // Account ready returns before the deadline can retire their
+            // registered requests. Count only the work still outstanding.
+            state.collect_ready_refinement_returns(
+                &ev_tx,
+                &tail_patch_done,
+                cloud_notice.as_ref(),
+                audio_secs,
+            );
             let outstanding = state.tail_patch_awaiting_completion();
             if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
                 tail_patch_timeout_residue = outstanding;
@@ -7898,6 +9186,14 @@ fn apple_stream_worker(
             || !state.refinement_pending.is_empty()
             || !state.cloud_inflight.is_empty()
         {
+            // Cloud finals have the same race as local completions: returning
+            // their observers first can seal Apple before a queued final lands.
+            state.collect_ready_refinement_returns(
+                &ev_tx,
+                &tail_patch_done,
+                cloud_notice.as_ref(),
+                audio_secs,
+            );
             let outstanding = state.tail_patch_awaiting_completion();
             let now = Instant::now();
             if (state.planned_work_pending()
@@ -7910,11 +9206,6 @@ fn apple_stream_worker(
             if now >= stop_deadline {
                 state.return_outstanding_cloud(&ev_tx);
                 break;
-            }
-            if let Some(notices) = cloud_notice.as_ref() {
-                while let Ok(notice) = notices.try_recv() {
-                    state.handle_cloud_notice(&ev_tx, notice);
-                }
             }
             if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
                 if state.cloud_inflight.is_empty() {
@@ -7954,10 +9245,8 @@ fn apple_stream_worker(
     state.return_outstanding_cloud(&ev_tx);
     state.close_admission_horizon(&ev_tx, u64::MAX);
 
-    // Optional formatting shares the existing stop deadline. A missing or
-    // refused reply returns a no-label disposition through the emitter rather
-    // than extending Stop, force-sealing speech or aborting the whole worker.
-    drain_formatter_observers(&mut state, &ev_tx, &formatter_done, stop_deadline);
+    // Formatting is not awaited here: it consumes sealed text on the async
+    // side and cannot extend Stop, hold a seal or keep the microphone open.
 
     // Capture is over: no later Apple callback can revise a span and no further
     // Whisper window can arrive, so both double-close gates are satisfied by
@@ -7966,7 +9255,12 @@ fn apple_stream_worker(
     // clock is frozen at EOF and can sit milliseconds behind them.
     state.seal_remaining_at_session_end(&ev_tx);
     reconcile_terminal_coverage(&mut state, &ev_tx);
-    drain_formatter_observers(&mut state, &ev_tx, &formatter_done, stop_deadline);
+    // Bounded terminal DictationTranscriber witness: one last evidence source
+    // for debt the retained replays left unresolved (lost take beginnings,
+    // negations, uncovered speech gaps). It reads only the recorder-owned
+    // terminal PCM and every returned segment enters through ordinary ledger
+    // admission; it never rewrites the document wholesale.
+    run_terminal_dictation_witness(&mut state, &ev_tx, language, &witness_done_rx);
     if let Some(owner) = consultation.as_mut() {
         owner.settle(&state, &ev_tx, samples_seen);
     }
@@ -8069,49 +9363,137 @@ fn apple_stream_worker(
     })
 }
 
-/// Whether an open partial must be frozen before accepting a collapsed next
-/// hypothesis from SFSpeech.
-///
-/// # Named drop mechanism: `shared_opener_restart_suppresses_freeze`
-///
-/// Measured 2026-08-10 three-way live (same mic/air): our committed raw lost
-/// s6/s8/s10 while native Apple dictation kept them. Loss always followed a
-/// stressor (fast speech / English terms / mumbling). Root cause at the
-/// commit/adjudication layer: SFSpeech rarely emits `isFinal` on long Polish
-/// dictation (13 restarts vs ONE isFinal on the 150 s fixture) and instead
-/// collapses the open hypothesis onto the next sentence. Consecutive Polish
-/// sentences share openers (`Zdanie` / `Zadanie`). The previous freeze rule
-/// treated `prev.hasPrefix(next)` / substring containment as "extends", so a
-/// collapse onto a short shared opener overwrote the prior utterance without
-/// sealing it.
-///
-/// Freeze whenever `next` does not retain `prev` in full. The old restart
-/// thresholds classify telemetry only; revision and same-phrase rewind are
-/// retained too because this call site otherwise overwrites the only copy.
-/// Kept in lockstep with `SfSpeechPhraseAccumulator` in the Swift bridge.
-pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
-    phrase_retention_reason(prev, next).is_some()
+/// A valid later onset follows the complete timed extent of the prior phrase.
+/// This retains physical repetitions even when their labels are identical.
+/// No earlier segment may lack timing or extend beyond the claimed boundary.
+pub(crate) fn apple_partials_are_disjoint(
+    previous: &[TranscriptSegment],
+    next: &[TranscriptSegment],
+) -> bool {
+    let Some(next) = next.first() else {
+        return false;
+    };
+    if next.text.trim().is_empty()
+        || !next.start_ts.is_finite()
+        || !next.end_ts.is_finite()
+        || next.start_ts < 0.0
+        || next.end_ts <= next.start_ts
+        || previous.is_empty()
+    {
+        return false;
+    }
+    previous.iter().all(|segment| {
+        !segment.text.trim().is_empty()
+            && segment.start_ts.is_finite()
+            && segment.end_ts.is_finite()
+            && segment.start_ts >= 0.0
+            && segment.end_ts > segment.start_ts
+            && segment.end_ts <= next.start_ts
+    })
 }
 
-/// Telemetry classification for a retention decision. Text safety depends
-/// only on forward containment, never on the restart/revision classifier.
-fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
-    let prev = prev.trim();
-    let next = next.trim();
-    if prev.is_empty() || next.contains(prev) {
-        return None;
+fn apple_partial_restart_has_valley(state: &AppleSealState, next: &[TranscriptSegment]) -> bool {
+    if !apple_partials_are_disjoint(&state.open_partial_segments, next) {
+        return false;
     }
-    if next.is_empty() {
-        return Some("empty_collapse_retained");
+    let (Some(fusion), Some(calibration)) = (&state.fusion, state.energy_calibration.as_ref())
+    else {
+        return false;
+    };
+    let previous = apple_segments_on_pcm_clock(state, &state.open_partial_segments);
+    let next = apple_segments_on_pcm_clock(state, next);
+    match (
+        previous.iter().map(|word| word.range.sample_end).max(),
+        next.first(),
+    ) {
+        (Some(end), Some(start)) => fusion.has_phrase_valley(
+            end,
+            start.range.sample_start,
+            calibration.min_valley_samples,
+        ),
+        _ => false,
     }
-    let prev_chars = prev.chars().count();
-    let next_chars = next.chars().count();
-    let restarted = (next_chars * 3 < prev_chars) || (next_chars <= 15 && prev_chars >= 25);
-    Some(if restarted {
-        "restart_retained"
-    } else {
-        "revision_retained"
-    })
+}
+
+fn retain_open_apple_phrase(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+) {
+    if state.open_partial.is_empty() {
+        return;
+    }
+    let text = std::mem::take(&mut state.open_partial);
+    let segments = std::mem::take(&mut state.open_partial_segments);
+    let rev = state.preview_rev;
+    let (_, events) = close_apple_phrase(
+        state,
+        ev_tx,
+        state.phrase_id,
+        &text,
+        segments,
+        audio_secs,
+        true,
+    );
+    let (final_disposition, refused_evidence) = phrase_final_disposition(&events, &text);
+    let _ = ev_tx.send(EngineEvent::PreviewDisposition {
+        superseded_through_rev: rev,
+        final_disposition,
+        refused_evidence,
+    });
+}
+
+/// Qualify the existing physical owner on a short measured valley aligned
+/// with the current provider's timed phrase end. Reuses ordinary seal/admission.
+fn publish_apple_phrase_at_valley(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+    consultation: Option<&mut LiveConsultationCapture>,
+) {
+    if !state.fusion_seal_armed
+        || state.open_partial.is_empty()
+        || state.open_partial_segments.is_empty()
+        || state.open_partial_segments.iter().any(|word| {
+            !word.start_ts.is_finite()
+                || !word.end_ts.is_finite()
+                || word.start_ts < 0.0
+                || word.end_ts <= word.start_ts
+        })
+    {
+        return;
+    }
+    let Some(calibration) = state.energy_calibration.as_ref() else {
+        return;
+    };
+    let Some(end) = apple_segments_on_pcm_clock(state, &state.open_partial_segments)
+        .iter()
+        .map(|word| word.range.sample_end)
+        .max()
+    else {
+        return;
+    };
+    let Some(fusion) = state.fusion.as_mut() else {
+        return;
+    };
+    let ingest = fusion.confirm_phrase_valley(end, calibration.min_valley_samples);
+    if ingest.closed.is_empty() {
+        return;
+    }
+    if let Some(owner) = consultation
+        && owner.observe(&ingest, fusion.observed_samples()).is_err()
+    {
+        owner.report_refusal(ev_tx);
+    }
+    for evidence in ingest.sideband {
+        let _ = ev_tx.send(EngineEvent::SidebandEvidence { evidence });
+    }
+    info!(
+        phrase_end_sample = end,
+        decision_sample = fusion.observed_samples(),
+        "apple_lifecycle: progressive phrase closed on measured Silero valley"
+    );
+    retain_open_apple_phrase(state, ev_tx, audio_secs);
 }
 
 /// Read the phrase's actual Apple receipts; a successful seal function call
@@ -8186,9 +9568,8 @@ fn phrase_final_disposition(
 /// epoch close does not open that window; arming alone never admits a summary.
 /// Admitted summaries use the existing physical admission and replay receipts.
 ///
-/// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
-/// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
-/// cannot eat a whole utterance before the bridge emits a `final`.
+/// Partial revisions replace the open observation. Only a measured Silero
+/// valley permits retention as a closed phrase, independently of its wording.
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -8216,32 +9597,10 @@ fn emit_stream_events(
             LiveStreamEvent::Partial { text, segments } => {
                 state.finishing_phrase_id = None;
                 state.observe_apple_progress(&text, &segments);
-                // Safety net for the named drop mechanism: if the bridge
-                // missed a freeze (shared opener collapse), seal the open
-                // partial here before the rewrite lands.
-                if phrase_restart_should_freeze_prior(&state.open_partial, &text) {
-                    let reason = phrase_retention_reason(&state.open_partial, &text)
-                        .expect("freeze decision must carry a telemetry reason");
-                    let frozen = state.open_partial.clone();
-                    info!(
-                        audio_secs,
-                        prev_chars = frozen.chars().count(),
-                        next_chars = text.chars().count(),
-                        reason,
-                        "apple_lifecycle: freeze open partial before restart partial"
-                    );
-                    let frozen_segments = std::mem::take(&mut state.open_partial_segments);
-                    state.open_partial.clear();
-                    let phrase_id = state.phrase_id;
-                    close_apple_phrase(
-                        state,
-                        ev_tx,
-                        phrase_id,
-                        &frozen,
-                        frozen_segments,
-                        audio_secs,
-                        true,
-                    );
+                // Disjoint recognizer timing nominates a restart; measured
+                // Silero silence on this capture epoch is the only authority.
+                if apple_partial_restart_has_valley(state, &segments) {
+                    retain_open_apple_phrase(state, ev_tx, audio_secs);
                 }
                 // Preserve the recognizer pin as a diagnostic receipt. The
                 // mirror paints this phrase at the tail regardless of its pin.
@@ -8279,9 +9638,14 @@ fn emit_stream_events(
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
-                state.open_partial = text.clone();
+                // An empty recognition withdrawal is not evidence that the
+                // preceding physical phrase disappeared. Keep it until a
+                // measured close or a subsequent nonempty observation.
+                if !text.trim().is_empty() {
+                    state.open_partial = text.clone();
+                    state.open_partial_segments = segments;
+                }
                 state.open_partial_pin = pin.range.sample_start;
-                state.open_partial_segments = segments;
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
@@ -9066,7 +10430,7 @@ mod c13a_lifecycle_tests {
                     .open_producers()
                     .is_empty(),
             );
-            assert_eq!(state.formatter_awaiting_completion, 0);
+            assert!(state.formatter_requested.is_empty());
         }
         assert!(
             max_rx.try_recv().is_err(),
@@ -9144,22 +10508,15 @@ mod c13a_lifecycle_tests {
             ai_result(AiFormatStatus::Failed, "Surowe zdanie"),
         );
 
-        // PresentationEmitter synchronously returns the Formatter frontier,
-        // seals the raw occurrence, and may let another completion publish it
-        // before the worker receives this acknowledgement.
-        {
-            let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-            assert!(ledger.note_frontier_return(&first, LedgerObservationProducer::Formatter,));
-            assert!(ledger.seal(&first).is_ok());
-        }
-        state.emit_pending_seal(&ev_tx, 1);
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&first));
         assert!(state.pending_events.is_empty());
-
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        assert!(deliver_formatter_completion(completion, &sink, None));
         assert!(
-            state.complete_formatter(&ev_tx, completion),
-            "a known formatter failure must be acknowledged even after raw publication",
+            matches!(sink.events().as_slice(), [EngineEvent::OccurrenceLabelProposal { proposal }]
+            if proposal.disposition == LabelProposalDisposition::Refuse)
         );
-        assert_eq!(state.formatter_awaiting_completion, 0);
+        assert_eq!(state.formatter_requested.len(), 1);
 
         // A later utterance proves that the live lane remained usable after
         // the formatter failure instead of terminating at the acknowledgement.
@@ -9200,12 +10557,13 @@ mod c13a_lifecycle_tests {
     }
 
     #[test]
-    fn formatter_waits_for_ledger_word_resolution() {
+    fn formatter_waits_for_ledger_word_trial_disposition() {
         use crate::pipeline::acoustic_ledger::WordPin;
         for resolved in [false, true] {
-            let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+            let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
             let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
             let mut state = state_for_session("formatter-settled-input");
+            state.capture_epoch = 1;
             state.formatter = Some(formatter_tx);
             let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
             let trial = {
@@ -9256,7 +10614,7 @@ mod c13a_lifecycle_tests {
                 formatter_rx.try_recv().is_err(),
                 "formatter must never adjudicate an open lexical dispute"
             );
-            assert_eq!(state.formatter_awaiting_completion, 0);
+            assert!(state.formatter_requested.is_empty());
             if resolved {
                 let mut ledger = state.acoustic_ledger.lock().unwrap();
                 assert!(ledger.word_trial_has_decode(
@@ -9275,8 +10633,9 @@ mod c13a_lifecycle_tests {
                 ledger.admit_word_trial(&trial, &observation, &words, &words);
                 assert_eq!(ledger.text_of(&owner), Some("1286"));
             } else {
-                // An inconclusive trial keeps the selected floor and alternative;
-                // it does not turn disputed words into a formatter's input.
+                // An inconclusive closed trial keeps the selected floor and
+                // alternative. Formatting may read that committed floor;
+                // it cannot select or adjudicate the alternative.
                 state
                     .acoustic_ledger
                     .lock()
@@ -9284,256 +10643,141 @@ mod c13a_lifecycle_tests {
                     .close_word_trial(&trial, "unresolved");
             }
             state.publish_resolved_word_seals(&ev_tx);
-            if resolved {
+            {
                 let request = formatter_rx
                     .try_recv()
-                    .expect("resolved words can now be formatted");
-                assert_eq!(request.existing_label, "1286");
+                    .expect("a committed floor can now be formatted");
+                assert_eq!(request.existing_label, if resolved { "1286" } else { "56" });
                 assert_eq!(request.occurrence, owner);
-                assert_eq!(state.formatter_awaiting_completion, 1);
+                assert!(
+                    std::iter::from_fn(|| ev_rx.try_recv().ok()).any(|event| {
+                        matches!(event, EngineEvent::LedgerSeal { receipt }
+                            if receipt.sealed_occurrences.contains(&owner))
+                    }),
+                    "the source seal reaches the emitter before a formatter can reply"
+                );
+                assert_eq!(state.formatter_requested.len(), 1);
                 state.publish_resolved_word_seals(&ev_tx);
                 assert!(
                     formatter_rx.try_recv().is_err(),
                     "one decision schedules only one formatter"
                 );
-            } else {
-                assert!(
-                    formatter_rx.try_recv().is_err(),
-                    "unresolved alternatives stay out of formatting"
-                );
             }
         }
     }
 
     #[test]
-    fn formatter_completion_during_word_trial_returns_job_without_forcing_seal() {
+    fn formatter_cannot_launch_or_close_an_open_word_trial() {
         use crate::pipeline::acoustic_ledger::{SealRefusal, WordPin};
-
-        for (status, stop_drain) in [
-            (AiFormatStatus::Applied, false),
-            (AiFormatStatus::AiNoop, false),
-            (AiFormatStatus::Failed, true),
-        ] {
-            let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
-            let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            let mut state = state_for_session("formatter-pending-word-trial");
-            state.formatter = Some(formatter_tx);
-            let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
-            let (trial, request) = {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                let calibration = EnergyCalibration::new("formatter-trial", 1.0, 1);
-                assert!(
-                    ledger
-                        .qualify(
-                            &AcousticEvidence {
-                                occurrence: owner.clone(),
-                                duration_ms: 10_000.0,
-                                energy_integral: 100.0,
-                                mean_rms_dbfs: -20.0,
-                                peak_dbfs: -10.0,
-                                vad_open_sample: Some(0),
-                                vad_close_sample: Some(160_000),
-                                evidence_calibration_version: calibration.version.clone(),
-                            },
-                            &calibration
-                        )
-                        .is_qualified()
-                );
-                ledger.schedule_frontier(
-                    owner.clone(),
-                    [
-                        LedgerObservationProducer::Apple,
-                        LedgerObservationProducer::Whisper,
-                    ],
-                );
-                ledger.admit_word_slots(
-                    &LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Apple,
-                        1,
-                        0,
-                        owner.clone(),
-                    ),
-                    &[WordPin::new(48_000, 64_000, "56")],
-                );
-                assert!(!ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple));
-                drop(ledger);
-                // Already-launched work can meet a later dispute. Readiness
-                // prevents new launches; it cannot make old replies fatal.
-                state.finish_whisper_frontier(&ev_tx, &owner);
-                let request = formatter_rx.try_recv().expect("scheduled formatter job");
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                ledger.admit_word_slots(
-                    &LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Whisper,
-                        1,
-                        1,
-                        owner.clone(),
-                    ),
-                    &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 128_000)],
-                );
-                let trial = ledger
-                    .next_word_trial(true)
-                    .expect("actual pending word trial");
-                (trial, request)
-            };
-            assert_eq!(state.formatter_awaiting_completion, 1);
-            let completion = FormatterCompletion::from_result(request, ai_result(status, "1286"));
-            assert!(
-                !state.complete_formatter(&ev_tx, completion.clone()),
-                "the emitter must return the exact obligation before acknowledgement"
-            );
-            let mut foreign = completion.clone();
-            foreign.occurrence.capture_epoch += 1;
-            foreign.proposal.capture_epoch += 1;
-            assert!(!state.complete_formatter(&ev_tx, foreign));
-            assert_eq!(state.formatter_awaiting_completion, 1);
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                // The emitter returns its exact producer obligation, but the
-                // concurrent acoustic trial correctly prevents an occurrence seal.
-                assert!(ledger.note_frontier_return(&owner, LedgerObservationProducer::Formatter));
-                assert_eq!(ledger.seal(&owner).unwrap_err(), SealRefusal::FrontierOpen);
-            }
-            if stop_drain {
-                let (ack, done) = std_mpsc::channel();
-                ack.send(completion.clone()).unwrap();
-                drain_formatter_observers(
-                    &mut state,
-                    &ev_tx,
-                    &done,
-                    Instant::now() + Duration::from_secs(1),
-                );
-            } else {
-                assert!(
-                    state.complete_formatter(&ev_tx, completion.clone()),
-                    "formatter return must not terminate the PCM worker while a word trial remains open"
-                );
-            }
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(state.formatter_in_flight.is_empty());
-            assert!(
-                !state.complete_formatter(&ev_tx, completion),
-                "duplicate return stays refused"
-            );
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                assert_eq!(ledger.seal(&owner).unwrap_err(), SealRefusal::FrontierOpen);
-                assert_eq!(ledger.text_of(&owner), Some("56"));
-            }
-
-            // New speech still enters the same live ledger while the older
-            // trial is outstanding. Its independent occurrence can also seal.
-            state.formatter = None;
-            let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 160_000, 176_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
-            return_lexicon(&mut state, &ev_tx, 2, &later);
+        let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let mut state = state_for_session("formatter-pending-word-trial");
+        state.formatter = Some(formatter_tx);
+        let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 160_000);
+        let trial = {
             let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-            assert_eq!(ledger.text_of(&later), Some("Dalsza mowa"));
-            assert!(ledger.is_sealed(&later));
-            assert!(!ledger.is_sealed(&owner));
-            ledger.close_word_trial(&trial, "test_trial_finished");
+            let calibration = EnergyCalibration::new("formatter-trial", 1.0, 1);
             assert!(
-                ledger.seal(&owner).is_ok(),
-                "only the trial's own return permits sealing"
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: owner.clone(),
+                            duration_ms: 10_000.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(160_000),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
             );
+            ledger.schedule_frontier(
+                owner.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::Whisper,
+                ],
+            );
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    1,
+                    0,
+                    owner.clone(),
+                ),
+                &[WordPin::new(48_000, 64_000, "56")],
+            );
+            assert!(!ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple));
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    1,
+                    1,
+                    owner.clone(),
+                ),
+                &[WordPin::new(48_000, 64_000, "1286").with_decode_window(0, 128_000)],
+            );
+            ledger
+                .next_word_trial(true)
+                .expect("actual pending word trial")
+        };
+        state.finish_whisper_frontier(&ev_tx, &owner);
+        assert!(formatter_rx.try_recv().is_err());
+        assert!(state.formatter_requested.is_empty());
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.seal(&owner), Err(SealRefusal::FrontierOpen));
+            assert_eq!(ledger.text_of(&owner), Some("56"));
         }
+        state.formatter = None;
+        let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 160_000, 176_000);
+        stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
+        return_lexicon(&mut state, &ev_tx, 2, &later);
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_sealed(&later));
+        assert!(!ledger.is_sealed(&owner));
+        ledger.close_word_trial(&trial, "test_trial_finished");
+        assert!(
+            ledger.seal(&owner).is_ok(),
+            "only the acoustic trial permits sealing"
+        );
     }
 
     #[test]
-    fn formatter_protocol_refusals_are_local_and_stop_drain_is_bounded() {
-        for refusal in ["malformed", "foreign", "deadline", "disconnected"] {
-            let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-            let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            let mut state = state_for_session("formatter-local-refusal");
-            state.formatter = Some(formatter_tx);
-            let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 16_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 1, owner.clone(), "Iwo");
-            return_lexicon(&mut state, &ev_tx, 1, &owner);
-            let request = formatter_rx.try_recv().expect("owned formatter request");
-            let completion = FormatterCompletion::from_result(
-                request,
-                ai_result(AiFormatStatus::Applied, "untrusted"),
-            );
-            while ev_rx.try_recv().is_ok() {}
-            let (ack, done) = std_mpsc::channel();
-            match refusal {
-                "malformed" => {
-                    let mut malformed = completion.clone();
-                    malformed.proposal.capture_epoch += 1;
-                    state.settle_formatter_completion(&ev_tx, malformed);
-                }
-                "foreign" => {
-                    let mut foreign = completion.clone();
-                    foreign.occurrence.capture_epoch += 1;
-                    foreign.proposal.capture_epoch += 1;
-                    state.settle_formatter_completion(&ev_tx, foreign);
-                    assert_eq!(
-                        state.formatter_awaiting_completion, 1,
-                        "foreign return cannot cancel our job"
-                    );
-                    assert!(ev_rx.try_recv().is_err());
-                    drain_formatter_observers(&mut state, &ev_tx, &done, Instant::now());
-                }
-                "deadline" => drain_formatter_observers(&mut state, &ev_tx, &done, Instant::now()),
-                "disconnected" => {
-                    drop(ack);
-                    drain_formatter_observers(
-                        &mut state,
-                        &ev_tx,
-                        &done,
-                        Instant::now() + Duration::from_secs(1),
-                    );
-                }
-                _ => unreachable!(),
-            }
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(state.formatter_in_flight.is_empty());
-            let EngineEvent::OccurrenceLabelProposal { proposal } =
-                ev_rx.try_recv().expect("local refusal receipt")
-            else {
-                panic!("only a no-label refusal may leave the cancelled task");
-            };
-            assert_eq!(proposal.session, owner.session);
-            assert_eq!(proposal.capture_epoch, owner.capture_epoch);
-            assert_eq!(
-                (proposal.sample_start, proposal.sample_end),
-                (owner.sample_start, owner.sample_end)
-            );
-            assert_eq!(proposal.disposition, LabelProposalDisposition::Refuse);
-            assert!(proposal.proposed_label.is_empty());
-            assert!(ev_rx.try_recv().is_err());
-            // Cancelling a job does not itself grant a seal. The emitter's
-            // normal refusal corridor must still return this exact frontier.
-            {
-                let ledger = state.acoustic_ledger.lock().unwrap();
-                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
-                assert!(!ledger.is_sealed(&owner));
-                assert!(
-                    ledger
-                        .frontier_of(&owner)
-                        .unwrap()
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::Formatter)
-                );
-            }
-            state.settle_formatter_completion(&ev_tx, completion);
-            assert_eq!(state.formatter_awaiting_completion, 0);
-            assert!(
-                ev_rx.try_recv().is_err(),
-                "duplicate return emits no second refusal"
-            );
-            state.formatter = None;
-            let later = OccurrenceIdentity::new(state.session_id.clone(), 1, 16_000, 32_000);
-            stage_pending_occurrence(&mut state, &ev_tx, 2, later.clone(), "Dalsza mowa");
-            return_lexicon(&mut state, &ev_tx, 2, &later);
-            let ledger = state.acoustic_ledger.lock().unwrap();
-            assert_eq!(ledger.text_of(&later), Some("Dalsza mowa"));
-            assert!(ledger.is_sealed(&later));
-        }
+    fn formatter_protocol_identity_refusal_does_not_touch_the_seal() {
+        let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let mut state = state_for_session("formatter-local-refusal");
+        state.formatter = Some(formatter_tx);
+        let owner = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 16_000);
+        stage_pending_occurrence(&mut state, &ev_tx, 1, owner.clone(), "Iwo");
+        return_lexicon(&mut state, &ev_tx, 1, &owner);
+        let completion = FormatterCompletion::from_result(
+            formatter_rx.try_recv().unwrap(),
+            ai_result(AiFormatStatus::Applied, "Iwo!"),
+        );
+        let mut malformed = completion;
+        malformed.proposal.capture_epoch += 1;
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        assert!(!deliver_formatter_completion(malformed, &sink, None));
+        assert!(sink.events().is_empty());
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.is_sealed(&owner));
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .is_empty()
+        );
     }
 
     #[test]
-    fn five_equal_labels_keep_five_occurrence_jobs_and_exact_completion_debts() {
+    fn five_equal_labels_keep_five_text_jobs_and_seal_before_any_reply() {
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
         let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
         let mut state = state_for_session("formatter-five-iwo");
@@ -9548,89 +10792,48 @@ mod c13a_lifecycle_tests {
                 )
             })
             .collect::<Vec<_>>();
-
         for (index, occurrence) in occurrences.iter().enumerate() {
-            let utterance_id = index as u64 + 1;
-            let queued_before_stage = formatter_rx.len();
-            stage_pending_occurrence(&mut state, &ev_tx, utterance_id, occurrence.clone(), "Iwo");
+            stage_pending_occurrence(
+                &mut state,
+                &ev_tx,
+                index as u64 + 1,
+                occurrence.clone(),
+                "Iwo",
+            );
             assert_eq!(
                 formatter_rx.len(),
-                queued_before_stage,
-                "staging occurrence {utterance_id} must not dispatch formatting",
+                index,
+                "no formatting before final label"
             );
-            return_lexicon(&mut state, &ev_tx, utterance_id, occurrence);
-            assert_eq!(
-                formatter_rx.len(),
-                queued_before_stage + 1,
-                "returning Lexicon for occurrence {utterance_id} must enqueue exactly one request",
-            );
+            return_lexicon(&mut state, &ev_tx, index as u64 + 1, occurrence);
+            assert_eq!(formatter_rx.len(), index + 1);
         }
-
-        // Normal sender closure cannot discard accepted work: Tokio drains
-        // every buffered exact request before reporting disconnection.
         drop(state.formatter.take());
         let requests = (0..5)
-            .map(|_| formatter_rx.try_recv().expect("exact formatter request"))
+            .map(|_| formatter_rx.try_recv().unwrap())
             .collect::<Vec<_>>();
         assert!(matches!(
             formatter_rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Disconnected),
+            Err(mpsc::error::TryRecvError::Disconnected)
         ));
-        assert_eq!(state.formatter_awaiting_completion, 5);
+        assert_eq!(state.formatter_requested.len(), 5);
         for (request, occurrence) in requests.iter().zip(&occurrences) {
             assert_eq!(&request.occurrence, occurrence);
             assert_eq!(request.existing_label, "Iwo");
-            let ledger = state.acoustic_ledger.lock().expect("ledger");
             assert_eq!(
+                request.source_observation.as_ref().unwrap().occurrence,
+                *occurrence
+            );
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_sealed(occurrence));
+            assert!(
                 ledger
                     .frontier_of(occurrence)
-                    .expect("frontier")
-                    .open_producers(),
-                vec![LedgerObservationProducer::Formatter],
+                    .unwrap()
+                    .open_producers()
+                    .is_empty()
             );
         }
-
-        let wrong_occurrence = OccurrenceIdentity::new("formatter-five-iwo", 1, 1, 16_001);
-        let wrong_completion = FormatterCompletion::from_result(
-            FormatterRequest {
-                occurrence: wrong_occurrence,
-                existing_label: "Iwo".to_string(),
-                source_observation: None,
-                policy: FormattingPolicy::Smart,
-            },
-            ai_result(AiFormatStatus::AiNoop, "Iwo"),
-        );
-        assert!(!state.complete_formatter(&ev_tx, wrong_completion));
-        assert_eq!(state.formatter_awaiting_completion, 5);
-
-        let mut mismatched_completion = FormatterCompletion::from_result(
-            requests[0].clone(),
-            ai_result(AiFormatStatus::AiNoop, "Iwo"),
-        );
-        mismatched_completion.proposal.sample_start = mismatched_completion
-            .proposal
-            .sample_start
-            .saturating_add(1);
-        assert!(!mismatched_completion.carries_same_occurrence());
-        assert!(!state.complete_formatter(&ev_tx, mismatched_completion));
-        assert_eq!(state.formatter_awaiting_completion, 5);
-
-        for request in requests {
-            let occurrence = request.occurrence.clone();
-            let completion =
-                FormatterCompletion::from_result(request, ai_result(AiFormatStatus::AiNoop, "Iwo"));
-            {
-                let mut ledger = state.acoustic_ledger.lock().expect("ledger");
-                assert!(
-                    ledger.note_frontier_return(&occurrence, LedgerObservationProducer::Formatter,)
-                );
-                assert!(ledger.seal(&occurrence).is_ok());
-            }
-            assert!(state.complete_formatter(&ev_tx, completion.clone()));
-            assert!(!state.complete_formatter(&ev_tx, completion));
-        }
-
-        assert_eq!(state.formatter_awaiting_completion, 0);
         assert!(state.pending_events.is_empty());
         let finals = std::iter::from_fn(|| ev_rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -9642,14 +10845,132 @@ mod c13a_lifecycle_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             finals,
-            vec![
-                (1, "Iwo".to_string()),
-                (2, "Iwo".to_string()),
-                (3, "Iwo".to_string()),
-                (4, "Iwo".to_string()),
-                (5, "Iwo".to_string()),
-            ],
+            (1..=5).map(|id| (id, "Iwo".into())).collect::<Vec<_>>()
         );
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        for request in requests {
+            assert!(deliver_formatter_completion(
+                FormatterCompletion::from_result(request, ai_result(AiFormatStatus::AiNoop, "Iwo")),
+                &sink,
+                None
+            ));
+        }
+        assert_eq!(sink.events().len(), 5);
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().rendered_text(),
+            "Iwo Iwo Iwo Iwo Iwo"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn retained_formatter_drains_queued_and_in_flight_work_after_stop() {
+        use crate::pipeline::sinks::CollectorEventSink;
+        use crate::test_isolation::EnvGuard;
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _policy = EnvGuard::set("FORMATTING_LEVEL", "off");
+        let settings =
+            Arc::new(crate::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+        let (sender, requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let first = FormatterRequest {
+            occurrence: OccurrenceIdentity::new("stopped-take", 1, 0, 16_000),
+            existing_label: "first".into(),
+            source_observation: None,
+            policy: FormattingPolicy::Smart,
+        };
+        let second = FormatterRequest {
+            occurrence: OccurrenceIdentity::new("stopped-take", 1, 16_000, 32_000),
+            existing_label: "second".into(),
+            source_observation: None,
+            policy: FormattingPolicy::Smart,
+        };
+        sender.send(second).await.unwrap();
+        let mut jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
+        jobs.push_back(Box::pin(async move {
+            waiting.await.unwrap();
+            FormatterCompletion::from_result(first, ai_result(AiFormatStatus::Applied, "First!"))
+        }));
+        let sink = Arc::new(CollectorEventSink::new());
+        let next_take_sink = CollectorEventSink::new();
+        let retained = RetainedFormatterJobs {
+            requests,
+            jobs,
+            runtime_settings: settings,
+            language: None,
+            event_sink: sink.clone(),
+            stream_log_path: None,
+        }
+        .retain()
+        .expect("accepted text jobs must retain an owner");
+        // No sender or acoustic session is needed once Stop hands off work.
+        drop(sender);
+        tokio::task::yield_now().await;
+        assert!(!retained.is_finished());
+        assert!(sink.events().is_empty());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), retained)
+            .await
+            .unwrap()
+            .unwrap();
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        for (index, event) in events.iter().enumerate() {
+            let EngineEvent::OccurrenceLabelProposal { proposal } = event else {
+                panic!("text completion cannot manufacture an acoustic event");
+            };
+            assert_eq!(proposal.session, "stopped-take");
+            assert_eq!(proposal.sample_start, index as u64 * 16_000);
+        }
+        assert!(next_take_sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn retained_formatter_owner_deadline_cancels_without_raw_events() {
+        use crate::test_isolation::EnvGuard;
+        use std::sync::atomic::Ordering;
+        struct CancelReceipt(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for CancelReceipt {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path().to_str().unwrap());
+        let _policy = EnvGuard::set("FORMATTING_LEVEL", "off");
+        let settings =
+            Arc::new(crate::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+        let (_sender, requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = CancelReceipt(cancelled.clone());
+        let mut jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
+        jobs.push_back(Box::pin(async move {
+            let _guard = guard;
+            std::future::pending::<FormatterCompletion>().await
+        }));
+        let sink = Arc::new(crate::pipeline::sinks::CollectorEventSink::new());
+        RetainedFormatterJobs {
+            requests,
+            jobs,
+            runtime_settings: settings,
+            language: None,
+            event_sink: sink.clone(),
+            stream_log_path: None,
+        }
+        .run(Duration::from_millis(10))
+        .await;
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(sink.events().is_empty());
+        let result = bound_formatter_reply(
+            "Raw survives",
+            Duration::from_millis(10),
+            std::future::pending::<AiFormatResult>(),
+        )
+        .await;
+        assert_eq!(result.status, AiFormatStatus::Failed);
+        assert_eq!(result.text, "Raw survives");
     }
 
     #[tokio::test]
@@ -10812,10 +12133,13 @@ mod storm_tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(mirrors.len(), 1);
-            let preview = if second.start_ts >= 9.125 {
-                expected.clone()
-            } else {
+            // Clock overlap alone cannot erase another native lexical pin.
+            let preview = if second.start_ts == 9.0 && second.end_ts == 9.125 {
+                // Two surfaces for exactly the same native PCM pin are one
+                // preview position; both hypotheses remain retained above.
                 vec![(at(second.start_ts), at(second.end_ts), second.text.as_str())]
+            } else {
+                expected.clone()
             };
             assert_eq!(
                 mirrors[0]
@@ -10824,32 +12148,6 @@ mod storm_tests {
                     .collect::<Vec<_>>(),
                 preview
             );
-            if preview.len() == 1 {
-                let fusion = state.fusion.as_mut().unwrap();
-                let start = fusion
-                    .ledger()
-                    .utterances()
-                    .last()
-                    .unwrap()
-                    .range
-                    .sample_start;
-                fusion.observe(Some((start, at(10.0))), false, at(10.0));
-                fusion.observe(None, true, at(10.0));
-                seal_sliced_by_silero(&mut state, &tx, &[]);
-                let ledger = state.acoustic_ledger.lock().unwrap();
-                assert!(ledger.layer_trail().iter().any(|entry| {
-                    entry.candidate_label == "leftover"
-                        && entry.observation.occurrence.sample_start == at(9.0)
-                        && entry.observation.occurrence.sample_end == at(9.125)
-                        && matches!(
-                            entry.decision,
-                            MutationReceipt::KeepVisibleUnanchored {
-                                reason: NoAuthorityReason::LateAppleWordNotCurrent,
-                                ..
-                            }
-                        )
-                }));
-            }
         }
     }
 
@@ -11009,7 +12307,11 @@ mod rc_w1_live_ledger_tests {
 
         // Silero crossings are narrower still and outrank the ladder.
         let fusion = state.fusion.as_mut().unwrap();
-        fusion.ingest(&vec![0.25f32; at(10.0) as usize], at(10.0));
+        fusion.ingest(
+            &vec![0.25f32; at(10.0) as usize],
+            &vec![0.25f32; at(10.0) as usize],
+            at(10.0),
+        );
         fusion.observe_boundaries(&[
             crossing(VadBoundaryKind::SpeechStart, at(2.0)),
             crossing(VadBoundaryKind::SpeechEnd, at(3.0)),
@@ -11028,7 +12330,11 @@ mod rc_w1_live_ledger_tests {
         let mut state = AppleSealState::new_for_session(RATE, "rc-w3-padding".into(), 0);
         push_capture(&mut state, 10.0);
         let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), 0);
-        ingress.ingest(&vec![0.25f32; at(10.0) as usize], at(10.0));
+        ingress.ingest(
+            &vec![0.25f32; at(10.0) as usize],
+            &vec![0.25f32; at(10.0) as usize],
+            at(10.0),
+        );
         ingress.observe_boundaries(&[
             crossing(VadBoundaryKind::SpeechStart, at(1.0)),
             crossing(VadBoundaryKind::SpeechEnd, at(2.0)),
@@ -13427,14 +14733,7 @@ mod rc_w2_acoustic_tests {
         assert_eq!((segments[0].start_ts, segments[0].end_ts), (0.5, 4.0));
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Ported from the parked `mod tests`: phrase-restart adjudication.
-    // `phrase_restart_should_freeze_prior` is live production
-    // (`apple_live_session.rs:3639`) with a live consumer inside
-    // `emit_stream_events`, and every test of it was parked — so this rule
-    // currently ships unguarded. Nothing here revives a retired helper: the
-    // parked bodies only needed the current `AppleSealState` constructor.
-    // ══════════════════════════════════════════════════════════════════
+    // Timed phrase observation and physical retention contracts.
 
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
@@ -13445,189 +14744,259 @@ mod rc_w2_acoustic_tests {
         }
     }
 
-    /// Ported unchanged from the parked `mod tests`: the measured phrase-restart
-    /// vectors, including the 40→20 collapse the old rule missed. The table is
-    /// the falsifier — this test fails if any vector's verdict moves, and fails
-    /// if a vector is silently dropped from the fixture.
     #[test]
-    fn fleet_red_retention_missed_collapse_40_to_20() {
-        let vectors = include_str!("../../../tests/fixtures/phrase_restart_vectors.tsv");
-        let required_ids = [
-            "measured_restart_47_to_12",
-            "measured_revision_95_to_79",
-            "missed_collapse_40_to_20",
-            "shared_opener_sentence_restart",
-            "shared_opener_spoken_variant",
-        ];
-        let mut seen_ids = std::collections::BTreeSet::new();
-
-        for line in vectors.lines().filter(|line| !line.starts_with('#')) {
-            let fields: Vec<_> = line.split('\t').collect();
-            assert_eq!(fields.len(), 4, "malformed phrase restart vector: {line}");
-            seen_ids.insert(fields[0]);
-            let expected = fields[1]
-                .parse::<bool>()
-                .expect("expected_freeze must be true or false");
-            let actual = phrase_restart_should_freeze_prior(fields[2], fields[3]);
-            if fields[0] == "missed_collapse_40_to_20" {
-                assert_eq!(fields[2].chars().count(), 40);
-                assert_eq!(fields[3].chars().count(), 20);
+    fn progressive_valleys_keep_five_iwo_occurrences_before_native_finals() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(RATE, "progressive-five-iwo".into(), 1);
+        let (requests, _requests_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
+        let (_returns_tx, returns) = std_mpsc::channel();
+        let mut consultation = LiveConsultationCapture {
+            queue: ConsultationInputQueue::new(state.session_id.clone(), state.capture_epoch)
+                .unwrap(),
+            requests,
+            returns,
+            last_assessed: None,
+            assessment_pending: false,
+            answers_pending: 0,
+            speech_open: false,
+            refused: false,
+        };
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, at(0.3)));
+        state.fusion = Some(SileroIngress::new(
+            RATE,
+            &state.session_id,
+            state.capture_epoch,
+        ));
+        state.fusion_seal_armed = true;
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        let mut cursor = 0u64;
+        for repetition in 0..5 {
+            let start = cursor as f32 / RATE as f32;
+            for frame in 0..31 {
+                let speech = frame < 20;
+                let pcm = vec![if speech { 0.25 } else { 0.0 }; 512];
+                writer.push_samples(&pcm);
+                state.audio.push(&pcm);
+                cursor += 512;
+                let fusion = state.fusion.as_mut().unwrap();
+                fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
+                let ingest = fusion.ingest(&pcm, &pcm, cursor);
+                consultation.observe(&ingest, cursor).unwrap();
+                if frame == 19 {
+                    emit_stream_events(
+                        vec![LiveStreamEvent::Partial {
+                            text: "Iwo".into(),
+                            segments: vec![segment("Iwo", start + 0.1, start + 0.64)],
+                        }],
+                        &tx,
+                        &mut state,
+                        cursor as f32 / RATE as f32,
+                    );
+                }
+                publish_apple_phrase_at_valley(
+                    &mut state,
+                    &tx,
+                    cursor as f32 / RATE as f32,
+                    Some(&mut consultation),
+                );
             }
             assert_eq!(
-                actual,
-                expected,
-                "phrase restart vector {} diverged: prev_chars={} next_chars={}",
-                fields[0],
-                fields[2].chars().count(),
-                fields[3].chars().count()
+                state
+                    .fusion
+                    .as_ref()
+                    .unwrap()
+                    .ledger()
+                    .utterances()
+                    .iter()
+                    .filter(|utterance| utterance.closed)
+                    .count(),
+                repetition + 1
             );
-        }
-
-        for required_id in required_ids {
             assert!(
-                seen_ids.contains(required_id),
-                "required phrase restart vector missing: {required_id}"
+                state.open_partial.is_empty(),
+                "short measured valley publishes the phrase"
             );
-        }
-    }
-
-    /// Ported from the parked `mod tests`: after a long open partial, SFSpeech
-    /// collapses onto the next sentence's shared opener. That collapse must
-    /// freeze the prior utterance — the old rule did not, and whole sentences
-    /// disappeared.
-    #[test]
-    fn utterance_drop_shared_opener_restart_freezes_prior_sentence() {
-        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zdanie"),
-            "collapse onto the next sentence's shared opener must freeze s6"
-        );
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zdanie siódme"),
-            "collapse onto a non-prefix next-sentence head must freeze s6"
-        );
-        assert!(
-            phrase_restart_should_freeze_prior(s6, "Zadanie"),
-            "Zadanie opener (spoken variant) must freeze too"
-        );
-    }
-
-    /// Ported from the parked `mod tests`: revisions and rewinds retain the
-    /// prior text; only a forward extension containing the full prior
-    /// hypothesis may replace it.
-    #[test]
-    fn utterance_drop_revision_and_rewind_retain_prior() {
-        // 95 → 79 char mid-reword classifies as a revision, and still freezes,
-        // because otherwise its removed span has no retained copy anywhere.
-        let prev = format!("{}MIDDLE{}", "x".repeat(50), "y".repeat(39));
-        let next = format!("{}REVISE{}", "x".repeat(50), "y".repeat(23));
-        assert_eq!(prev.len(), 95);
-        assert_eq!(next.len(), 79);
-        assert!(
-            phrase_restart_should_freeze_prior(&prev, &next),
-            "revision must retain the prior hypothesis"
-        );
-        assert!(!phrase_restart_should_freeze_prior(
-            "Zdanie",
-            "Zdanie szóste spokojnie"
-        ));
-        let long = "Hello world this is a long phrase that continues for a while more text here";
-        let rewind: String = long.chars().take(40).collect();
-        assert!(
-            phrase_restart_should_freeze_prior(long, &rewind),
-            "substantial true-prefix rewind must retain its removed suffix"
-        );
-        assert!(phrase_restart_should_freeze_prior(long, ""));
-        assert!(!phrase_restart_should_freeze_prior("", "new phrase"));
-        assert!(!phrase_restart_should_freeze_prior(
-            "middle retained",
-            "new prefix middle retained and suffix"
-        ));
-    }
-
-    /// Ported from the parked `mod tests`: the same rule at the adjudication
-    /// layer, through the live `emit_stream_events` consumer — a partial
-    /// sequence that used to drop the post-stressor sentence now seals it as
-    /// `UtteranceFinal` before the restart partial lands as a preview.
-    #[test]
-    fn utterance_drop_emit_seals_prior_on_shared_opener_partial_restart() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = state_for("rc-w2-utterance-drop", 30.0);
-        // The port needs the real physical qualification owner. Merely setting
-        // calibration leaves the fallback lane unqualified and emits no seals.
-        let mut fusion = SileroIngress::new(RATE, state.session_id.clone(), state.capture_epoch);
-        for (start, end) in [(0, 5), (5, 10), (10, 15)] {
-            fusion.observe(
-                Some((start * u64::from(RATE), end * u64::from(RATE))),
-                true,
-                end * u64::from(RATE),
+            assert!(
+                !consultation.speech_open,
+                "Max receives the same physical close"
             );
+            assert_eq!(consultation.queue.pending_groups(), 1);
         }
-        state.fusion = Some(fusion);
-        state.fusion_seal_armed = true;
-        let s5 = "Zdanie piąte, szybko bez pauz. Teraz mówię bardzo szybko, bez żadnej przerwy, \
-                  żeby sprawdzić czy silnik nadąża za tempem, którego normalnie unika w \
-                  codziennym dyktowaniu.";
-        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
-        let s7 = "Zdanie siódme Overlap cztery angielskie terminy w polskim";
-        emit_stream_events(
-            vec![
-                LiveStreamEvent::Partial {
-                    text: s5.to_string(),
-                    segments: vec![segment(s5, 0.0, 5.0)],
-                },
-                // The stressor phrase seals cleanly.
-                LiveStreamEvent::PhraseFinal {
-                    text: s5.to_string(),
-                    segments: vec![segment(s5, 0.0, 5.0)],
-                },
-                // The post-stressor sentence builds as an open partial…
-                LiveStreamEvent::Partial {
-                    text: s6.to_string(),
-                    segments: vec![segment(s6, 5.0, 10.0)],
-                },
-                // …then SFSpeech restarts onto the next opener without isFinal.
-                LiveStreamEvent::Partial {
-                    text: "Zdanie".to_string(),
-                    segments: vec![segment("Zdanie", 10.0, 10.5)],
-                },
-                LiveStreamEvent::Partial {
-                    text: s7.to_string(),
-                    segments: vec![segment(s7, 10.0, 15.0)],
-                },
-                LiveStreamEvent::PhraseFinal {
-                    text: s7.to_string(),
-                    segments: vec![segment(s7, 10.0, 15.0)],
-                },
-            ],
-            &tx,
-            &mut state,
-            30.0,
-        );
-        drop(tx);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let words = ledger
+            .occurrences()
+            .filter_map(|owner| ledger.slots_of(owner))
+            .flatten()
+            .filter(|word| word.text == "Iwo")
+            .count();
+        assert_eq!(words, 5);
+        drop(ledger);
         let mut finals = Vec::new();
         while let Ok(event) = rx.try_recv() {
             if let EngineEvent::UtteranceFinal { text, .. } = event {
                 finals.push(text);
             }
         }
-        assert!(
+        assert_eq!(
             finals
                 .iter()
-                .any(|t| t.contains("szóste") || t.contains("szost")),
-            "the post-stressor sentence must be committed, got finals: {finals:?}"
+                .flat_map(|text| text.split_whitespace())
+                .filter(|word| *word == "Iwo")
+                .count(),
+            5
         );
+    }
+
+    #[test]
+    fn partial_restart_needs_measured_valley_not_changed_words_or_timestamps() {
+        let mut state = state_for("partial-valley", 5.0);
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, at(0.3)));
+        state.open_partial = "Sam poukładać".into();
+        state.open_partial_segments = vec![segment("Sam poukładać", 0.2, 1.0)];
+        let next = [segment("Sam nie mamy", 2.0, 2.5)];
+        assert!(!apple_partial_restart_has_valley(&state, &next));
+        let mut fusion = SileroIngress::new(RATE, &state.session_id, state.capture_epoch);
+        fusion.note_observed_pcm(at(5.0), at(5.0));
+        fusion.observe_boundaries(&[
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: at(0.1),
+                speech_probability: 0.9,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: at(1.0),
+                speech_probability: 0.01,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: at(2.0),
+                speech_probability: 0.9,
+            },
+        ]);
+        state.fusion = Some(fusion);
+        assert!(apple_partial_restart_has_valley(&state, &next));
+        assert!(!apple_partial_restart_has_valley(
+            &state,
+            &[segment("poprawka", 0.8, 1.2)]
+        ));
+        assert!(!apple_partial_restart_has_valley(
+            &state,
+            &[segment("bez pomiaru", 0.0, 0.0)]
+        ));
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .note_observed_pcm(100, at(6.0));
         assert!(
-            finals
-                .iter()
-                .any(|t| t.contains("siódme") || t.contains("siodm") || t.contains("Overlap")),
-            "the restarting sentence must still seal, got finals: {finals:?}"
+            !apple_partial_restart_has_valley(&state, &next),
+            "a capture hole is not silence"
         );
-        assert!(
-            state.sealed_count >= 3,
-            "s5 + frozen s6 + s7 → at least 3 seals, got {}",
-            state.sealed_count
+    }
+
+    #[test]
+    fn partial_revision_live_same_onset_updates_without_synthetic_final() {
+        for next in ["Iwo plan poprawiony", "Iwo"] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut state = state_for("partial-revision", 3.0);
+            emit_stream_events(
+                vec![
+                    LiveStreamEvent::Partial {
+                        text: "Iwo stary plan".into(),
+                        segments: vec![segment("Iwo", 0.0, 0.5)],
+                    },
+                    LiveStreamEvent::Partial {
+                        text: next.into(),
+                        segments: vec![segment("Iwo", 0.0, 0.5)],
+                    },
+                ],
+                &tx,
+                &mut state,
+                3.0,
+            );
+            assert_eq!(state.open_partial, next);
+            assert_eq!(state.preview_rev, 2);
+            let mut count = 0;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    EngineEvent::Preview { .. } => count += 1,
+                    EngineEvent::UnadmittedAppleWords { .. } => {}
+                    other => panic!("revision emitted {other:?}"),
+                }
+            }
+            assert_eq!(count, 2);
+        }
+    }
+
+    #[test]
+    fn partial_revision_timing_matrix_does_not_borrow_invalid_onsets_or_tails() {
+        let previous = [segment("Iwo", 0.0, 0.5)];
+        assert!(apple_partials_are_disjoint(
+            &previous,
+            &[segment("Iwo", 0.5, 1.0)]
+        ));
+        for bad in [
+            segment("Iwo", 0.0, 0.0),
+            segment("Iwo", f32::NAN, 0.5),
+            segment("Iwo", -0.1, 0.5),
+            segment("", 0.0, 0.5),
+        ] {
+            let invalid_first = [bad.clone(), segment("Iwo", 1.0, 2.0)];
+            assert!(!apple_partials_are_disjoint(&previous, &invalid_first));
+            assert!(!apple_partials_are_disjoint(
+                &[previous[0].clone(), bad],
+                &[segment("Iwo", 3.0, 4.0)]
+            ));
+        }
+        assert!(!apple_partials_are_disjoint(
+            &[previous[0].clone(), segment("ogon", 2.0, 3.0)],
+            &[segment("Iwo", 1.0, 1.5)]
+        ));
+        assert!(!apple_partials_are_disjoint(&previous, &[]));
+    }
+
+    #[test]
+    fn partial_revision_bridge_final_does_not_freeze_again_on_next_partial() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state_for("partial-final-once", 3.0);
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "Iwo".into(),
+                    segments: vec![segment("Iwo", 0.0, 0.5)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo".into(),
+                    segments: vec![segment("Iwo", 0.0, 0.5)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
         );
+        assert!(state.open_partial.is_empty());
+        while rx.try_recv().is_ok() {}
+        let phrase_id = state.phrase_id;
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: vec![segment("Iwo", 1.0, 1.5)],
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let mut previews = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                EngineEvent::Preview { .. } => previews += 1,
+                EngineEvent::UnadmittedAppleWords { .. } => {}
+                other => panic!("post-final partial emitted {other:?}"),
+            }
+        }
+        assert_eq!(previews, 1);
+        assert_eq!(state.phrase_id, phrase_id);
     }
 
     /// rc-w3-acoustic-validity: invalid PCM *after* valid PCM, through the real
@@ -14468,7 +15837,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn forensic_cloud_last_observer_schedules_formatter_before_sealing() {
+    fn forensic_cloud_last_observer_seals_before_scheduling_formatter() {
         let session = "cloud-last-formatter";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = state(session, 0.0);
@@ -14529,24 +15898,23 @@ mod rc_w2_test_rehab {
             request.source_observation.unwrap().producer,
             LedgerObservationProducer::CloudLive
         );
-        assert_eq!(state.formatter_awaiting_completion, 1);
-        assert!(state.formatter_in_flight.contains(&owner));
+        assert!(state.formatter_requested.contains(&owner));
         let ledger = state.acoustic_ledger.lock().unwrap();
         assert!(
             ledger
                 .frontier_of(&owner)
                 .unwrap()
                 .open_producers()
-                .contains(&LedgerObservationProducer::Formatter)
+                .is_empty()
         );
-        assert!(!ledger.is_sealed(&owner));
+        assert!(ledger.is_sealed(&owner));
         assert_eq!(ledger.conservation().residue(), 0);
         drop(ledger);
         assert_eq!(state.session_conservation().residue(), 0);
         assert!(
             drain(&mut rx)
                 .iter()
-                .all(|event| !matches!(event, EngineEvent::LedgerSeal { .. }))
+                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
         );
     }
 
@@ -14923,7 +16291,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn restart_and_empty_receipt_close_are_numbered_without_admission_inference() {
+    fn untimed_revisions_do_not_mint_phrase_closes_or_admission() {
         let mut state = physical_state("phrase-restart", 2.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let words = vec![segment("Iwo", 0.0, 0.8)];
@@ -14957,14 +16325,11 @@ mod rc_w2_test_rehab {
             &mut state,
             2.0,
         );
-        assert_eq!(state.phrase_id, 4);
-        assert_eq!(
-            state.closed_phrases[&3].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Untimed, 2)])
-        );
+        assert_eq!(state.phrase_id, 3);
+        assert!(!state.closed_phrases.contains_key(&3));
         assert!(state.published_unadmitted_words.iter().any(|word| matches!(
             word.source,
-            UnadmittedAppleWordSource::OpenPartial { phrase_id: 4, .. }
+            UnadmittedAppleWordSource::OpenPartial { phrase_id: 3, .. }
         )));
         drain(&mut rx);
     }
@@ -16403,7 +17768,7 @@ mod rc_w2_test_rehab {
     /// Untimed preview cannot be promoted into committed speech. Preserve the
     /// refusal and prove that the same words with actual timing can still land.
     #[test]
-    fn frozen_partial_without_segments_requires_exact_pcm() {
+    fn untimed_partial_revision_requires_exact_pcm_without_synthetic_final() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = physical_state("untimed-freeze", 3.0, &[(0.0, 2.0)]);
         let prior = "whole prior utterance retained for exact observation";
@@ -16423,7 +17788,7 @@ mod rc_w2_test_rehab {
             2.0,
         );
         let events = drain(&mut rx);
-        assert!(events.iter().any(|event| matches!(event,
+        assert!(!events.iter().any(|event| matches!(event,
             EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing"
         )));
         assert!(raw_finals(&events).is_empty());
@@ -17160,7 +18525,7 @@ mod rc_w2_test_rehab {
             request.member_occurrences,
             vec![(
                 1,
-                OccurrenceIdentity::new("exact-tail", 7, sample(0.5), sample(2.0))
+                OccurrenceIdentity::new("exact-tail", 7, 2_624, sample(2.0))
             )]
         );
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
@@ -17659,8 +19024,13 @@ mod rc_w2_test_rehab {
         {
             let ledger = state.acoustic_ledger.lock().unwrap();
             for (i, &(start, end)) in ranges.iter().enumerate() {
-                let occurrence =
-                    OccurrenceIdentity::new("full-tail", 7, sample(start), sample(end));
+                // Onset context is clamped to the previous closed owner.
+                let owner_start = if i == 0 {
+                    sample(start)
+                } else {
+                    sample(ranges[i - 1].1)
+                };
+                let occurrence = OccurrenceIdentity::new("full-tail", 7, owner_start, sample(end));
                 assert_eq!(
                     ledger.text_of(&occurrence),
                     Some(format!("segment {i}").as_str()),
@@ -17684,8 +19054,8 @@ mod rc_w2_test_rehab {
         );
         let events = drain(&mut rx);
         assert_eq!(raw_finals(&events), vec!["Iwo", "Iwo"]);
-        for (id, start, end) in [(1, 0.0, 1.0), (2, 2.0, 3.0)] {
-            let occurrence = OccurrenceIdentity::new("slice-order", 7, sample(start), sample(end));
+        for (id, start, end) in [(1, 0, 16_000), (2, 26_624, 48_000)] {
+            let occurrence = OccurrenceIdentity::new("slice-order", 7, start, end);
             let admission = events.iter().position(|event| matches!(event,
                 EngineEvent::LedgerMutation { observation, receipt, label }
                     if observation.producer == LedgerObservationProducer::Apple
@@ -17726,7 +19096,7 @@ mod rc_w2_test_rehab {
             drain(&mut rx).is_empty(),
             "reconciled slice must not re-emit events"
         );
-        for (id, start, end) in [(1, 0.0, 1.0), (2, 2.0, 3.0)] {
+        for (id, start, end) in [(1, 0, 16_000), (2, 26_624, 48_000)] {
             let receipt = admit_ledger_label(
                 &mut state,
                 &tx,
@@ -17735,7 +19105,7 @@ mod rc_w2_test_rehab {
                         LedgerObservationProducer::Apple,
                         id,
                         0,
-                        OccurrenceIdentity::new("slice-replay", 7, sample(start), sample(end)),
+                        OccurrenceIdentity::new("slice-replay", 7, start, end),
                     ),
                     label: "changed replay",
                     energy: EnergyAdmission::RequireExistingQualification,
@@ -17915,7 +19285,7 @@ mod rc_w2_test_rehab {
             cursor += pcm.len() as u64;
             let fusion = state.fusion.as_mut().unwrap();
             fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
-            let ingest = fusion.ingest(&pcm, cursor);
+            let ingest = fusion.ingest(&pcm, &pcm, cursor);
             let receipt = ingest
                 .closed
                 .first()
@@ -19151,7 +20521,7 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
-    fn word_dispute_uses_existing_capture_windows_without_extra_inference() {
+    fn word_dispute_uses_grid_witnesses_then_at_most_one_bounded_trial() {
         for word_start in [6_000, 6_200] {
             let (mut state, events, _receiver, mut requests) = fixture(8);
             let pcm = vec![0.25; 15_000];
@@ -19223,27 +20593,34 @@ mod live_refinement_admission_tests {
             for request in &windows[1..] {
                 state.complete_whisper_window(&events, witness(request), 15.2);
             }
+            let needs_trial = state.acoustic_ledger.lock().unwrap().has_word_conflicts();
+            assert_eq!(
+                state.tail_patch_awaiting_completion(),
+                u64::from(needs_trial)
+            );
+            if needs_trial {
+                let trial = requests
+                    .try_recv()
+                    .expect("grid left an unresolved lexical dispute");
+                let range = &trial.provider_request.identity.range;
+                assert!(trial.provider_request.identity.request_id >= (1_u64 << 63));
+                assert!(range.sample_start < word_start && range.sample_end > word_start + 400);
+                assert!(range.sample_end - range.sample_start <= 9_000);
+                assert_eq!(
+                    trial.audio,
+                    pcm[range.sample_start as usize..range.sample_end as usize]
+                );
+                state.complete_whisper_window(&events, witness(&trial), 15.3);
+            }
             assert_eq!(state.tail_patch_awaiting_completion(), 0);
             state.pump_capture_windows(&events);
             assert!(
                 requests.try_recv().is_err(),
-                "adjudication must not dispatch another inference"
+                "resolved dispute must not dispatch another inference"
             );
             let ledger = state.acoustic_ledger.lock().unwrap();
-            // The third issued window starts at 6000. Keep the source-edge case:
-            // its narrower new pin cannot supply context for the earlier pin.
-            let expected = if word_start == 6_000 { "1286" } else { "56" };
-            assert_eq!(ledger.text_of(&owner), Some(expected));
-            if word_start == 6_000 {
-                assert!(
-                    ledger
-                        .seal_of(&owner)
-                        .expect("the admission horizon settles both variants")
-                        .word_finality
-                        .iter()
-                        .any(|word| word.unresolved)
-                );
-            }
+            assert_eq!(ledger.text_of(&owner), Some("56"));
+            assert!(!ledger.has_word_conflicts());
             assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
             assert!(
                 ledger
@@ -19552,6 +20929,33 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn bounded_word_trial_scan_follows_the_refinement_clock_not_the_loop() {
+        // The worker loop ticks on every PCM chunk and Apple partial; the
+        // trial scan walks every open word component against the whole
+        // slot-operation history, so it may run once per interval, not once
+        // per tick.
+        let (mut state, events, _receiver, _requests) = fixture(1);
+        let now = state.refinement_clock;
+        state.tick_refinements(&events, now);
+        // The fixture's PCM plans one window; the scan runs only while
+        // nothing is pending, so clear the queue to reach the scan itself.
+        state.refinement_pending.clear();
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(state.word_trial_scan_at, Some(now));
+        state.refinement_clock = now + Duration::from_millis(100);
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(
+            state.word_trial_scan_at,
+            Some(now),
+            "a call inside the interval does not rescan"
+        );
+        let later = now + WORD_TRIAL_SCAN_INTERVAL;
+        state.refinement_clock = later;
+        state.schedule_bounded_word_trial(&events);
+        assert_eq!(state.word_trial_scan_at, Some(later));
+    }
+
+    #[test]
     fn dictation_expected_whisper_stop_timeout_releases_formatter_with_receipt() {
         let (mut state, events, mut receiver, _requests) = fixture(1);
         let (formatter, mut formats) = mpsc::channel(1);
@@ -19787,7 +21191,7 @@ mod live_refinement_admission_tests {
                 .frontier_of(&occurrence)
                 .unwrap()
                 .open_producers(),
-            vec![LedgerObservationProducer::Formatter]
+            Vec::<LedgerObservationProducer>::new()
         );
     }
 
@@ -21872,6 +23276,140 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn forensic_unrouted_edge_pin_retains_debt_and_late_apple_is_not_finality() {
+        // d152 geometry scaled from 48kHz to this fixture's 16kHz. These
+        // supplied hypotheses test accounting, not model recognition.
+        let session = "unrouted-edge-late-apple";
+        let (mut lane, owner, _requests, _) =
+            forensic_boundary_capture(session, 14_592, 198_144, &[(0, 198_144)]);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            AdmitWindow {
+                request_id: 71,
+                sample_start: 0,
+                sample_end: 128_000,
+            },
+            &[(1, owner.clone())],
+            &[word_pin(session, "Opowiedz", 0, 26_880)],
+            LedgerObservationProducer::Whisper,
+        );
+        assert!(
+            routes[0].exclusive.is_empty(),
+            "the midpoint is before the owner"
+        );
+        {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let diagnostic = ledger.recovery_diagnostic(&owner);
+            let rejected = diagnostic
+                .rejected_pins
+                .iter()
+                .find(|pin| pin.sample_start == 0 && pin.sample_end == 26_880)
+                .expect("the actual rejected edge pin must survive routing");
+            assert_eq!(rejected.decode, Some((0, 128_000)));
+            assert_eq!(rejected.observation.request, 71);
+            assert!(!rejected.accepted_observation);
+            assert!(
+                rejected
+                    .refusal_reasons
+                    .iter()
+                    .any(|r| r == "decode_window_clipped")
+            );
+            assert!(ledger.slots_of(&owner).unwrap_or(&[]).is_empty());
+            assert!(!ledger.is_sealed(&owner));
+        }
+        let late = FusionWord {
+            confidence: None,
+            text: "Opowiedz".into(),
+            sample_start: 18_944,
+            sample_end: 25_184,
+        };
+        let current = TranscriptSegment {
+            confidence: None,
+            text: late.text.clone(),
+            start_ts: late.sample_start as f32 / RATE as f32,
+            end_ts: late.sample_end as f32 / RATE as f32,
+        };
+        let outcome = admit_late_apple_words(&mut lane.state, &lane.tx, 72, &[late], &[current]);
+        assert_eq!(outcome.admitted_into.get(&owner), Some(&1));
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Opowiedz"));
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "one Apple label cannot certify all recovery"
+        );
+        assert_eq!(
+            ledger.seal_terminal(session, 1),
+            Err(crate::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending)
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_unrouted_edge_pin_requires_measured_intersection_energy() {
+        for measured in [false, true] {
+            let session = format!("unrouted-edge-no-energy-{measured}");
+            let mut lane = open(&session);
+            let owner = OccurrenceIdentity::new(&session, 1, 14_592, 198_144);
+            stage(&mut lane, 1, owner.clone(), "mi dalej");
+            if measured {
+                record_energy(&lane, &[vec![0.0; 198_144]]);
+            }
+            lane.state.route_overlap_pins(
+                &lane.tx,
+                AdmitWindow {
+                    request_id: 71,
+                    sample_start: 0,
+                    sample_end: 128_000,
+                },
+                &[(1, owner.clone())],
+                &[word_pin(&session, "Opowiedz", 0, 26_880)],
+                LedgerObservationProducer::Whisper,
+            );
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.recovery_diagnostic(&owner).rejected_pins.is_empty());
+            assert_eq!(ledger.text_of(&owner), Some("mi dalej"));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_unrouted_edge_pin_does_not_grant_phrase_or_other_backend_authority() {
+        for phrase in [false, true] {
+            for producer in [
+                LedgerObservationProducer::Whisper,
+                LedgerObservationProducer::CloudLive,
+            ] {
+                if !phrase && producer == LedgerObservationProducer::Whisper {
+                    continue;
+                }
+                let session = format!("unrouted-edge-source-{phrase}-{producer:?}");
+                let (mut lane, owner, _requests, _) =
+                    forensic_boundary_capture(&session, 14_592, 198_144, &[(0, 198_144)]);
+                let pin = if phrase {
+                    segment(&session, "Opowiedz mi", 0, 26_880)
+                } else {
+                    word_pin(&session, "Opowiedz", 0, 26_880)
+                };
+                lane.state.route_overlap_pins(
+                    &lane.tx,
+                    AdmitWindow {
+                        request_id: 71,
+                        sample_start: 0,
+                        sample_end: 128_000,
+                    },
+                    &[(1, owner.clone())],
+                    &[pin],
+                    producer,
+                );
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert!(ledger.recovery_diagnostic(&owner).rejected_pins.is_empty());
+                assert!(ledger.slots_of(&owner).unwrap_or(&[]).is_empty());
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn forensic_boundary_owner_straddle_inside_actual_decoder_keeps_word() {
         for mode in BufferMode::BOTH {
             let session = mode.session("forensic-owner-not-decoder-edge");
@@ -21926,15 +23464,22 @@ mod relay_l1_overlap_admission_tests {
                     "{}-{malformed}",
                     mode.session("forensic-decoder-not-owner-edge")
                 );
-                let (mut lane, owner, requests, _) =
-                    forensic_boundary_capture(&session, 0, 152_000, &[(10_000, 152_000)]);
+                // The complete sibling and edge-cut word have independent measured
+                // bursts. A flat uninterrupted burst cannot prove this partition.
+                let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                    &session,
+                    0,
+                    152_000,
+                    &[(99_840, 110_080), (120_000, 152_000)],
+                );
                 assert!(requests.len() >= 2);
                 let end = requests[0].provider_request.identity.range.sample_end;
                 assert!(end < owner.sample_end);
                 let stub_start = end - 24_000;
                 let stub_end = if malformed { end + 768 } else { end };
-                let valid_start = end - 44_000;
-                let valid_end = end - 34_000;
+                assert_eq!(end, 144_000);
+                let valid_start = 99_840;
+                let valid_end = 110_080;
                 let completed = completion(
                     &requests[0],
                     vec![
@@ -23574,7 +25119,7 @@ mod relay_l1_overlap_admission_tests {
         let session = "forensic_leading_silence_proves_capture_origin_word_recovery";
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
-        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_voiced_capture(&mut lane, 48_000, &[(6_000, 16_000)]);
         record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
         stage(&mut lane, 1, owner.clone(), "hipoteza");
         {
@@ -23635,7 +25180,7 @@ mod relay_l1_overlap_admission_tests {
         let session = "forensic_trailing_silence_proves_decode_end_word_recovery";
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
-        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_voiced_capture(&mut lane, 48_000, &[(6_000, 16_000)]);
         record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
         stage(&mut lane, 1, owner.clone(), "hipoteza");
         {
@@ -23693,41 +25238,81 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_decode_fence_with_speech_remains_unsettled() {
-        for (session, speech_range, word_range) in [
-            ("voiced-leading-fence", (0, 16_000), (0, 18_000)),
-            ("voiced-trailing-fence", (6_000, 48_000), (4_000, 48_000)),
-        ] {
-            let mut lane = open(session);
-            let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
-            record_voiced_spans(&lane, 48_000, &[speech_range]);
-            record_silero(&mut lane, 48_000, Some(speech_range));
-            stage(&mut lane, 1, owner.clone(), "hipoteza");
-            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
-            assert!(ledger.require_text_recovery(&owner));
-            ledger.record_speech_evidence(&coverage_speech_evidence(&lane.state));
-            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
-            let observation =
-                ObservationIdentity::new(ObservationProducer::Whisper, 19, 0, owner.clone());
-            let receipt = ledger.admit_word_slots(
-                &observation,
-                &[crate::pipeline::acoustic_ledger::WordPin::new(
-                    word_range.0,
-                    word_range.1,
-                    "Iwo",
-                )
-                .with_decode_window(0, 48_000)],
-            );
-            assert!(receipt.grants_mutation(), "{session}: {receipt:?}");
-            assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert_voiced_decode_fence_unsettled(
+            "voiced-leading-fence",
+            (0, 16_000),
+            (0, 18_000),
+            true,
+        );
+    }
+
+    #[test]
+    fn forensic_trailing_decode_fence_with_speech_remains_unsettled() {
+        assert_voiced_decode_fence_unsettled(
+            "voiced-trailing-fence",
+            (6_000, 48_000),
+            (4_000, 48_000),
+            false,
+        );
+    }
+
+    fn assert_voiced_decode_fence_unsettled(
+        session: &str,
+        speech_range: (u64, u64),
+        word_range: (u64, u64),
+        expected_admitted: bool,
+    ) {
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        record_voiced_capture(&mut lane, 48_000, &[speech_range]);
+        record_silero(&mut lane, 48_000, Some(speech_range));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.require_text_recovery(&owner));
+        ledger.record_speech_evidence(&coverage_speech_evidence(&lane.state));
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 19, 0, owner.clone());
+        lane.state
+            .record_decode_fence_measurement(&mut ledger, Some((0, 48_000)));
+        let before = ledger.slots_of(&owner).unwrap_or(&[]).to_vec();
+        let receipt = ledger.admit_word_slots(
+            &observation,
+            &[
+                crate::pipeline::acoustic_ledger::WordPin::new(word_range.0, word_range.1, "Iwo")
+                    .with_decode_window(0, 48_000),
+            ],
+        );
+        assert_eq!(
+            receipt.grants_mutation(),
+            expected_admitted,
+            "{session}: {receipt:?}"
+        );
+        if !expected_admitted {
+            assert!(matches!(
+                receipt,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::SlotAdmissionRejected,
+                    ..
+                }
+            ));
+            assert_eq!(ledger.slots_of(&owner).unwrap_or(&[]), before.as_slice());
             assert!(
-                ledger.text_recovery_pending(&owner),
-                "{session}: speech at decode fence cannot prove a whole word"
-            );
-            assert_eq!(
-                ledger.seal_terminal(session, 1),
-                Err(crate::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending)
+                ledger
+                    .slot_alternatives()
+                    .iter()
+                    .any(|alternative| alternative.reason == "live_edge_cut_pending")
             );
         }
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "{session}: speech at decode fence cannot prove a whole word"
+        );
+        assert_eq!(
+            ledger.seal_terminal(session, 1),
+            Err(crate::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending)
+        );
     }
 
     #[test]
@@ -24183,6 +25768,18 @@ mod relay_l1_overlap_admission_tests {
             .map(<[f32]>::to_vec)
             .collect::<Vec<_>>();
         record_energy(lane, &blocks);
+    }
+
+    // Feed the exact same PCM through both owners used by production:
+    // classification alone cannot authenticate a retained waveform edge.
+    fn record_voiced_capture(lane: &mut Lane, total: u64, voiced: &[(u64, u64)]) {
+        record_voiced_spans(lane, total, voiced);
+        let mut samples = vec![0.0_f32; total as usize];
+        for &(start, end) in voiced {
+            samples[start as usize..end as usize].fill(0.2);
+        }
+        lane.state.audio.push(&samples);
+        assert_eq!(lane.state.audio.session_sample_end(), total);
     }
 
     fn qualify_unlabelled(lane: &mut Lane, occurrence: &OccurrenceIdentity) {
@@ -24740,23 +26337,21 @@ mod relay_l1_overlap_admission_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(kept, prefix);
             } else {
-                // The original coarse Apple hypothesis is a source label, not five
-                // independently proved Words. Its exact lineage remains available.
+                // A coarse source does not prove five individual Words, but
+                // one uncorroborated frame must not remove its negation either.
+                // New words outside its scope still land independently.
                 assert!(
-                    ledger
-                        .slot_alternatives()
-                        .iter()
-                        .any(|alternative| alternative.candidate == label
-                            && alternative.reason == "resegmentation_source_label"
-                            && alternative.sources.contains(&source))
+                    text.starts_with(label),
+                    "polarity source was erased: {text}"
                 );
+                assert!(ledger.slots_of(&owner).unwrap().contains(&source));
                 assert_eq!(
                     ledger
                         .slot_operations()
                         .iter()
                         .filter(|operation| operation.sources.contains(&source))
                         .count(),
-                    1
+                    0
                 );
             }
             assert!(ledger.word_deletions().is_empty());
@@ -25179,7 +26774,15 @@ mod relay_l1_overlap_admission_tests {
                     .grants_mutation()
             );
         }
-        lane.state.audio.push(&vec![0.2_f32; 200_000]);
+        // The one physical word is in A. The decoder's shifted long pin
+        // must not create another occurrence in the measured quiet of B.
+        let mut pcm = vec![0.0_f32; 200_000];
+        pcm[89_920..99_840].fill(0.2);
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
         lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(
@@ -25499,18 +27102,28 @@ mod relay_l1_overlap_admission_tests {
         }
         assert_eq!(ledger.text_of(&owner), Some("zima usza rości dalej"));
         assert_eq!(&ledger.slots_of(&owner).unwrap()[..3], sources.as_slice());
-        for candidate in ["zimą", "szarości"] {
-            assert!(
-                ledger
-                    .word_choices()
-                    .iter()
-                    .any(|choice| choice.candidate.surface == candidate
-                        && !choice.accepted
-                        && !choice.lexical_resolved),
-                "{candidate}: {:?}",
-                ledger.word_choices()
-            );
-        }
+        // Independent word pins are protected before lexical adjudication.
+        // A refused contraction remains an alternative, not a lexical vote.
+        assert!(
+            ledger.slot_alternatives().iter().any(|alternative| {
+                alternative
+                    .candidate
+                    .split_whitespace()
+                    .any(|word| word == "zimą")
+                    && sources[..2]
+                        .iter()
+                        .all(|source| alternative.sources.contains(source))
+            }),
+            "the refused contraction must retain both independent sources"
+        );
+        assert!(
+            ledger.word_choices().iter().any(|choice| {
+                choice.candidate.surface == "szarości"
+                    && !choice.accepted
+                    && !choice.lexical_resolved
+            }),
+            "the legal 1:1 candidate still needs lexical evidence"
+        );
         assert!(!ledger.slot_operations().iter().any(|operation| {
             operation
                 .sources
@@ -25522,7 +27135,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn three_real_frames_resolve_coarse_and_partitioned_sources_without_loss() {
+    fn three_real_frames_preserve_independent_pins_and_refine_coarse_sources() {
         use crate::pipeline::acoustic_ledger::WordPin;
         for partitioned in [false, true] {
             let session = if partitioned {
@@ -25607,7 +27220,7 @@ mod relay_l1_overlap_admission_tests {
             }
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
             let expected = if partitioned {
-                "zimą szarości dalej"
+                "zima usza szarości dalej"
             } else {
                 "na tym naprawdę jesteśmy z Technicznym Foundation."
             };
@@ -25618,7 +27231,7 @@ mod relay_l1_overlap_admission_tests {
                 ledger.word_choices()
             );
             let changed = if partitioned {
-                &sources[..3]
+                &sources[2..3]
             } else {
                 &sources[..]
             };
@@ -25648,7 +27261,28 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
             if partitioned {
-                assert!(ledger.slots_of(&owner).unwrap().contains(&sources[3]));
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(slots.len(), sources.len());
+                for source in [&sources[0], &sources[1], &sources[3]] {
+                    assert!(
+                        slots.contains(source),
+                        "independent source changed: {source:?}"
+                    );
+                    assert!(
+                        !ledger
+                            .slot_operations()
+                            .iter()
+                            .any(|operation| { operation.sources.contains(source) }),
+                        "a protected source must not be retired"
+                    );
+                }
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .all(|operation| { operation.sources.len() <= operation.outputs.len() }),
+                    "lexical agreement cannot contract independent word pins"
+                );
             }
             assert!(ledger.word_deletions().is_empty());
             assert_eq!(ledger.conservation().residue(), 0);
@@ -26202,13 +27836,32 @@ mod relay_l1_overlap_admission_tests {
                 .complete_whisper_window(&lane.tx, completed, 15.0);
             events.extend(drain(&mut lane.rx));
         }
-        assert_replaced_slot_evidence(&lane, &occurrence, &["Szew,"]);
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slot_operations()
+                .iter()
+                .any(
+                    |operation| operation.rule_id == "speech_anchor_agreement/v2"
+                        && operation
+                            .sources
+                            .iter()
+                            .any(|source| source.text == "Szew,")
+                        && operation
+                            .outputs
+                            .iter()
+                            .any(|output| output.text == "Szew,")
+                ),
+            "case equivalence keeps the original physical word and its surface"
+        );
         let warnings = warning_lines(&events);
         assert!(replay_refusal(&events, "szew"), "{warnings}");
         assert_eq!(mutation_count(&events), 3);
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("szew dalej koniec"),
+            Some("Szew, dalej koniec"),
             "{warnings}"
         );
     }
@@ -27136,15 +28789,121 @@ mod relay_l1_overlap_admission_tests {
         }
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
+        let coverage = reconcile_terminal_coverage(&mut lane.state, &lane.tx);
+        assert_eq!(
+            coverage.status,
+            crate::pipeline::acoustic_ledger::SealCoverageStatus::Complete,
+            "{coverage:#?}"
+        );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.text_of(&owner), Some("szew"));
-        assert!(ledger.is_sealed(&owner));
+        assert!(
+            ledger.is_sealed(&owner),
+            "trail={:#?}",
+            ledger.layer_trail()
+        );
         ledger.assert_slot_labels();
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
-    fn replay_overlap_is_clipped_to_owner_before_comparison() {
+    fn cloud_word_context_guard_emits_one_matching_live_receipt() {
+        for (decode, accepted) in [((48_000, 192_000), false), ((24_000, 168_000), true)] {
+            let session = "cloud-word-context-receipt";
+            let mut lane = open(session);
+            let owner = OccurrenceIdentity::new(session, 1, 0, 160_000);
+            let lexicon = tempfile::tempdir().unwrap();
+            lane.state.lexicon_custom_path = lexicon.path().join("absent.jsonl");
+            let mut pcm = vec![0.0_f32; 192_000];
+            pcm[48_000..64_000].fill(0.2);
+            record_voiced_capture(&mut lane, 192_000, &[(48_000, 64_000)]);
+            *lane.state.acoustic_ledger.lock().unwrap() =
+                crate::pipeline::acoustic_ledger::word_adjudication_tests::measured_ledger(
+                    &owner, &pcm,
+                );
+            let pins = [RoutedPin {
+                confidence: None,
+                index: 0,
+                pin: OccurrenceIdentity::new(session, 1, 48_000, 64_000),
+                text: "1286".into(),
+            }];
+            assert!(lane.state.admit_routed_words_with_decode_window(
+                &lane.tx,
+                1,
+                &owner,
+                (1, Some((0, 144_000))),
+                RoutedWords {
+                    pins: &pins,
+                    neighbours: &[]
+                },
+                LedgerObservationProducer::CloudLive,
+            ));
+            assert_eq!(
+                lane.state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()[0]
+                    .producer,
+                ObservationProducer::CloudLive
+            );
+            drain(&mut lane.rx);
+            let candidate = [RoutedPin {
+                text: "56".into(),
+                ..pins[0].clone()
+            }];
+            let admitted = lane.state.admit_routed_words_with_decode_window(
+                &lane.tx,
+                1,
+                &owner,
+                (2, Some(decode)),
+                RoutedWords {
+                    pins: &candidate,
+                    neighbours: &[],
+                },
+                LedgerObservationProducer::Whisper,
+            );
+            assert_eq!(admitted, accepted);
+            let events = drain(&mut lane.rx);
+            // The batch has one receipt; refused individual pins also carry
+            // child receipts with their own physical ranges.
+            let mutations = events
+                .iter()
+                .filter_map(|event| match event {
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label,
+                        receipt,
+                    } if observation.producer == ObservationProducer::Whisper
+                        && observation.occurrence == owner =>
+                    {
+                        Some((label.clone(), receipt.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                mutations.len(),
+                1,
+                "one owner admission must emit one batch receipt"
+            );
+            assert_eq!(mutations[0].1.grants_mutation(), accepted);
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if accepted { "56" } else { "1286" })
+            );
+            assert_eq!(ledger.slots_of(&owner).unwrap().len(), 1);
+            assert_eq!(ledger.conservation().residue(), 0);
+            if accepted {
+                assert_eq!(mutations[0].0, "56");
+            }
+        }
+    }
+
+    #[test]
+    fn overlap_routing_preserves_native_pin_for_ledger_identity_adjudication() {
         let session = "seam-clipped-slots";
         let mut lane = open(session);
         let pcm = vec![0.2_f32; 96_000];
@@ -27179,6 +28938,7 @@ mod relay_l1_overlap_admission_tests {
             lane.state.acoustic_ledger.lock().unwrap().text_of(&owner),
             Some("szew")
         );
+        let _ = drain(&mut lane.rx);
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
             AdmitWindow {
@@ -27191,7 +28951,17 @@ mod relay_l1_overlap_admission_tests {
             LedgerObservationProducer::Whisper,
         );
         assert_eq!(routes[0].exclusive.len(), 1);
-        assert!(replay_refusal(&drain(&mut lane.rx), "szew"));
+        assert_eq!(
+            (
+                routes[0].exclusive[0].pin.sample_start,
+                routes[0].exclusive[0].pin.sample_end
+            ),
+            (45_000, 53_000)
+        );
+        assert!(
+            whisper_mutations(&drain(&mut lane.rx)).is_empty(),
+            "routing has no authority to decide word identity"
+        );
     }
 
     /// The first pin geometry is copied from live take b2707ce7: the word
@@ -27567,9 +29337,25 @@ mod relay_l1_overlap_admission_tests {
             }
             let warnings = warning_lines(&events);
             if corroborated {
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert_eq!(
+                    ledger
+                        .slots_of(&occurrence)
+                        .unwrap()
+                        .iter()
+                        .filter(|slot| slot.text == "w")
+                        .count(),
+                    1
+                );
                 assert!(
-                    replay_refusal(&events, "w"),
-                    "the third frame repeats the now admitted Word"
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .flat_map(|operation| &operation.source_ranges)
+                        .any(|range| range.same_capture(&occurrence)
+                            && (range.sample_start, range.sample_end)
+                                == (52_000 + base, 55_000 + base)),
+                    "the corroborated short word retains its native PCM exactly once"
                 );
             } else {
                 assert!(!replay_refusal(&events, "w"), "{warnings}");
@@ -27593,9 +29379,10 @@ mod relay_l1_overlap_admission_tests {
                         .any(|choice| choice.candidate.surface == "domu w"
                             && !choice.accepted
                             && !choice.lexical_resolved),
-                    "{:?}",
+                    "a single split hypothesis cannot retire its complete source: {:#?}",
                     ledger.word_choices()
                 );
+                assert!(ledger.text_recovery_pending(&occurrence));
             }
             assert_eq!(ledger.conservation().residue(), 0);
         }
@@ -27709,13 +29496,22 @@ mod relay_l1_overlap_admission_tests {
             "the first window's copy belongs to the second window\n{warnings}"
         );
         assert!(
-            warnings.contains("segment 60000..66000")
-                && warnings.contains(&format!(
-                    "occurrence [{}..{}]",
-                    occurrence.sample_start, occurrence.sample_end
-                ))
-                && warnings.contains("ledger=replayed_range_identity"),
-            "the replay warning names segment, occurrence, and ledger reason\n{warnings}"
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .layer_trail()
+                .iter()
+                .any(|entry| entry.candidate_label == "krawedz"
+                    && entry.observation.occurrence.same_capture(&occurrence)
+                    && matches!(
+                        entry.decision,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::ReplayedRangeIdentity,
+                            ..
+                        }
+                    )),
+            "the ledger, rather than the routing warning, authenticates the replay's capture"
         );
         assert_eq!(
             (
@@ -28138,13 +29934,27 @@ mod relay_l1_overlap_admission_tests {
         assert!(!recovered, "higher-rank slot must retain debt: {events:#?}");
         assert_eq!(
             whisper_mutations(&events),
-            vec![(
-                "lexikon trzyma".to_string(),
-                MutationReceipt::Refuse {
-                    occurrence: occurrence.clone(),
-                    reason: RefuseReason::SlotAdmissionRejected,
-                },
-            )],
+            vec![
+                (
+                    "whisper inny".to_string(),
+                    MutationReceipt::Refuse {
+                        occurrence: OccurrenceIdentity::new(
+                            &occurrence.session,
+                            occurrence.capture_epoch,
+                            4_000,
+                            12_000
+                        ),
+                        reason: RefuseReason::SlotAdmissionRejected,
+                    },
+                ),
+                (
+                    "lexikon trzyma".to_string(),
+                    MutationReceipt::Refuse {
+                        occurrence: occurrence.clone(),
+                        reason: RefuseReason::SlotAdmissionRejected,
+                    },
+                )
+            ],
             "{events:#?}"
         );
         assert_eq!(mutation_count(&events), 0);
@@ -28617,11 +30427,29 @@ mod tc2_window_contract_tests {
         );
         assert_words(&f, "alpha beta gamma");
         let after_second = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
-        assert!(after_second.iter().any(|event| matches!(event,
-            EngineEvent::LedgerMutation {
-                label, receipt: MutationReceipt::Refuse { reason: RefuseReason::ReplayedRangeIdentity, .. }, ..
-            } if label == "alpha"
-        )));
+        {
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger
+                    .slots_of(&f.occurrence)
+                    .unwrap()
+                    .iter()
+                    .filter(|slot| slot.text == "alpha")
+                    .count(),
+                1
+            );
+            assert!(
+                ledger.slot_operations().iter().any(|operation| operation
+                    .sources
+                    .iter()
+                    .any(|source| source.text == "alpha")
+                    && operation
+                        .outputs
+                        .iter()
+                        .any(|output| output.text == "alpha")),
+                "the overlapping return retains a source-backed alpha rather than a second occurrence: {after_second:#?}"
+            );
+        }
 
         // Next physical closure and its context pad, from the same take.
         let head = f.state.audio.session_sample_end();
@@ -28972,7 +30800,7 @@ mod tc2_window_contract_tests {
                 .unwrap()
                 .to_vec();
             for (text, reason) in [
-                ("alpha", RefuseReason::ReplayedRangeIdentity),
+                ("alpha", RefuseReason::SlotAdmissionRejected),
                 ("changed", RefuseReason::SlotAdmissionRejected),
             ] {
                 while f.receiver.try_recv().is_ok() {}
@@ -29000,12 +30828,15 @@ mod tc2_window_contract_tests {
                         }
                     ));
                 } else {
-                    assert!(matches!(
-                        &events[0],
-                        EngineEvent::LedgerMutation {
-                            receipt: MutationReceipt::Refuse { reason: actual, .. }, ..
-                        } if actual == &reason
-                    ));
+                    assert!(
+                        matches!(
+                            &events[0],
+                            EngineEvent::LedgerMutation {
+                                receipt: MutationReceipt::Refuse { reason: actual, .. }, ..
+                            } if actual == &reason
+                        ),
+                        "{events:#?}"
+                    );
                 }
                 let ledger = f.state.acoustic_ledger.lock().unwrap();
                 assert_eq!(ledger.slots_of(&f.occurrence).unwrap(), before.as_slice());
@@ -29539,45 +31370,61 @@ mod tc2_window_contract_tests {
     }
 
     #[test]
-    fn overlapping_apple_revisions_keep_one_exact_slot_and_loser_receipt() {
+    fn partial_apple_revision_retains_one_source_and_its_unresolved_alternative() {
         let mut f = fixture();
         assert!(reconcile_silero_ledger(
             &mut f.state,
             &f.events,
             &f.physical,
-            &[
-                apple_word("one", 246_464, 290_000),
-                apple_word("two", 262_784, 300_000),
-            ]
+            &[apple_word("one", 246_464, 290_000)]
+        ));
+        let before = f
+            .state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .slots_of(&f.occurrence)
+            .unwrap()
+            .to_vec();
+        assert_eq!(before.len(), 1);
+        while f.receiver.try_recv().is_ok() {}
+        // A later partial clock does not establish a complete replacement for
+        // the earlier native source. Keep the candidate and the original PCM.
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[apple_word("two", 262_784, 300_000)]
         ));
         let ledger = f.state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.text_of(&f.occurrence), Some("two"));
-        let slots = ledger.slots_of(&f.occurrence).unwrap();
-        assert_eq!(slots.len(), 1);
-        assert_eq!(
-            (slots[0].sample_start, slots[0].sample_end),
-            (262_784, 300_000)
+        assert_eq!(ledger.text_of(&f.occurrence), Some("one"));
+        assert_eq!(ledger.slots_of(&f.occurrence).unwrap(), before.as_slice());
+        assert!(
+            ledger
+                .slot_alternatives()
+                .iter()
+                .any(|alternative| alternative.candidate == "two"
+                    && alternative.sources.contains(&before[0])),
+            "the rejected revision retains its actual competing source: {:#?}",
+            ledger.slot_alternatives()
         );
-        assert!(ledger.layer_trail().iter().any(|entry| {
-            entry.candidate_label == "one"
-                && entry.observation.occurrence.sample_start == 246_464
-                && entry.observation.occurrence.sample_end == 290_000
-                && matches!(
-                    entry.decision,
-                    MutationReceipt::KeepVisibleUnanchored {
-                        reason: NoAuthorityReason::LateAppleWordNotCurrent,
-                        ..
-                    }
-                )
-        }));
+        assert!(
+            ledger
+                .layer_trail()
+                .iter()
+                .any(|entry| entry.candidate_label == "two" && !entry.decision.grants_mutation())
+        );
         assert_eq!(ledger.conservation().residue(), 0);
         ledger.assert_slot_labels();
         drop(ledger);
-        assert!(
-            std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(event,
-            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored {
-                reason: NoAuthorityReason::LateAppleWordNotCurrent, .. }, .. } if label == "one"))
-        );
+        let receipts = std::iter::from_fn(|| f.receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation { receipt, .. } => Some(receipt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!receipts.is_empty());
+        assert!(receipts.iter().all(|receipt| !receipt.grants_mutation()));
     }
 
     #[test]
@@ -29708,13 +31555,17 @@ mod tc2_window_contract_tests {
                         }
                     )
             }));
-            assert!(ledger.layer_trail().iter().any(|entry| matches!(
-                entry.decision,
-                MutationReceipt::Refuse {
-                    reason: RefuseReason::ReplayedRangeIdentity,
-                    ..
-                }
-            )));
+            for native in [(246_464, 262_784), (248_000, 266_000)] {
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .flat_map(|operation| &operation.source_ranges)
+                        .any(|range| range.same_capture(&f.occurrence)
+                            && (range.sample_start, range.sample_end) == native),
+                    "both original PCM declarations survive the single-word correction: {native:?}"
+                );
+            }
         }
     }
 
@@ -30169,3 +32020,238 @@ pub fn forensic_word_conservation_trace(
 #[cfg(test)]
 #[path = "capture_decode_budget_contract_tests.rs"]
 mod capture_decode_budget_contract_tests;
+
+#[cfg(test)]
+#[path = "corroborated_lexicon_contract_tests.rs"]
+mod corroborated_lexicon_contract_tests;
+
+#[cfg(test)]
+mod bounded_lexical_trial_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::WordPin;
+    use crate::pipeline::acoustic_ledger::word_adjudication_tests::measured_ledger;
+    use crate::stt::tail_provider::{TailEvidenceSource, TailProviderEvidence, TailSegmentGrain};
+
+    fn disputed() -> (
+        AppleSealState,
+        mpsc::UnboundedSender<EngineEvent>,
+        mpsc::Receiver<TailPatchRequest>,
+        OccurrenceIdentity,
+    ) {
+        let session = "bounded-pnpm";
+        let owner = OccurrenceIdentity::new(session, 1, 432_000, 456_000);
+        let mut pcm = vec![0.0; 624_000];
+        pcm[437_760..446_400].fill(0.2);
+        let mut ledger = measured_ledger(&owner, &pcm);
+        ledger.schedule_frontier(
+            owner.clone(),
+            [
+                LedgerObservationProducer::Apple,
+                LedgerObservationProducer::Whisper,
+            ],
+        );
+        let apple =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Apple, 5, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_word_slots(&apple, &[WordPin::new(437_760, 446_400, "PTM")])
+                .grants_mutation()
+        );
+        for (id, start, end, pin_start) in [
+            (9, 384_000, 528_000, 437_760),
+            (10, 432_000, 576_000, 432_000),
+        ] {
+            let obs = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                id,
+                0,
+                owner.clone(),
+            );
+            let pins = [WordPin::new(pin_start, 446_400, "PNPM").with_decode_window(start, end)];
+            ledger.admit_word_slots(&obs, &pins);
+        }
+        assert_eq!(ledger.text_of(&owner), Some("PTM"));
+        assert!(ledger.has_word_conflicts());
+        let (events, _) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(8);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            16_000,
+            session.into(),
+            1,
+            sender,
+            Arc::new(Mutex::new(ledger)),
+            None,
+        );
+        state.audio.push(&pcm);
+        // These grid jobs already returned: only their authentic ledger evidence
+        // above is used. No decoder/model is run by this transport fixture.
+        while let Some(range) = state.window_plan.next_due(624_000, false) {
+            assert!(state.window_plan.account(&range));
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: owner.clone(),
+                raw_text: "PTM".into(),
+                layer1_baseline: "PTM".into(),
+                start_ts: 27.0,
+                end_ts: 28.5,
+                segments: vec![],
+            },
+        );
+        (state, events, receiver, owner)
+    }
+
+    #[test]
+    fn missing_first_pins_and_edge_second_witness_get_one_fresh_live_trial_before_expiry() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.close_admission_horizon(&events, u64::MAX);
+        let request = requests
+            .try_recv()
+            .expect("fresh bounded PCM trial, not immediate expiry");
+        assert_eq!(state.word_trial_requests.len(), 1);
+        assert!(request.provider_request.identity.request_id >= (1_u64 << 63));
+        assert!(request.admit_sample_start < 437_760 && request.admit_sample_end > 446_400);
+        assert!(request.audio.len() <= 9 * 16_000);
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        let payload = TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "PNPM".into(),
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
+                avg_logprob: None,
+                segment_grain: TailSegmentGrain::Word,
+            },
+            segments: vec![TimedTailSegment {
+                text: "PNPM".into(),
+                confidence: None,
+                grain: TailSegmentGrain::Word,
+                range: TailSampleRange {
+                    session: owner.session.clone(),
+                    capture_epoch: owner.capture_epoch,
+                    sample_start: 437_760,
+                    sample_end: 446_400,
+                },
+            }],
+        };
+        state.complete_whisper_window(
+            &events,
+            TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: Some(request.provider_request.identity.clone()),
+                member_occurrences: request.member_occurrences.clone(),
+                payload: Some(payload),
+            },
+            39.0,
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("PNPM"));
+        assert!(!ledger.has_word_conflicts());
+        assert!(
+            ledger
+                .word_choices()
+                .iter()
+                .any(|choice| choice.accepted && choice.reason == "trial_confirmed")
+        );
+        assert!(state.word_trial_requests.is_empty());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn unrelated_future_window_does_not_expire_a_live_conflict_without_trial() {
+        let (mut state, events, mut requests, _) = disputed();
+        let identity = TailRequestIdentity {
+            request_id: 11,
+            range: TailSampleRange {
+                session: "bounded-pnpm".into(),
+                capture_epoch: 1,
+                sample_start: 480_000,
+                sample_end: 624_000,
+            },
+        };
+        let job = TailPatchInFlight {
+            submission_sequence: 99,
+            utterance_id: 11,
+            request_identity: identity.clone(),
+            admit_sample_start: 480_000,
+            admit_sample_end: 624_000,
+            member_occurrences: vec![],
+        };
+        state.last_submission_sequence = 99;
+        state
+            .refinement_submitted
+            .insert(inflight_key(99, &identity), job);
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(
+            requests.try_recv().is_ok(),
+            "later unrelated work is not a reason to lose the live trial"
+        );
+        assert_eq!(state.word_trial_requests.len(), 1);
+        assert_eq!(state.refinement_submitted.len(), 2);
+    }
+
+    #[test]
+    fn failed_bounded_trial_keeps_the_label_and_does_not_retry_the_same_pcm() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.close_admission_horizon(&events, u64::MAX);
+        let request = requests.try_recv().unwrap();
+        state.complete_whisper_window(
+            &events,
+            TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: Some(request.provider_request.identity.clone()),
+                payload: None,
+                member_occurrences: request.member_occurrences,
+            },
+            39.0,
+        );
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(state.word_trial_requests.is_empty());
+        assert!(requests.try_recv().is_err());
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("PTM"));
+        assert!(
+            ledger.next_word_trial(true).is_none(),
+            "one failed attempt is accounted"
+        );
+        ledger.note_frontier_return(&owner, LedgerObservationProducer::Apple);
+        let seal = ledger
+            .seal(&owner)
+            .expect("all original producers returned");
+        assert!(
+            seal.word_finality.iter().any(|word| {
+                word.unresolved
+                    && word
+                        .trial
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.reason == "inference_failed")
+            }),
+            "failed inference must remain explicitly unresolved in finality"
+        );
+    }
+
+    #[test]
+    fn stop_does_not_schedule_a_new_trial_for_an_early_dispute() {
+        let (mut state, events, mut requests, owner) = disputed();
+        state.capture_stopping = true;
+        while let Some(range) = state.window_plan.next_due(624_000, true) {
+            assert!(state.window_plan.account(&range));
+        }
+        state.close_admission_horizon(&events, u64::MAX);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&owner),
+            Some("PTM")
+        );
+        assert!(state.word_trial_requests.is_empty());
+    }
+}

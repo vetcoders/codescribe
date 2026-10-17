@@ -118,6 +118,11 @@ impl FormattingPolicy {
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
+/// Power-user override of `interaction.agent_send_hold_sec`.
+pub const AGENT_SEND_HOLD_ENV: &str = "CODESCRIBE_AGENT_SEND_HOLD_SEC";
+/// Seconds between an Agent channel seal and automatic delivery; zero disables it.
+pub const DEFAULT_AGENT_SEND_HOLD_SEC: u32 = 10;
+
 /// Power-user override for the product-owned Silero seal lane.
 ///
 /// The durable field lives at `audio.seal_lane_armed` in `settings.json` and
@@ -285,6 +290,10 @@ pub struct UserSettings {
     /// Keep a completed Dictation take visible until explicitly closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_keep_visible_between_takes: Option<bool>,
+    /// Seconds before an expanded overlay folds. `Some(0)` means never.
+    /// Absence is the 10 s default. The bridge accepts only 0, 5, 10, 30 and 60.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_auto_fold_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -327,6 +336,12 @@ pub struct UserSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub seal_lane_armed: Option<bool>,
+    /// Voice Lab experiment: the DictationTranscriber witness re-checks
+    /// unresolved recovery debt on each sealed utterance, in the background.
+    /// Default off. The `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` process value
+    /// is the documented power-user override and wins when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_witness_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -346,6 +361,9 @@ pub struct UserSettings {
     pub agent_enter_sends: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_auto_send: Option<bool>,
+    /// Agent-channel send hold in seconds. Zero disables the hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_send_hold_sec: Option<u32>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
     /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -650,6 +668,10 @@ pub struct RuntimeLlmLane {
     credential: RuntimeLlmCredential,
     available: bool,
     unavailable_reason: Option<String>,
+    /// Sealed topology fault (no model, vanished custom provider). Unlike the
+    /// credential part of `unavailable_reason`, a later Keychain save cannot
+    /// repair it without a new settings generation.
+    configuration_fault: Option<String>,
 }
 
 impl RuntimeLlmLane {
@@ -658,7 +680,7 @@ impl RuntimeLlmLane {
         provider: ResolvedProvider,
         model: String,
         credential: RuntimeLlmCredential,
-        available: bool,
+        configuration_fault: Option<String>,
         unavailable_reason: Option<String>,
     ) -> Self {
         Self {
@@ -666,8 +688,9 @@ impl RuntimeLlmLane {
             provider,
             model,
             credential,
-            available,
+            available: unavailable_reason.is_none(),
             unavailable_reason,
+            configuration_fault,
         }
     }
 
@@ -726,6 +749,28 @@ impl RuntimeLlmLane {
 
     pub fn unavailable_reason(&self) -> Option<&str> {
         self.unavailable_reason.as_deref()
+    }
+
+    /// The one request-time verdict for this lane: a sealed topology fault, or
+    /// no credential truth now (stored key, signed-in account, or a
+    /// key-optional endpoint). `None` means a request can be sent. Every
+    /// availability gate and request sender reads this, so a lane without a
+    /// model can never look ready.
+    pub fn request_unavailable_reason(&self) -> Option<String> {
+        if let Some(fault) = &self.configuration_fault {
+            return Some(fault.clone());
+        }
+        (!self.request_available()).then(|| {
+            self.unavailable_reason.clone().unwrap_or_else(|| {
+                format!(
+                    "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
+                    self.lane.as_str(),
+                    self.provider.display_name,
+                    self.provider.endpoint,
+                    self.credential.key_account,
+                )
+            })
+        })
     }
 
     pub(super) fn digest_material(&self) -> String {
@@ -1053,6 +1098,12 @@ pub struct RuntimeSettingsSnapshot {
     /// Effective mandatory-lane verdict after `settings.json` plus the optional
     /// power-user env override. Consumers never re-read either source.
     seal_lane_armed: bool,
+    /// Effective Voice Lab witness verdict for this generation, resolved by the
+    /// same loader pass from `audio.dictation_witness_armed` plus the optional
+    /// `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` override.
+    dictation_witness_armed: bool,
+    /// Effective send hold, resolved only by the settings loader.
+    agent_send_hold_sec: u32,
     local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
     layered_transcription_override: Option<String>,
     tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
@@ -1072,6 +1123,8 @@ impl std::fmt::Debug for RuntimeSettingsSnapshot {
             .field("digest", &self.digest)
             .field("energy_calibration", &self.energy_calibration)
             .field("seal_lane_armed", &self.seal_lane_armed)
+            .field("dictation_witness_armed", &self.dictation_witness_armed)
+            .field("agent_send_hold_sec", &self.agent_send_hold_sec)
             .field("local_tail_patch", &self.local_tail_patch)
             .field(
                 "layered_transcription_override",
@@ -1097,6 +1150,8 @@ pub(crate) struct RuntimeSnapshotParts {
     pub(crate) digest: SettingsSnapshotDigest,
     pub(crate) energy_calibration: SealedEnergyCalibration,
     pub(crate) seal_lane_armed: bool,
+    pub(crate) dictation_witness_armed: bool,
+    pub(crate) agent_send_hold_sec: u32,
     pub(crate) local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
     pub(crate) layered_transcription_override: Option<String>,
     pub(crate) tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
@@ -1120,6 +1175,8 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1137,6 +1194,8 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1157,6 +1216,7 @@ impl RuntimeSettingsSnapshot {
                 reason: error.to_string(),
             });
         parts.seal_lane_armed = false;
+        parts.dictation_witness_armed = false;
         let RuntimeSnapshotParts {
             captured_inputs,
             repair_receipt,
@@ -1169,6 +1229,8 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1185,6 +1247,8 @@ impl RuntimeSettingsSnapshot {
             digest,
             energy_calibration,
             seal_lane_armed,
+            dictation_witness_armed,
+            agent_send_hold_sec,
             local_tail_patch,
             layered_transcription_override,
             tail_provider,
@@ -1297,6 +1361,16 @@ impl RuntimeSettingsSnapshot {
         }
     }
 
+    /// Effective Voice Lab witness verdict for this immutable generation.
+    pub const fn dictation_witness_armed(&self) -> bool {
+        self.dictation_witness_armed
+    }
+
+    /// Agent-channel send hold for this generation. Zero means immediate delivery.
+    pub const fn agent_send_hold_sec(&self) -> u32 {
+        self.agent_send_hold_sec
+    }
+
     /// The ledger calibration for one live capture path at its actual rate,
     /// or the precise refusal. This is the only way a session obtains an
     /// [`EnergyCalibration`]; there is no default.
@@ -1386,6 +1460,8 @@ struct InteractionV2 {
     agent_enter_sends: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_auto_send: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_send_hold_sec: Option<u32>,
     /// User-owned automatic paste policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1547,6 +1623,8 @@ struct AudioV2 {
     )]
     seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    dictation_witness_armed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
 
@@ -1579,6 +1657,8 @@ struct UiV2 {
     show_transcript_at_take_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_keep_visible_between_takes: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_auto_fold_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1702,6 +1782,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AUDIO_INPUT_DEVICE",
     "AUDIO_RETENTION",
     SILERO_FUSION_ENV,
+    crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -1709,6 +1790,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     "AGENT_AUTO_SEND",
+    AGENT_SEND_HOLD_ENV,
     "ONBOARDING_MODE",
     "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
@@ -1776,6 +1858,7 @@ typed_setting_writes! {
         "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
         "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
         SILERO_FUSION_ENV => seal_lane_armed,
+        crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER => dictation_witness_armed,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
         "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
@@ -1784,6 +1867,9 @@ typed_setting_writes! {
         "AGENT_ENTER_SENDS" => agent_enter_sends,
         "AGENT_AUTO_SEND" => agent_auto_send,
         "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => stt_initial_prompt_enabled,
+    }
+    store_u32: u32, |value: &str| value.parse::<u32>().ok() => {
+        AGENT_SEND_HOLD_ENV => agent_send_hold_sec,
     }
     store_u64: u64, |value: &str| value.parse::<u64>().ok() => {
         "HOLD_START_DELAY_MS" => hold_start_delay_ms,
@@ -1830,6 +1916,10 @@ impl UserSettings {
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
                 agent_auto_send: Some(self.agent_auto_send.unwrap_or(false)),
+                agent_send_hold_sec: Some(
+                    self.agent_send_hold_sec
+                        .unwrap_or(DEFAULT_AGENT_SEND_HOLD_SEC),
+                ),
                 paste_mode: self.paste_mode,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
                 restore_clipboard: self.restore_clipboard,
@@ -1888,6 +1978,7 @@ impl UserSettings {
                 input_device_id: self.audio_input_device.clone(),
                 retention: self.audio_retention,
                 seal_lane_armed: self.seal_lane_armed,
+                dictation_witness_armed: self.dictation_witness_armed,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -1901,6 +1992,7 @@ impl UserSettings {
                 overlay_expanded_by_default: self.overlay_expanded_by_default,
                 show_transcript_at_take_start: self.show_transcript_at_take_start,
                 overlay_keep_visible_between_takes: self.overlay_keep_visible_between_takes,
+                overlay_auto_fold_seconds: self.overlay_auto_fold_seconds,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -2020,6 +2112,7 @@ impl UserSettings {
             overlay_expanded_by_default: copy!(v2.ui, overlay_expanded_by_default),
             show_transcript_at_take_start: copy!(v2.ui, show_transcript_at_take_start),
             overlay_keep_visible_between_takes: copy!(v2.ui, overlay_keep_visible_between_takes),
+            overlay_auto_fold_seconds: copy!(v2.ui, overlay_auto_fold_seconds),
             hold_indicator: copy!(v2.ui, hold_indicator),
             hold_badge_size: copy!(v2.ui, hold_badge_size),
             deferred_insert_shortcut: cloned!(v2.interaction, deferred_insert_shortcut),
@@ -2045,6 +2138,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|audio| audio.seal_lane_armed)
                 .or(Some(DEFAULT_SEAL_LANE_ARMED)),
+            dictation_witness_armed: v2
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.dictation_witness_armed),
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
@@ -2059,6 +2156,7 @@ impl UserSettings {
             xai_oauth_client_id: cloned!(v2.system, xai_oauth_client_id),
             agent_enter_sends: copy!(v2.interaction, agent_enter_sends),
             agent_auto_send: copy!(v2.interaction, agent_auto_send),
+            agent_send_hold_sec: copy!(v2.interaction, agent_send_hold_sec),
             buffer_delay_ms: copy!(v2.speech, emission, buffer_delay_ms),
             typing_cps: copy!(v2.speech, emission, typing_cps),
             emit_words_max: copy!(v2.speech, emission, emit_words_max),
@@ -2719,7 +2817,11 @@ impl UserSettings {
             changed |= remove_json_keys_at(
                 &mut value,
                 &["interaction"],
-                &["agent_enter_sends", "agent_auto_send"],
+                &[
+                    "agent_enter_sends",
+                    "agent_auto_send",
+                    "agent_send_hold_sec",
+                ],
             )?;
 
             let after: SettingsV2 = serde_json::from_value(value.clone())?;
@@ -2740,6 +2842,7 @@ impl UserSettings {
                     "agent_capabilities",
                     "agent_enter_sends",
                     "agent_auto_send",
+                    "agent_send_hold_sec",
                 ],
             )?;
             let _: Self = serde_json::from_value(value.clone())?;
@@ -3401,7 +3504,8 @@ mod tests {
         assert!(!UserSettings::settings_path().exists());
     }
     use super::{
-        DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
+        AGENT_SEND_HOLD_ENV, DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV,
+        UserSettings, is_promoted_key,
     };
     use crate::config::{PasteMode, ShortcutBinding, WorkMode};
     use serial_test::serial;
@@ -3521,6 +3625,46 @@ mod tests {
 
         settings.set_bool("AGENT_AUTO_SEND", true);
         assert_eq!(UserSettings::load().agent_auto_send, Some(true));
+    }
+
+    #[test]
+    #[serial]
+    fn agent_send_hold_defaults_and_round_trips_in_interaction() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"interaction":{}}"#).unwrap();
+        let settings = UserSettings::load();
+        assert_eq!(settings.agent_send_hold_sec, None);
+        settings.save().unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved.pointer("/interaction/agent_send_hold_sec"),
+            Some(&serde_json::json!(10))
+        );
+        // Settings writes arrive through `Config::save_to_env` → `assign_wire`,
+        // the typed wire route; `set_string` only knows string-valued keys.
+        for seconds in [0, 7, 30, 60] {
+            let mut settings = UserSettings::load();
+            assert!(
+                settings
+                    .assign_wire(AGENT_SEND_HOLD_ENV, &seconds.to_string(), false)
+                    .unwrap()
+            );
+            settings.save().unwrap();
+            assert_eq!(UserSettings::load().agent_send_hold_sec, Some(seconds));
+            UserSettings::load().save().unwrap();
+            assert_eq!(UserSettings::load().agent_send_hold_sec, Some(seconds));
+        }
+        let mut settings = UserSettings::load();
+        for invalid in ["-1", "1.5", "4294967296"] {
+            assert!(
+                !settings
+                    .assign_wire(AGENT_SEND_HOLD_ENV, invalid, false)
+                    .unwrap()
+            );
+            settings.save().unwrap();
+            assert_eq!(UserSettings::load().agent_send_hold_sec, Some(60));
+        }
     }
 
     /// Redirect the data dir to a fresh temp directory and clear the legacy
@@ -4658,6 +4802,44 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial]
+    fn overlay_auto_fold_seconds_roundtrips_in_v2_ui_section() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().overlay_auto_fold_seconds, None);
+        for seconds in [10_u32, 0] {
+            let settings = UserSettings {
+                overlay_auto_fold_seconds: Some(seconds),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist auto-fold");
+            let path = UserSettings::settings_path();
+            let first = fs::read(&path).expect("read saved auto-fold");
+            let saved_inode = fs::metadata(&path).expect("saved auto-fold metadata").ino();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&first).expect("parse saved auto-fold");
+            assert_eq!(saved["ui"]["overlay_auto_fold_seconds"], seconds);
+            assert!(saved.get("overlay_auto_fold_seconds").is_none());
+            assert_eq!(
+                UserSettings::load().overlay_auto_fold_seconds,
+                Some(seconds)
+            );
+            assert_eq!(
+                UserSettings::load().overlay_auto_fold_seconds,
+                Some(seconds)
+            );
+            assert_eq!(fs::read(&path).expect("read after second load"), first);
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("reloaded auto-fold metadata")
+                    .ino(),
+                saved_inode
+            );
+        }
+    }
+
     /// Same section contract for the tray's starting lane.
     #[test]
     #[serial]
@@ -5158,6 +5340,8 @@ mod captured_sealer_tests {
             digest: SettingsSnapshotDigest::from_hex(String::new()),
             energy_calibration: snapshot.energy_calibration,
             seal_lane_armed: true,
+            dictation_witness_armed: false,
+            agent_send_hold_sec: snapshot.agent_send_hold_sec,
             local_tail_patch: snapshot.local_tail_patch,
             layered_transcription_override: snapshot.layered_transcription_override.clone(),
             tail_provider: snapshot.tail_provider,

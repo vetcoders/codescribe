@@ -16,7 +16,9 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  # The release refresh dispatches the build below; a shared group would let
+  # that dispatched run cancel the refresh that started it.
+  group: ${{ github.event_name == 'release' && 'pages-release-refresh' || 'pages' }}
   cancel-in-progress: true
 
 jobs:
@@ -24,9 +26,33 @@ jobs:
     # Pages permits deployments from main only, not release tag refs.
     if: github.event_name == 'release' && !github.event.release.prerelease
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       actions: write
+      contents: read
     steps:
+      # `published` fires while the release job is still uploading assets, and
+      # the site build refuses a release without an uploaded Codescribe.dmg.
+      # v0.16.0 was published at 13:23:07Z, the refresh built at 13:23:34Z and
+      # failed, and Codescribe.dmg was created at 13:29:51Z.
+      - name: Wait for the uploaded DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          for attempt in $(seq 1 60); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+              --jq '[.assets[] | select(.name == "Codescribe.dmg") | .state] | join(",")')
+            if [ "$state" = "uploaded" ]; then
+              echo "Codescribe.dmg is uploaded for $TAG"
+              exit 0
+            fi
+            echo "Attempt $attempt: Codescribe.dmg state is '${state:-absent}'"
+            sleep 20
+          done
+          echo "::error::Codescribe.dmg was not uploaded to $TAG within 20 minutes"
+          exit 1
+
       - name: Rebuild website from main
         env:
           GH_TOKEN: ${{ github.token }}

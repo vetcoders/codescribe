@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 // ═══════════════════════════════════════════════════════════
@@ -104,7 +105,7 @@ impl Attachment {
         }
     }
 
-    /// Extract paths from a slice of attachments (for `build_attachments_block`).
+    /// Extract paths from a slice of attachments.
     pub fn paths(attachments: &[Attachment]) -> Vec<PathBuf> {
         attachments.iter().map(|a| a.path.clone()).collect()
     }
@@ -172,12 +173,8 @@ fn kind_from_extension(path: &Path) -> AttachmentKind {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Vision attachment parsing (shared by agent + legacy send paths)
+// Vision attachment loading (typed, user-selected attachments only)
 // ═══════════════════════════════════════════════════════════
-
-/// Marker line emitted by `build_attachments_block` that introduces the list of
-/// image file paths appended to a chat payload as text.
-pub const IMAGE_PATHS_MARKER: &str = "ATTACHMENTS (image paths)";
 
 /// Default per-image byte cap honored when loading images for vision input.
 pub const MAX_VISION_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -204,66 +201,52 @@ pub fn image_media_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// Split a chat payload into its visible text and the image paths listed under
-/// the `ATTACHMENTS (image paths)` marker appended by `build_attachments_block`.
-///
-/// The marker block (and a dangling `---`/`—` separator directly above it) is
-/// removed from the returned text so the model never sees raw file paths where a
-/// real vision input belongs. The original payload is returned verbatim in
-/// `.0` when no marker is present, so non-attachment messages pass through
-/// unchanged.
-pub fn parse_image_attachment_block(text: &str) -> (String, Vec<PathBuf>) {
-    let mut out_lines: Vec<String> = Vec::new();
-    let mut image_paths: Vec<PathBuf> = Vec::new();
-    let mut in_block = false;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == IMAGE_PATHS_MARKER {
-            // Drop a preceding separator if present to avoid leaving a dangling "---".
-            if out_lines
-                .last()
-                .is_some_and(|l| l.trim() == "---" || l.trim() == "—")
-            {
-                out_lines.pop();
-            }
-            in_block = true;
-            continue;
-        }
-
-        if in_block {
-            if trimmed.is_empty() {
-                in_block = false;
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("- ") {
-                let p = rest.trim();
-                if !p.is_empty() {
-                    image_paths.push(PathBuf::from(p));
-                }
-                continue;
-            }
-            // Unexpected line → end block, keep the line.
-            in_block = false;
-            out_lines.push(line.to_string());
-            continue;
-        }
-
-        out_lines.push(line.to_string());
-    }
-
-    (out_lines.join("\n"), image_paths)
-}
-
 /// Load an image file as `(bytes, media_type)` for vision input.
 ///
-/// Returns `None` (with a warning) when the extension is not a vision-supported
-/// image, the file is unreadable, or it exceeds `max_bytes`.
+/// The path must name an attachment the user selected and the caller holds as
+/// typed data (the composer's staged list); text such as a transcript never names
+/// files to load. Returns `None` (with a warning) when the extension is not a
+/// vision-supported image, the file cannot be opened, it is not a regular file,
+/// or it is empty or longer than `max_bytes`.
+///
+/// One descriptor carries every decision, so the limit holds against a file that
+/// grows after a check and against a device that reports length 0. It is opened
+/// without following a final symlink (`O_NOFOLLOW`: the named file is the file
+/// read), without blocking (`O_NONBLOCK`: a FIFO named like an image cannot stall
+/// the caller) and without adopting a terminal (`O_NOCTTY`). File type and size
+/// come from `fstat` on that same handle, and the read stops at `max_bytes + 1`
+/// bytes, so one byte past the limit is enough to refuse.
 pub fn load_image_for_vision(path: &Path, max_bytes: u64) -> Option<(Vec<u8>, String)> {
+    use std::os::unix::fs::OpenOptionsExt;
+
     let media_type = image_media_type(path)?;
 
-    let meta = std::fs::metadata(path).ok()?;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            warn!("Failed to open image attachment {}: {}", path.display(), e);
+            return None;
+        }
+    };
+
+    let meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(e) => {
+            warn!("Failed to stat image attachment {}: {}", path.display(), e);
+            return None;
+        }
+    };
+    if !meta.is_file() {
+        warn!(
+            "Skipping image attachment (not a regular file): {}",
+            path.display()
+        );
+        return None;
+    }
     if meta.len() > max_bytes {
         warn!(
             "Skipping image attachment (too large, {} bytes > {} max): {}",
@@ -274,20 +257,47 @@ pub fn load_image_for_vision(path: &Path, max_bytes: u64) -> Option<(Vec<u8>, St
         return None;
     }
 
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.is_empty() => {
-            // An empty/zero-byte file would encode to an empty base64 string,
-            // which providers reject ("empty base64-encoded bytes") and which
-            // fails the whole request. Drop it instead.
-            warn!("Skipping image attachment (empty file): {}", path.display());
-            None
+    let bytes = match read_capped(file, max_bytes, meta.len()) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            warn!(
+                "Skipping image attachment (grew past {} bytes while reading): {}",
+                max_bytes,
+                path.display()
+            );
+            return None;
         }
-        Ok(bytes) => Some((bytes, media_type.to_string())),
         Err(e) => {
             warn!("Failed to read image attachment {}: {}", path.display(), e);
-            None
+            return None;
         }
+    };
+    if bytes.is_empty() {
+        // An empty/zero-byte file would encode to an empty base64 string,
+        // which providers reject ("empty base64-encoded bytes") and which
+        // fails the whole request. Drop it instead.
+        warn!("Skipping image attachment (empty file): {}", path.display());
+        return None;
     }
+    Some((bytes, media_type.to_string()))
+}
+
+/// Read at most `max_bytes` from `reader`. `Ok(None)` means the source held more:
+/// the read stops one byte past the limit, so an endless or growing source costs
+/// at most `max_bytes + 1` bytes of memory. `size_hint` only presizes the buffer.
+fn read_capped<R: std::io::Read>(
+    reader: R,
+    max_bytes: u64,
+    size_hint: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+
+    let capacity = usize::try_from(size_hint.min(max_bytes)).unwrap_or_default();
+    let mut bytes = Vec::with_capacity(capacity);
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((max_bytes >= bytes.len() as u64).then_some(bytes))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -341,6 +351,50 @@ impl AttachmentStore {
     pub fn save_text(text: &str, name: &str, prefix: &str) -> Result<PathBuf> {
         Self::save_fetched(text.as_bytes(), name, prefix)
     }
+
+    /// Persist pasted bytes before publishing their pointer. Content identity
+    /// prevents a later paste with the same name from changing an earlier one.
+    pub fn save_clipboard(data: &[u8], name: &str) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !data.is_empty() && data.len() as u64 <= MAX_ATTACHMENT_BYTES,
+            "Pasted attachment must contain 1..=50 MiB of data"
+        );
+        let dir = Self::store_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
+        let dir = Self::ensure_dir()?;
+        let hash = Sha256::digest(data)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut name = sanitize_filename(name);
+        while name.len() > 160 {
+            name.pop();
+        }
+        let path = dir.join(format!("clipboard_{hash}_{name}"));
+        if path.exists() {
+            anyhow::ensure!(std::fs::read(&path)? == data, "Stored attachment changed");
+            return Ok(path);
+        }
+        let temporary = dir.join(format!(".paste_{:032x}.tmp", rand::random::<u128>()));
+        let result = (|| -> Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(data)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result?;
+        Ok(path)
+    }
 }
 
 /// Sanitize a filename by replacing unsafe characters.
@@ -373,6 +427,48 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn clipboard_store_preserves_bytes_and_does_not_overwrite_same_named_pastes() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+        let first = AttachmentStore::save_clipboard(b"\0\xffZIP\0", "clip.bin").unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), b"\0\xffZIP\0");
+        assert_eq!(
+            AttachmentStore::save_clipboard(b"\0\xffZIP\0", "clip.bin").unwrap(),
+            first
+        );
+        let second = AttachmentStore::save_clipboard(b"different", "clip.bin").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"\0\xffZIP\0");
+        assert_eq!(std::fs::read(&second).unwrap(), b"different");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn clipboard_store_bounds_names_payloads_and_detects_changed_files() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+        assert!(AttachmentStore::save_clipboard(b"", "empty").is_err());
+        assert!(
+            AttachmentStore::save_clipboard(
+                &vec![0; MAX_ATTACHMENT_BYTES as usize + 1],
+                "oversized.bin"
+            )
+            .is_err()
+        );
+        let name = format!("../../{}\n.txt", "ż".repeat(200));
+        let path = AttachmentStore::save_clipboard(b"safe name", &name).unwrap();
+        assert_eq!(path.parent(), Some(AttachmentStore::store_dir().as_path()));
+        assert!(path.file_name().unwrap().len() < 256);
+        assert!(!path.file_name().unwrap().to_string_lossy().contains('\n'));
+        assert_eq!(std::fs::read(&path).unwrap(), b"safe name");
+        let changed = AttachmentStore::save_clipboard(b"original", "changed.bin").unwrap();
+        std::fs::write(&changed, b"tampered").unwrap();
+        assert!(AttachmentStore::save_clipboard(b"original", "changed.bin").is_err());
+        std::fs::remove_file(changed).unwrap();
+    }
 
     /// Extension → AttachmentKind matrix including image, pdf, text, and fallback.
     #[test]
@@ -490,41 +586,6 @@ mod tests {
         assert_eq!(image_media_type(Path::new("noext")), None);
     }
 
-    /// Plain text without the ATTACHMENTS marker is unchanged with no paths.
-    #[test]
-    fn test_parse_image_attachment_block_passthrough() {
-        // No marker → text returned unchanged, no paths.
-        let text = "just a normal message\nwith two lines";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(cleaned, text);
-        assert!(paths.is_empty());
-    }
-
-    /// Marker block yields paths and strips marker/separator from cleaned text.
-    #[test]
-    fn test_parse_image_attachment_block_extracts_paths() {
-        let text = "Look at these\n\n---\nATTACHMENTS (image paths)\n- /tmp/a.png\n- /tmp/b.jpg\n";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(
-            paths,
-            vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.jpg")]
-        );
-        // The marker block and the dangling separator are stripped.
-        assert!(!cleaned.contains(IMAGE_PATHS_MARKER));
-        assert!(!cleaned.contains("/tmp/a.png"));
-        assert!(cleaned.contains("Look at these"));
-        assert!(!cleaned.trim_end().ends_with("---"));
-    }
-
-    /// Path list ends at a blank line; trailing prose stays in cleaned text.
-    #[test]
-    fn test_parse_image_attachment_block_stops_at_blank_line() {
-        let text = "msg\nATTACHMENTS (image paths)\n- /tmp/a.png\n\ntrailing text kept";
-        let (cleaned, paths) = parse_image_attachment_block(text);
-        assert_eq!(paths, vec![PathBuf::from("/tmp/a.png")]);
-        assert!(cleaned.contains("trailing text kept"));
-    }
-
     /// Vision load rejects oversize, non-image, and empty PNG payloads.
     #[test]
     fn test_load_image_for_vision_rejects_oversize_and_nonimage() {
@@ -554,6 +615,24 @@ mod tests {
         assert!(load_image_for_vision(&empty, MAX_VISION_IMAGE_BYTES).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A selected image must be the regular file named by the caller; aliases
+    /// and a source growing beyond the byte budget cannot become vision input.
+    #[test]
+    fn vision_input_refuses_symlinks_and_bounds_an_endless_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("image.png");
+        let alias = dir.path().join("alias.png");
+        std::fs::write(&image, b"image bytes").unwrap();
+        std::os::unix::fs::symlink(&image, &alias).unwrap();
+        assert!(load_image_for_vision(&image, 32).is_some());
+        assert!(load_image_for_vision(&alias, 32).is_none());
+        assert!(read_capped(std::io::repeat(7), 8, 0).unwrap().is_none());
+        assert_eq!(
+            read_capped(&b"exact"[..], 5, 0).unwrap(),
+            Some(b"exact".to_vec())
+        );
     }
 
     /// Attachment::paths preserves order of the input handles.

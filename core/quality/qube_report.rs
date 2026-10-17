@@ -671,9 +671,10 @@ async fn process_pair(
 
     let ai_formatted = if ctx.config.skip_formatting {
         None
-    } else if !ai_formatting::is_formatting_available(ctx.runtime_settings.llm_lanes().formatting())
+    } else if let Some(reason) =
+        ai_formatting::text_formatting_unavailable_reason(ctx.runtime_settings)
     {
-        errors.push("AI formatting skipped: missing endpoint/model/key".into());
+        errors.push(format!("AI formatting skipped: {reason}"));
         None
     } else if let Some(post_text) = post.as_deref() {
         // Reset conversation chain — batch mode must NOT chain between files

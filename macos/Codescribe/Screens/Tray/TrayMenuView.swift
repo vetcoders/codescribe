@@ -34,7 +34,7 @@ struct TrayMenuView: View {
       TrayDivider()
       if DeveloperSurface.isEnabled() {
         TrayRow(
-          icon: .diagnostics,
+          icon: .voiceLab,
           title: String(localized: "Voice Lab")
         ) {
           Task { await VoiceLabRuntime.shared.openConsole() }
@@ -120,7 +120,7 @@ struct TrayMenuView: View {
         style: .primary
       ) { viewModel.onShowAgent() }
 
-      TrayRow(icon: .dock, title: String(localized: "Open widget")) {
+      TrayRow(icon: .dock, title: String(localized: "Show widget")) {
         viewModel.onOpenWidget()
       }
       .accessibilityIdentifier("tray-open-widget")
@@ -129,7 +129,7 @@ struct TrayMenuView: View {
         icon: viewModel.isRecording && !viewModel.isStartingDictation ? .stop : .record,
         iconColor: recordingActionColor,
         title: recordingActionTitle
-      ) { viewModel.toggleDictation() }
+      ) { viewModel.toggleDictationFromTray() }
 
       historyGroup
       TrayRow(icon: .copy, title: String(localized: "Copy last transcript")) {
@@ -165,7 +165,7 @@ struct TrayMenuView: View {
             TrayChildRow(title: String(localized: "No transcripts yet"))
           } else {
             ForEach(viewModel.historyItems) { item in
-              TrayChildRow(title: item.title) {
+              TrayHistoryRow(time: item.time, snippet: item.snippet) {
                 viewModel.copyTranscript(path: item.path)
               }
             }
@@ -237,7 +237,8 @@ struct TrayMenuView: View {
       TrayRow(
         icon: .settings,
         title: String(localized: "Open Settings"),
-        shortcut: "⌘,"
+        shortcut: "⌘,",
+        scale: .child
       ) {
         openWindow.presentSettings()
       }
@@ -252,7 +253,8 @@ struct TrayMenuView: View {
       icon: .send,
       title: String(localized: "Auto Paste"),
       shortcut: viewModel.pasteMode.visibleName,
-      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight,
+      scale: .child
     ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
     .accessibilityLabel("Auto Paste")
     .accessibilityValue(viewModel.pasteMode.visibleName)
@@ -268,26 +270,32 @@ struct TrayMenuView: View {
       title: String(localized: "Auto Format"),
       shortcut: viewModel.autoFormatLevel.visibleName,
       shortcutColor: viewModel.autoFormatLevel == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight
+        ? CSColor.textFaintAlt : CSColor.oliveLight,
+      scale: .child
     ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
     .accessibilityLabel("Auto Format")
     .accessibilityValue(viewModel.autoFormatLevel.visibleName)
     .accessibilityHint("Cycle automatic formatting level")
   }
 
-  /// Pointer Indicator follows the same rolling-row grammar as Auto Format:
+  /// Cursor indicator follows the same rolling-row grammar as Auto Format:
   /// Off → 4px → 8px → 12px → Off, with the current value in the keycap.
+  /// Founder brief, round 17, 2026-10-10: the label names the place, not the
+  /// mechanism — Settings › Hotkeys keeps the long "Recording indicator" copy.
   private var holdBadgeMenu: some View {
     TrayRow(
       icon: .record,
-      title: String(localized: "Pointer Indicator"),
+      title: String(
+        localized: "Cursor indicator",
+        comment: "Tray row: size of the recording dot drawn next to the mouse cursor"),
       shortcut: viewModel.holdBadgeOption.visibleName,
       shortcutColor: viewModel.holdBadgeOption == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight
+        ? CSColor.textFaintAlt : CSColor.oliveLight,
+      scale: .child
     ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
-    .accessibilityLabel("Pointer Indicator")
+    .accessibilityLabel("Cursor indicator")
     .accessibilityValue(viewModel.holdBadgeOption.visibleName)
-    .accessibilityHint("Cycle pointer recording indicator size")
+    .accessibilityHint("Cycle the cursor indicator size")
   }
 
   /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the
@@ -309,27 +317,17 @@ struct TrayMenuView: View {
         : String(
           localized: "tray.keycap.off", defaultValue: "Off",
           comment: "Tray keycap, a few letters wide: this toggle is disabled"),
-      shortcutColor: isOn ? onColor : CSColor.textFaintAlt
+      shortcutColor: isOn ? onColor : CSColor.textFaintAlt,
+      scale: .child
     ) { set(!isOn) }
   }
 
   private var recordingActionTitle: String {
-    if viewModel.isStartingDictation {
-      return String(localized: "Starting…", comment: "Tray row: a recording start is in flight")
-    }
-    if viewModel.isRecording {
-      return trayStatus.status.assistive
-        ? String(
-          localized: "Stop transcription in Agent mode",
-          comment: "Tray row: stop the current transcription in Agent mode")
-        : String(
-          localized: "Stop transcription", comment: "Tray row: stop the current transcription")
-    }
-    return viewModel.startInAssistive
-      ? String(
-        localized: "Start transcription in Agent mode",
-        comment: "Tray row: start a new transcription in Agent mode")
-      : String(localized: "Start transcription", comment: "Tray row: start a new transcription")
+    DictationActionTitle.title(
+      isStarting: viewModel.isStartingDictation,
+      isRecording: viewModel.isRecording,
+      assistiveRecording: trayStatus.status.assistive,
+      startInAssistive: viewModel.startInAssistive)
   }
 
   private var recordingActionColor: Color {

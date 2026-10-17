@@ -16,6 +16,7 @@ private final class DragRecordingWindow: NSWindow {
 @MainActor
 final class SetupAppearanceTests: XCTestCase {
   func testAllSemanticIconsHaveSystemGlyphs() {
+    XCTAssertNotEqual(CSIcon.voiceLab.systemName, CSIcon.diagnostics.systemName)
     for icon in CSIcon.allCases {
       XCTAssertNotNil(
         NSImage(systemSymbolName: icon.systemName, accessibilityDescription: nil),
@@ -81,6 +82,9 @@ final class SetupAppearanceTests: XCTestCase {
             XCTAssertNil(backdrop, "Reduced transparency must use the solid shared backdrop")
           } else {
             let glass = try XCTUnwrap(backdrop, "Every setup step must use the overlay glass")
+            XCTAssertNil(
+              glass.tintColor,
+              "Setup must use the same untinted glass as the overlay; the veil is a layer above")
             XCTAssertNil(glass.hitTest(NSPoint(x: glass.bounds.midX, y: glass.bounds.midY)))
           }
         } else {

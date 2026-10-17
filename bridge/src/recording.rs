@@ -228,6 +228,8 @@ pub enum CsDocumentRevisionProvenance {
     Retranscribe,
     Formatter,
     LightPlus,
+    /// Undo, redo or a version pick re-selected an accepted version.
+    Navigation,
 }
 
 /// Document provenance travels beside acoustic receipts, never inside a fake serial.
@@ -250,6 +252,7 @@ impl CsManualDocumentRevisionReceipt {
             "retranscribe" => CsDocumentRevisionProvenance::Retranscribe,
             "formatter" => CsDocumentRevisionProvenance::Formatter,
             "light-plus" => CsDocumentRevisionProvenance::LightPlus,
+            "navigation" => CsDocumentRevisionProvenance::Navigation,
             _ => return None,
         };
         Some(Self {
@@ -651,6 +654,8 @@ pub struct CsWhisperModelStatus {
     pub available: bool,
     pub embedded: bool,
     pub path: Option<String>,
+    /// Directory a download writes into, for display (`~` for the home prefix).
+    pub models_dir: String,
     pub model_id: String,
     pub repo: String,
     pub size_hint: String,
@@ -663,6 +668,7 @@ impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperMode
             available: s.available,
             embedded: s.embedded,
             path: s.path,
+            models_dir: s.models_dir,
             model_id: s.model_id,
             repo: s.repo,
             size_hint: s.size_hint,
@@ -670,7 +676,7 @@ impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperMode
     }
 }
 
-/// Progress callbacks for Settings Whisper download (large, multi-file).
+/// Progress and control callbacks for the Whisper download (large, multi-file).
 /// `bytes_total` is `-1` when the server did not send Content-Length.
 #[uniffi::export(with_foreign)]
 pub trait CsWhisperDownloadListener: Send + Sync {
@@ -679,6 +685,10 @@ pub trait CsWhisperDownloadListener: Send + Sync {
     fn on_progress(&self, file: String, bytes_done: u64, bytes_total: i64);
     /// The whole model is on disk at `path`.
     fn on_complete(&self, path: String);
+    /// Polled during the transfer: `true` stops it and clears the partial file.
+    /// The answer belongs to this generation, so a stopped download can never
+    /// cancel the one started after it.
+    fn is_cancelled(&self) -> bool;
 }
 
 /// Snapshot Whisper availability without constructing a dictation session.
@@ -924,6 +934,10 @@ pub fn remove_model_directory(name: String) -> Result<(), CsError> {
 }
 
 /// Download the default Whisper model (idempotent if already complete).
+///
+/// The listener both reports progress and answers whether the transfer should
+/// stop; a cancelled download fails with the core cancellation message and
+/// leaves no partial file behind.
 #[uniffi::export]
 pub async fn download_whisper_model(
     listener: Option<Arc<dyn CsWhisperDownloadListener>>,
@@ -939,6 +953,11 @@ pub async fn download_whisper_model(
                             total.map(|t| t as i64).unwrap_or(-1),
                         );
                     }
+                },
+                &|| {
+                    listener
+                        .as_ref()
+                        .is_some_and(|listener| listener.is_cancelled())
                 },
             )
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
@@ -1013,11 +1032,9 @@ fn resolve_audio_input_state(
 #[uniffi::export]
 pub fn audio_input_snapshot() -> Result<CsAudioInputSnapshot, CsError> {
     let configured_device = codescribe_core::config::UserSettings::load().audio_input_device;
-    // Recorder::start reads this process value directly. It is the actual
-    // selector for the current app lifetime, while `configured_device` is the
-    // freshly-persisted choice for the next launch.
-    let runtime_preference =
-        normalized_device_name(std::env::var("AUDIO_INPUT_DEVICE").ok().as_deref());
+    // The selector the next take opens. It equals `configured_device` unless
+    // the launching environment pinned AUDIO_INPUT_DEVICE explicitly.
+    let runtime_preference = codescribe_core::config::Config::audio_input_preference();
     let host = cpal::default_host();
     let default_device = host
         .default_input_device()

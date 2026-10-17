@@ -57,6 +57,16 @@ make install
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
+With a real signing identity, `scripts/build-app.sh` also enables the hardened
+runtime (`--options runtime --timestamp`) and applies `scripts/entitlements.plist`
+(override with `CODESCRIBE_ENTITLEMENTS`) on the publisher binary, the app
+bundle's deep sign, and the outer resource seal — the same requirement
+`make install-app` already enforced. Apple's notarization service rejects a
+bundle whose executables lack the hardened runtime flag, so `make app PROFILE=local-release` on its own now produces a notarizable bundle without a
+manual re-sign. The ad-hoc path (`CODESCRIBE_CODESIGN_IDENTITY=-`) stays
+plain: ad-hoc plus hardened runtime breaks local TCC grants and is not meant
+to be notarized.
+
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
 the app build script preserves that choice instead of selecting a listed
@@ -323,13 +333,16 @@ TOGGLE_SILENCE_SEC=5.0
 
 # AI Formatting
 AI_FORMATTING_ENABLED=1
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-# Store LLM_API_KEY in Settings / macOS Keychain.
 
-# Optional: Mode-specific OpenAI overrides
-LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=...
-LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=...
+# LLM lanes: a provider and a model per lane. The endpoint is the provider's
+# own; keys live in Settings › Providers (Keychain), env is only a fallback
+# (LLM_OPENAI_API_KEY, LLM_XAI_API_KEY, LLM_ANTHROPIC_API_KEY).
+LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
+LLM_FORMATTING_MODEL=gpt-4.1
+LLM_ASSISTIVE_PROVIDER=openai-responses
+LLM_ASSISTIVE_MODEL=gpt-5.5
+# Retired, ignored with one warning: LLM_ENDPOINT, LLM_MODEL, LLM_*_ENDPOINT,
+# LLM_API_KEY, LLM_FORMATTING_API_KEY, LLM_ASSISTIVE_API_KEY.
 ```
 
 ## Bundle Structure
@@ -391,11 +404,48 @@ Explicitly deselecting the last client can forget an already absent folder.
 Existing entries, including broken symlinks, must still prove marker ownership;
 unreadable paths refuse teardown. Ownership is checked against the same captured
 receipt again before removal. Startup synchronization keeps its strict checks.
+`receipt.json` is the only evidence that this root holds an installation.
+`runtime/` doubles as the bus state root — follower logs, ack cursors — which a
+running app writes before anything is installed, so a receipt-less `runtime/`
+counts as not yet installed and the next installation takes it over, preserving
+that state. A receipt-less `runtime/` that already holds payload, or one
+redirected by a symlink, still belongs to an installation this root cannot
+account for and is retained untouched. A command in `~/.local/bin` carrying the
+Codescribe managed header is adopted by a first installation that owns no
+identity yet; once a receipt or a client marker names one, a command claiming a
+different identity is refused, as is any command without that header.
 
 The full readiness report, managed installation paths, MCP status, and Refresh
 action live in **Settings › Agent › Diagnostics**. Setup keeps only the client
 choice and an inline setup failure. Setup can be reopened later from the
 existing **Setup Wizard…** tray action.
+
+#### Selecting clients without a window
+
+A headless host — SSH, a worker session, a machine with no logged-in GUI — has
+no Settings and no Setup, so the same explicit selection is expressed on the
+command line. `--install-agent-bridge` alone keeps today's behaviour: it
+installs the runtime and refreshes only the clients the receipt already names,
+which on a fresh host is none. `--agent-clients` adds the selection and
+replaces it exactly as the Settings panel does:
+
+```bash
+/Applications/Codescribe.app/Contents/MacOS/Codescribe \
+  --install-agent-bridge --agent-clients claude-code,codex
+```
+
+The list is comma-separated raw client names — `agents`, `claude-code`,
+`codex` — and `--agent-clients=claude-code,codex` is accepted too. The run
+prints one line naming each installed client and its path, and installs
+`~/.claude/skills/codescribe`, `~/.codex/skills/codescribe` or
+`~/.agents/skills/codescribe` accordingly.
+
+`--agent-clients` is only meaningful together with `--install-agent-bridge`.
+Passing it alone, with no value, or with a name that is not a client prints one
+usage line and exits 2 without touching the home directory. An installer
+refusal — an unowned folder, a checksum mismatch, a failed transaction —
+prints the installer's own message and exits 1, the same as before. Clearing
+the selection stays a windowed act: the CLI never installs an empty selection.
 
 ### Info.plist Keys
 

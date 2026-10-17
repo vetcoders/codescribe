@@ -1,12 +1,107 @@
 # Clean Transcript Bus
 
+## Held delivery
+
+Agent-channel messages (1–9 and broadcast channel 0) use
+`interaction.agent_send_hold_sec` in `settings.json`: integer seconds, default
+10, 0 disables the hold, adjustable from 0–30 in Settings → Agent.
+`CODESCRIBE_AGENT_SEND_HOLD_SEC` takes precedence through the config loader.
+Dictation and paste delivery are unchanged.
+
+A held `codescribe.agent-user-message.v1` or channel `transcript_sealed` row
+carries `hold_until`, an RFC 3339 UTC timestamp with microsecond precision, as
+does the sealed voice row's `codescribe.transcript-evidence.v1` twin. The hold
+starts at publication/seal time, not when a follower happens to read the bus.
+Producers omit the field at 0. `cs-bus --send-text --hold-seconds N` applies
+one deadline to every recipient's row; its `message_published` receipt and each
+recipient entry include the same `hold_until`. Existing broadcast policy
+receipts remain present.
+
+Controls are append-only rows on the **same bus** as the message, schema
+`codescribe.delivery-control.v1`, with `kind` equal to `revise`, `withdraw` or
+`release`. `identity` names the original typed `message_id` or voice
+`utterance_id`; that named field is also included when the original source row
+is available. Controls carry `control_id`, `emitted_at` and the exact
+`provider`, `provider_session_id`, `lease_id`, `bus`, `channel` and `audience`
+owner. `revise` additionally carries replacement `text`.
+Voice controls also preserve the capture `session_id` so repeated numeric
+utterance labels cannot select a different take. The overlay submits that
+capture session to the helper, which resolves its source `utterance_id` on the
+same bus; ambiguous bare utterance labels are refused rather than guessed.
+The current whole-channel snapshot lacks a producer-authenticated numeric
+utterance ID; such controls remain capture-session-scoped. Propagating canonical
+engine utterance IDs into that snapshot remains an integration/design decision,
+not permission to relabel an observation request as an utterance.
+
+```bash
+cs-bus --revise ID --provider PROVIDER --session SESSION --bus BUS < corrected.txt
+cs-bus --withdraw ID --provider PROVIDER --session SESSION --bus BUS
+cs-bus --release ID --provider PROVIDER --session SESSION --bus BUS
+```
+
+Ownerless `--channel 0` variants fan out to the currently bound recipient
+buses, using the same binding/lease validation as typed sending. A control
+cannot edit a different provider/session/bus owner. Nothing is removed from
+the source bus, and no control recalls text already delivered to a model.
+
+The follower is the only delivery gate. A future deadline parks the terminal
+envelope in the lease's persisted `held` map, outside `pending`. It emits no
+follower message, output line, native wake or seal hook for that envelope.
+On the next polling tick after expiry, or on `release`, it follows the ordinary
+queue/publication/wake path exactly once as a fresh delivery, with the latest
+text. Unacknowledged delivered messages retain the normal restart replay
+contract. `revise` replaces held text and keeps its predecessors in `revisions`
+on the held record; that history is never copied into the delivered envelope.
+Voice evidence `apply_manual_edit` / `apply_user_revision` for the held
+`utterance_id` follows the same revision rule.
+
+`withdraw` removes the held envelope and records one text-free
+`delivery_withdrawn` follower event, **not** an ACK marker. Durable withdrawal
+receipts prevent resurrection during cursor replay; original messages and
+controls remain source history. Controls for unknown, already delivered or
+hold-disabled identities are ignored with one stderr line. Broadcast policy
+`off` is evaluated before parking (one skip receipt, no held row); `quiet`
+holds normally and later lands without a wake.
+
+Attach, status and `--read-pending` receipts expose only
+`"held": [{"identity": "…", "hold_until": "…"}]` beside `broadcast`, never held
+text. The overlay projects these source rows and controls into held bubbles;
+the existing 500 ms poll derives the countdown, with Cancel/Edit and Send now
+actions. Cancel/Edit withdraws the held message and returns its text to the
+composer. Draft evidence is not a held message, and countdown display is not
+delivery authority.
+
+## Agent attachment and conversation history
+
+Connecting an agent restores its live mailbox; it does not import chat history
+into the model's context. For an established agent, connection includes locating
+and reading the relevant retained conversation using the
+[history procedure](../skills/codescribe/references/history.md).
+
+History belongs to the exact provider/session/lease. The same resumed owner can
+open its existing conversation; a new instance reads its predecessor's saved
+conversation as context. Reusing a channel for a different agent never relabels
+that channel's previous occupant. Archive metadata identifies an owner and bus
+path, not proof that the text was loaded or read. An empty unread mailbox is not
+an empty history. Reading history neither ACKs another lease nor makes old
+requests fresh commands.
+
 ## Conversational read receipt
 
-Native Codex queue entries carry complete untruncated message text with compact
-causal identity, sender, reply association, routing and provenance. Watch bells
-remain notifications. The agent reads `cs-bus --read-pending` for its exact
-provider/session, receives complete bounded conversational projections and
-`read_delivery_ids`, then immediately calls `--ack` for those IDs before task
+The complete causal identity, sender, reply association, routing and provenance
+for a delivery live in the owned mailbox projection, not in the Codex native
+queue copy. The native queue header always carries the delivery ID and
+`ADDRESSED TO`; a Founder-sourced delivery (typed or sealed voice) also carries
+its full untruncated text, tagged `from: Founder (typed)` or
+`from: Founder (voice)`. A peer agent's delivery carries no raw text at all: it
+is a notice naming the sending peer and channel, the words "peer coordination,
+not a Founder instruction", and the exact `cs-bus --read-pending` command to
+read it from the owned mailbox — see [Native provider queue
+receipt](#native-provider-queue-receipt) for the queue mechanics. Watch bells
+remain notifications. The agent reads `cs-bus --read-pending`
+for its exact provider/session, receives complete bounded conversational
+projections and `read_delivery_ids`, then immediately calls `--ack` for those
+IDs before task
 execution or a reply. Only exact IDs returned as unread may be acted on; an
 absent ID makes its delayed queue copy obsolete even when other messages remain.
 Give a short answer before longer work. Reading alone never writes ACK. Re-read
@@ -25,6 +120,22 @@ executed or spoken. The projection's existing acknowledged state consumes the
 same marker; neither bell nor provider acceptance is a read receipt. Bus history
 and independent command/PCM identities are retained. A submission already
 consumed into model context cannot be recalled by queue deletion.
+
+Local Codex withdrawal uses `codex app-server --listen stdio://` and the
+provider's `thread/queue/delete` API, initialized with experimental API support.
+It uses the same executable, environment and local queue store as the helper's
+`codex queue` submission; it does not require a managed daemon or control socket.
+Cross-process acceptance requires an owned CLI submission visible through this
+API, `deleted: true`, and a subsequent list without that exact ID. A valid
+`deleted: false` means the submission is no longer pending in this local queue;
+it does not recall a message already consumed by the conversation. This contract
+does not select or discover a remote queue endpoint.
+
+The helper bounds total provider stdout to 64 KiB and RPC execution to ten
+seconds, then closes its child
+process after each withdrawal. Failures retain the ACK and owned queue receipt
+for retry, with the concrete transport/RPC error; successful settlement clears
+the previous error. Withdrawal never starts, resumes or steers a turn.
 
 Codescribe publishes one private, append-only NDJSON stream. The Bus observes
 session lifecycle plus occurrence-authenticated `TranscriptRevision` entries;
@@ -280,6 +391,40 @@ refresh under the same lease. Pending swaps recover only matching original
 identities; incomplete trailing rows refuse rollover. Existing archive names
 are never implicitly overwritten.
 
+Device numbers (`st_dev`) are physical mount coordinates, not durable volume
+identity. On macOS the receipt pins the volume UUID. At startup, a reader or an
+appender may recover a uniform device-number change under the same generation
+lease, after checking volume UUID, every inode, archive length and recorded
+archive SHA-256. The ordered chain is validated again before an atomic receipt
+replacement. Only segment device coordinates change: stream ID, original logical
+stream device/inode, offsets and all journal bytes remain intact. An active file
+may have legitimately grown since its recorded checkpoint; shrinking is refused.
+
+Receipts written before volume UUID pinning need independent reboot evidence:
+the receipt predates the current boot, the original stream inode retains its
+recorded birthtime, every linked file moved from the same old device to the same
+current volume, and immutable bytes lacking a historical digest were not changed
+after boot. The active inode must have a pre-boot birth and content modification
+time; a later permission change may update ctime without invalidating those
+bytes. Growth since the manifest checkpoint remains valid if its content mtime
+predates boot. If compression replaced the original stream inode, the first
+closed generation must have a recorded compressed flag and historical digest;
+that digest is verified, and every linked file must have a pre-boot birth and
+content mtime, with every closed generation also retaining a pre-boot ctime.
+All recorded digests, physical inodes, lengths and the uniform device transition
+remain mandatory. Actual post-boot content writes without a previously pinned
+UUID still refuse automatic admission. A successful admission pins the UUID for
+future restarts. Missing proof,
+another volume, replaced inodes, digest mismatch, ambiguous pending rollover or
+superseded-copy cleanup refuse recovery and preserve the original receipt and
+bytes. Recovery never deletes the manifest or certifies a session as ended.
+
+App startup applies this same leased recovery to the main journal and existing
+managed regular `channel-*.jsonl` files under the authoritative agent bridge
+home's `buses` directory. It does not follow channel/receipt symlinks, create
+receipts for unmanaged files, or rewrite channel lifecycle events. A refused
+channel reports its path and remains unavailable rather than looking idle.
+
 An existing nonempty journal without a generation receipt is **undated**.
 Admission pins all its original bytes under `events/undated/`; it neither scans
 nor compresses that mixed-day source, and never invents a day from mtime. A
@@ -530,13 +675,39 @@ buffer. It may follow `session_ended` because microphone lifecycle is already
 closed. Replay accepts that terminal revision only for the just-ended session;
 once a newer session is active, an older edit cannot displace it.
 
-The Format dock command is the sibling route, not a second reducer. Rust reads
-the exact current terminal document under the same `session_id + source_revision` CAS, runs `format_text_with_status_for_policy`, and admits only
-an `Applied` result through `TranscriptReducer::apply_user_revision`. Its
-`ManualDocumentRevisionReceipt` uses `provenance=formatter` and a
-`formatter-*` receipt; the resulting Bus projection is the only canvas repaint.
-`Failed`, `Skipped`, and `AiNoop` results return a visible refusal to Swift and
-append no ledger, Bus, history, delivery-buffer, or Copy-last state.
+The Format dock command enters the same ledger-before-reducer commit corridor.
+Rust reads the selected terminal document under `session_id + source_revision`
+CAS, runs `format_text_with_status_for_policy`, and accepts an `Applied` result
+as a derived presentation over unchanged acoustic text. Acceptance mints a
+`navigation` document receipt, advances the CAS revision, and publishes the
+formatter presentation over that new revision. A second result naming the old
+revision is stale. `Failed`, `Skipped`, and `AiNoop` results add no accepted
+version; diagnostic evidence may remain.
+
+### Linear transcript versions
+
+The reducer owns ordered accepted steps and one selected cursor. The first
+explicit operation anchors the existing document once. Each accepted edit,
+retranscription or formatting result appends one step, including an identical
+successful retranscription or formatter output. Three retranscriptions and one
+format therefore offer four Undo steps and four Redo steps. Navigation selects
+saved bytes without rerunning recognition or formatting and does not append an
+attempt. A new accepted operation after Undo discards the forward branch;
+a refused or stale operation leaves it intact. Swift projects these steps and
+blocks navigation while another document operation or an unsaved edit is pending.
+
+The retained take mirrors these steps and cursor into its existing transcript
+archive revision chain. Raw transcript and audio stay unchanged. Archived takes
+use that same chain for navigation; selecting a take from History opens its
+selected version on the overlay canvas with the normal actions. Retranscription
+requires retained audio; formatting operates on text. The Previous take menu
+continues to mean a retained superseded draft, not transcript versions.
+
+Archive writes use the current chain head as CAS. A conflicting external write
+or I/O failure preserves the existing archive and reports an unsaved-history
+reason, including when projection delivery finishes before the operation ACK.
+Live acceptance alone is not proof that a version was saved. A diverged live
+mirror stops writing rather than merging concurrent archive edits.
 
 Controller-authenticated context captures enter the same presentation reducer
 as `RecordContextMarker` actions (`record_context_marker` on the Bus). The
@@ -898,6 +1069,66 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
 
+### Broadcast policy
+
+Each provider/session/leased bus has one runtime policy receipt under
+`runtime/broadcast-policy/<key>.json` in the agent-bridge home. The key is the
+first 24 hex characters of SHA-256 over NUL-separated lowercase provider,
+provider session ID and resolved bus path, matching the playback mute key.
+The receipt schema is `codescribe.broadcast-policy.v1`:
+
+```json
+{
+  "schema": "codescribe.broadcast-policy.v1",
+  "provider": "codex",
+  "provider_session_id": "SESSION_ID",
+  "lease_id": "<32 lowercase hex>",
+  "bus": "<resolved leased bus path>",
+  "policy": "quiet",
+  "emitted_at": "<utc>"
+}
+```
+
+- `on`: queue deliveries and wake normally (the default).
+- `quiet`: queue them in the existing pending mailbox without follower output,
+  native queue submission, seal hook or waiter completion. On the next natural
+  turn, `--read-pending` includes them and the agent ACKs only what it read.
+  Steer is global (Maciej, 2026-10-17): quiet applies to every delivery —
+  channel-zero broadcasts, directs and peer-to-peer alike — so an unticked
+  Steer means "nothing wakes me; everything waits in my mailbox".
+- `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
+  row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
+  existing follower events stream. A skip is not an ACK marker and contains no
+  transcript text. There is nothing to acknowledge. Off stays broadcast-only:
+  a direct or peer delivery to an `off` lease queues and wakes as `on`, so
+  leaving channel 0 never cuts the agent off from addressed words.
+
+Missing files mean `on`. Invalid, foreign or unreadable receipts log a warning
+and also mean `on`: unlike playback mute's fail-closed silence, policy fails
+open so damaged state never silently disconnects an agent. Typed Founder,
+spoken channel-zero and peer broadcasts all use the same policy gate; direct
+channel/name deliveries pass through only quiet, never off. Previously queued
+messages are retained when the policy changes; already submitted provider
+wakeups cannot be recalled by changing this preference. Switching back to `on`
+delivers what queued while quiet: the Claude/OMP waiter's unread poll surfaces
+the rows by itself, and for a codex lease the policy write resubmits the
+pending seals to the native queue once.
+
+`cs-bus --broadcast on|quiet|off --provider P --session S [--bus B]` validates
+the lease before atomically writing the receipt. The omitted bus is resolved
+from that lease. Followers read the receipt per delivery without restart or
+reattachment. Attach, pending reads and status include `broadcast.policy` next
+to `playback`. Typed and peer publisher receipts report each recipient's
+`broadcast` policy, but still publish every admitted copy, including `off`;
+the follower is the delivery authority. Sender snapshots are informational,
+not a promise against a policy switch while the publication is in flight.
+
+The overlay's channel-zero disclosure checks agents whose policy is `on`;
+unchecking selects `quiet`. The header counts `on` over bound agents. Both
+`quiet` and CLI-only `off` show a slashed antenna in the agent's own row.
+Swift only paints snapshots of the policy receipts; it writes no preference
+store of its own.
+
 ## Native chat receiver acknowledgment
 
 For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,
@@ -1042,6 +1273,10 @@ channel 0. The microphone guard always starts from the canonical global
 capture bus and discovers the dedicated channel buses; a reply's publication
 path never substitutes for the global capture journal. The existing lifecycle
 cursor enforces capture interlocks.
+Lifecycle scans have a separate 500 ms slice budget from the playback polling
+cadence. Faster polling does not shorten the safety scan; a scan that exhausts
+its budget still refuses idle and stops playback conservatively. The original
+cursor retains its processed prefix for the next scan.
 Stop writes an owner-checked request for that exact reply/ticket and requires
 its live ticket lock. The Python owner checks the request during lock/capture
 wait and playback, and terminates only its own `afplay` child. A stop request
@@ -1070,6 +1305,22 @@ selection. Routine roster polling does not override manual review. Simultaneous
 new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
+The delivery observer's restart cache is
+`runtime/overlay-delivery-cursor.v1.json`. Live snapshots consume bus evidence
+and verified receipt metadata immediately; persistence is a separate checkpoint.
+The first changed snapshot saves once, and later changes across all buses share
+one atomic save after 30 seconds since the last successful checkpoint, or when
+one bus has advanced by at least 8 MiB. The byte threshold triggers a checkpoint
+after a read; it does not lower the existing 64 MiB per-read budget. Continuous
+activity cannot postpone the time deadline. Unchanged polls do not write.
+
+Each checkpoint pairs its projection with a cursor before any unfinished row
+or storage transaction. Restart replays the suffix after that cursor. A failed
+save preserves the previous file and retries the dirty state on the next poll.
+The existing 128 MiB cache budget evicts whole projection/cursor units; an
+evicted unit returns to the bounded cold-tail path. This cache never advances
+the agent mailbox cursor, acknowledges delivery, or establishes transcript truth.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor
@@ -1094,7 +1345,44 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
+The channel-zero composer uses `cs-bus --send-text --channel 0`. Under the
+same binding lock, it validates every bound recipient before publication and
+writes one private copy per recipient. Copies share a message ID and timestamp;
+`origin_channel: "0"` records the broadcast while `channel` retains the exact
+recipient channel for the publisher. The follower presents channel zero and the
+overlay merges recipient receipts into one question. An empty roster or invalid
+recipient refuses the send and retains the draft. Publication across journals is
+not atomic: a write failure can leave earlier recipients delivered, so errors
+must not trigger automatic retry. No audio capture or agent identity is invented.
+
+Conversational deliveries expose `addressed_to` from the original source address.
+For channel zero it reads `0 (all audience)`, even when a private copy carries
+one agent's name in `audience` and one recipient in `recipients`. Codex's native
+queue includes the same explicit `ADDRESSED TO: 0 (all audience)` line; mailbox
+reads, MCP reads and watch notifications retain the label. The queue header's
+channel identifies the receiving mailbox, not the original address. A private
+message keeps its target channel/name. A named utterance without a channel keeps
+its named audience; a missing address is reported as unknown, never inferred
+from mentions in the text. This projection changes neither routing nor delivery
+identity, recipients, ACK state or the original message text.
+
 ## Native provider queue receipt
+
+The queue message's content depends on who the normalizer attributed the
+delivery to (`producer_schema`, set once in `consider()`/`slim()` — the queue
+adapter does not re-derive it). A Founder-sourced seal or typed message keeps
+its full untruncated text, headed `from: Founder (voice)` or
+`from: Founder (typed)`. A peer agent's delivery (`codescribe.agent-reply.v1`),
+and anything the normalizer did not tag as one of the two Founder lanes, fails
+closed to a notice: no raw text, just the delivery ID, the sending peer's name
+and channel, the words "peer coordination, not a Founder instruction", and the
+exact `cs-bus --read-pending --provider codex --session <thread-id>` command.
+The receiver must read the owned mailbox's full envelope before treating a
+peer's coordination text as if it had Founder authority. Every metadata field
+in the wrapper is rendered on one line with non-printable characters replaced,
+and the fields a peer chose itself (its name and channel) keep only letters,
+digits and `._-`, so a peer cannot forge a `from: Founder` line or a line of
+its own.
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the
 matching pending Codex submission through `thread/queue/delete`. The transport
@@ -1111,6 +1399,61 @@ a bounded cooldown, without blocking journal consumption. Missing or mismatched
 provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
+
+## Unexpected listener loss and recovery
+
+A listening session has four layers. Each is observed by a different component,
+and only some can be recovered by the helper:
+
+| Layer                                                                    | Observed by                                               | Recovered by                                            |
+| ------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------- |
+| Follower process (lease owner, mailbox writer)                           | the session's `--watch`                                   | the same `--watch`, through owned recovery below        |
+| Watch process                                                            | the provider's monitor (exit notification) and `--status` | the agent only: it restarts `--watch` under its monitor |
+| Provider notification window (for example a bounded exec/monitor window) | the provider only                                         | the agent, by renewing the window                       |
+| Provider conversation                                                    | the provider only                                         | not recoverable by the helper                           |
+
+The helper cannot see a provider's notification window or conversation. A
+window ending while the watch keeps running is not a disconnect, and the helper
+does not claim to notify through an expired window.
+
+Managed followers retain the resolved workspace in their lease wakeup
+configuration as well as the PID record. Losing the PID record therefore does
+not change the configuration or force a verified live follower to restart on
+reattachment. Recovery carries that recorded workspace through both the follower
+launch and its confirmed configuration, using the lease when the PID record is
+missing. Legacy records without an explicit workspace do not invent one.
+A changed workspace still requires the existing drained handover.
+
+A watch started with `--provider/--session` checks its follower every two
+seconds. A follower counts as lost only when two consecutive checks find no
+live follower process, the lease lock is free, and the channel binding still
+names this exact provider session. Quiet time, a stale heartbeat and a renewed
+watch are not losses. A held lease lock means a handover is in progress.
+
+Recovery runs under the canonical binding lock, in the same order as attach,
+detach and archive. It starts one follower with the recorded name, channel, bus,
+wakeup, hook and explicit workspace through the same launch and readiness path as `--attach`. The
+replacement acquires the same lease and resumes its cursor and unread mailbox.
+Recovery writes no acknowledgment, resubmits no accepted queue copy and replays
+no transcript. Each lost follower incarnation (pid plus start time) is handled
+at most once. Detach, archive and takeover remove or replace the binding, so
+nothing they ended is revived. A session that does not own the binding cannot
+recover it. Forks need their own session ID.
+
+The watch reports recovery on its own stdout as a single
+`codescribe.agent-bridge.lifecycle-notice.v1` line (`notice: "Codescribe listener lifecycle"`). It is independent of the lost follower. Events are
+`follower_recovered`, `recovery_failed`, `recovery_suspended`, `unrecoverable`
+and `listener_ended`, after which the watch exits. A notice has no
+`delivery_id` and no transcript text. It is never in the mailbox and is never
+acknowledged.
+
+Two consecutive losses without a newly queued message suspend automatic
+recovery (Founder decision, 2026-10-10). A suspended session stays visible as
+`listener.recovery_suspended` in `--status`. For Codex, the suspension notice is
+also submitted once through the native queue, so a later turn learns of it after
+the watch has ended. A newly queued terminal message or an explicit `--attach`
+resets the streak. Bookkeeping lives in `runtime/followers/<lease>.lifecycle.json`;
+the watch registers in `<lease>.watch.json` for `--status`.
 
 ## Disconnected agent archive
 

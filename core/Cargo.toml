@@ -7,8 +7,8 @@ authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
 description = "Core library for Codescribe (audio, STT, quality pipeline)"
 repository = "https://github.com/vetcoders/codescribe"
-homepage = "https://vetcoders.github.io/codescribe/"
-documentation = "https://vetcoders.github.io/codescribe/quickstart/"
+homepage = "https://codescribe.vetcoders.io/"
+documentation = "https://codescribe.vetcoders.io/guide/"
 keywords = ["speech-to-text", "whisper", "audio", "transcription", "stt"]
 categories = ["multimedia::audio", "multimedia::encoding"]
 
@@ -47,6 +47,8 @@ reqwest = { version = "0.13", features = ["json", "multipart", "blocking", "stre
 # Local STT (Whisper + Candle)
 candle-core = { version = "0.11", features = ["metal"] }
 candle-transformers = { version = "0.11", features = ["metal"] }
+# Planned real FFT for the Whisper log-mel front end (see stt/whisper/mel.rs).
+realfft = "3.5"
 candle-nn = "0.11"
 tokenizers = "0.23"
 indicatif = "0.18"
@@ -68,6 +70,7 @@ tiny_http = "0.12"
 # Audio
 cpal = "0.18"
 hound = "3.5"
+nnnoiseless = { version = "=0.5.2", default-features = false }
 symphonia = { version = "0.6", features = ["all", "mp3", "pcm", "isomp4", "alac"] }
 
 # Text/embeddings

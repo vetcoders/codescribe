@@ -2,6 +2,23 @@
 
 ## Overlay conversation viewing and speech
 
+Overlay size is selected explicitly. Each ordinary preview-button click advances
+mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
+is the shared pin: the strip grows leftward and the transcript grows downward,
+with display containment applied when the full target cannot fit. The context
+menu also selects any of the three modes directly. Mini is fixed; midi supports
+horizontal resize; regular supports edge and corner resize around that same pin.
+Settled native floors are mini 200 × 46 pt, midi 410 × 46 pt and regular
+320 × 260 pt. During a drag, the painted frame respects the current form's floor.
+The panel separately retains the requested gesture size: on release, requested
+height of at least 153 pt selects regular; below that, requested width below
+305 pt selects mini and larger width selects midi. Thus release-to-fold remains
+available without crushing the current presentation during the drag. Compact
+forms settle to their strip sizes; regular retains its manual size above its
+readability floor. Moving the window relocates the pin. Pointer entry
+and departure preserve that selection. Hover still provides button feedback and
+pauses terminal auto-hide; it does not change the capture route or window size.
+
 The overlay's channel menu separates **My dictation**, **0 · All**, and exact
 named-agent conversations from the explicit **Capture channels** controls.
 Selecting a conversation is passive: it does not open or close the microphone,
@@ -18,7 +35,8 @@ text. Unread reply counts describe viewing only, independently of delivery ACK.
 An explicit ordinary hold or toggle start closes active agent capture channels
 through their normal hangup path before admitting dictation (Founder delivery
 `f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
-Each channel task joins and publishes its final receipt; its words are retained.
+Each channel releases its PCM feed before dictation admission. Its retained
+terminal task then joins and publishes the final receipt; its words are retained.
 For hold gestures, handover waits until the existing start delay has elapsed.
 The modifier alone can still become a channel chord or be released without a
 take; an explicit channel gesture cancels that pending ordinary hold.
@@ -34,12 +52,39 @@ settlement. The terminal operation rechecks the captured identity under the
 transition lock and never stops a successor. Idle without a published capture
 still requires admission to be available before reporting no live take.
 
+Native recording gestures remain FIFO ordered through capture admission. A Stop
+acknowledges only after its PCM subscription is released and the capture and
+transition locks are free. The same retained terminal operation owns archive
+finalization, recognition, reducer publication and delivery; explicit Stop APIs
+still wait for its terminal result. `Busy` refuses a new take until the old
+foreground retires, while channel gestures can use the released capture slot.
+A preempting start waits on the predecessor's foreground settlement receipt,
+not merely on a mutex that the terminal drain has released.
+
+Each take archives exactly its own admitted native PCM, even when a channel
+keeps the physical microphone open. Releasing the feed freezes its sample count
+under the same registry lock as capture admission. A bounded archive queue or
+write failure refuses incomplete evidence; it never certifies a shortened WAV.
+
 Each reply's **Play** invokes the installed bus speech owner with its persisted
 reply ID and a fresh playback ticket. **Stop** names the exact emitted active
 ticket and provider session. These controls do not use the built-in chat player.
 The existing voice profiles, microphone interlock and serialization apply;
-failed or refused speech leaves reply text visible. Tab changes never schedule
-historical replay or start extra offscreen sound.
+failed or refused speech leaves reply text visible. Conversation selection never
+schedules historical replay or starts extra offscreen sound.
+
+The per-agent speaker controls automatic playback for the exact provider/session
+and bus. A manual Play is still explicit while that agent is muted. The channel-0
+speaker is the global playback switch: it also covers manual playback and future
+channels, without rewriting individual preferences. The UI confirms a change by
+reading the playback owner's durable receipt; an error is not a confirmed mute.
+The reported save failure remains open as of the 801 UI source cut.
+
+On macOS 15+, the conversation's native size-change scroll anchor owns resize
+anchoring; geometry changes do not also issue a proxy scrollTo. macOS 14 keeps
+the proxy path. Explicit return-to-current and new-message following remain
+separate from resize. This source change does not certify absence of transient
+flicker on a live window.
 
 Opening a capture channel follows the exact provider/session conversation and
 scrolls to its newest message. New messages on that open channel keep the latest
@@ -244,6 +289,19 @@ recent committed utterance; it must never create a second delivered utterance.
 
 **Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
 **Behavior:** First tap starts recording, second tap toggles send/stop
+**Tap means tap:** an Option press counts as a tap only when it is shorter than
+220 ms (`TAP_MAX_MS`, the same limit the Ctrl double-tap uses) and nothing was
+typed while it was down. Typing with Option (Polish diacritics such as ś, ć, ę)
+never pairs into a double-tap: the detector drops the pair when it saw a letter
+key-down, and also when the HID system reports a key-down during the press even
+though the tap never received the letter (secure keyboard entry, another event
+tap swallowing key events). The CoreGraphics layer passes that HID timestamp
+in through `HotkeyDetector::observe_hid_key_down` on every modifier change.
+Both ends of the press are timed by the CGEvent timestamp (the hardware clock),
+not by when the tap callback ran, so a late callback cannot shrink a chord into
+a tap. Verified so far: the detector logic (unit tests) and the gates; still to
+be verified at runtime: that the HID key-down query is populated under secure
+keyboard entry, and that ordinary double-taps stay comfortable.
 **Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
@@ -282,6 +340,73 @@ continue to win.
 HotkeyInput { key_type: Toggle, action: Press, assistive: false } // Left Option
 HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Option
 ```
+
+### Settings picker vs routed combinations
+
+The Shortcuts tab offers one flat gesture catalog for all three modes:
+`available_bindings()` returns every `ShortcutBinding` regardless of mode
+(`bridge/src/hotkeys.rs`). The detector routes a subset of those cells, and
+that subset is one predicate, `mode_binding_reachable(mode, binding)` in
+`app/os/hotkeys/detector.rs`:
+
+| Work mode  | Routed gestures                | Routing site in `HotkeyDetector::handle_flags_changed`                                             |
+| ---------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Dictation  | all five `Hold*`, `DoubleCtrl` | hold combo (`check_hold_combo`), raw toggle (`dictation == DoubleCtrl`)                            |
+| Formatting | `DoubleLeftOption` only        | normal toggle (`formatting == DoubleLeftOption`) — the only read of `mode_bindings.formatting`     |
+| Assistive  | `DoubleRightOption` only       | assistive toggle; `assistive_hold_binding` maps no hold to Assistive, so every `Hold*` is unrouted |
+
+`Disabled` binds nothing and is accepted for every mode. The routed sets are
+disjoint: a gesture bound to two modes always leaves one of them unrouted.
+`reachability_predicate_matches_detector_routing_for_every_cell` (detector
+tests) binds each of the 24 mode × gesture cells alone, performs the gesture
+through `HotkeyDetector::feed` with synthetic key snapshots, and asserts that
+the predicate and the started mode agree — 8 routed cells, 16 unrouted.
+
+The routed set describes each cell **bound in isolation**. The per-cell
+predicate is not the whole routing decision: one cross-mode rule also reads the
+Dictation binding. With Dictation=`DoubleCtrl` the raw toggle wins and both
+Option toggles start nothing, so Formatting=`DoubleLeftOption` and
+Assistive=`DoubleRightOption` are routed cells that are still blocked.
+`detect_internal_conflicts` (`app/os/shortcut_registry.rs`) reports that pair
+as a blocking conflict ("Dictation is set to Double Ctrl, so Left/Right Option
+toggle is disabled."), which is the sentence the `ShortcutsSaveReceiptTests`
+assert; the precedence matrix below lists the same rows.
+
+**Unrouted cells are refused, not persisted.** One owner, three readers:
+
+- Validation: `detect_internal_conflicts` (`app/os/shortcut_registry.rs`)
+  emits a blocking conflict for every bound mode the detector does not route,
+  through `unreachable_binding_message`. The sentence names the one mode the
+  gesture does start — the explicit precedence. Settings gates Save on it.
+- Write: `set_mode_binding` (`bridge/src/hotkeys.rs`) refuses the same cells
+  with the same sentence, for Settings, onboarding and any other caller, so no
+  path persists a dead binding.
+- Screen: `HotkeysPresentation.swift` maps each wire sentence to a localized
+  one (PL/EN) and keeps the wire text as the technical line. Swift holds no
+  routing table of its own.
+
+**Precedence matrix (what one physical gesture starts):**
+
+| Bound configuration                                           | Gesture         | Starts                    | Settings                                                       |
+| ------------------------------------------------------------- | --------------- | ------------------------- | -------------------------------------------------------------- |
+| Dictation=`DoubleLeftOption`, Formatting=`DoubleLeftOption`   | 2× left Option  | Formatting only           | blocking: "This gesture only starts Formatting, so Dictation…" |
+| Dictation=`DoubleCtrl`, Formatting=`DoubleLeftOption`         | 2× left Option  | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Left Option…"   |
+| Dictation=`DoubleCtrl`, Assistive=`DoubleRightOption`         | 2× right Option | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Right Option…"  |
+| Dictation=`Hold*`, Assistive=same `Hold*`                     | that hold       | Dictation only            | blocking: "This gesture only starts Dictation, so Assistive…"  |
+| Formatting=`HoldCtrl` (no duplicate)                          | hold Ctrl       | nothing                   | blocking: "This gesture only starts Dictation, so Formatting…" |
+| Defaults: `HoldFn` / `DoubleLeftOption` / `DoubleRightOption` | each            | its own mode              | clean                                                          |
+
+The macOS Fn/Globe tap note (`fn_tap_intercept_note`) is informational: it
+crosses the bridge with `blocking: false` and never blocks Save.
+
+A settings file written before this rule can still hold an unrouted cell. The
+Shortcuts tab shows it as a blocking conflict on load; choosing a routed
+gesture for that mode clears it.
+
+Narrowing the picker itself per mode needs a per-mode `available_bindings`
+query on the bridge (a UniFFI shape change, regenerated bindings). Until then
+the picker offers every gesture and the backend refuses the unrouted ones
+inline, before Save.
 
 ### Capture and transcript ownership
 
@@ -614,3 +739,17 @@ outside the detector.
 ---
 
 _Copyright © 2024–2026 Vetcoders_
+
+### Publication timeout ownership
+
+A foreground terminal-publication timeout is an incomplete attempt, not a Bus end.
+The original `ClosedTake`, presentation sink, exact Bus and retention lease move
+into the controller's tracked closed-capture tails before foreground reset. The
+tail retries publication with backoff and classifies/archives/ends only that take
+after acknowledgement. It cannot paste, paint, or reset a successor. Permanent
+publisher refusal remains unfinished and visible to shutdown admission; timeout
+never grants permission to discard unpublished terminal evidence.
+
+Recording start opens regular when the default transcript preference is enabled,
+and MIDI when disabled. MINI is the idle entry form; merely changing form does
+not start or stop recording.

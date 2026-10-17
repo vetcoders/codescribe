@@ -206,6 +206,10 @@ verify-install-bus:
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
+.PHONY: restart-if-idle
+restart-if-idle:
+	@./scripts/restart-if-idle
+
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
 	@BIT=$$(./scripts/developer-surface-gate.sh); \
@@ -288,26 +292,7 @@ version:
 	@grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/v\1/'
 
 bump:
-	@if [ -z "$(TYPE)" ]; then \
-		echo "Usage: make bump TYPE=patch|minor|major"; \
-		echo "Current: $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"; \
-		exit 1; \
-	fi
-	@current=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	IFS='.' read -r major minor patch <<< "$$current"; \
-	case "$(TYPE)" in \
-		patch) patch=$$((patch + 1)) ;; \
-		minor) minor=$$((minor + 1)); patch=0 ;; \
-		major) major=$$((major + 1)); minor=0; patch=0 ;; \
-		*) echo "Invalid TYPE: $(TYPE)"; exit 1 ;; \
-	esac; \
-	new="$$major.$$minor.$$patch"; \
-	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" $(VERSION_FILE); \
-	if [ -f README.md ]; then \
-		sed -i '' "s/badge\/version-$$current-/badge\/version-$$new-/" README.md; \
-		sed -i '' "s/current source version is \`$$current\`/current source version is \`$$new\`/" README.md; \
-	fi; \
-	echo "Bumped: v$$current -> v$$new (Cargo.toml + README). Update CHANGELOG by hand. Website download metadata comes from GitHub Releases."
+	@python3 scripts/release-version.py --version-file "$(VERSION_FILE)" bump "$(TYPE)" $(if $(TO),--to "$(TO)",)
 
 bump-patch:
 	@$(MAKE) bump TYPE=patch
@@ -356,7 +341,7 @@ bump-major:
 # class=operator denotes a platform/tool requirement; ci=yes means the workflow
 # supplies it. The localization gates need Xcode but run in the required job.
 #
-# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census; executes ZERO tests
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census (with the L10N_BASE prose ratchet); executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (the runner's PATH loct is a dev build without release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; any host with a release loct on PATH runs the full surface.
@@ -364,8 +349,8 @@ bump-major:
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
-# gate: verify-l10n-catalog class=static ci=yes -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync); rust.yml invokes this target in required Clippy + Tests
-# gate: verify-l10n-bridge class=static ci=yes -- scripts/l10n-bridge-census.py: every String field crossing the UniFFI bridge (macos/Codescribe/Bridge/codescribe_ffi.swift) is classified data|prose in scripts/data/l10n-bridge-fields.txt; an unclassified or vanished field fails, so English prose composed in Rust cannot grow unnoticed (LOCALIZATION_LEDGER.md §4 burn-down); rust.yml invokes this target in required Clippy + Tests
+# gate: verify-l10n-catalog class=static ci=yes -- scripts/l10n-lint.py over the String Catalogs: stale keys, argument number and type parity with the English source, plural completeness per language against the CLDR rules in scripts/data/cldr, full coverage of every language either catalog carries (--allow-partial downgrades that to a report while a language is being built up), a refusal of any translation that reads exactly as its English source unless the key is named in scripts/data/l10n-identical-allowed.txt or carries no letter at all (the one way an untranslated string used to pass coverage), the product spelling in every string, InfoPlist.xcstrings vs project.yml; reads the JSON only and says nothing about whether the catalog matches the Swift sources (that is verify-l10n-sync); rust.yml and l10n.yml invoke this target, the latter on every branch
+# gate: verify-l10n-bridge class=static ci=yes -- scripts/l10n-bridge-census.py: every String crossing the UniFFI bridge is classified data|prose; an unclassified or vanished field fails. L10N_BASE (default origin/main, caller-selected merge base for a stack) ratchets new prose seams; either unreadable base file refuses. The ref travels as literal environment data, never shell code; rust.yml and l10n.yml invoke this target, the latter on every branch.
 # gate: verify-l10n-sync class=operator ci=yes -- scripts/l10n-sync.sh --check: Localizable.xcstrings vs compiler extraction from a current Debug build; missing/outdated data exits 2; rust.yml builds fresh Swift-only extraction and invokes this target in required Clippy + Tests
 # gate: test-l10n-sync class=operator ci=yes -- real Swift compiler and xcstringstool in a temporary source tree: synchronized catalog passes, new/changed Swift copy fails, missing/outdated extraction fails, checks never write the catalog; rust.yml runs this in required Clippy + Tests
 # gate: verify-install-bus class=operator ci=yes -- scripts/install-bus.sh --compile-only: real Swift 6 compiler, warnings as errors, over the two files `make install-bus` builds its installer from; stages and installs nothing; needs the Swift toolchain
@@ -475,8 +460,18 @@ verify-l10n-sync:
 verify-l10n-catalog:
 	@python3 scripts/l10n-lint.py
 
+# The census alone only asks that every bridged String be classified; writing
+# `prose` on a new one satisfies it. The ratchet is what makes the list a
+# burn-down: L10N_BASE names the ref the prose count may not exceed. Set it to
+# the branch a cut will merge into (CI passes the PR base). An empty or
+# unreadable base refuses. For census-only reporting, call the Python CLI
+# directly without --base. Freeze the literal value before exporting it:
+# neither Make functions nor shell metacharacters in a ref are executable.
+L10N_BASE ?= origin/main
+override L10N_BASE := $(value L10N_BASE)
+export L10N_BASE
 verify-l10n-bridge:
-	@python3 scripts/l10n-bridge-census.py
+	@python3 scripts/l10n-bridge-census.py --base-env
 
 test-l10n-sync:
 	@python3 -m unittest scripts/tests/test_l10n_sync.py
@@ -1093,7 +1088,7 @@ check:
 	@echo "=== Localization catalogs ==="
 	@python3 scripts/l10n-lint.py
 	@echo "=== Localization bridge census ==="
-	@python3 scripts/l10n-bridge-census.py
+	@python3 scripts/l10n-bridge-census.py --base-env
 	@echo ""
 	@echo "check: static gate passed — format, lint, security, env registry, gate ledger, localization catalogs, bridge census."
 	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
@@ -1119,9 +1114,16 @@ check:
 # passed" and returned 0 over `error: test failed, to rerun pass -p
 # codescribe-ffi --lib` — the first run of this gate produced exactly the lie it
 # was written to remove. Any line added below must stay in the `-e` chain.
+#
+# The structural verifier refuses an explicit CARGO_TARGET_DIR that does not
+# exist yet (a typo or a redirect must never be created on its behalf), and this
+# Makefile always exports one. A fresh clone has no target directory, so the
+# gate materializes the target it exports before the verifier reads it;
+# otherwise every live NeutralAstTests case fails on a clean runner.
 verify:
 	@set -eo pipefail; \
 	$(TEST_DATA_DIR_SETUP); \
+	mkdir -p "$(CARGO_TARGET_DIR)"; \
 	echo "=== Verify (structural verifier instrument) ==="; \
 	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
 	echo "=== Verify (live Loctree acoustic throne receipt) ==="; \
@@ -1142,6 +1144,7 @@ verify:
 	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (optional build model discovery) ==="; \
 	python3 scripts/tests/test_build_optional_model_discovery.py; \
+	python3 scripts/tests/test_appcast_version.py; \
 	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
 	bash scripts/tests/bus-demux-test.sh; \
 	echo "=== Verify (bench STT stage fixture hard-links) ==="; \
@@ -1150,11 +1153,13 @@ verify:
 	bash scripts/tests/share-new-model-tokenizer-test.sh; \
 	echo "=== Verify (env registry) ==="; \
 	python3 -m unittest scripts/tests/test_env_registry.py; \
+	python3 -m unittest scripts/tests/test_release_version.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
+	python3 -m unittest scripts/tests/test_bus_listener_recovery.py; \
 	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
 	python3 -m unittest scripts/tests/test_bus_runtime_model.py; \
 	python3 -m unittest scripts/tests/test_bus_user_text.py; \
@@ -1162,6 +1167,10 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_draft_retirement.py; \
 	python3 -m unittest scripts/tests/test_install_bus_payload.py; \
 	python3 -m unittest scripts/tests/test_bus_peer_messages.py; \
+	python3 -m unittest scripts/tests/test_bus_address_authority.py; \
+	python3 -m unittest scripts/tests/test_bus_broadcast_policy.py; \
+	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
+	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \
@@ -1169,6 +1178,8 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_agent_archive.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
+	python3 -m unittest scripts/tests/test_bus_mcp.py; \
+	python3 -m unittest scripts/tests/test_bus_dot_mcp.py scripts/tests/test_bus_mcp_runtime.py scripts/tests/test_bus_mcp_key_store.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
@@ -1186,7 +1197,9 @@ verify:
 	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
 	echo "verify: (parity bars, Swift front-end suite, host smoke, real-API e2e)."
 
+# Same exported target as `verify`, same reason to materialize it first.
 test-structural-verifier:
+	@mkdir -p "$(CARGO_TARGET_DIR)"
 	@python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py
 
 test-transcript-bus-path:
@@ -1257,7 +1270,7 @@ hooks:
 	@echo "Installing pre-commit hooks..."
 	@command -v pre-commit >/dev/null 2>&1 || { echo "Install pre-commit: pipx install pre-commit"; exit 1; }
 	@pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
-	@echo "Hooks installed: pre-commit (check+fmt) + pre-push (clippy+semgrep) + commit-msg (provenance)"
+	@echo "Hooks installed: pre-commit (check+fmt+l10n) + pre-push (clippy+semgrep+l10n) + commit-msg (provenance)"
 
 # ============================================================================
 # Cleanup
@@ -1328,8 +1341,8 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-catalog' 'String Catalog lint (part of check): stale keys, arguments, plurals, coverage, no translation left in English'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-bridge' 'Bridge census (part of check): every String crossing UniFFI is classified data|prose, and the prose list may not grow past L10N_BASE (default origin/main)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-l10n-sync' 'String Catalog vs current Debug compiler extraction; required in CI'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-install-bus' 'Helper installer source compiles without the app target; required in CI'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-l10n-sync' 'Real-compiler positive/negative controls for the localization gate'
