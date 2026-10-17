@@ -1980,4 +1980,243 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       return
     }
   }
+
+  /// Mini opens another agent: collapsed, then one update selects the other
+  /// conversation and the window grows into the conversation surface.
+  @MainActor
+  func testSelectingAnotherConversationFromMiniShowsItsMessages() throws {
+    let lena = try canvasConversation(
+      id: "conversation-lena", channel: "2", name: "Lena", lease: leaseA,
+      session: "lena-session")
+    let andrzej = try canvasConversation(
+      id: "conversation-andrzej", channel: "3", name: "andrzej", lease: leaseB,
+      session: "andrzej-session")
+    let model = ConversationCanvasModel(
+      ConversationCanvasState(conversation: lena, focusRevision: 0, isPresented: false))
+    let rig = mountConversationCanvas(model, height: 72)
+    defer { rig.window.close() }
+    pumpConversationCanvas(1.0 / 60.0)
+    model.state = ConversationCanvasState(
+      conversation: andrzej, focusRevision: model.state.focusRevision &+ 1, isPresented: true)
+    growConversationCanvas(rig, from: 72, to: 520)
+    pumpConversationCanvas(0.3)
+    assertLatestMessagesPainted(host: rig.host, scenario: "select-from-mini")
+  }
+
+  /// The expanded conversation is already at its latest row, then the founder
+  /// switches to the other agent without resizing.
+  @MainActor
+  func testSwitchingConversationWhileExpandedShowsTheNewMessages() throws {
+    let lena = try canvasConversation(
+      id: "conversation-lena", channel: "2", name: "Lena", lease: leaseA,
+      session: "lena-session")
+    let andrzej = try canvasConversation(
+      id: "conversation-andrzej", channel: "3", name: "andrzej", lease: leaseB,
+      session: "andrzej-session")
+    let model = ConversationCanvasModel(
+      ConversationCanvasState(conversation: lena, focusRevision: 0, isPresented: true))
+    let rig = mountConversationCanvas(model, height: 520)
+    defer { rig.window.close() }
+    pumpConversationCanvas(0.3)
+    model.state = ConversationCanvasState(
+      conversation: andrzej, focusRevision: model.state.focusRevision &+ 1, isPresented: true)
+    pumpConversationCanvas(0.3)
+    assertLatestMessagesPainted(host: rig.host, scenario: "switch-while-expanded")
+  }
+
+  /// A followed reply expands the same conversation out of the mini. Production
+  /// `selectConversation` bumps focus in that same update, so this does too.
+  @MainActor
+  func testFollowedReplyFromMiniShowsTheNewMessage() throws {
+    let lena = try canvasConversation(
+      id: "conversation-lena", channel: "2", name: "Lena", lease: leaseA,
+      session: "lena-session")
+    let model = ConversationCanvasModel(
+      ConversationCanvasState(conversation: lena, focusRevision: 0, isPresented: false))
+    let rig = mountConversationCanvas(model, height: 72)
+    defer { rig.window.close() }
+    pumpConversationCanvas(1.0 / 60.0)
+    let followed = OverlayConversationMessage(
+      id: "\(lena.id)-reply-followed", kind: .reply,
+      text: (1...9).map { "Nowa odpowiedź \($0) po śladzie z mini." }.joined(separator: "\n"),
+      order: UInt64(lena.messages.count), emittedAt: "2026-10-17T06:09:00Z",
+      owner: lena.owner, recipients: [], deliveryID: nil, replyTo: nil,
+      unsolicited: false, playback: nil, busPath: busPath)
+    let updated = OverlayConversation(
+      id: lena.id, channel: lena.channel, name: lena.name, owner: lena.owner,
+      messages: lena.messages + [followed])
+    model.state = ConversationCanvasState(
+      conversation: updated, focusRevision: model.state.focusRevision &+ 1, isPresented: true)
+    growConversationCanvas(rig, from: 72, to: 520)
+    pumpConversationCanvas(0.3)
+    assertLatestMessagesPainted(host: rig.host, scenario: "followed-reply-from-mini")
+  }
+
+  /// The open conversation stays selected while the surface shrinks and grows.
+  @MainActor
+  func testResizingTheOpenConversationKeepsTheLatestMessagesVisible() throws {
+    let lena = try canvasConversation(
+      id: "conversation-lena", channel: "2", name: "Lena", lease: leaseA,
+      session: "lena-session")
+    let model = ConversationCanvasModel(
+      ConversationCanvasState(conversation: lena, focusRevision: 1, isPresented: true))
+    let rig = mountConversationCanvas(model, height: 520)
+    defer { rig.window.close() }
+    pumpConversationCanvas(0.3)
+    growConversationCanvas(rig, from: 520, to: 260)
+    growConversationCanvas(rig, from: 260, to: 520)
+    pumpConversationCanvas(0.3)
+    assertLatestMessagesPainted(host: rig.host, scenario: "morph-without-switching")
+  }
+
+  private func canvasConversation(
+    id: String, channel: String, name: String, lease: String, session: String
+  ) throws -> OverlayConversation {
+    let row = owner(lease, session: session, name: name, channel: channel)
+    let conversationOwner = try XCTUnwrap(OverlayConversationOwner(row: row))
+    let tall = (1...9).map { line in
+      "Linia \(line) rozmowy \(name), dość długa żeby bąbel miał własną wysokość."
+    }.joined(separator: "\n")
+    let messages = (0..<30).map { index in
+      let replyRow = !index.isMultiple(of: 2)
+      return OverlayConversationMessage(
+        id: "\(id)-\(index)", kind: replyRow ? .reply : .user,
+        text: replyRow ? tall : "Krótka \(index).", order: UInt64(index),
+        emittedAt: String(format: "2026-10-17T06:08:%02dZ", index),
+        owner: replyRow ? conversationOwner : nil, recipients: [], deliveryID: nil,
+        replyTo: nil, unsolicited: false, playback: nil, busPath: busPath)
+    }
+    return OverlayConversation(
+      id: id, channel: channel, name: name, owner: conversationOwner, messages: messages)
+  }
+
+  @MainActor
+  private func mountConversationCanvas(
+    _ model: ConversationCanvasModel, height: CGFloat
+  ) -> (window: NSWindow, host: NSHostingView<ConversationCanvasHost>) {
+    let host = NSHostingView(rootView: ConversationCanvasHost(model: model))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 532, height: height)
+    let canvas = OverlayAppearancePalette.dark.desktopBackground.nsColor
+    host.wantsLayer = true
+    host.layer?.backgroundColor = canvas.cgColor
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.isOpaque = true
+    window.backgroundColor = canvas
+    window.contentView = host
+    host.layoutSubtreeIfNeeded()
+    return (window, host)
+  }
+
+  @MainActor
+  private func growConversationCanvas(
+    _ rig: (window: NSWindow, host: NSView), from start: CGFloat, to end: CGFloat
+  ) {
+    for step in 1...12 {
+      let height = start + (end - start) * CGFloat(step) / 12
+      let size = NSSize(width: 532, height: height)
+      rig.window.setContentSize(size)
+      rig.host.frame = NSRect(origin: .zero, size: size)
+      rig.host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 1.0 / 60.0))
+    }
+  }
+
+  private func pumpConversationCanvas(_ seconds: TimeInterval) {
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
+  }
+
+  /// Message band: below the header inset and above the composer. AppKit's
+  /// bitmap origin is the lower-left, so the excluded bottom 90 points are the
+  /// low rows and `topInset + 40` is the high rows.
+  @MainActor
+  private func assertLatestMessagesPainted(
+    host: NSView, scenario: String, file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let topInset: CGFloat = 50
+    func scrollViews(_ root: NSView) -> [NSScrollView] {
+      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+    }
+    let scroll = scrollViews(host).first { $0.bounds.height > 150 }
+    let document = scroll?.documentView
+    let visible = scroll?.documentVisibleRect ?? .zero
+    let documentHeight = document?.bounds.height ?? 0
+    let latestRevealed = document != nil && visible.maxY > documentHeight - 50
+    let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)
+    if let bitmap { host.cacheDisplay(in: host.bounds, to: bitmap) }
+    let painted = bitmap.map { paintedBubblePixels($0, in: host, topInset: topInset) } ?? 0
+    if painted > 400, latestRevealed { return }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "codescribe-empty-canvas-\(scenario).png")
+    if let png = bitmap?.representation(using: .png, properties: [:]) {
+      try? png.write(to: url)
+    }
+    XCTFail(
+      "the conversation opens as an empty canvas (\(scenario)); png=\(url.path); "
+        + "visible=\(String(describing: visible)); documentHeight=\(documentHeight); "
+        + "painted=\(painted)",
+      file: file, line: line)
+  }
+
+  private func paintedBubblePixels(
+    _ bitmap: NSBitmapImageRep, in host: NSView, topInset: CGFloat
+  ) -> Int {
+    let background = OverlayAppearancePalette.dark.desktopBackground.components
+    let pointsHigh = host.bounds.height
+    guard pointsHigh > 0, bitmap.pixelsHigh > 0, bitmap.pixelsWide > 0 else { return 0 }
+    let scaleY = CGFloat(bitmap.pixelsHigh) / pointsHigh
+    let lower = max(0, Int((90 * scaleY).rounded(.down)))
+    let upper = min(
+      bitmap.pixelsHigh, Int(((pointsHigh - topInset - 40) * scaleY).rounded(.up)))
+    guard upper > lower else { return 0 }
+    var painted = 0
+    for y in lower..<upper {
+      for x in 0..<bitmap.pixelsWide {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        let alpha = Double(color.alphaComponent)
+        let red = Double(color.redComponent) * alpha + background.red * (1 - alpha)
+        let green = Double(color.greenComponent) * alpha + background.green * (1 - alpha)
+        let blue = Double(color.blueComponent) * alpha + background.blue * (1 - alpha)
+        if abs(red - background.red) > 0.05 || abs(green - background.green) > 0.05
+          || abs(blue - background.blue) > 0.05
+        {
+          painted += 1
+        }
+      }
+    }
+    return painted
+  }
+}
+
+private struct ConversationCanvasState {
+  var conversation: OverlayConversation
+  var focusRevision: UInt64
+  var isPresented: Bool
+}
+
+@MainActor
+private final class ConversationCanvasModel: ObservableObject {
+  @Published var state: ConversationCanvasState
+
+  init(_ state: ConversationCanvasState) {
+    self.state = state
+  }
+}
+
+private struct ConversationCanvasHost: View {
+  @ObservedObject var model: ConversationCanvasModel
+  private let palette = OverlayAppearancePalette.dark
+
+  var body: some View {
+    OverlayConversationView(
+      conversation: model.state.conversation, palette: palette, topInset: 50, bottomInset: 20,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      focusRevision: model.state.focusRevision, isPresented: model.state.isPresented,
+      draft: .constant(""), sending: false, sendError: nil, onSend: {}
+    )
+    .background(palette.desktopBackground.color)
+    .preferredColorScheme(.dark)
+  }
 }

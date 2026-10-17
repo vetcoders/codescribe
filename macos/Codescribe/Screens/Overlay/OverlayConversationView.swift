@@ -83,6 +83,10 @@ struct OverlayConversationView: View {
   var onComposerTypingActivity: () -> Void = {}
 
   @State private var scrollFollow = StreamScrollFollowState()
+  /// Conversation and presentation the focus handler last observed. Written
+  /// after this turn's handlers, so a mini morph is not read as a re-select.
+  @State private var scrollFocusConversationID: String?
+  @State private var scrollFocusWasPresented = false
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
   /// Bumps the composer's focus after a held message returns to the draft.
@@ -120,6 +124,9 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: geometry.size.width, textScale: textScale)
         )
+        // One ScrollView per conversation. `.initialOffset` then starts at the
+        // bottom instead of reusing the previous list's offset through the morph.
+        .id(conversation.id)
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
         // The open pill stack steals neither color nor scrolling (Maciej,
         // 2026-10-17): the conversation keeps its full opacity and stays live;
@@ -193,13 +200,49 @@ struct OverlayConversationView: View {
             }
           }
         }
-        .onAppear { scrollToLatest(proxy) }
-        .onChange(of: conversation.id) { _, _ in
-          scrollToLatest(proxy)
+        .onAppear {
+          scrollFocusConversationID = conversation.id
+          scrollFocusWasPresented = isPresented
+          if #available(macOS 15.0, *) {
+            // `.initialOffset` places a new list. scrollTo here races the morph's
+            // lazy row remeasurement, the same race the geometry handler refuses.
+          } else {
+            scrollToLatest(proxy)
+          }
         }
-        .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
+        .onChange(of: conversation.id) { _, _ in
+          if #available(macOS 15.0, *) {
+            // The new `.id` rebuilds the list at the bottom anchor. scrollTo on
+            // this frame races that remeasurement.
+            _ = scrollFollow.handle(.jumpToCurrent)
+          } else {
+            scrollToLatest(proxy)
+          }
+          rememberScrollFocusAnchor()
+        }
+        .onChange(of: focusRevision) { _, _ in
+          let reselectingOpenConversation =
+            scrollFocusConversationID == conversation.id && scrollFocusWasPresented
+          if #available(macOS 15.0, *) {
+            if reselectingOpenConversation {
+              scrollToLatest(proxy)
+            } else {
+              // Opening or switching during the morph: keep following, no scrollTo.
+              _ = scrollFollow.handle(.jumpToCurrent)
+            }
+          } else {
+            scrollToLatest(proxy)
+          }
+          rememberScrollFocusAnchor()
+        }
         .onChange(of: isPresented) { _, presented in
-          if presented, followsLatest { scrollToLatest(proxy) }
+          if #available(macOS 15.0, *) {
+            // The size-change anchor keeps a following list at the bottom through
+            // the morph; a list the user scrolled up stays where it was.
+          } else if presented, followsLatest {
+            scrollToLatest(proxy)
+          }
+          rememberScrollFocusAnchor()
         }
         .onChange(of: geometry.size) { _, _ in
           // Modern ScrollView owns size-change anchoring. A second scrollTo
@@ -211,7 +254,11 @@ struct OverlayConversationView: View {
           }
         }
         .onChange(of: orderedMessages.last) { _, _ in
-          if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
+          if #available(macOS 15.0, *) {
+            // Size-change anchoring keeps the bottom while the morph grows the list.
+            // scrollTo on the new last row races the lazy remeasurement.
+            _ = scrollFollow.handle(.contentChanged)
+          } else if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
             scrollToLatest(proxy)
           }
         }
@@ -436,6 +483,18 @@ struct OverlayConversationView: View {
       } catch {
         deliveryControlErrors[message.id] = error.userFacingMessage
       }
+    }
+  }
+
+  /// Records the anchor after this turn's handlers have read the previous one.
+  /// A synchronous write would make a mini morph look like a re-select and call
+  /// `scrollTo`, which races lazy row remeasurement (see the geometry handler).
+  private func rememberScrollFocusAnchor() {
+    let id = conversation.id
+    let presented = isPresented
+    Task { @MainActor in
+      scrollFocusConversationID = id
+      scrollFocusWasPresented = presented
     }
   }
 
