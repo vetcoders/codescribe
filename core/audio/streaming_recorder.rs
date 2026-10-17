@@ -364,27 +364,20 @@ pub struct ReplayScenario {
 }
 
 impl ReplayScenario {
-    /// A session id tag, so a scenario's evidence sits beside the plain
-    /// replay's instead of replacing it.
+    /// A short session id tag, so a scenario's evidence sits beside the plain
+    /// replay's instead of replacing it. At most 12 bytes: the trail limits a
+    /// session id to 80, and a channel take's own id already uses 52.
     fn session_tag(&self) -> Option<String> {
         let mut parts = Vec::new();
         if let Some(enabled) = self.seal_ledger {
-            parts.push(if enabled { "ledger-on" } else { "ledger-off" }.to_string());
+            parts.push(if enabled { "lon" } else { "loff" }.to_string());
         }
         if let Some(device) = &self.capture_device {
-            let slug: String = device
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() {
-                        c.to_ascii_lowercase()
-                    } else {
-                        '-'
-                    }
-                })
-                .collect();
-            let slug: Vec<&str> = slug.split('-').filter(|part| !part.is_empty()).collect();
-            let slug: String = slug.join("-").chars().take(24).collect();
-            parts.push(format!("device-{}", slug.trim_end_matches('-')));
+            // FNV-1a: stable across runs and builds, unlike the std hasher.
+            let hash = device.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+                (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+            });
+            parts.push(format!("d{:06x}", hash & 0x00ff_ffff));
         }
         (!parts.is_empty()).then(|| parts.join("-"))
     }
@@ -4998,10 +4991,12 @@ mod recorded_replay_tests {
             prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 1, &scenario).unwrap();
 
         let config = &replay.config;
-        assert_eq!(
-            config.session_id,
-            format!("replay-{SESSION}-ledger-on-device-usb-mic-2-r1")
-        );
+        let tag = config
+            .session_id
+            .strip_prefix(&format!("replay-{SESSION}-lon-d"))
+            .and_then(|rest| rest.strip_suffix("-r1"))
+            .expect("the scenario tag sits between the take's id and the run");
+        assert_eq!(tag.len(), 6);
         assert!(config.runtime_settings.seal_ledger_enabled());
         assert_eq!(config.capture_device_name.as_deref(), Some("USB Mic (2)"));
         let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
@@ -5021,6 +5016,20 @@ mod recorded_replay_tests {
             .find(|input| input.input == "capture_device")
             .unwrap();
         assert!(device.reason.as_deref().unwrap().contains("no profile"));
+    }
+
+    #[test]
+    fn a_scenario_id_fits_the_trail_limit_for_a_channel_take() {
+        let scenario = ReplayScenario {
+            capture_device: Some("A very long external USB microphone name".into()),
+            seal_ledger: Some(false),
+        };
+        let session = "agent-channel-0-0b47f573-d80d-4d87-8f26-7faaf85955cc";
+        let id = format!("replay-{session}-{}-r20", scenario.session_tag().unwrap());
+        assert!(
+            crate::pipeline::trail::trail_path(std::path::Path::new("/"), &id).is_ok(),
+            "{id}"
+        );
     }
 
     #[test]
