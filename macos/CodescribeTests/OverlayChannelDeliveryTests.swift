@@ -1454,10 +1454,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "Codescribe/Screens/Overlay/DictationOverlayView.swift"), encoding: .utf8)
     let start = try XCTUnwrap(view.range(of: "private var header: some View"))
     let end = try XCTUnwrap(
-      view.range(of: "private var fullHeader", range: start.upperBound..<view.endIndex))
+      view.range(of: "private var closeButton", range: start.upperBound..<view.endIndex))
     let header = String(view[start.lowerBound..<end.lowerBound])
     XCTAssertFalse(header.contains("OverlayChannelStatusView("))
-    let controls = try XCTUnwrap(view.range(of: "private func justifiedHeader(compact: Bool)"))
+    let controls = try XCTUnwrap(
+      view.range(of: "private func justifiedHeader(density: OverlayHeaderDensity)"))
     XCTAssertTrue(view[controls.lowerBound...].contains("OverlayChannelStatusView("))
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
