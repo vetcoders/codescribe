@@ -7912,6 +7912,95 @@ fn record_dictation_witness_attempts(
     }
 }
 
+/// The per-utterance witness question over outstanding targets (sorted,
+/// deduplicated, closed PCM only): the window and the targets it may debit.
+///
+/// Only debt the retained live capture still holds can be asked. Anchoring
+/// the window on evicted debt fails the lookup on every seal and starves every
+/// newer gap behind it, so older debt waits for the terminal archive pass. The
+/// window's leading context never reaches before the retained start.
+fn live_witness_question(
+    targets: &[(u64, u64)],
+    retained_start: u64,
+    sealed_end: u64,
+    context: u64,
+    max_window: u64,
+) -> Option<((u64, u64), Vec<(u64, u64)>)> {
+    let askable: Vec<(u64, u64)> = targets
+        .iter()
+        .copied()
+        .filter(|&(start, _)| start >= retained_start)
+        .collect();
+    let first_start = askable.first()?.0;
+    let last_end = askable.last()?.1;
+    let window_start = first_start.saturating_sub(context).max(retained_start);
+    let window_end = last_end
+        .saturating_add(context)
+        .min(sealed_end)
+        .min(window_start.saturating_add(max_window));
+    (window_end > window_start).then_some(((window_start, window_end), askable))
+}
+
+/// Terminal witness windows: targets (sorted, deduplicated) clustered into
+/// disjoint windows with bounded context, ordered by the debt each covers,
+/// largest first, earlier window on a tie.
+///
+/// The request budget is bounded. Spent in time order, a long take's whole
+/// budget went to its first minutes while later holes stayed empty.
+fn terminal_witness_windows(
+    targets: &[(u64, u64)],
+    capture_samples: u64,
+    context: u64,
+    max_window: u64,
+) -> Vec<(u64, u64)> {
+    // (first target start, last target end, summed target length)
+    let mut clusters: Vec<(u64, u64, u64)> = Vec::new();
+    for &(start, end) in targets {
+        let extend = match clusters.last() {
+            Some(&(first_start, last_end, _)) => {
+                start <= last_end.saturating_add(2 * context)
+                    && end
+                        .saturating_add(context)
+                        .saturating_sub(first_start.saturating_sub(context))
+                        <= max_window
+            }
+            None => false,
+        };
+        let debt = end.saturating_sub(start);
+        if extend {
+            let cluster = clusters
+                .last_mut()
+                .expect("a cluster matched the extension check");
+            cluster.1 = cluster.1.max(end);
+            cluster.2 = cluster.2.saturating_add(debt);
+        } else {
+            clusters.push((start, end, debt));
+        }
+    }
+    let mut windows: Vec<(u64, u64, u64)> = clusters
+        .iter()
+        .map(|&(first_start, last_end, debt)| {
+            let window_start = first_start.saturating_sub(context);
+            // A single oversized target must not widen the window past the
+            // cap either: the witness reads from the target's leading edge —
+            // the lost-beginning failure mode — and whatever does not fit
+            // stays honestly unresolved instead of silently exceeding the
+            // per-request PCM bound.
+            let window_end = last_end
+                .saturating_add(context)
+                .min(capture_samples)
+                .min(window_start.saturating_add(max_window));
+            (window_start, window_end, debt)
+        })
+        .filter(|&(start, end, _)| end > start)
+        .collect();
+    windows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    windows
+        .into_iter()
+        .map(|(start, end, _)| (start, end))
+        .collect()
+}
+
 /// Per-utterance witness trigger: after a seal commits, re-ask outstanding
 /// recovery debt on closed PCM in the background. One request in flight; a
 /// target range is asked at most twice per session; the worker admits the
@@ -7960,16 +8049,18 @@ fn maybe_spawn_utterance_witness(
     }
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
     let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
-    let first_start = targets.first().expect("nonempty targets").0;
-    let last_end = targets.last().expect("nonempty targets").1;
-    let window_start = first_start.saturating_sub(context);
-    let window_end = last_end
-        .saturating_add(context)
-        .min(sealed_end)
-        .min(window_start.saturating_add(max_window));
-    if window_end <= window_start {
+    // Before Stop the live buffer is the only PCM; once the archive owns the
+    // take, every target is askable.
+    let retained_start = if state.terminal_pcm.is_some() {
+        0
+    } else {
+        state.audio.retained_start_sample()
+    };
+    let Some(((window_start, window_end), targets)) =
+        live_witness_question(&targets, retained_start, sealed_end, context, max_window)
+    else {
         return;
-    }
+    };
     let Some(window) = state.window_by_samples(window_start, window_end) else {
         let _ = ev_tx.send(EngineEvent::Warning {
             code: "dictation_witness_pcm_unavailable".into(),
@@ -8155,48 +8246,9 @@ fn run_terminal_dictation_witness(
     targets.sort_unstable();
     targets.dedup();
 
-    // Cluster targets into disjoint witness windows with bounded context.
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
     let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
-    let mut clusters: Vec<(u64, u64)> = Vec::new();
-    for (start, end) in targets {
-        let extend = match clusters.last() {
-            Some(&(first_start, last_end)) => {
-                start <= last_end.saturating_add(2 * context)
-                    && end
-                        .saturating_add(context)
-                        .saturating_sub(first_start.saturating_sub(context))
-                        <= max_window
-            }
-            None => false,
-        };
-        if extend {
-            let last_end = &mut clusters
-                .last_mut()
-                .expect("a cluster matched the extension check")
-                .1;
-            *last_end = (*last_end).max(end);
-        } else {
-            clusters.push((start, end));
-        }
-    }
-    let windows: Vec<(u64, u64)> = clusters
-        .iter()
-        .map(|&(first_start, last_end)| {
-            let window_start = first_start.saturating_sub(context);
-            // A single oversized target must not widen the window past the
-            // cap either: the witness reads from the target's leading edge —
-            // the lost-beginning failure mode — and whatever does not fit
-            // stays honestly unresolved instead of silently exceeding the
-            // per-request PCM bound.
-            let window_end = last_end
-                .saturating_add(context)
-                .min(capture_samples)
-                .min(window_start.saturating_add(max_window));
-            (window_start, window_end)
-        })
-        .filter(|&(start, end)| end > start)
-        .collect();
+    let windows = terminal_witness_windows(&targets, capture_samples, context, max_window);
 
     let budget_start = Instant::now();
     let mut requests_issued = 0usize;
