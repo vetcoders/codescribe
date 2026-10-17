@@ -791,8 +791,13 @@ struct DictationOverlayView: View {
     // two trees; Founder report 2026-10-17 01:44Z).
     justifiedHeader(density: OverlayHeaderDensity(state.presentationMode))
       // The row is offered the full width first, so the clip below trims the
-      // window's width and not the row's own ideal width.
-      .frame(maxWidth: .infinity, alignment: .leading)
+      // window's width and not the row's own ideal width. `minWidth: 0` pins
+      // this frame to the offered width even when the row is wider mid-morph:
+      // without it the flexible frame adopts the child's wider size, the parent
+      // centres it and the leading group lands at a negative x (dragon gate
+      // 2026-10-17, OverlayHeaderMorphTests mini→midi @25 %). The overflow now
+      // runs to the trailing side only, where the clip trims it.
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       // Hover growth of the close dot and the focus outlines live in this
       // inset; the clip then only trims a transient overflow mid-morph.
       .padding(.horizontal, OverlayHeaderDensity.clipInset)
