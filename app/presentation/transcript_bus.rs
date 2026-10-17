@@ -1700,12 +1700,10 @@ impl TranscriptBus {
         } else {
             TranscriptProjectionPhase::Listening
         };
-        // A terminal close or a post-terminal document operation is not a take
-        // in progress: action availability computes from the ended state and
-        // inherits the already proven wav existence, exactly like the ledger
-        // lane's post-stop user revisions. Live observations keep the
-        // in-progress tuple.
-        let availability = if operation.is_some() || capability.terminal {
+        // Decoder completion does not end capture. Only the lifecycle end
+        // releases document actions; later revisions retain its audio proof,
+        // exactly like post-stop revisions in the ledger lane.
+        let availability = if writer.ended {
             self.projection_availability(
                 !revision.rendered_text.trim().is_empty(),
                 false,
