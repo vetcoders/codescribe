@@ -409,25 +409,37 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 
   @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
-    // A menu Toggle puts the check in the native state column, matching the
-    // header menu's checkboxes (Maciej, 2026-10-17: consistent with the rest
-    // of the project's checkboxes, not an icon-slot checkmark).
-    ForEach(AgentBroadcastPolicy.allCases, id: \.self) { policy in
-      Toggle(
-        isOn: Binding(
-          get: { policy == channel.broadcastPolicy },
-          set: { selected in
-            guard selected else { return }
-            apply(policy, to: channel)
-          }
-        )
-      ) {
-        Text(policy.menuTitle)
-      }
-      .disabled(
-        !enabled || channel.broadcastIdentity == nil
-          || channel.broadcastIdentity.map { pending.contains($0) } == true)
+    // Two STATE checkboxes in the menu's native state column (Maciej,
+    // 2026-10-17): "Channel 0" is membership in the zero broadcasts, "Steer"
+    // is wake-versus-queue — and since the soft-queue decision, Steer governs
+    // every delivery, direct and peer included. (channel0, steer) maps onto
+    // the wire policy: (on, on) = on, (on, off) = quiet, (off, _) = off.
+    let locked =
+      !enabled || channel.broadcastIdentity == nil
+      || channel.broadcastIdentity.map { pending.contains($0) } == true
+    Toggle(
+      isOn: Binding(
+        get: { channel.broadcastPolicy != .off },
+        set: { member in apply(member ? .on : .off, to: channel) }
+      )
+    ) {
+      Text("Channel 0", comment: "Pill context menu: membership in channel-zero broadcasts")
     }
+    .disabled(locked)
+    Toggle(
+      isOn: Binding(
+        // Off keeps directs waking (the wire has no off+quiet state), so the
+        // disabled Steer box must still read ticked — an unticked box over
+        // deliveries that ring would lie (stasiu's falsifier, 2026-10-17).
+        get: { channel.broadcastPolicy != .quiet },
+        set: { steer in apply(steer ? .on : .quiet, to: channel) }
+      )
+    ) {
+      Text(
+        "Steer (otherwise queued)",
+        comment: "Pill context menu: deliveries wake the agent; unticked, they queue silently")
+    }
+    .disabled(locked || channel.broadcastPolicy == .off)
   }
 
   private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
