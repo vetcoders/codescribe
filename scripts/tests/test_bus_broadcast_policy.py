@@ -141,6 +141,26 @@ class BroadcastPolicyTests(unittest.TestCase):
         self.assertEqual(rows[0]["delivery_id"], payload["delivery_id"])
         self.assertNotIn("text", rows[0])
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, payload["delivery_id"]))
+        # The overlay's receipt for this exact delivery and owner is the
+        # per-delivery file, a copy of the recorded row.
+        marker = DEMUX.broadcast_skip_path(self.root, self.lease_id, payload["delivery_id"])
+        self.assertEqual(json.loads(marker.read_text()), rows[0])
+        self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+
+    def test_skip_marker_backfills_a_row_the_stream_already_holds(self):
+        lease = self.lease()
+        self.policy("off")
+        payload = self.payload(lease)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(lease.queue_delivery(payload))
+        marker = DEMUX.broadcast_skip_path(self.root, self.lease_id, payload["delivery_id"])
+        recorded = json.loads(marker.read_text())
+        marker.unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(lease.queue_delivery(payload))
+        events = DEMUX.follower_paths(self.root, self.lease_id)[1]
+        self.assertEqual(len(events.read_text().splitlines()), 1, "no second history row")
+        self.assertEqual(json.loads(marker.read_text()), recorded)
 
     def test_all_producer_addresses_are_broadcast_but_direct_is_not(self):
         lease = self.lease()
