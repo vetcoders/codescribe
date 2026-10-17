@@ -18,6 +18,8 @@ pub mod streaming;
 pub mod take_truth;
 /// Versioned diagnostic decision history, asynchronous persistence and replay.
 pub mod trail;
+/// A Whisper word is admitted only with speech on its own sample span.
+pub mod whisper_word_speech;
 /// Per-word acoustic confidence: raw engine evidence, per-source thresholds.
 pub mod word_confidence;
 
