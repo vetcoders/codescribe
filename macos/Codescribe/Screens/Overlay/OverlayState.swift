@@ -1747,6 +1747,9 @@ final class OverlayState {
     agentGesturePhase = .talking(channel: channel)
     // An open microphone stays open; the next middle click closes it.
     guard channelHudStates[channel]?.open != true else { return }
+    // A stale error must not end this talk when the toggle below returns early
+    // behind one still pending; a failure of this toggle sets a fresh one.
+    channelToggleError = nil
     Task {
       await performAgentChannelToggle(digit, keepsAgentList: false)
       if channelToggleError != nil, agentGesturePhase == .talking(channel: channel) {
