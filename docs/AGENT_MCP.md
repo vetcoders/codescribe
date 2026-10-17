@@ -4,7 +4,7 @@ Codescribe's Transcript BUS is normally joined by a local client — Claude Code
 Junie or OMP — through the plugin described in the README. The agent MCP
 connector is the equivalent entry point for an agent that does **not** run on
 this machine: a hosted assistant, a custom service, anything that can speak MCP
-2.0 over stdio behind a transport you control.
+(JSON-RPC 2.0) over stdio behind a transport you control.
 
 It gives that one remote agent its own mailbox on the BUS: read, acknowledge,
 send to current participants and, if the owner opts in, requested speech. It is

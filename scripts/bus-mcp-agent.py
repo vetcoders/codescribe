@@ -208,7 +208,7 @@ class Scope:
             if stat.S_ISLNK(os.lstat(runtime).st_mode):
                 raise ValueError("The bridge runtime root must not be a symlink")
         except FileNotFoundError:
-            pass
+            pass  # Validation writes nothing; prepare_state creates the root later.
         if (path.parent.resolve() != runtime
                 or not STATE_DIRECTORY_PATTERN.fullmatch(path.name)):
             raise ValueError("A '-mcp' directory directly inside the bridge runtime root is required")
