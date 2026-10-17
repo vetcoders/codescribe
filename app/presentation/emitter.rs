@@ -1028,13 +1028,20 @@ impl TranscriptReducer {
             "unavailable"
         };
         let mut delivered = policy;
-        // Every formatter version leaves through here: a model that rewrites
-        // the words may also rewrite the brand.
-        let mut text =
-            codescribe_core::pipeline::light_plus::brand_spelling(&result.text).into_owned();
+        let mut text = result.text;
         if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
+        } else {
+            // Every applied formatter version leaves through here: a model
+            // that rewrites the words may also rewrite the brand.
+            let branded = match codescribe_core::pipeline::light_plus::brand_spelling(&text) {
+                std::borrow::Cow::Owned(branded) => Some(branded),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            if let Some(branded) = branded {
+                text = branded;
+            }
         }
         // The high bit identifies the derived history namespace; Raw retains
         // its own monotonic counter and every CAS continues to use it.

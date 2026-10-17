@@ -41,13 +41,65 @@ static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
     .expect("brand hearing pattern")
 });
 
+/// Byte ranges that hold data rather than speech: fenced blocks, inline code
+/// and straight-quoted literals. An apostrophe inside a word (`Codescribe'a`,
+/// `don't`) does not open a literal; an unclosed backtick or quote protects
+/// nothing, an unclosed fence protects the rest of the text.
+fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut regions = Vec::new();
+    let mut index = 0;
+    while let Some(ch) = text[index..].chars().next() {
+        let rest = &text[index..];
+        let end = if let Some(body) = rest.strip_prefix("```") {
+            Some(body.find("```").map_or(text.len(), |at| index + 3 + at + 3))
+        } else {
+            match ch {
+                '`' | '"' => rest[1..].find(ch).map(|at| index + 1 + at + 1),
+                '\'' if text[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|before| !before.is_alphanumeric()) =>
+                {
+                    rest[1..]
+                        .match_indices('\'')
+                        .map(|(at, _)| index + 1 + at + 1)
+                        .find(|&close| {
+                            text[close..]
+                                .chars()
+                                .next()
+                                .is_none_or(|after| !after.is_alphanumeric())
+                        })
+                }
+                _ => None,
+            }
+        };
+        match end {
+            Some(end) => {
+                regions.push(index..end);
+                index = end;
+            }
+            None => index += ch.len_utf8(),
+        }
+    }
+    regions
+}
+
 /// Rewrite spoken forms of the brand to [`BRAND`]. All-lowercase
 /// `codescribe` and any form glued to a path, identifier or address stay as
 /// written: `~/.codescribe/takes` and `codescribe.transcript.v1` are names,
-/// not speech. Lone "code", "script" or "scribe" never match.
+/// not speech. Code in backticks or fences and straight-quoted literals
+/// (`printf '%s' 'CodeScript'`, JSON `"CodeScript"`) are data and stay too;
+/// writer's quotes („…”) are prose and are normalised. Lone "code", "script"
+/// or "scribe" never match.
+///
+/// Known gap: the rule sees one span. When the decoder splits the name over
+/// two occurrences ("code" | "scribe"), each stays as heard; occurrences are
+/// never merged or re-keyed for spelling, because that would change their
+/// acoustic identity.
 pub fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
     let mut rewritten = String::new();
     let mut copied = 0;
+    let mut literals = None;
     for found in BRAND_HEARINGS.find_iter(text) {
         let heard = found.as_str();
         let before = text[..found.start()].chars().next_back();
@@ -58,6 +110,13 @@ pub fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
             || (matches!(next, Some('.' | '-' | ':'))
                 && after.next().is_some_and(char::is_alphanumeric));
         if glued || heard == BRAND || heard == "codescribe" {
+            continue;
+        }
+        if literals
+            .get_or_insert_with(|| literal_regions(text))
+            .iter()
+            .any(|region| region.start <= found.start() && found.end() <= region.end)
+        {
             continue;
         }
         rewritten.push_str(&text[copied..found.start()]);
@@ -420,6 +479,44 @@ mod tests {
         ] {
             assert_eq!(brand_spelling(kept), kept);
         }
+    }
+
+    #[test]
+    fn code_and_quoted_literals_keep_their_bytes() {
+        for kept in [
+            "printf '%s' 'CodeScript'",
+            r#"{"name": "CodeScript"}"#,
+            "uruchom `code script --help`",
+            "```\nCodeScript = 1\n```",
+            "```sh\necho code scribe",
+        ] {
+            assert_eq!(brand_spelling(kept), kept);
+        }
+    }
+
+    #[test]
+    fn prose_beside_code_still_gets_the_brand() {
+        assert_eq!(
+            brand_spelling("CodeScript uruchamia `code script` i „Code Scribe”"),
+            "Codescribe uruchamia `code script` i „Codescribe”"
+        );
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n```\npo bloku CodeScript działa"),
+            "```\nCodeScript\n```\npo bloku Codescribe działa"
+        );
+        assert_eq!(
+            brand_spelling("nie don't i CodeScript'a"),
+            "nie don't i Codescribe'a"
+        );
+    }
+
+    /// Known gap, pinned: the name split over two occurrences stays as heard.
+    #[test]
+    fn brand_split_across_occurrences_stays_as_heard() {
+        assert_eq!(
+            apply_live_span("pracuję nad code", "scribe dziś", false),
+            "scribe dziś"
+        );
     }
 
     #[test]
