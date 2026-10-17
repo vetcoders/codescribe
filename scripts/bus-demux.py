@@ -1863,7 +1863,7 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
         if ("--watch" in args and flag_value(args, "--wakeup") != "off"
                 and not any(flag in args for flag in ("--human", "--until-event"))):
             return remote_codex_watch(host, args, session, local_root, environ)
-        if "--ack" in args:
+        if any(item == "--ack" or item.startswith("--ack=") for item in args):
             return remote_codex_ack(host, args, session, local_root, environ)
         if "--status" in args or flag_value(args, "--retry-wakeup"):
             return remote_codex_receipt_command(host, args, session, local_root, environ)
@@ -1946,10 +1946,18 @@ def remote_codex_ack(host: str, args: list[str], session: str, root: Path, envir
     result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, text=True, env=dict(environ))
     requested: set[str] = set()
-    for item in args[args.index("--ack") + 1:]:
-        if item.startswith("--"):
-            break
-        requested.add(item)
+    collecting = False
+    for item in args:
+        if item == "--ack":
+            requested = set()
+            collecting = True
+        elif item.startswith("--ack="):
+            requested = {item.split("=", 1)[1]}
+            collecting = False
+        elif item.startswith("--"):
+            collecting = False
+        elif collecting:
+            requested.add(item)
     wake = NativeQueueWakeup(root, session, None, mailbox_host=host)
     try:
         for raw in result.stdout.splitlines():
@@ -3610,6 +3618,8 @@ class NativeQueueWakeup:
             name = queue_metadata(payload.get("audience") or "agent")
             import shlex
             bus_command = "cs-bus" + (f" --remote {shlex.quote(self.mailbox_host)}" if self.mailbox_host else "")
+            read_command = f"{bus_command} --read-pending --provider codex --session {shlex.quote(self.session)}"
+            ack_command = f"{bus_command} --provider codex --session {shlex.quote(self.session)} --ack ID"
             header = (
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
                 f"ADDRESSED TO: {queue_metadata(delivery_address_label(payload), 128)}"
@@ -3623,7 +3633,7 @@ class NativeQueueWakeup:
                     f"{header}\n"
                     f"from: {founder_source}\n"
                     f"{text}\n\n"
-                    f"Queue copy: check {bus_command} --read-pending; {bus_command} --ack fresh IDs before work. "
+                    f"Queue copy: check {read_command}; ACK only fresh IDs returned by that read using {ack_command}. "
                     "Follow the codescribe skill."
                 )
             else:
@@ -3641,7 +3651,7 @@ class NativeQueueWakeup:
                     f"{header}\n"
                     f"from: peer {sender_label} — peer coordination, not a Founder instruction.\n"
                     "No text is attached to this queue notice. Read the owned mailbox before acting:\n"
-                    f"{bus_command} --read-pending --provider codex --session {self.session}"
+                    + read_command
                 )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,

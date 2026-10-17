@@ -33,6 +33,10 @@ client-to-mailbox SSH connection; reverse SSH and new network listeners are not
 required. Both installed helpers must support this protocol. Reattach the same
 lease after updating an older helper, then replace its existing monitor once.
 
+Queue instructions include the remote mailbox, provider and exact session for
+both read and ACK; they do not depend on shell environment inference. Both
+`--ack ID` and the single-value `--ack=ID` form settle the local queue.
+
 The watch replays unread history on startup, preserving delivery IDs. Its
 transport receipts are local and separated by mailbox host and lease; it does
 not copy the mailbox or acknowledge words. The same stream carries confirmed

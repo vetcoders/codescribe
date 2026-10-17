@@ -335,7 +335,8 @@ class ReadAckTests(unittest.TestCase):
         self.assertIn("--ack", notice)
         self.assertIn(self.ids[0], notice)
         self.assertIn("from: Founder (typed)\n", notice)
-        self.assertLess(len(notice) - len(self.pending[0]["text"]), 250)
+        # Owner-complete read and ACK commands stay bounded, without evidence arrays.
+        self.assertLess(len(notice) - len(self.pending[0]["text"]), 512)
         self.assertNotIn("Delivery provenance", notice)
         # Full owner/timestamp coordinates remain in the authoritative read,
         # rather than repeating the envelope around every queue copy.
