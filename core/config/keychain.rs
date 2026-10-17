@@ -1150,3 +1150,374 @@ mod stt_tests {
         );
     }
 }
+
+/// Ephemeral MCP signing keys owned here, independently of the API-key bundle.
+/// Only inherited private-FD requests can reach the CLI bridge; no general key API.
+pub mod event_keys {
+    use super::{credential_service, is_test_env, note_credential_acquisition};
+    use base64::Engine as _;
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+    use security_framework::passwords::{
+        PasswordOptions, delete_generic_password, get_generic_password,
+        set_generic_password_options,
+    };
+    use serde::Deserialize;
+
+    const PREFIX: &str = "MCP_EVENTS_";
+    const MAX_REFS: usize = 128;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        version: u8,
+        op: String,
+        namespace: String,
+        reference: Option<String>,
+        secret: Option<String>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Failure {
+        Invalid,
+        Unavailable,
+        Missing,
+        Disabled,
+    }
+
+    impl Failure {
+        fn code(self) -> &'static str {
+            match self {
+                Self::Invalid => "invalid_request",
+                Self::Unavailable => "unavailable",
+                Self::Missing => "not_found",
+                Self::Disabled => "disabled",
+            }
+        }
+    }
+
+    fn lower_hex(text: &str, length: usize) -> bool {
+        text.len() == length
+            && text
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    }
+
+    fn valid_namespace(text: &str) -> bool {
+        text.strip_prefix(PREFIX)
+            .and_then(|s| s.strip_suffix('_'))
+            .is_some_and(|hash| lower_hex(hash, 64))
+    }
+
+    fn valid_reference(namespace: &str, reference: &str) -> bool {
+        reference
+            .strip_prefix(namespace)
+            .is_some_and(|version| lower_hex(version, 32))
+    }
+
+    fn valid_secret(text: &str) -> bool {
+        text.len() <= 100
+            && text
+                .strip_prefix("whsec_")
+                .and_then(|encoded| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok()
+                })
+                .is_some_and(|bytes| (24..=64).contains(&bytes.len()))
+    }
+
+    fn parse(raw: &[u8]) -> std::result::Result<Request, Failure> {
+        if raw.len() > 2048 {
+            return Err(Failure::Invalid);
+        }
+        let r: Request = serde_json::from_slice(raw).map_err(|_| Failure::Invalid)?;
+        if r.version != 1 || !valid_namespace(&r.namespace) {
+            return Err(Failure::Invalid);
+        }
+        let shape = match r.op.as_str() {
+            "list" => r.reference.is_none() && r.secret.is_none(),
+            "get" | "delete" => {
+                r.reference
+                    .as_deref()
+                    .is_some_and(|v| valid_reference(&r.namespace, v))
+                    && r.secret.is_none()
+            }
+            "put" => {
+                r.reference
+                    .as_deref()
+                    .is_some_and(|v| valid_reference(&r.namespace, v))
+                    && r.secret.as_deref().is_some_and(valid_secret)
+            }
+            _ => false,
+        };
+        if !shape {
+            return Err(Failure::Invalid);
+        }
+        Ok(r)
+    }
+
+    trait Backend {
+        fn put(
+            &mut self,
+            namespace: &str,
+            reference: &str,
+            secret: &str,
+        ) -> std::result::Result<(), Failure>;
+        fn get(&mut self, reference: &str) -> std::result::Result<Option<String>, Failure>;
+        fn delete(&mut self, reference: &str) -> std::result::Result<(), Failure>;
+        fn references(&mut self, namespace: &str) -> std::result::Result<Vec<String>, Failure>;
+    }
+
+    struct System;
+    impl Backend for System {
+        fn put(
+            &mut self,
+            namespace: &str,
+            reference: &str,
+            secret: &str,
+        ) -> std::result::Result<(), Failure> {
+            note_credential_acquisition("event key put");
+            let mut options =
+                PasswordOptions::new_generic_password(credential_service(), reference);
+            options.set_label(namespace);
+            set_generic_password_options(secret.as_bytes(), options)
+                .map_err(|_| Failure::Unavailable)
+        }
+        fn get(&mut self, reference: &str) -> std::result::Result<Option<String>, Failure> {
+            note_credential_acquisition("event key get");
+            match get_generic_password(credential_service(), reference) {
+                Ok(bytes) => String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| Failure::Unavailable),
+                Err(e) if e.code() == -25300 => Ok(None),
+                Err(_) => Err(Failure::Unavailable),
+            }
+        }
+        fn delete(&mut self, reference: &str) -> std::result::Result<(), Failure> {
+            note_credential_acquisition("event key delete");
+            match delete_generic_password(credential_service(), reference) {
+                Ok(()) => Ok(()),
+                Err(e) if e.code() == -25300 => Ok(()),
+                Err(_) => Err(Failure::Unavailable),
+            }
+        }
+        fn references(&mut self, namespace: &str) -> std::result::Result<Vec<String>, Failure> {
+            note_credential_acquisition("event key references");
+            let mut query = ItemSearchOptions::new();
+            query
+                .class(ItemClass::generic_password())
+                .service(credential_service())
+                .label(namespace)
+                .load_attributes(true)
+                .load_data(false)
+                .load_refs(false)
+                .limit(Limit::Max((MAX_REFS + 1) as i64));
+            let rows = match query.search() {
+                Ok(rows) => rows,
+                Err(e) if e.code() == -25300 => return Ok(Vec::new()),
+                Err(_) => return Err(Failure::Unavailable),
+            };
+            if rows.len() > MAX_REFS {
+                return Err(Failure::Unavailable);
+            }
+            rows.into_iter()
+                .map(|row| {
+                    row.simplify_dict()
+                        .and_then(|attrs| attrs.get("acct").cloned())
+                        .filter(|reference| valid_reference(namespace, reference))
+                        .ok_or(Failure::Unavailable)
+                })
+                .collect()
+        }
+    }
+
+    fn execute(
+        r: Request,
+        backend: &mut impl Backend,
+    ) -> std::result::Result<serde_json::Value, Failure> {
+        use serde_json::json;
+        match r.op.as_str() {
+            "put" => {
+                backend.put(
+                    &r.namespace,
+                    r.reference.as_deref().ok_or(Failure::Invalid)?,
+                    r.secret.as_deref().ok_or(Failure::Invalid)?,
+                )?;
+                Ok(json!({"ok": true}))
+            }
+            "get" => {
+                let secret = backend
+                    .get(r.reference.as_deref().ok_or(Failure::Invalid)?)?
+                    .ok_or(Failure::Missing)?;
+                if !valid_secret(&secret) {
+                    return Err(Failure::Unavailable);
+                }
+                Ok(json!({"ok": true, "secret": secret}))
+            }
+            "delete" => {
+                backend.delete(r.reference.as_deref().ok_or(Failure::Invalid)?)?;
+                Ok(json!({"ok": true}))
+            }
+            "list" => {
+                let mut refs = backend.references(&r.namespace)?;
+                if refs.len() > MAX_REFS || refs.iter().any(|v| !valid_reference(&r.namespace, v)) {
+                    return Err(Failure::Unavailable);
+                }
+                refs.sort();
+                refs.dedup();
+                Ok(json!({"ok": true, "references": refs}))
+            }
+            _ => Err(Failure::Invalid),
+        }
+    }
+
+    fn response(result: std::result::Result<serde_json::Value, Failure>) -> serde_json::Value {
+        result.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error.code()}))
+    }
+
+    /// Contains a secret only for an admitted get; the caller must use a private FD.
+    /// Invalid/test-disabled requests acquire neither API-key bundle nor Keychain.
+    pub fn request_json(raw: &[u8]) -> serde_json::Value {
+        response(parse(raw).and_then(|r| {
+            if is_test_env() {
+                return Err(Failure::Disabled);
+            }
+            execute(r, &mut System)
+        }))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::{BUNDLE_ACCOUNT, CredentialAcquisitionProbe};
+        use super::*;
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Memory {
+            values: BTreeMap<String, String>,
+            failure: bool,
+        }
+        impl Backend for Memory {
+            fn put(
+                &mut self,
+                _: &str,
+                reference: &str,
+                secret: &str,
+            ) -> std::result::Result<(), Failure> {
+                if self.failure {
+                    return Err(Failure::Unavailable);
+                }
+                self.values.insert(reference.into(), secret.into());
+                Ok(())
+            }
+            fn get(&mut self, reference: &str) -> std::result::Result<Option<String>, Failure> {
+                if self.failure {
+                    return Err(Failure::Unavailable);
+                }
+                Ok(self.values.get(reference).cloned())
+            }
+            fn delete(&mut self, reference: &str) -> std::result::Result<(), Failure> {
+                if self.failure {
+                    return Err(Failure::Unavailable);
+                }
+                self.values.remove(reference);
+                Ok(())
+            }
+            fn references(&mut self, namespace: &str) -> std::result::Result<Vec<String>, Failure> {
+                if self.failure {
+                    return Err(Failure::Unavailable);
+                }
+                Ok(self
+                    .values
+                    .keys()
+                    .filter(|v| v.starts_with(namespace))
+                    .cloned()
+                    .collect())
+            }
+        }
+        fn command(op: &str) -> serde_json::Value {
+            let namespace = format!("MCP_EVENTS_{}_", "a".repeat(64));
+            let mut r = serde_json::json!({"version":1,"op":op,"namespace":namespace});
+            if op != "list" {
+                r["reference"] = serde_json::json!(format!(
+                    "{}{}",
+                    r["namespace"].as_str().unwrap(),
+                    "b".repeat(32)
+                ));
+            }
+            if op == "put" {
+                r["secret"] = serde_json::json!(format!(
+                    "whsec_{}",
+                    base64::engine::general_purpose::STANDARD.encode([7u8; 32])
+                ));
+            }
+            r
+        }
+        fn call(value: serde_json::Value, backend: &mut Memory) -> serde_json::Value {
+            response(parse(&serde_json::to_vec(&value).unwrap()).and_then(|r| execute(r, backend)))
+        }
+        #[test]
+        fn event_key_roundtrip_namespace_and_idempotent_delete_without_credentials() {
+            let probe = CredentialAcquisitionProbe::forbid();
+            let mut b = Memory::default();
+            assert_eq!(call(command("put"), &mut b)["ok"], true);
+            assert_eq!(
+                call(command("get"), &mut b)["secret"],
+                command("put")["secret"]
+            );
+            assert_eq!(
+                call(command("list"), &mut b)["references"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            for _ in 0..2 {
+                assert_eq!(call(command("delete"), &mut b)["ok"], true);
+            }
+            assert_eq!(call(command("get"), &mut b)["error"], "not_found");
+            assert!(probe.attempts().is_empty());
+        }
+        #[test]
+        fn event_key_refuses_foreign_accounts_unknown_fields_and_invalid_shapes() {
+            let probe = CredentialAcquisitionProbe::forbid();
+            let mut b = Memory::default();
+            for (field, value) in [
+                ("reference", serde_json::json!(BUNDLE_ACCOUNT)),
+                ("namespace", serde_json::json!("MCP_EVENTS_bad_")),
+                ("op", serde_json::json!("dump")),
+                ("extra", serde_json::json!("private")),
+                ("secret", serde_json::json!("not-a-signing-key")),
+            ] {
+                let mut r = command("put");
+                r[field] = value;
+                assert_eq!(call(r, &mut b)["error"], "invalid_request");
+            }
+            assert!(b.values.is_empty());
+            assert!(probe.attempts().is_empty());
+        }
+        #[test]
+        fn event_key_default_test_runtime_fails_closed_before_system_backend() {
+            let probe = CredentialAcquisitionProbe::forbid();
+            assert_eq!(
+                request_json(&serde_json::to_vec(&command("put")).unwrap())["error"],
+                "disabled"
+            );
+            assert!(probe.attempts().is_empty());
+        }
+        #[test]
+        fn event_key_backend_failures_are_categorized_and_do_not_contain_secrets() {
+            let probe = CredentialAcquisitionProbe::forbid();
+            let mut b = Memory {
+                failure: true,
+                ..Memory::default()
+            };
+            for op in ["put", "get", "delete", "list"] {
+                assert_eq!(
+                    call(command(op), &mut b),
+                    serde_json::json!({"ok":false,"error":"unavailable"})
+                );
+            }
+            assert!(probe.attempts().is_empty());
+        }
+    }
+}
