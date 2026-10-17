@@ -1814,4 +1814,170 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertNil(OverlayConversationOwner(row: owner(String(repeating: "a", count: 24))))
     XCTAssertNotNil(OverlayConversationOwner(row: owner(leaseA)))
   }
+
+  // MARK: - Command-C on an agent bubble, the whole path
+
+  /// The real overlay, one agent reply. The contract is two steps: a click on
+  /// the bubble opens the keyboard gate, and ⌘C then puts its text on a
+  /// clipboard. The hit-walk and the first responder are recorded, not
+  /// required: the gate may open through a registered text region and the
+  /// copy may travel the responder chain. Their record goes into the failing
+  /// step's message, so a red run still names the broken link.
+  @MainActor
+  func testCommandCOnAnAgentBubbleCopiesItsSelectionThroughTheRealOverlay() throws {
+    let probe = "BUBBLE COPY PROBE alpha beta gamma"
+    var bus = OverlayChannelDelivery.Bus()
+    var row = reply(String(format: "%024x", 1))
+    row["text"] = probe
+    bus.consume(row)
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    let conversation = try lenaConversation(restored)
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.selectConversation(conversation.id, expand: false)
+    state.setPresentationMode(.expanded)
+    let host = NSHostingView(rootView: DictationOverlayView(state: state))
+    host.sizingOptions = []
+    host.translatesAutoresizingMaskIntoConstraints = true
+    host.autoresizingMask = []
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 800, y: 300, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = OverlayContentContainer(hosting: host)
+    panel.setPresentationMode(.expanded)
+    state.onPresentationModeChanged = { [weak panel] mode in
+      panel?.setPresentationMode(mode, animated: false)
+    }
+    panel.orderFrontRegardless()
+    defer { panel.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.35))
+
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    var bubble: (any NSAccessibilityProtocol)?
+    var bubbleArea = CGFloat.greatestFiniteMagnitude
+    for element in elements(host) {
+      let label = element.accessibilityLabel() ?? ""
+      let value = (element.accessibilityValue() as? String) ?? ""
+      guard label.contains("BUBBLE COPY PROBE") || value.contains("BUBBLE COPY PROBE") else {
+        continue
+      }
+      let frame = element.accessibilityFrame()
+      guard !frame.isEmpty else { continue }
+      let area = frame.width * frame.height
+      if area < bubbleArea {
+        bubble = element
+        bubbleArea = area
+      }
+    }
+    guard let bubble else {
+      XCTFail("bubble locate: no accessibility element contains BUBBLE COPY PROBE")
+      return
+    }
+    let bubbleFrame = bubble.accessibilityFrame()
+    let windowPoint = panel.convertPoint(
+      fromScreen: NSPoint(x: bubbleFrame.midX, y: bubbleFrame.midY))
+
+    let contentView = try XCTUnwrap(panel.contentView)
+    var chain: [String] = []
+    var copyCapable = false
+    var hit = contentView.hitTest(contentView.convert(windowPoint, from: nil))
+    while let view = hit {
+      chain.append(String(describing: type(of: view)))
+      if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+        copyCapable = true
+        break
+      }
+      hit = view.superview
+    }
+    let hitWalk = "hit-walk copy-capable=\(copyCapable) chain=\(chain)"
+
+    let event = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: windowPoint, modifierFlags: [],
+        timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 0, clickCount: 1, pressure: 1))
+    let mouseUp = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseUp, location: windowPoint, modifierFlags: [],
+        timestamp: 0.01, windowNumber: panel.windowNumber, context: nil,
+        eventNumber: 1, clickCount: 1, pressure: 0))
+    NSApp.postEvent(mouseUp, atStart: true)
+    panel.sendEvent(event)
+    guard panel.allowsKeyForTranscript, panel.canBecomeKey else {
+      XCTFail("step B gate: click on the bubble did not open the keyboard gate; \(hitWalk)")
+      return
+    }
+
+    if panel.canBecomeKey, !panel.isKeyWindow {
+      panel.makeKey()
+    }
+    let selectedAll =
+      panel.firstResponder?.tryToPerform(#selector(NSText.selectAll(_:)), with: nil) ?? false
+    if !selectedAll {
+      let doubleDown = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .leftMouseDown, location: windowPoint, modifierFlags: [],
+          timestamp: 0.02, windowNumber: panel.windowNumber, context: nil,
+          eventNumber: 2, clickCount: 2, pressure: 1))
+      let doubleUp = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .leftMouseUp, location: windowPoint, modifierFlags: [],
+          timestamp: 0.03, windowNumber: panel.windowNumber, context: nil,
+          eventNumber: 3, clickCount: 2, pressure: 0))
+      NSApp.postEvent(doubleUp, atStart: true)
+      panel.sendEvent(doubleDown)
+    }
+    let responder = panel.firstResponder
+    let responderClass = responder.map { String(describing: type(of: $0)) } ?? "nil"
+    let responderCopies = responder?.responds(to: #selector(NSText.copy(_:))) ?? false
+    let selection =
+      "selectAll=\(selectedAll) responder=\(responderClass) copies=\(responderCopies); \(hitWalk)"
+
+    let generalBoard = NSPasteboard.general
+    let savedItems: [NSPasteboardItem] = (generalBoard.pasteboardItems ?? []).map { item in
+      let copy = NSPasteboardItem()
+      for type in item.types {
+        if let data = item.data(forType: type) {
+          copy.setData(data, forType: type)
+        }
+      }
+      return copy
+    }
+    defer {
+      generalBoard.clearContents()
+      if !savedItems.isEmpty { generalBoard.writeObjects(savedItems) }
+    }
+    // A probe left on the clipboard by an earlier run must not pass this one.
+    generalBoard.clearContents()
+    let routed = NSPasteboard.withUniqueName()
+    defer { routed.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: routed)
+    defer { restoreClipboard() }
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "c",
+        charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8))
+    guard panel.performKeyEquivalent(with: key) else {
+      XCTFail("step D: ⌘C not handled by the overlay panel; \(selection)")
+      return
+    }
+    let general = generalBoard.string(forType: .string) ?? ""
+    let routedText = routed.string(forType: .string) ?? ""
+    guard general.contains("alpha beta gamma") || routedText.contains("alpha beta gamma") else {
+      XCTFail(
+        "step D: ⌘C handled but nothing copied; general=\(general), routed=\(routedText); "
+          + selection)
+      return
+    }
+  }
 }
