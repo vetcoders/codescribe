@@ -1032,6 +1032,16 @@ impl TranscriptReducer {
         if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
+        } else {
+            // Every applied formatter version leaves through here: a model
+            // that rewrites the words may also rewrite the brand.
+            let branded = match codescribe_core::pipeline::light_plus::brand_spelling(&text) {
+                std::borrow::Cow::Owned(branded) => Some(branded),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            if let Some(branded) = branded {
+                text = branded;
+            }
         }
         // The high bit identifies the derived history namespace; Raw retains
         // its own monotonic counter and every CAS continues to use it.
@@ -11178,6 +11188,82 @@ mod tests {
             reducer.apply_incremental_shaping(&mut ledger, &occurrence),
             Err(IncrementalShapingRefusal::AlreadyShaped)
         );
+    }
+
+    /// Acceptance: Whisper's hearing of the brand never reaches the user.
+    /// A Whisper word correction relabels the occurrence to "CodeScript"; the
+    /// live Light+ shape that paint, stop, paste and agent delivery read
+    /// presents "Codescribe", and the ledger authenticates that shape by
+    /// re-running the same pass over the corrected label.
+    #[test]
+    fn whisper_heard_brand_is_presented_as_codescribe() {
+        use codescribe_core::pipeline::acoustic_ledger::WordPin;
+        let mut reducer = TranscriptReducer::default();
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("brand-session", 22, 0, 32_000);
+        let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "pracuję nad kodem");
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = &mutation
+        else {
+            panic!("admitted_mutation must produce a ledger mutation");
+        };
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, observation, receipt)
+                .is_some()
+        );
+
+        let whisper =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, occurrence.clone());
+        let receipt = ledger.admit_word_slots_for_tests(
+            &whisper,
+            &[
+                WordPin::new(1_000, 9_000, "pracuję").with_decode_window(0, 48_000),
+                WordPin::new(10_000, 16_000, "nad").with_decode_window(0, 48_000),
+                WordPin::new(17_000, 31_000, "CodeScript").with_decode_window(0, 48_000),
+            ],
+        );
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &receipt)
+                .is_some()
+        );
+        assert_eq!(ledger.text_of(&occurrence), Some("pracuję nad CodeScript"));
+
+        let shaped = reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .expect("the corrected label is shaped");
+        assert_eq!(shaped.rendered_text, "Pracuję nad Codescribe");
+    }
+
+    /// Acceptance: a formatter that misspells the brand still delivers
+    /// "Codescribe"; the published digest covers the corrected bytes.
+    #[test]
+    fn formatter_versions_spell_the_brand() {
+        let mut reducer = TranscriptReducer::default();
+        for policy in [FormattingPolicy::Smart, FormattingPolicy::Max] {
+            let projection = reducer.mint_derived_projection(
+                "brand-format".into(),
+                1,
+                "pracuję nad kodem".into(),
+                policy,
+                AiFormatResult {
+                    text: "Pracuję nad CodeScript, a Python script zostaje.".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
+            assert_eq!(
+                projection.rendered_text,
+                "Pracuję nad Codescribe, a Python script zostaje."
+            );
+            assert_eq!(projection.publication_digest, projection.digest());
+        }
     }
 
     /// Acceptance: a terminal whole-document revision keeps ownership of the
