@@ -492,7 +492,6 @@ class RemoteQueueRelaySourceTests(unittest.TestCase):
                               {"lease_id": self.lease, "delivery_id": self.ids[0]})
             if waits == 3:
                 raise KeyboardInterrupt
-        from unittest import mock
         trigger = mock.Mock()
         trigger.wait.side_effect = wait
         with mock.patch.object(D, "BusEventTrigger", return_value=trigger), mock.patch.object(D, "unread_pending") as read, mock.patch.object(D.time, "monotonic", side_effect=[1.0, 32.0]), mock.patch.object(D, "emit") as output:
