@@ -358,18 +358,59 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)
 
-  func testDockedRowsCarryTimePreviewAndBadgeAndMoveDescriptorToTooltip() throws {
+  func testDockedRowsKeepProviderModelVisibleAlongsideTimePreviewAndBadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let row = try section(
       of: source, from: "private func channelRow(", to: "private func conversationRow(")
     XCTAssertTrue(row.contains("lineLimit(2)"), "rows carry a two-line message preview")
     XCTAssertTrue(row.contains("drawerPreview("), "rows render the last message preview")
-    XCTAssertFalse(
-      row.contains("overlay-agent-descriptor-"), "the descriptor leaves the row body")
+    XCTAssertTrue(
+      row.contains("overlay-agent-descriptor-"),
+      "wide rows must show the same provider/model identity as narrow pills")
     XCTAssertTrue(row.contains(".help("), "descriptor and status live in the row tooltip")
     XCTAssertTrue(
       row.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
+  }
+
+  func testRememberedDrawerWidthLeavesConversationSpaceAndScalesWithText() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
+    let (broadcast, lena, _) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.selectConversation(lena.id)
+    state.conversationDrafts[lena.id] = "unfinished message"
+    for (width, scale, expected) in [
+      (1200.0, 1.0, 480.0), (900.0, 1.0, 380.0),
+      (1400.0, 1.4, 672.0),
+    ] as [(CGFloat, CGFloat, CGFloat)] {
+      let recorder = OverlayDrawerFrameRecorder()
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .defaultAppStorage(defaults)
+          .environment(\.csTextScale, scale)
+          .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+          .frame(width: width, height: 500))
+      host.sizingOptions = []
+      let panel = NSPanel(
+        contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.contentView = host
+      panel.orderFrontRegardless()
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(recorder.frame.width, expected, accuracy: 1)
+      XCTAssertEqual(recorder.frame.minX, width - expected, accuracy: 1)
+      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 520 * scale - 1)
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+      XCTAssertEqual(state.conversationDrafts[lena.id], "unfinished message")
+      panel.orderOut(nil)
+    }
+    XCTAssertEqual(
+      defaults.double(forKey: "Overlay.agentDrawerWidth.v1"), 480,
+      "window clamping must not overwrite the user's remembered width")
   }
 
   func testDrawerPreviewPrefixesOwnMessagesAndChannelZeroSenders() throws {
@@ -424,7 +465,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     // The roster enters the canvas only as the docked HStack sibling; the
     // actions handle's badge is the one remaining topTrailing overlay and it
     // stays empty of roster content.
-    XCTAssertTrue(canvas.contains("agentDrawerColumn(maximumHeight: geometry.size.height)"))
+    XCTAssertTrue(canvas.contains("maximumHeight: geometry.size.height, width: drawerWidth"))
     var rest = canvas
     while let range = rest.range(of: ".overlay(alignment: .topTrailing)") {
       let window = rest[range.lowerBound...].prefix(600)
