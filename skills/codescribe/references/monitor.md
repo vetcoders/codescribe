@@ -227,19 +227,29 @@ with a `codescribe_mailbox_ready` notice on stderr. It never reads or ACKs.
 Announced IDs stay recorded until acknowledged, so a message left unread does
 not wake every turn. It also announces `follower_lost` or a refused mailbox once,
 and wakes after six silent hours only to re-arm. It ends silently when the
-session detaches or Claude Code exits. Every turn end re-arms it.
+session detaches or Claude Code exits. Every turn end and every tool call
+re-arm it: Claude Code runs no `Stop` hook after a user interrupt, and runs
+`StopFailure` instead after an API error, so a turn that a wake started would
+otherwise end with no waiter. An armed lease makes a later arm return at once.
 
 During an active turn, the plugin's `PostToolUse` probe can deliver the same
 `codescribe_mailbox_ready` notice. Read and ACK it before continuing work; the
 probe and Stop waiter never ACK messages themselves. Keep the same connection
-and end the turn after draining; the Stop hook re-arms automatically.
+and end the turn after draining; the hooks re-arm automatically.
 
 Without the plugin, use the Kimi pattern with `--provider claude-code`: one
 `Bash(run_in_background=true)` task over `cs-bus --watch --until-event`; on
 `mailbox_ready` read, ACK, act, and start one new task before ending the turn.
-Claude Code stops a background task at its timeout (default 10 min, at most
-2 h) and wakes the model: set the maximum timeout and treat that wake as a rearm
-without ACK or reply. A turn that ends without a new task is deaf.
+An interactive Claude Code session keeps a background task running; unattended
+runs (`-p`, Agent SDK, CI) stop it at its timeout (30 min by default, at most
+2 h) and wake the model: there, set the maximum timeout and treat that wake as a
+rearm without ACK or reply. A turn that ends without a new task is deaf.
+
+The same task may also run beside the plugin. While it lives, the plugin's
+waiter stays armed but leaves deliveries to the task, which records what it
+reported before it exits, so one message wakes the conversation once. When the
+task is gone, the waiter takes over and announces anything the task never
+reported; a lost follower is still the waiter's to announce.
 
 ## Watch stream
 
