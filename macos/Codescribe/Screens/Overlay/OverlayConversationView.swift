@@ -56,6 +56,10 @@ struct OverlayConversationView: View {
   /// The narrow-mode roster mounted under the name pill while it is open.
   /// Nil whenever the stack is closed or the wide window docks the roster.
   var agentPillStack: OverlayAgentPillStack? = nil
+  /// Wide windows dock the roster column, which already names the agent and
+  /// carries its microphone and speaker — the identity pill evacuates instead
+  /// of repeating it (Maciej, 2026-10-17).
+  var hidesNavigation = false
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -142,15 +146,21 @@ struct OverlayConversationView: View {
             Color.clear.frame(height: topInset)
               .allowsHitTesting(false)
               .accessibilityHidden(true)
-            navigation
-              .padding(.horizontal, 20)
-              .padding(.top, 4)
-              .padding(.bottom, 8)
-              .onGeometryChange(for: CGFloat.self) {
-                $0.size.height
-              } action: {
-                navigationHeight = $0
-              }
+            if hidesNavigation {
+              // The content margin follows: no phantom gap under the header.
+              Color.clear.frame(height: 0)
+                .onAppear { navigationHeight = 0 }
+            } else {
+              navigation
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
+                .onGeometryChange(for: CGFloat.self) {
+                  $0.size.height
+                } action: {
+                  navigationHeight = $0
+                }
+            }
             if let pillStack = agentPillStack {
               HStack {
                 Spacer(minLength: 0)

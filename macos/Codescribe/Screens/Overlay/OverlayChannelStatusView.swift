@@ -409,15 +409,20 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 
   @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
+    // A menu Toggle puts the check in the native state column, matching the
+    // header menu's checkboxes (Maciej, 2026-10-17: consistent with the rest
+    // of the project's checkboxes, not an icon-slot checkmark).
     ForEach(AgentBroadcastPolicy.allCases, id: \.self) { policy in
-      Button {
-        apply(policy, to: channel)
-      } label: {
-        if policy == channel.broadcastPolicy {
-          Label(policy.menuTitle, systemImage: "checkmark")
-        } else {
-          Text(policy.menuTitle)
-        }
+      Toggle(
+        isOn: Binding(
+          get: { policy == channel.broadcastPolicy },
+          set: { selected in
+            guard selected else { return }
+            apply(policy, to: channel)
+          }
+        )
+      ) {
+        Text(policy.menuTitle)
       }
       .disabled(
         !enabled || channel.broadcastIdentity == nil

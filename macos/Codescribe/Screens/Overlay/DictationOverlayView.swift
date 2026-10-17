@@ -468,6 +468,7 @@ struct DictationOverlayView: View {
                     onSelect: { state.selectConversation($0) },
                     onDismiss: { state.hideAgentSidebar() })
                   : nil,
+                hidesNavigation: columnShown,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() }
               )
