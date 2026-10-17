@@ -66,10 +66,15 @@ class UserTextTests(unittest.TestCase):
                     payload = DEMUX.consider(event, name=event["audience"], hear_all=False, drafts=False, debug=False)
                     self.assertEqual(payload["channel"], "0")
                     self.assertTrue(payload["state_change_allowed"])
+            # igor's follower died (the shape a restarted host leaves): nina still
+            # hears the words and the receipt names igor with the reason.
             with patch.object(DEMUX, "live_follower_pid", side_effect=[123, None]), \
-                 patch.object(DEMUX, "publish_reply_event") as publish:
-                with self.assertRaises(ValueError): DEMUX.send_text_command(args)
-                publish.assert_not_called()
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit") as emitted, patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+                self.assertEqual([call.args[1]["channel"] for call in publish.call_args_list], ["2"])
+                self.assertEqual([(s["channel"], s["reason"]) for s in emitted.call_args.args[0]["skipped"]],
+                                 [("7", "not_listening")])
             with patch.object(DEMUX, "live_follower_pid", return_value=123), \
                  patch.object(DEMUX, "publish_reply_event", side_effect=[receipt, OSError("disk")]) as publish, \
                  patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
@@ -77,6 +82,50 @@ class UserTextTests(unittest.TestCase):
                     DEMUX.send_text_command(args)
                 self.assertEqual(publish.call_count, 2)
 
+
+    def test_broadcast_skips_unreachable_owners_and_refuses_only_an_empty_roster(self):
+        """One stale binding must not veto channel zero; nobody listening still refuses."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            leases = {}
+            for channel, name in [("2", "nina"), ("5", "borys"), ("7", "igor")]:
+                bus = root / f"bus-{channel}.jsonl"
+                leases[name] = DEMUX.lease_identifier("codex", name)
+                DEMUX.write_channel_binding(root, channel, name, "codex", name, str(bus))
+                if name != "borys":  # borys detached: the binding stays, its lease receipt is gone
+                    DEMUX.atomic_json(root / "leases" / f"{leases[name]}.json", {
+                        "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                        "lease_id": leases[name], "bus": str(bus)})
+            receipt = {"stream_id": "fixture", "stream_dev": 1, "stream_inode": 2, "offset": 0, "length": 12}
+            alive = {leases["nina"]: 123}  # igor keeps a lease but no live follower process
+            broadcast = argparse.Namespace(bridge_home=root, channel="0")
+            with patch.object(DEMUX, "live_follower_pid", side_effect=lambda root, lease_id: alive.get(lease_id)), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit") as emitted, \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(broadcast), 0)
+                self.assertEqual([call.args[1]["channel"] for call in publish.call_args_list], ["2"])
+                published = emitted.call_args.args[0]
+                self.assertEqual(published["kind"], "message_published")
+                self.assertEqual([r["channel"] for r in published["recipients"]], ["2"])
+                self.assertEqual([(s["channel"], s["audience"], s["lease_id"], s["reason"]) for s in published["skipped"]],
+                                 [("5", "borys", leases["borys"], "stale_lease"),
+                                  ("7", "igor", leases["igor"], "not_listening")])
+            with patch.object(DEMUX, "live_follower_pid", return_value=None), \
+                 patch.object(DEMUX, "publish_reply_event") as publish, \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                with self.assertRaisesRegex(ValueError, "no agents are listening; draft retained"):
+                    DEMUX.send_text_command(broadcast)
+                publish.assert_not_called()
+            # Positive control: one chosen recipient keeps the hard refusal when it cannot read.
+            direct = argparse.Namespace(bridge_home=root, channel="7", bus=root / "bus-7.jsonl",
+                                        lease=leases["igor"], provider="codex", session="igor")
+            with patch.object(DEMUX, "live_follower_pid", return_value=None), \
+                 patch.object(DEMUX, "publish_reply_event") as publish, \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                with self.assertRaisesRegex(ValueError, "not listening; draft retained"):
+                    DEMUX.send_text_command(direct)
+                publish.assert_not_called()
 
     def test_attach_file_rides_as_pointer_without_copying_or_reading_bytes_into_text(self):
         with tempfile.TemporaryDirectory(dir=Path.home()) as directory:
