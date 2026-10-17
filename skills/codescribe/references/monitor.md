@@ -19,13 +19,19 @@ until zero plus one extra read. Then return to the event-driven listener.
 ## Channel 0 reception
 
 Change reception during a session with `cs-bus --broadcast on|quiet|off --provider PROVIDER --session SESSION [--bus BUS]`; omission of `--bus` uses the
-validated lease's bus. `on` is the default. `quiet` retains broadcasts in the
+validated lease's bus. `on` is the default. `quiet` (Steer) retains all messages in the
 mailbox without waking the agent: on the next natural turn, explicitly read
 `--read-pending` and ACK only complete returned messages, even if no bell rang.
-`off` records a skip instead of queueing new broadcasts. Direct messages still
-wake normally. The policy file is reread without restarting or reattaching.
+`off` records a skip instead of queueing new broadcasts; direct and peer messages
+still wake in this mode. `quiet` also suppresses direct and peer wakeups. The
+policy file is reread without restarting or reattaching.
 
 ## Codex native queue
+
+For a remote mailbox, follow [Remote bus](remote.md): the existing local remote
+watch submits to Codex on the conversation's Mac; the mailbox follower does not
+submit there. A remote watch also forwards peer coordination messages while
+preserving their attribution and lack of Founder authority.
 
 `cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
 automatically selects `codex-queue`. The follower submits a short
@@ -77,6 +83,9 @@ be answered together; there is no text-based deduplication or age-based deletion
 
 Receipts under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` distinguish
 `requesting`, `provider_accepted`, `rejected`, `unavailable` and `uncertain`.
+Provider failures retain bounded stderr as `provider_error` in the private
+receipt; inspect it locally, never broadcast raw receipts. For remote mailboxes,
+`--remote HOST --status` points to local receipts under `runtime/remote-native/`.
 `cs-bus --status` reports pending wakeup dispositions. Provider acceptance is
 not conversation receipt: only the receiving conversation calls `--ack` after
 reading. Restart never resubmits accepted or ambiguous deliveries. Inspect a
