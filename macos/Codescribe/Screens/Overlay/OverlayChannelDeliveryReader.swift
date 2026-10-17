@@ -320,13 +320,14 @@ actor OverlayChannelDeliveryReader {
           if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
         }
         // Only an unaccepted channel-0 delivery can have been skipped; a
-        // recorded skip drops the coordinate from the next poll.
+        // recorded skip drops the coordinate from the next poll. The
+        // acknowledgment is still read below: a skip file naming another
+        // owner marks nothing and must not hide a real ACK (Lena, 2026-10-17).
         if broadcast && !accepted {
           let skip = URL(
             fileURLWithPath: skips + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
           if let receipt = try? object(at: skip) {
             cursor.projection.observeBroadcastSkip(receipt, owner: owner, delivery: delivery)
-            continue
           }
         }
         let acknowledgment = URL(
