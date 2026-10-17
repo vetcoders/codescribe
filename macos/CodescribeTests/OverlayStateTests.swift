@@ -48,6 +48,13 @@ private final class OverlayStateTestEngine: DictationEngine {
     pinWrites.append(enabled)
     return true
   }
+  var autoFoldSeconds: UInt32 = 10
+  func overlayAutoFoldSeconds() -> UInt32 { autoFoldSeconds }
+  func setOverlayAutoFoldSeconds(_ seconds: UInt32) -> Bool {
+    guard [UInt32(0), 5, 10, 30, 60].contains(seconds) else { return false }
+    autoFoldSeconds = seconds
+    return true
+  }
   var policyReadCount = 0
   var sentAssistiveTexts: [String] = []
   var assistiveSendResult = true

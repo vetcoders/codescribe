@@ -38,8 +38,8 @@ enum OverlayHeaderGlyph {
 
 /// The header's secondary-click menu, shared by every header form (mini, midi,
 /// expanded): the agent roster, the transcription, Pin, the six anchors with
-/// free motion, and the take-start preference. The visible header keeps only
-/// Agents, Transcription and the explicit Pin.
+/// free motion, the take-start preference, and how long an expansion stays
+/// open. The visible header keeps only Agents, Transcription and the explicit Pin.
 @MainActor
 struct OverlayHeaderMenu: View {
   @Bindable var state: OverlayState
@@ -125,6 +125,33 @@ struct OverlayHeaderMenu: View {
     )
     .help("New recordings open with the transcript. Turn off to show only the recording bar.")
     .accessibilityIdentifier("overlay-expanded-by-default")
+    Menu("Auto fold after…") {
+      ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
+        Button {
+          state.setAutoFoldSeconds(seconds)
+        } label: {
+          autoFoldChoice("\(seconds) s", selected: state.autoFoldSeconds == seconds)
+        }
+        .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
+      }
+      Button {
+        state.setAutoFoldSeconds(0)
+      } label: {
+        autoFoldChoice("Never", selected: state.autoFoldSeconds == 0)
+      }
+      .accessibilityIdentifier("overlay-auto-fold-never")
+    }
+  }
+
+  private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
+
+  @ViewBuilder
+  private func autoFoldChoice(_ title: LocalizedStringKey, selected: Bool) -> some View {
+    if selected {
+      Label(title, systemImage: "checkmark")
+    } else {
+      Text(title)
+    }
   }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {

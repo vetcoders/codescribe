@@ -834,6 +834,44 @@ impl CodescribeConfig {
         true
     }
 
+    /// Read the auto-fold interval. `0` means never. Unset, or a stored value
+    /// outside {0, 5, 10, 30, 60}, reads as 10 seconds.
+    pub fn overlay_auto_fold_seconds(&self) -> u32 {
+        // The doc lines above are part of the UniFFI checksum: keep them. A
+        // settings read that fails keeps the default instead of panicking
+        // across the FFI boundary at overlay attach.
+        let stored = match Config::load_runtime_snapshot_without_keychain() {
+            Ok(snapshot) => snapshot.user_settings().overlay_auto_fold_seconds,
+            Err(error) => {
+                tracing::warn!(%error, "overlay auto-fold preference could not be loaded; folding after 10 s");
+                None
+            }
+        };
+        match stored {
+            Some(seconds) if matches!(seconds, 0 | 5 | 10 | 30 | 60) => seconds,
+            _ => 10,
+        }
+    }
+
+    /// Persist the auto-fold interval. `0` means never. A value outside
+    /// {0, 5, 10, 30, 60} is refused and nothing is written. An unchanged
+    /// value does not rewrite settings.
+    pub fn set_overlay_auto_fold_seconds(&self, seconds: u32) -> bool {
+        if !matches!(seconds, 0 | 5 | 10 | 30 | 60) {
+            return false;
+        }
+        let mut settings = UserSettings::load();
+        if settings.overlay_auto_fold_seconds == Some(seconds) {
+            return true;
+        }
+        settings.overlay_auto_fold_seconds = Some(seconds);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "overlay auto-fold preference could not be saved");
+            return false;
+        }
+        true
+    }
+
     /// Persist the paste mode and return the prompt-free post-write truth in
     /// one result. Callers may re-read `tray_toggles()` after an error; no
     /// optimistic bridge cache is retained.
@@ -3930,6 +3968,36 @@ mod settings_snapshot_tests {
         assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
         assert!(config.set_overlay_keep_visible_between_takes(true));
         assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_auto_fold_seconds_defaults_to_ten_refuses_seven_and_survives_new_handle() {
+        let root = scratch("overlay_auto_fold");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let config = CodescribeConfig::new();
+        assert_eq!(config.overlay_auto_fold_seconds(), 10);
+        assert!(!config.set_overlay_auto_fold_seconds(7));
+        assert_eq!(config.overlay_auto_fold_seconds(), 10);
+        assert_eq!(UserSettings::load().overlay_auto_fold_seconds, None);
+        assert!(config.set_overlay_auto_fold_seconds(30));
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 30);
+        let path = UserSettings::settings_path();
+        let written = fs::read(&path).expect("read auto-fold");
+        assert!(config.set_overlay_auto_fold_seconds(30));
+        assert_eq!(fs::read(&path).expect("unchanged auto-fold"), written);
+        assert!(config.set_overlay_auto_fold_seconds(0));
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 0);
+        UserSettings {
+            overlay_auto_fold_seconds: Some(7),
+            ..UserSettings::default()
+        }
+        .save()
+        .unwrap();
+        assert_eq!(CodescribeConfig::new().overlay_auto_fold_seconds(), 10);
         let _ = remove_path_without_following_symlinks(&root);
     }
 

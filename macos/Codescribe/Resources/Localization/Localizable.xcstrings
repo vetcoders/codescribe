@@ -1508,6 +1508,17 @@
         }
       }
     },
+    "%lld s" : {
+      "comment" : "Overlay header menu: auto-fold interval in seconds",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld s"
+          }
+        }
+      }
+    },
     "%lld s left" : {
       "localizations" : {
         "pl" : {
@@ -3419,6 +3430,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Automatyczne wklejanie"
+          }
+        }
+      }
+    },
+    "Auto fold after…" : {
+      "comment" : "Overlay header menu: how long an expanded overlay stays open",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwijaj po…"
           }
         }
       }
@@ -10067,6 +10089,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Błąd sieci"
+          }
+        }
+      }
+    },
+    "Never" : {
+      "comment" : "Overlay header menu: an expanded overlay never folds itself",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nigdy"
           }
         }
       }
