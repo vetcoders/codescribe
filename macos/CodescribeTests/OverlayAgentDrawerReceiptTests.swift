@@ -161,7 +161,9 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     XCTAssertTrue(bus.receiptCoordinates().isEmpty, "a recorded skip is never polled again")
   }
 
-  func testWithoutASkipReceiptAnOffAgentShowsThePresentPolicyNotAFate() throws {
+  func testTodaysPolicyNeverChangesAFrozenDeliverysReceipt() throws {
+    // Lena and Olek (2026-10-17): today's channel-0 membership is the row's
+    // mark, not evidence about an earlier delivery.
     var broadcast = try XCTUnwrap(fixture().messages.first)
     broadcast.sourceChannel = "0"
     let conversation = try fixture(messages: [broadcast])
@@ -171,9 +173,9 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       row.broadcastPolicy = policy
       return drawer.deliveryReceiptText(for: row, conversation: conversation)
     }
-    XCTAssertEqual(policyReceipt(.off), "Addressed · now off channel 0")
-    XCTAssertEqual(policyReceipt(.quiet), "Addressed", "quiet queues; only off skips")
-    XCTAssertEqual(policyReceipt(.on), "Addressed")
+    for policy in AgentBroadcastPolicy.allCases {
+      XCTAssertEqual(policyReceipt(policy), "Addressed", "\(policy) leaves the receipt alone")
+    }
 
     broadcast.recipients[0].broadcastSkipped = true
     let skipped = try fixture(messages: [broadcast])
@@ -194,19 +196,11 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     var sealed = OverlayChannelDelivery(
       channel: "2", agent: "Lena", deliveryID: "delivery", stage: .sent, isOpen: false)
     sealed.broadcastPolicy = .off
-    sealed.addressedByBroadcast = true
-    XCTAssertEqual(
-      drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed · now off channel 0")
+    XCTAssertEqual(drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed")
     sealed.broadcastSkipped = true
     sealed.broadcastPolicy = .on
     XCTAssertEqual(
       drawer.deliveryReceiptText(for: sealed, conversation: nil), "Skipped: off channel 0")
-    sealed = OverlayChannelDelivery(
-      channel: "2", agent: "Lena", deliveryID: "delivery", stage: .sent, isOpen: false)
-    sealed.broadcastPolicy = .off
-    XCTAssertEqual(
-      drawer.deliveryReceiptText(for: sealed, conversation: nil), "Addressed",
-      "a direct to an agent off channel 0 still arrives")
   }
 
   func testWithdrawnMessageCannotAdvertiseAReceipt() throws {
