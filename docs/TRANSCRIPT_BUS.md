@@ -881,11 +881,12 @@ The rail projects the producer's capability bits on `coverage_refused` and on
 `error` instead of a fixed `[close]`. A delivery failure keeps its words and its
 retained audio, so Copy, Insert and Retranscribe are exactly the recovery the
 user needs at that moment, and the previous fixed list hid them behind the word
-"error". Format is the one command withheld on both phases: its production relay
-refuses outside `formatted`, so projecting it would paint a dead button whose
-only working form would relabel a refused take as a sealed one. A false bit is
-honoured everywhere; on these two phases a true `can_format` is declined by the
-receiver, and that decision is stated here rather than inferred.
+"error". Format also follows the producer's `can_format` on a terminal document
+in `formatted`, `coverage_refused` or `error`. The request creates an explicit
+document revision; it does not certify an acoustic seal or erase diagnostics.
+A false capability stays disabled, and an active capture, dirty draft or pending
+document operation still prevents the request. Direct decoder completion alone
+does not enable actions: the capture lifecycle must have ended first.
 
 Delivery is unchanged and deliberately not phase-aware. Refused documents take
 the same `ComposerPending` route, and only the receiver's typed receipt is
