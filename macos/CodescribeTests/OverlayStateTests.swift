@@ -7555,3 +7555,249 @@ extension OverlayStateTests {
     XCTAssertTrue(delivered.isEmpty, "late completion cannot trigger another canvas' callbacks")
   }
 }
+
+/// Maciej, 2026-10-17 12:19Z–12:23Z: a middle click opens the agents with the
+/// first row focused; the wheel moves the focus, a left click opens that
+/// conversation, a middle click talks to that agent until the next middle
+/// click anywhere, and a microphone clicked in the list disarms that click.
+@MainActor
+final class OverlayAgentGestureTests: XCTestCase {
+  /// Records every write to the Rust capture lease.
+  private final class CaptureLog {
+    var calls: [Bool] = []
+  }
+
+  private struct Fixture {
+    let state: OverlayState
+    let engine: OverlayStateTestEngine
+    let captures: CaptureLog
+    let all: OverlayConversation
+    let lena: OverlayConversation
+    let olek: OverlayConversation
+  }
+
+  private func roster(_ channel: String, _ name: String, open: Bool = false)
+    -> CsChannelRosterState
+  {
+    let broadcast = channel == "0"
+    return CsChannelRosterState(
+      channel: channel, audience: broadcast ? "*" : name,
+      provider: broadcast ? "" : "codex",
+      providerSessionId: broadcast ? "" : "\(name)-session",
+      open: open, loud: false, autosealDeadlineUnixMs: nil, followerAlive: !broadcast,
+      unreadSinceUnixMs: nil)
+  }
+
+  private func agent(_ channel: String, _ name: String) throws -> OverlayConversation {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "\(name)-session",
+        "lease_id": String(repeating: channel, count: 32), "name": name, "channel": channel,
+      ]))
+    return OverlayConversation(
+      id: owner.id, channel: channel, name: name, owner: owner, messages: [])
+  }
+
+  private func fixture(lenaOpen: Bool = false, docked: Bool = false) throws -> Fixture {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let captures = CaptureLog()
+    state.agentChooserCapture = { captures.calls.append($0) }
+    state.setAgentDrawerDocked(docked)
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let lena = try agent("2", "lena")
+    let olek = try agent("3", "olek")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [all, lena, olek]))
+    state.applyChannelRoster([
+      roster("0", "all"), roster("2", "lena", open: lenaOpen), roster("3", "olek"),
+    ])
+    return Fixture(
+      state: state, engine: engine, captures: captures, all: all, lena: lena, olek: olek)
+  }
+
+  /// Lets the chooser's channel toggle task land.
+  private func settle(_ condition: () -> Bool) async {
+    for _ in 0..<500 {
+      if condition() { return }
+      await Task.yield()
+    }
+  }
+
+  func testMiddleClickOpensTheAgentsWithTheFirstRowFocused() throws {
+    let f = try fixture()
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertTrue(f.state.showsAgentMonitor)
+    XCTAssertFalse(f.state.isCollapsed)
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.all.id), "0 · All is first")
+    XCTAssertEqual(f.captures.calls, [true], "the chooser takes the wheel")
+  }
+
+  func testTheWheelMovesTheFocusAndStopsAtBothEnds() throws {
+    let f = try fixture()
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.lena.id)
+    f.state.handleAgentGesture(.scroll(steps: 5))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.olek.id)
+    f.state.handleAgentGesture(.scroll(steps: -9))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.all.id)
+    XCTAssertEqual(f.captures.calls, [true, true, true, true], "every input renews the lease")
+  }
+
+  func testLeftClickOpensTheFocusedConversationAndGivesTheWheelBack() throws {
+    let f = try fixture()
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    f.state.handleAgentGesture(.leftClick)
+
+    XCTAssertEqual(f.state.selectedConversationID, f.lena.id)
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.captures.calls.last, false)
+    XCTAssertTrue(f.engine.toggledDigits.isEmpty, "opening a conversation leaves microphones alone")
+  }
+
+  func testMiddleClickTalksToTheFocusedAgentUntilTheNextMiddleClick() async throws {
+    let f = try fixture()
+    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek")]
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .talking(channel: "2"))
+    XCTAssertEqual(f.captures.calls.last, false, "talking gives the wheel back")
+    await settle { f.state.channelHudStates["2"]?.open == true }
+    XCTAssertEqual(f.engine.toggledDigits, [2])
+
+    // The next middle click, wherever the pointer is, closes and sends.
+    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena"), roster("3", "olek")]
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    await settle { f.state.channelHudStates["2"]?.open == false }
+    XCTAssertEqual(f.engine.toggledDigits, [2, 2])
+  }
+
+  func testAMicrophoneClickedInTheListDisarmsTheNextMiddleClick() async throws {
+    let f = try fixture()
+    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek")]
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    f.state.handleAgentGesture(.middleClick)
+    await settle { f.state.channelHudStates["2"]?.open == true }
+
+    f.engine.rosterSnapshot = [
+      roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek", open: true),
+    ]
+    await f.state.toggleAgentChannel(3, keepsAgentList: true)
+    XCTAssertEqual(f.state.agentGesturePhase, .idle, "the hand's click disarms the gesture")
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertTrue(f.state.agentChooserOpen, "a disarmed middle click opens the chooser again")
+    XCTAssertEqual(f.engine.toggledDigits, [2, 3], "and closes nothing")
+  }
+
+  func testAnAlreadyOpenMicrophoneStaysOpenUntilTheNextMiddleClick() async throws {
+    let f = try fixture(lenaOpen: true, docked: true)
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.lena.id, "the docked column lists every row")
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .talking(channel: "2"))
+    XCTAssertTrue(f.engine.toggledDigits.isEmpty, "talking to an open microphone keeps it open")
+
+    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena"), roster("3", "olek")]
+    f.state.handleAgentGesture(.middleClick)
+    await settle { !f.engine.toggledDigits.isEmpty }
+    XCTAssertEqual(f.engine.toggledDigits, [2])
+  }
+
+  func testAMicrophoneClosedElsewhereTurnsTheNextMiddleClickIntoTheChooser() async throws {
+    let f = try fixture(lenaOpen: true, docked: true)
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    f.state.handleAgentGesture(.middleClick)
+    XCTAssertEqual(f.state.agentGesturePhase, .talking(channel: "2"))
+
+    f.state.applyChannelRoster([roster("0", "all"), roster("2", "lena"), roster("3", "olek")])
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertTrue(f.state.agentChooserOpen)
+    XCTAssertTrue(f.engine.toggledDigits.isEmpty)
+  }
+
+  func testThePillStackLeavesOutTheOpenConversation() throws {
+    let f = try fixture()
+    f.state.selectConversation(f.lena.id)
+
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.olek.id))
+  }
+
+  func testEscapeLeavesTheChooserAndClosesTheList() throws {
+    let f = try fixture()
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.handleAgentGesture(.cancel)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertFalse(f.state.showsAgentMonitor)
+    XCTAssertEqual(f.captures.calls, [true, false])
+  }
+
+  func testHoverMovesTheFocusOnlyWhileChoosing() throws {
+    let f = try fixture()
+    f.state.hoverAgentGestureTarget(f.olek.id)
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+
+    f.state.handleAgentGesture(.middleClick)
+    f.state.hoverAgentGestureTarget(f.olek.id)
+    XCTAssertEqual(f.state.agentGestureFocusID, f.olek.id)
+    f.state.hoverAgentGestureTarget("not-a-row")
+    XCTAssertEqual(f.state.agentGestureFocusID, f.olek.id)
+  }
+
+  func testCollapsingTheOverlayGivesTheWheelBack() throws {
+    let f = try fixture()
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.setPresentationMode(.mini)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.captures.calls.last, false)
+  }
+
+  func testAnIdleChooserGivesTheWheelBack() async throws {
+    let f = try fixture()
+    f.state.agentChooserIdleSeconds = 0.01
+    f.state.handleAgentGesture(.middleClick)
+
+    for _ in 0..<100 where f.state.agentChooserOpen {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.captures.calls, [true, false])
+  }
+
+  func testInputOutlivingItsChooserReleasesTheLease() throws {
+    let f = try fixture()
+
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    f.state.handleAgentGesture(.leftClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertFalse(f.state.showsAgentMonitor)
+    XCTAssertEqual(f.captures.calls, [false, false])
+  }
+}
