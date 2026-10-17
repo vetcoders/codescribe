@@ -444,6 +444,43 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       conversation.contains("OverlayAgentDrawerLayout.pillWidth(textScale: textScale)"),
       "the name pill and the stack share 224 × scale")
   }
+
+  // MARK: - Wide-window evacuation (Maciej, 2026-10-17)
+
+  /// The docked column already names the agent and carries its microphone and
+  /// speaker, so the identity pill must leave with it: the host hands the
+  /// column's visibility to the conversation view, and the view drops the
+  /// whole navigation row (controls and pill) with a collapsed measurement.
+  func testDockedColumnEvacuatesTheIdentityPillAndItsControls() throws {
+    let overlay = try overlaySource("DictationOverlayView.swift")
+    let canvas = try section(
+      of: overlay, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertTrue(
+      canvas.contains("hidesNavigation: columnShown"),
+      "the visible docked column is exactly when the pill evacuates")
+    let conversation = try overlaySource("OverlayConversationView.swift")
+    let anchor = try section(
+      of: conversation, from: ".overlay(alignment: .top)", to: ".onAppear { scrollToLatest")
+    XCTAssertTrue(
+      anchor.contains("if hidesNavigation"),
+      "the navigation row is conditional, not just transparent")
+    XCTAssertTrue(
+      anchor.contains("navigationHeight = 0"),
+      "the content margin follows the evacuated row")
+  }
+
+  /// Broadcast-policy choices in the pill's context menu are checkboxes, so
+  /// they must use the menu Toggle's native state column like the header
+  /// menu's checkboxes, not a checkmark squatting in the icon slot.
+  func testPolicyMenuUsesNativeCheckboxToggles() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let actions = try section(
+      of: source, from: "private func policyActions", to: "private func apply")
+    XCTAssertTrue(actions.contains("Toggle("), "policy rows are menu checkboxes")
+    XCTAssertFalse(
+      actions.contains("systemImage: \"checkmark\""),
+      "no icon-slot checkmark impersonating a checkbox")
+  }
 }
 
 @MainActor

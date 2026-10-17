@@ -36,8 +36,16 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     XCTAssertNil(channel("1", policy: .on).broadcastPolicy.statusSymbol)
     XCTAssertFalse(quiet.broadcastPolicy.receivesWake)
     XCTAssertFalse(off.broadcastPolicy.receivesWake)
-    // The menu names each of the three receptions distinctly.
-    XCTAssertEqual(Set(AgentBroadcastPolicy.allCases.map(\.menuTitle)).count, 3)
+    // The menu stopped naming three receptions: it is two state checkboxes
+    // (Maciej, 2026-10-17), and the wire enum keeps only non-menu duties.
+    let source =
+      (try? String(
+        contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+          .deletingLastPathComponent()
+          .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"),
+        encoding: .utf8)) ?? ""
+    XCTAssertTrue(source.contains("\"Channel 0\""), "membership checkbox")
+    XCTAssertTrue(source.contains("\"Steer (otherwise queued)\""), "steer checkbox")
   }
 
   /// The member row's menu (click and right-click alike) issues the selected
