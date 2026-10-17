@@ -58,7 +58,9 @@ final class OverlayAgentArchiveTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(50))
       host.layoutSubtreeIfNeeded()
       XCTAssertEqual(host.fittingSize.width, 336, accuracy: 1)
-      XCTAssertGreaterThan(host.fittingSize.height, 200, "The hint occupies space between the rows")
+      // 174 pt with the hint once the Transcription row left the column
+      // (Maciej, 2026-10-17); the hint alone is what lifts it past 160.
+      XCTAssertGreaterThan(host.fittingSize.height, 160, "The hint occupies space between the rows")
       XCTAssertLessThan(host.fittingSize.height, 480, "The hint fits the sidebar")
     }
     state.applyChannelRoster([roster(session: "replacement", alive: true)])

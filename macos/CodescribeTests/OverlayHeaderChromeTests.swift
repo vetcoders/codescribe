@@ -604,7 +604,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       id: owner.id, channel: "1", name: "Atlas", owner: owner, messages: [])
     let channel = OverlayChannelDelivery(
       channel: "1", agent: "Atlas", deliveryID: nil, stage: nil, isOpen: false)
-    var status = OverlayChannelStatusView(
+    let status = OverlayChannelStatusView(
       channels: [channel],
       unavailable: false,
       palette: palette,
@@ -618,7 +618,6 @@ final class OverlayHeaderChromeTests: XCTestCase {
       conversations: interactive ? [conversation] : [],
       onSelectConversation: interactive ? { _ in } : nil
     )
-    if interactive { status.onShowTranscription = {} }
     return status.monitorBody(maximumHeight: 260)
   }
 
