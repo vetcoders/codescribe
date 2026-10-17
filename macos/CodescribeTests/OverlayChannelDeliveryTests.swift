@@ -1475,7 +1475,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.
-    XCTAssertFalse(status.contains("antenna.radiowaves"))
+    // The antenna belongs to the roster's 0 · All dot alone (Maciej,
+    // 2026-10-17: "wyróżnić bardziej kanał ogólny"), never to the header.
+    XCTAssertEqual(
+      status.components(separatedBy: "antenna.radiowaves").count - 1, 1,
+      "one antenna in the status view: the shared channel's dot")
+    let statusDot = try XCTUnwrap(status.range(of: "struct OverlayAgentStatusDot: View"))
+    let pillStack = try XCTUnwrap(status.range(of: "struct OverlayAgentPillStack: View"))
+    let antenna = try XCTUnwrap(status.range(of: "antenna.radiowaves"))
+    XCTAssertTrue(
+      statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < pillStack.lowerBound,
+      "the antenna is drawn by OverlayAgentStatusDot, not by the header")
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
     // Passive navigation and capture ownership are exercised by
     // testNotificationNavigationRetainsOwnerAndUnreadCountWithoutOpeningMicrophone.
@@ -1726,7 +1736,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       XCTAssertEqual(view.currentConversations.map(\.id), [current.id])
       XCTAssertEqual(view.savedConversations.map(\.id), [saved.id])
       XCTAssertEqual(host.fittingSize.width, 440, accuracy: 1)
-      XCTAssertGreaterThan(host.fittingSize.height, 120, "saved history is still visible")
+      // One compact row plus the saved section measured 118 pt once the
+      // Transcription row left the column (Maciej, 2026-10-17); without the
+      // saved section the column would stop short of 100 pt.
+      XCTAssertGreaterThan(host.fittingSize.height, 100, "saved history is still visible")
       XCTAssertTrue(selections.isEmpty, "rendering does not navigate")
       XCTAssertTrue(toggles.isEmpty, "rendering does not start recording")
       XCTAssertLessThan(host.fittingSize.height, 220, "one compact row plus saved history")
