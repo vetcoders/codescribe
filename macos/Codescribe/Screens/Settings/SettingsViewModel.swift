@@ -3219,6 +3219,17 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Middle click opens the overlay's agent chooser. Off until chosen. While on,
+  /// the middle click belongs to Codescribe; with middle-as-Fn a hold still dictates.
+  var middleMouseAgentGesture: Bool { settings.middleMouseAgentGesture }
+
+  func setMiddleMouseAgentGesture(_ enabled: Bool) {
+    settings.middleMouseAgentGesture = enabled
+    writeHotkeySurface("MIDDLE_MOUSE_AGENT_GESTURE", enabled ? "1" : "0") {
+      try hotkeys?.setMiddleMouseAgentGesture(enabled)
+    }
+  }
+
   /// One settings.json write. The hotkeys seam persists when it is injected;
   /// otherwise the shared config router does. Either path reloads the detector.
   private func writeHotkeySurface(
