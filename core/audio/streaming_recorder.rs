@@ -545,6 +545,16 @@ pub fn prepare_recorded_replay(
                 .into(),
         ),
     });
+    // Read from the data dir when the session needs them, as they are now.
+    inputs.push(ReplayInputReceipt {
+        input: "data_dir_files",
+        recorded: None,
+        effective: None,
+        reason: Some(
+            "custom lexicon, protected terms and models are read as they are now, not as the take saw them"
+                .into(),
+        ),
+    });
 
     let session_id = recorded_session
         .map(|session| format!("replay-{session}-r{run}"))
@@ -4873,7 +4883,7 @@ mod recorded_replay_tests {
         assert_eq!(archive.session_id, config.session_id);
         assert_eq!(archive.sample_count, 1_600);
         let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
-        assert_eq!(diverged, ["engine_env"]);
+        assert_eq!(diverged, ["engine_env", "data_dir_files"]);
     }
 
     #[test]
