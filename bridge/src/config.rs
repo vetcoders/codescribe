@@ -120,6 +120,9 @@ pub struct CsSettings {
     /// Middle mouse button follows Fn press/release. Default off.
     /// The tap stays listen-only, so the click still reaches the frontmost app.
     pub middle_mouse_acts_as_fn: bool,
+    /// A short middle click opens the overlay's agent chooser. Default off.
+    /// While it is on, the middle button is Codescribe's, not the frontmost app's.
+    pub middle_mouse_agent_gesture: bool,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -244,6 +247,7 @@ impl CsSettings {
             channel_modifier: config.channel_modifier.as_str().to_string(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
+            middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             paste_mode: config.paste_mode.into(),
