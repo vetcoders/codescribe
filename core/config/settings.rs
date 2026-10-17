@@ -843,7 +843,7 @@ impl RuntimeLlmLanes {
 ///
 /// Runtime execution records this typed evidence rather than carrying an
 /// absolute path or raw I/O error text into the selected generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSource {
     /// A non-empty operator override on disk.
     CustomFile,

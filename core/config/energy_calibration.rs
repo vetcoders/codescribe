@@ -373,7 +373,7 @@ impl std::error::Error for GuidedCalibrationRefused {}
 
 /// Loader verdict frozen into the snapshot. Consumers display it; they may not
 /// upgrade `Missing`/`Refused` into a floor of their own.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EnergyCalibrationStatus {
     Sealed {
         path: PathBuf,
@@ -802,7 +802,10 @@ impl EnergyCalibrationArtifact {
 }
 
 /// Calibration truth frozen by the settings loader into one snapshot.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializes for a take's replay card: a replay reseals exactly what this
+/// take sealed, not whatever the calibration file holds by then.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SealedEnergyCalibration {
     status: EnergyCalibrationStatus,
     artifact: Option<EnergyCalibrationArtifact>,
