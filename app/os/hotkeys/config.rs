@@ -16,7 +16,9 @@ use crate::config::{
     ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding,
     UserSettings, WorkMode,
 };
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 
 /// Packed slot: no gesture armed for that mode.
 const BIND_DISABLED: u16 = 0;
@@ -265,6 +267,8 @@ static CHANNEL_MODIFIER: AtomicU8 = AtomicU8::new(0);
 static FN_TAP_TOGGLES_DICTATION: AtomicBool = AtomicBool::new(false);
 /// Middle mouse button follows the Fn press/release path.
 static MIDDLE_MOUSE_ACTS_AS_FN: AtomicBool = AtomicBool::new(false);
+/// A short middle click opens the overlay's agent chooser.
+static MIDDLE_MOUSE_AGENT_GESTURE: AtomicBool = AtomicBool::new(false);
 
 fn encode_channel_modifier(modifier: ChannelModifier) -> u8 {
     match modifier {
@@ -313,6 +317,55 @@ pub fn get_middle_mouse_acts_as_fn() -> bool {
     MIDDLE_MOUSE_ACTS_AS_FN.load(AtomicOrdering::SeqCst)
 }
 
+/// Enable or disable the middle-click agent chooser.
+pub fn set_middle_mouse_agent_gesture(enabled: bool) {
+    MIDDLE_MOUSE_AGENT_GESTURE.store(enabled, AtomicOrdering::SeqCst);
+    tracing::info!("Middle mouse agent gesture: {}", enabled);
+}
+
+/// Whether a short middle click opens the agent chooser.
+pub fn get_middle_mouse_agent_gesture() -> bool {
+    MIDDLE_MOUSE_AGENT_GESTURE.load(AtomicOrdering::SeqCst)
+}
+
+// --- Agent chooser capture ---
+//
+// While the overlay's agent chooser is open, the tap takes the scroll wheel,
+// the left click and Escape away from other apps. The overlay renews the lease
+// on every chooser input, so an overlay that stops answering cannot keep the
+// mouse longer than one lease.
+
+/// How long one renewal holds the capture.
+pub const AGENT_GESTURE_CAPTURE_LEASE: Duration = Duration::from_secs(30);
+/// Lease end in milliseconds since [`capture_epoch`]; 0 means released.
+static AGENT_GESTURE_CAPTURE_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Process-local zero for the lease clock.
+fn capture_epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
+fn capture_millis(at: Instant) -> u64 {
+    u64::try_from(at.saturating_duration_since(capture_epoch()).as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Take (or renew) the chooser capture, or release it.
+pub fn set_agent_gesture_capture(active: bool) {
+    let until = if active {
+        capture_millis(Instant::now() + AGENT_GESTURE_CAPTURE_LEASE).max(1)
+    } else {
+        0
+    };
+    AGENT_GESTURE_CAPTURE_UNTIL_MS.store(until, AtomicOrdering::SeqCst);
+}
+
+/// Whether the chooser holds the capture at `now`.
+pub fn agent_gesture_capture_active(now: Instant) -> bool {
+    let until = AGENT_GESTURE_CAPTURE_UNTIL_MS.load(AtomicOrdering::SeqCst);
+    until != 0 && capture_millis(now) < until
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The whole hotkey contract as one comparable value.
 ///
@@ -332,6 +385,9 @@ pub struct HotkeyRuntimeConfig {
     pub fn_tap_toggles_dictation: bool,
     /// Mouse button 2 is delivered as an Fn edge.
     pub middle_mouse_acts_as_fn: bool,
+    /// A short middle click opens the agent chooser; with
+    /// [`Self::middle_mouse_acts_as_fn`] a hold past the delay still dictates.
+    pub middle_mouse_agent_gesture: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +430,7 @@ impl From<&Config> for HotkeyRuntimeConfig {
             channel_modifier: config.channel_modifier,
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
+            middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
         }
     }
 }
@@ -390,6 +447,7 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
         channel_modifier: get_channel_modifier(),
         fn_tap_toggles_dictation: get_fn_tap_toggles_dictation(),
         middle_mouse_acts_as_fn: get_middle_mouse_acts_as_fn(),
+        middle_mouse_agent_gesture: get_middle_mouse_agent_gesture(),
     }
 }
 
@@ -421,6 +479,7 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_channel_modifier(normalized.channel_modifier);
     set_fn_tap_toggles_dictation(normalized.fn_tap_toggles_dictation);
     set_middle_mouse_acts_as_fn(normalized.middle_mouse_acts_as_fn);
+    set_middle_mouse_agent_gesture(normalized.middle_mouse_agent_gesture);
 }
 
 /// Apply the hotkey slice of a [`Config`] to the runtime atomics.
@@ -489,6 +548,7 @@ mod tests {
             channel_modifier: ChannelModifier::Fn,
             fn_tap_toggles_dictation: true,
             middle_mouse_acts_as_fn: true,
+            middle_mouse_agent_gesture: true,
         };
         apply_hotkey_runtime_config(runtime);
 
@@ -507,6 +567,7 @@ mod tests {
         assert_eq!(get_channel_modifier(), ChannelModifier::Fn);
         assert!(get_fn_tap_toggles_dictation());
         assert!(get_middle_mouse_acts_as_fn());
+        assert!(get_middle_mouse_agent_gesture());
     }
 
     /// Second apply of an out-of-range interval is a no-op after the first clamp.
@@ -532,6 +593,7 @@ mod tests {
             channel_modifier: ChannelModifier::Ctrl,
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
+            middle_mouse_agent_gesture: false,
         };
         apply_hotkey_runtime_config(runtime);
         let after_first = get_hotkey_runtime_config();
@@ -554,6 +616,7 @@ mod tests {
         assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
         assert!(!config.fn_tap_toggles_dictation);
         assert!(!config.middle_mouse_acts_as_fn);
+        assert!(!config.middle_mouse_agent_gesture);
 
         let runtime = HotkeyRuntimeConfig {
             mode_bindings: ModeHotkeyBindings {
@@ -569,9 +632,29 @@ mod tests {
             channel_modifier: config.channel_modifier,
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
+            middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
         };
         assert_eq!(runtime.channel_modifier, ChannelModifier::Ctrl);
         assert!(!runtime.fn_tap_toggles_dictation);
         assert!(!runtime.middle_mouse_acts_as_fn);
+        assert!(!runtime.middle_mouse_agent_gesture);
+    }
+
+    /// The chooser capture holds for one lease, and a release ends it at once.
+    #[test]
+    fn agent_gesture_capture_is_a_lease_and_releases_at_once() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        set_agent_gesture_capture(true);
+        let now = Instant::now();
+        assert!(agent_gesture_capture_active(now));
+        assert!(!agent_gesture_capture_active(
+            now + AGENT_GESTURE_CAPTURE_LEASE + Duration::from_millis(5)
+        ));
+
+        set_agent_gesture_capture(false);
+        assert!(!agent_gesture_capture_active(Instant::now()));
     }
 }
