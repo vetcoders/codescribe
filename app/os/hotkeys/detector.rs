@@ -23,6 +23,12 @@ use std::time::{Duration, Instant};
 /// Max press duration for a "tap" gesture (milliseconds)
 const TAP_MAX_MS: u64 = 220;
 
+/// Continuous-scroll points (trackpad, Magic Mouse) worth one chooser step.
+const SCROLL_POINTS_PER_STEP: i64 = 30;
+
+/// Most chooser steps one scroll event may move.
+const SCROLL_MAX_STEPS: i64 = 5;
+
 // --- Types ---
 
 /// Represents the action of a hold gesture
@@ -87,6 +93,26 @@ pub enum HotkeyEvent {
         gesture: DoubleTapGesture,
         reason: DoubleTapBlockReason,
     },
+    /// Input for the overlay's middle-mouse agent chooser. UI-only, like
+    /// [`Self::ShowAgent`]: it never starts or ends a dictation take itself.
+    AgentGesture(AgentGestureInput),
+}
+
+/// What the overlay's agent chooser receives from the pointer.
+///
+/// `MiddleClick` exists whenever the gesture setting is on. The other three
+/// arrive only while the overlay holds the chooser capture, and the tap takes
+/// those events away from the frontmost app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentGestureInput {
+    /// The middle button was clicked, not held into dictation.
+    MiddleClick,
+    /// Wheel movement while choosing. Positive steps move down the list.
+    Scroll { steps: i32 },
+    /// A left click while choosing: open the focused agent.
+    LeftClick,
+    /// Escape while choosing: leave the chooser without acting.
+    Cancel,
 }
 
 /// Which physical double-tap the user performed.
@@ -299,12 +325,26 @@ pub enum HotkeyDetectorInput {
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
     },
-    /// Mouse button 2. Ignored unless `middle_mouse_acts_as_fn` is set, in
-    /// which case press and release follow the Fn path.
+    /// Mouse button 2. Ignored unless `middle_mouse_acts_as_fn` or
+    /// `middle_mouse_agent_gesture` is set. With the gesture on, a click is
+    /// [`AgentGestureInput::MiddleClick`] and only a press held past the hold
+    /// delay follows the Fn path.
     MiddleButton {
         now: Instant,
         pressed: bool,
         modifiers: HotkeyModifierSnapshot,
+    },
+    /// Vertical scroll wheel, fed only while the agent chooser holds the
+    /// capture. Deltas are CoreGraphics' own: positive scrolls content down.
+    ScrollWheel {
+        /// Line delta of a notched wheel.
+        lines: i64,
+        /// Point delta of a continuous device.
+        points: i64,
+        /// The device scrolls continuously (trackpad, Magic Mouse).
+        continuous: bool,
+        /// The event belongs to a momentum tail after the fingers lifted.
+        momentum: bool,
     },
 }
 
@@ -355,6 +395,12 @@ pub struct HotkeyDetector {
     /// Hold Down was emitted on release because the threshold poll had not
     /// run yet. The next [`HotkeyDetector::poll`] emits the matching Hold Up.
     hold_up_owed: bool,
+    /// Middle press with the agent gesture on, while click or hold is open.
+    middle_press_started: Option<Instant>,
+    /// That press crossed the hold delay and now drives a dictation hold.
+    middle_hold_promoted: bool,
+    /// Continuous-scroll points not yet worth a chooser step.
+    scroll_points: i64,
 }
 
 impl Default for HotkeyDetector {
@@ -383,6 +429,9 @@ impl Default for HotkeyDetector {
             fn_press_pending: false,
             fn_press_started: None,
             hold_up_owed: false,
+            middle_press_started: None,
+            middle_hold_promoted: false,
+            scroll_points: 0,
         }
     }
 }
@@ -462,6 +511,9 @@ impl HotkeyDetector {
                 pressed,
                 modifiers,
             } => {
+                if config.middle_mouse_agent_gesture {
+                    return self.handle_agent_middle_button(now, pressed, config);
+                }
                 if !config.middle_mouse_acts_as_fn {
                     return None;
                 }
@@ -469,7 +521,107 @@ impl HotkeyDetector {
                 modifiers.fn_key = pressed || modifiers.fn_key;
                 self.handle_flags_changed(now, HotkeyPhysicalKey::Fn, modifiers, config)
             }
+            HotkeyDetectorInput::ScrollWheel {
+                lines,
+                points,
+                continuous,
+                momentum,
+            } => self.handle_scroll(lines, points, continuous, momentum),
         }
+    }
+
+    /// Middle button with the agent gesture on (Maciej, 2026-10-17: "klik 1x
+    /// może nadal pokazywać i chować nie zabierając dyktowania na hold").
+    ///
+    /// The press decides nothing. A release before the hold delay is a click.
+    /// When the button also dictates, a press held past the delay becomes the
+    /// same Raw hold an Fn hold starts: [`Self::poll`] promotes it, or the
+    /// release does when the poll was late.
+    fn handle_agent_middle_button(
+        &mut self,
+        now: Instant,
+        pressed: bool,
+        config: HotkeyRuntimeConfig,
+    ) -> Option<HotkeyEvent> {
+        if pressed {
+            if self.middle_press_started.is_none() && !self.middle_hold_promoted {
+                self.middle_press_started = Some(now);
+            }
+            return None;
+        }
+        if std::mem::take(&mut self.middle_hold_promoted) {
+            self.middle_press_started = None;
+            return self.end_middle_hold();
+        }
+        let started = self.middle_press_started.take()?;
+        if middle_button_dictates(config)
+            && !self.hold_active
+            && elapsed_between(now, started) >= Duration::from_millis(config.hold_start_delay_ms)
+        {
+            self.begin_middle_hold(started);
+            self.hold_up_owed = true;
+            return Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            });
+        }
+        Some(HotkeyEvent::AgentGesture(AgentGestureInput::MiddleClick))
+    }
+
+    fn begin_middle_hold(&mut self, started: Instant) {
+        self.hold_active = true;
+        self.hold_active_ts = Some(started);
+        self.hold_mode = HoldMode::Raw;
+        self.hold_event_sent = true;
+        self.arm_modifier_down = false;
+    }
+
+    fn end_middle_hold(&mut self) -> Option<HotkeyEvent> {
+        if !self.hold_active {
+            return None;
+        }
+        self.hold_active = false;
+        self.hold_active_ts = None;
+        self.arm_modifier_down = false;
+        self.hold_event_sent.then_some(HotkeyEvent::Hold {
+            action: HoldAction::Up,
+            mode: self.hold_mode,
+        })
+    }
+
+    /// Turn wheel movement into chooser steps.
+    ///
+    /// A notched wheel moves one step per event whatever its acceleration. A
+    /// continuous device moves one step per [`SCROLL_POINTS_PER_STEP`] points
+    /// and its momentum tail is dropped, so a flick does not run off the list.
+    /// Content scrolling down reads as moving up the list, the way the list
+    /// itself would scroll under the user's own direction setting.
+    fn handle_scroll(
+        &mut self,
+        lines: i64,
+        points: i64,
+        continuous: bool,
+        momentum: bool,
+    ) -> Option<HotkeyEvent> {
+        let steps = if continuous {
+            if momentum {
+                return None;
+            }
+            self.scroll_points = self.scroll_points.saturating_add(points);
+            let steps = self.scroll_points / SCROLL_POINTS_PER_STEP;
+            self.scroll_points -= steps * SCROLL_POINTS_PER_STEP;
+            steps
+        } else {
+            self.scroll_points = 0;
+            lines.signum()
+        };
+        if steps == 0 {
+            return None;
+        }
+        let steps = i32::try_from(-steps.clamp(-SCROLL_MAX_STEPS, SCROLL_MAX_STEPS)).ok()?;
+        Some(HotkeyEvent::AgentGesture(AgentGestureInput::Scroll {
+            steps,
+        }))
     }
 
     /// Promote a pending Fn press once it has crossed the hold delay.
@@ -489,6 +641,20 @@ impl HotkeyDetector {
             return Some(HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode,
+            });
+        }
+        if let Some(started) = self.middle_press_started
+            && config.middle_mouse_agent_gesture
+            && middle_button_dictates(config)
+            && !self.middle_hold_promoted
+            && !self.hold_active
+            && elapsed_between(now, started) >= Duration::from_millis(config.hold_start_delay_ms)
+        {
+            self.middle_hold_promoted = true;
+            self.begin_middle_hold(started);
+            return Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
             });
         }
         if !config.fn_tap_toggles_dictation || !self.fn_press_pending {
@@ -921,6 +1087,11 @@ impl HotkeyDetector {
     }
 }
 
+/// The middle button dictates on hold: it acts as Fn and Fn holds dictation.
+fn middle_button_dictates(config: HotkeyRuntimeConfig) -> bool {
+    config.middle_mouse_acts_as_fn && config.mode_bindings.dictation == ShortcutBinding::HoldFn
+}
+
 /// Whether the held modifiers exactly match the configured Insert-Here chord.
 ///
 /// Matching is exclusive in both directions — every modifier the chord needs
@@ -1206,6 +1377,7 @@ mod tests {
             channel_modifier: ChannelModifier::Ctrl,
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
+            middle_mouse_agent_gesture: false,
         }
     }
 
@@ -2942,6 +3114,200 @@ mod tests {
         );
         assert!(!detector.hold_active);
         assert!(!detector.fn_press_pending);
+    }
+
+    const MIDDLE_CLICK: HotkeyEvent = HotkeyEvent::AgentGesture(AgentGestureInput::MiddleClick);
+    const RAW_HOLD_DOWN: HotkeyEvent = HotkeyEvent::Hold {
+        action: HoldAction::Down,
+        mode: HoldMode::Raw,
+    };
+    const RAW_HOLD_UP: HotkeyEvent = HotkeyEvent::Hold {
+        action: HoldAction::Up,
+        mode: HoldMode::Raw,
+    };
+
+    /// Fn hold dictation, with the middle button as Fn and the chooser on.
+    fn middle_gesture_config(acts_as_fn: bool) -> HotkeyRuntimeConfig {
+        let mut config = fn_hold_double_option_config();
+        config.middle_mouse_acts_as_fn = acts_as_fn;
+        config.middle_mouse_agent_gesture = true;
+        config
+    }
+
+    #[test]
+    fn middle_click_opens_the_chooser_on_release_when_the_gesture_is_on() {
+        let config = middle_gesture_config(false);
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(
+            middle(
+                &mut detector,
+                config,
+                base + Duration::from_millis(90),
+                false
+            ),
+            Some(MIDDLE_CLICK)
+        );
+        assert!(!detector.hold_active);
+    }
+
+    #[test]
+    fn without_fn_a_long_middle_press_is_still_a_click() {
+        let config = middle_gesture_config(false);
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(detector.poll(base + Duration::from_secs(2), config), None);
+        assert_eq!(
+            middle(&mut detector, config, base + Duration::from_secs(3), false),
+            Some(MIDDLE_CLICK)
+        );
+    }
+
+    /// Both options and Fn-tap: a click is the chooser, never a dictation
+    /// toggle or a micro-take.
+    #[test]
+    fn with_fn_a_short_middle_click_is_the_chooser_and_starts_no_take() {
+        let mut config = middle_gesture_config(true);
+        config.fn_tap_toggles_dictation = true;
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(400), config),
+            None
+        );
+        assert_eq!(
+            middle(
+                &mut detector,
+                config,
+                base + Duration::from_millis(450),
+                false
+            ),
+            Some(MIDDLE_CLICK)
+        );
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(900), config),
+            None
+        );
+        assert!(!detector.hold_active);
+    }
+
+    #[test]
+    fn with_fn_a_middle_hold_past_the_delay_dictates_and_opens_no_chooser() {
+        let config = middle_gesture_config(true);
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(800), config),
+            Some(RAW_HOLD_DOWN)
+        );
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(850), config),
+            None
+        );
+        assert_eq!(
+            middle(&mut detector, config, base + Duration::from_secs(4), false),
+            Some(RAW_HOLD_UP)
+        );
+        assert!(!detector.hold_active);
+        assert_eq!(detector.poll(base + Duration::from_secs(5), config), None);
+    }
+
+    #[test]
+    fn a_middle_hold_released_before_a_late_poll_still_dictates() {
+        let config = middle_gesture_config(true);
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(
+            middle(
+                &mut detector,
+                config,
+                base + Duration::from_millis(1_100),
+                false
+            ),
+            Some(RAW_HOLD_DOWN)
+        );
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(1_150), config),
+            Some(RAW_HOLD_UP)
+        );
+        assert!(!detector.hold_active);
+    }
+
+    #[test]
+    fn a_hold_needs_the_fn_dictation_binding() {
+        let mut config = middle_gesture_config(true);
+        config.mode_bindings.dictation = ShortcutBinding::HoldCtrl;
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(detector.poll(base + Duration::from_secs(2), config), None);
+        assert_eq!(
+            middle(&mut detector, config, base + Duration::from_secs(3), false),
+            Some(MIDDLE_CLICK)
+        );
+    }
+
+    fn scroll(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        lines: i64,
+        points: i64,
+        continuous: bool,
+        momentum: bool,
+    ) -> Option<HotkeyEvent> {
+        detector.feed(
+            HotkeyDetectorInput::ScrollWheel {
+                lines,
+                points,
+                continuous,
+                momentum,
+            },
+            config,
+        )
+    }
+
+    fn chooser_steps(steps: i32) -> Option<HotkeyEvent> {
+        Some(HotkeyEvent::AgentGesture(AgentGestureInput::Scroll {
+            steps,
+        }))
+    }
+
+    /// One notch is one step whatever the acceleration; content scrolling
+    /// down moves up the list.
+    #[test]
+    fn a_notched_wheel_moves_the_chooser_one_step_per_event() {
+        let config = middle_gesture_config(false);
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(
+            scroll(&mut detector, config, 1, 10, false, false),
+            chooser_steps(-1)
+        );
+        assert_eq!(
+            scroll(&mut detector, config, -4, -40, false, false),
+            chooser_steps(1)
+        );
+        assert_eq!(scroll(&mut detector, config, 0, 3, false, false), None);
+    }
+
+    #[test]
+    fn a_continuous_scroll_accumulates_points_and_drops_its_momentum_tail() {
+        let config = middle_gesture_config(false);
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(scroll(&mut detector, config, 0, -20, true, false), None);
+        assert_eq!(
+            scroll(&mut detector, config, 0, -20, true, false),
+            chooser_steps(1)
+        );
+        assert_eq!(scroll(&mut detector, config, 0, -500, true, true), None);
+        assert_eq!(
+            scroll(&mut detector, config, 0, 400, true, false),
+            chooser_steps(-5)
+        );
     }
 
     /// Perform one physical gesture as synthetic modifier snapshots and return

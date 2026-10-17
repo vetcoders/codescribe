@@ -28,12 +28,20 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     XCTAssertEqual(String(format: format, Int64(1), Int64(2)), "0 · Wszyscy (1 z 2)")
   }
 
-  func testQuietAndOffRowsSelectTheSlashedAntennaButOnDoesNot() {
+  func testOnQuietAndOffEachWearTheirOwnMark() {
+    // Maciej (2026-10-17): channel 0 and channel 0 plus steer could not be
+    // told apart — quiet and off shared the slashed antenna, on wore nothing.
+    let on = channel("1", policy: .on)
     let quiet = channel("2", policy: .quiet)
     let off = channel("3", policy: .off)
-    XCTAssertEqual(quiet.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right.slash")
-    XCTAssertEqual(off.broadcastPolicy.statusSymbol, quiet.broadcastPolicy.statusSymbol)
-    XCTAssertNil(channel("1", policy: .on).broadcastPolicy.statusSymbol)
+    XCTAssertEqual(on.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right")
+    XCTAssertEqual(quiet.broadcastPolicy.statusSymbol, "tray.and.arrow.down")
+    XCTAssertEqual(off.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertEqual(
+      Set(AgentBroadcastPolicy.allCases.map(\.statusSymbol)).count, 3, "three states, three marks")
+    XCTAssertEqual(
+      Set(AgentBroadcastPolicy.allCases.map(\.statusHelp)).count, 3, "three states, three tooltips")
+    XCTAssertTrue(on.broadcastPolicy.receivesWake)
     XCTAssertFalse(quiet.broadcastPolicy.receivesWake)
     XCTAssertFalse(off.broadcastPolicy.receivesWake)
     // The menu stopped naming three receptions: it is two state checkboxes
@@ -115,11 +123,15 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
   private func drawer(_ channels: [OverlayChannelDelivery]) -> OverlayChannelStatusView {
     OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: .dark, animates: false,
-      hudStates: Dictionary(uniqueKeysWithValues: channels.map { channel in
-        (channel.channel, OverlayChannelHudProjection(
-          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-          provider: "junie", providerSessionID: "session-\(channel.channel)"))
-      }))
+      hudStates: Dictionary(
+        uniqueKeysWithValues: channels.map { channel in
+          (
+            channel.channel,
+            OverlayChannelHudProjection(
+              open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+              provider: "junie", providerSessionID: "session-\(channel.channel)")
+          )
+        }))
   }
 
   private struct Fixture {
@@ -158,7 +170,8 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
       let command = installer.commandURL("cs-bus")
       try FileManager.default.createDirectory(
         at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
-      let managed = String(source[...firstNewline])
+      let managed =
+        String(source[...firstNewline])
         + "# codescribe-managed-command: {\"managed_id\":\"broadcast-fixture\"}\n"
         + String(source[source.index(after: firstNewline)...])
       try managed.write(to: command, atomically: true, encoding: .utf8)

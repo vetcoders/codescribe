@@ -1,6 +1,6 @@
 {
   "schema": "codescribe.real-take-fixture.v1",
-  "authored": "2026-10-13, integrator Klaudiusz (claude), from dragon ~/.codescribe/sessions/*.wav + *.trail.jsonl (decision-trail v3), Codescribe 0.17.0 build 953 b62bc3e17, EarPods, local_power + local_tail_patch",
+  "authored": "2026-10-13, from recorded takes ~/.codescribe/sessions/*.wav + *.trail.jsonl (decision-trail v3), Codescribe 0.17.0 build 953 b62bc3e17, EarPods, local_power + local_tail_patch",
   "purpose": "Counterexamples for word identity. Each fixture carries both producers' claimed word ranges and the measured speech bursts of the microphone. The product contract: equal words on the same physical speech are one word; a window whose Stop fences are complete outranks an edge-cut live label; one zero-length word cannot void a whole window.",
   "burst_method": "RMS per 20 ms hop over int16/32768, speech when > -50 dBFS, gaps < 60 ms merged, bursts >= 60 ms kept",
   "fixtures": [

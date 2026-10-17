@@ -211,3 +211,45 @@ fn bounded_trial_cannot_reopen_early_pcm_at_stop_or_exceed_window_budget() {
     assert!(owner.is_finished());
     assert!(owner.next_due(4000, true).is_none());
 }
+
+// Integrator-authored tests for the same production capture planner.
+#[test]
+fn direct_windows_own_all_pcm_once_including_short_stop_tail() {
+    for duration in [1_u64, 8, 9, 10, 18, 24] {
+        let rate = 16_000_u64;
+        let end = duration * rate;
+        let mut plan = CaptureWindowPlan::new("direct-window".into(), 7, rate as u32);
+        plan.set_non_overlapping_publications();
+        let mut cursor = 0;
+        while let Some(range) = plan.next_due(end, true) {
+            assert_eq!(range.sample_start, cursor);
+            assert!(range.sample_end > range.sample_start);
+            assert!(range.sample_end <= end);
+            assert_eq!(
+                plan.next_due(end + rate, true),
+                Some(range.clone()),
+                "Stop freezes capture; backpressure retains the exact offer"
+            );
+            cursor = range.sample_end;
+            assert!(plan.account(&range));
+        }
+        assert_eq!(cursor, end, "no short recording or trailing PCM lost");
+        assert!(plan.is_finished());
+    }
+}
+
+#[test]
+fn direct_windows_do_not_republish_live_pcm_at_stop() {
+    let rate = 16_000_u64;
+    let mut plan = CaptureWindowPlan::new("direct-live-stop".into(), 7, rate as u32);
+    plan.set_non_overlapping_publications();
+    let first = plan.next_due(9 * rate, false).unwrap();
+    assert_eq!((first.sample_start, first.sample_end), (0, 9 * rate));
+    assert!(plan.account(&first));
+    assert!(plan.next_due(10 * rate, false).is_none());
+    let tail = plan.next_due(10 * rate, true).unwrap();
+    assert_eq!((tail.sample_start, tail.sample_end), (9 * rate, 10 * rate));
+    assert!(plan.account(&tail));
+    assert!(plan.next_due(10 * rate, true).is_none());
+    assert!(plan.is_finished());
+}

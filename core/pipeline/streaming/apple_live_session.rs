@@ -1,11 +1,12 @@
-//! Apple live session — the only target of the normal live dispatcher.
+//! Shared live session — one capture clock with independently optional Apple
+//! recognition and ledger admission.
 //!
-//! One long-lived SFSpeech stream maps:
-//! - `partial` → `EngineEvent::Preview` (RAW — previews are not canvas yet)
-//! - phrase `final` → `EngineEvent::UtteranceFinal` (multi-seal freezed+append)
-//! - open partial on stop → sealed as a last final when non-empty
+//! Enabled Apple streams provide raw previews and phrase finals. Ledger mode
+//! admits their observations normally; direct mode publishes the selected
+//! recognizer's exact bytes without word certificates or acoustic seals.
 //!
-//! At seal, Apple and Lexicon/Light+ are separate observations of the same
+//! With ledger admission enabled, Apple and Lexicon/Light+ are separate
+//! observations of the same
 //! PCM-identified occurrence. `admit_ledger_label` offers them to
 //! `AcousticLedger::admit`; a closed occurrence passes through
 //! `AcousticLedger::seal`; `EngineEvent::LedgerMutation` and
@@ -13,27 +14,31 @@
 //! `PresentationEmitter` / `TranscriptReducer`. Neither raw Apple text nor the
 //! seal-time shaping pass owns the document.
 //!
-//! Whisper is never the primary live engine here. Local Power arms it as the
-//! required Layer 1 observer on capture-clock 9-second windows every 3 seconds.
-//! Stop drains that same plan, including at most one next-grid partial window.
-//! Original returns are shared with qualified owners through `AcousticLedger`;
-//! Conflicts may use one planner-budgeted bounded witness before their horizon
-//! closes. Stop cannot open work outside its last nine seconds or mutate a seal.
+//! Local Power arms Whisper through the explicit Layer 1 decision, never an
+//! implicit model load. Ledger mode retains capture-clock 9-second windows
+//! every 3 seconds, shared with physically qualified owners. Without Apple,
+//! Whisper can supply those owners without an Apple label prerequisite.
+//! Direct mode uses disjoint 9-second publication ranges and a final short
+//! range at Stop; it forwards raw payloads rather than stitching overlapping
+//! text or slicing translations against source-language word counts.
 //! One deliberate exception: the terminal DictationTranscriber witness. When
-//! the armed opt-in lane is available, Stop may run a bounded number of final
+//! both controls permit Apple/ledger work and the opt-in lane is available,
+//! Stop may run a bounded number of final
 //! DT decodes over the recorder-owned terminal archive, aimed only at ranges
 //! still unresolved after every retained replay (pending text recovery and
 //! material speech gaps). Its segments enter through the same occurrence
 //! admission as any producer; the whole-take DT text never replaces the
 //! document and never reopens a seal.
-//! Apple-only deliberately omits this lane; explicit off/invalid overrides in
-//! Local Power produce a typed degraded state.
+//! Apple-only never implicitly loads Whisper. If Apple is disabled and no
+//! consent-owned Layer 1 source is armed, the take closes with a no-source
+//! outcome. Explicit off/invalid Local Power overrides retain their degraded
+//! disposition.
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
 //! temp-WAV request transport for A/B comparison with live AudioBuffer delivery.
 //! It does not restore the deleted VAD/scheduler pipeline or create another
 //! transcript authority.
 //!
-//! The bridge global lock + child process live on a **dedicated OS thread**
+//! When enabled, the Apple bridge global lock and child live on a dedicated OS thread
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
 //! `EngineEvent`s out.
 
@@ -64,7 +69,7 @@ use crate::asr_session::recorder::{
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
-    CapturePathMeta, emit_capture_level_receipt,
+    CapturePathMeta, DIGITAL_ZERO_ABS, emit_capture_level_receipt,
 };
 use crate::audio::speech_input::{
     SpeechInputArchive, SpeechInputFrame, SpeechInputPlan, SpeechInputStream,
@@ -82,18 +87,26 @@ use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
-    RefuseReason, SealCoverageReceipt, SealRefusal,
+    RefuseReason, SealCoverageReceipt, SealRefusal, SilenceUnderSpan,
 };
 use crate::pipeline::contracts::{
     ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin,
     SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use crate::pipeline::speech_islands::{
+    SpeechIslandEvidence, SpeechIslandInput, measure_speech_islands,
+};
+use crate::pipeline::whisper_word_speech::{
+    SileroSpeechDistance, WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech,
+    WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words, repeat_key,
+    separation_window, window_has_energy_valley, window_has_silero_dip,
+};
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailProviderPayload, TailProviderRequest, TailRequestIdentity,
-    TailSampleRange, TimedTailSegment,
+    TailSampleRange, TailSegmentGrain, TimedTailSegment,
 };
 
 use super::layer1_window::CaptureWindowPlan;
@@ -1180,6 +1193,7 @@ pub(crate) async fn apple_stream_transcription_session(
         terminal_audio,
         mut last_window_closed,
     } = config;
+    let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();
     // One owner for this capture epoch's acoustic evidence. This async arm is
     // the writer and the blocking Apple worker below is the reader; both hold
     // the same handle, so no process-global slot and no reset entrypoint sit
@@ -1267,6 +1281,9 @@ pub(crate) async fn apple_stream_transcription_session(
             .tail_provider()
             .unwrap_or(crate::stt::tail_provider::TailProviderId::InProcess),
     );
+    // Direct publication needs the decoder payload, never a computed char patch.
+    // The existing in-flight gate and execution owner bound both job kinds.
+    let mut direct_decode_job: Option<BoxFuture<'static, Result<TailProviderPayload>>> = None;
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
     // branch's guard does not borrow what the collect branch holds mutably.
     let mut tail_patch_in_flight = false;
@@ -1289,15 +1306,16 @@ pub(crate) async fn apple_stream_transcription_session(
     // Arming the transport schedules nothing; a sealed occurrence must acquire
     // a bounded queue permit first. Apple on-device counts as an engine on its
     // own: it needs no cloud key, endpoint or account.
-    let formatter_on = live_formatter_lane_is_armed(
-        capture_turn,
-        runtime_settings.values().ai_formatting_enabled,
-        runtime_settings.formatting_policy(),
-        || {
-            crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
-                .is_none()
-        },
-    );
+    let formatter_on = seal_ledger_enabled
+        && live_formatter_lane_is_armed(
+            capture_turn,
+            runtime_settings.values().ai_formatting_enabled,
+            runtime_settings.formatting_policy(),
+            || {
+                crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
+                    .is_none()
+            },
+        );
     if !capture_turn.schedules_live_formatting() {
         info!(
             "Capture intent: the live formatter lane stays unarmed for this take, so no \
@@ -1336,7 +1354,8 @@ pub(crate) async fn apple_stream_transcription_session(
         });
     }
     let live_formatting_agent = live_formatting_agent.filter(|_| {
-        capture_turn.schedules_live_formatting()
+        seal_ledger_enabled
+            && capture_turn.schedules_live_formatting()
             && runtime_settings.values().ai_formatting_enabled
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
@@ -1617,7 +1636,7 @@ pub(crate) async fn apple_stream_transcription_session(
             // call itself runs on a retained native worker, so this loop
             // only ever schedules and collects — inference never sits on the
             // event-drain path (F1).
-            Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
+            Some(mut req) = tp_rx.recv(), if !tail_patch_in_flight => {
                 info!(
                     session = %req.provider_request.identity.range.session,
                     capture_epoch = req.provider_request.identity.range.capture_epoch,
@@ -1636,7 +1655,24 @@ pub(crate) async fn apple_stream_transcription_session(
                     admit_sample_end: req.admit_sample_end,
                     member_occurrences: req.member_occurrences.clone(),
                 };
-                tail_patch_lane.push_request(req);
+                if seal_ledger_enabled {
+                    tail_patch_lane.push_request(req);
+                } else {
+                    req.provider_request.language = tail_patch_lane.language.clone();
+                    let provider = tail_patch_lane.provider;
+                    let audio = req.audio;
+                    let request = req.provider_request;
+                    let receiver = tail_patch_lane.execution.spawn(move |control| {
+                        crate::stt::tail_provider::transcribe_selected_controlled(
+                            provider, &request, &audio, control,
+                        )
+                    });
+                    direct_decode_job = Some(Box::pin(async move {
+                        receiver?
+                            .await
+                            .map_err(|error| anyhow::anyhow!("direct decoder worker: {error}"))?
+                    }));
+                }
                 tail_patch_in_flight = true;
                 // One job is in flight; the coalesce map rides alongside so
                 // the completion can close every member seal.
@@ -1665,6 +1701,39 @@ pub(crate) async fn apple_stream_transcription_session(
                         utterance_id = rejected_id,
                         "Layer 1 completion rejected — Apple seal worker already closed"
                     );
+                }
+            }
+            result = async {
+                match direct_decode_job.as_mut() {
+                    Some(job) => job.await,
+                    None => std::future::pending().await,
+                }
+            }, if !seal_ledger_enabled && tail_patch_in_flight => {
+                direct_decode_job = None;
+                tail_patch_in_flight = false;
+                let Some(inflight) = tail_patch_lane_in_flight.take() else {
+                    warn!("Direct decoder completion has no accepted request");
+                    continue;
+                };
+                let payload = match result {
+                    Ok(payload) => Some(payload),
+                    Err(error) => {
+                        event_sink.on_event(&EngineEvent::Warning {
+                            code: "direct_decode_failed".into(),
+                            message: error.to_string(),
+                        });
+                        None
+                    }
+                };
+                let completion = TailPatchCompletion {
+                    submission_sequence: inflight.submission_sequence,
+                    utterance_id: inflight.utterance_id,
+                    request_identity: Some(inflight.request_identity),
+                    payload,
+                    member_occurrences: inflight.member_occurrences,
+                };
+                if !tail_patch_lane.forward_completion_to_worker(&tp_done_tx, completion) {
+                    warn!("Direct decoder returned after its capture worker closed");
                 }
             }
             Some(request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
@@ -1894,6 +1963,28 @@ struct AppleSealState {
     session_id: String,
     capture_epoch: u64,
     sample_rate: u32,
+    /// Immutable, independent per-capture policy; neither changes PCM ownership.
+    seal_ledger_enabled: bool,
+    apple_live_enabled: bool,
+    /// Taking this owner closes delivery exactly once and fences late results.
+    direct_end: Option<DirectTranscriptEndGuard>,
+    /// Selected once from the actually armed, consent-owned recognizer lanes.
+    direct_producer: LedgerObservationProducer,
+    direct_sample_end: u64,
+    direct_apple_epoch_has_final: bool,
+    /// Direct publications suppressed by owned Silero non-speech evidence
+    /// over a valid capture range. A diagnostic count, never a receipt.
+    direct_suppressed_no_measured_speech: u64,
+    /// Direct-lane Whisper words dropped because Silero heard no speech within
+    /// the near radius of their span. A diagnostic count; each drop is logged.
+    direct_words_over_silence: u64,
+    /// Direct-lane words dropped as unpinned copies of the word before them
+    /// (a decoder loop). A diagnostic count; each window's drop is logged.
+    direct_unpinned_repeats: u64,
+    /// Valid direct finals withheld on purpose: Silero measured the whole
+    /// range quiet, or heard no speech near any word. Completed work, so it
+    /// never withholds the direct completion that Stop waits for.
+    direct_jobs_suppressed: u64,
     preview_rev: u64,
     speech_progress: SpeechProgress,
     last_integrity: Option<SpeechIntegrity>,
@@ -2016,6 +2107,10 @@ struct AppleSealState {
     /// Measured threshold frozen into the same settings snapshot. Absence is a
     /// fail-closed W2 state: no occurrence qualifies and no text mutates.
     energy_calibration: Option<EnergyCalibration>,
+    /// Linear RMS of the calibrated existence floor for this take.
+    /// `None` means this take has no measured floor. Word admission does not
+    /// invent one from `min_energy_integral` or from the −80 dBFS hop floor.
+    existence_floor_rms: Option<f32>,
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
@@ -2175,10 +2270,118 @@ struct AdmitWindow {
     sample_end: u64,
 }
 
+/// How one completed Whisper job of the ledger-free direct lane ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectJobOutcome {
+    /// The final reached the presentation.
+    Published,
+    /// A valid final the take's own Silero evidence withheld on purpose.
+    Suppressed,
+    /// No valid final, or a publication refused for identity, range or a
+    /// closed sink.
+    Failed,
+}
+
 impl AppleSealState {
+    /// Only the session's Silero classifies speech. Both capture observers
+    /// must authenticate a complete, valid measurement before silence can
+    /// suppress a label. Energy above the ladder floor can be room noise;
+    /// it cannot overrule a measured absence of speech. Missing, partial,
+    /// foreign or invalid evidence always preserves the possible words.
+    fn direct_range_measured_quiet(&self, range: &OccurrenceIdentity) -> bool {
+        let fully_observed = |evidence: &AcousticSpeechEvidence| {
+            evidence
+                .identity()
+                .matches(&range.session, range.capture_epoch)
+                && matches!(evidence.availability(),
+                    AcousticAvailability::Observed { observed_samples }
+                        if observed_samples >= range.sample_end)
+        };
+        let Some(fusion) = &self.fusion else {
+            return false;
+        };
+        let speech = fusion.acoustic_speech_evidence();
+        let capture = self.capture_energy.session_active_speech_ranges(
+            &self.session_id,
+            self.capture_epoch,
+            self.sample_rate,
+        );
+        fully_observed(&speech)
+            && fully_observed(&capture)
+            && !speech.ranges().iter().any(|speech| {
+                speech.sample_end > range.sample_start && speech.sample_start < range.sample_end
+            })
+    }
+
+    /// Publish raw recognizer bytes without claiming word or seal authority.
+    fn publish_direct_transcript(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        observation: LedgerObservationIdentity,
+        text: String,
+        final_chunk: bool,
+    ) -> bool {
+        let range = &observation.occurrence;
+        if self.seal_ledger_enabled
+            || self.direct_end.is_none()
+            || observation.producer != self.direct_producer
+            || range.session != self.session_id
+            || range.capture_epoch != self.capture_epoch
+            || range.sample_start < self.direct_sample_end
+            || range.sample_end <= range.sample_start
+            || range.sample_end > self.audio.session_sample_end()
+        {
+            return false;
+        }
+        // The direct lane has no ledger admission to stop a decoder's
+        // near-silence hallucination; the producer-side protection is the
+        // take's own measured evidence. A fully measured quiet range is the
+        // only suppressible input — anything unmeasured keeps its words.
+        if self.direct_range_measured_quiet(range) {
+            self.direct_suppressed_no_measured_speech += 1;
+            debug!(
+                session = %self.session_id,
+                sample_start = range.sample_start,
+                sample_end = range.sample_end,
+                suppressed = self.direct_suppressed_no_measured_speech,
+                "direct transcript suppressed: owned Silero measured no speech in the valid capture range"
+            );
+            return false;
+        }
+        if final_chunk {
+            self.direct_sample_end = range.sample_end;
+        }
+        ev_tx
+            .send(EngineEvent::DirectTranscript {
+                observation,
+                text,
+                final_chunk,
+            })
+            .is_ok()
+    }
+
+    /// Count one completed direct Whisper job. Only a failed job withholds
+    /// the direct completion; a deliberate suppression owes no words.
+    fn account_direct_job(&mut self, outcome: DirectJobOutcome) {
+        match outcome {
+            DirectJobOutcome::Published => {
+                self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
+            }
+            DirectJobOutcome::Suppressed => {
+                self.direct_jobs_suppressed = self.direct_jobs_suppressed.saturating_add(1);
+            }
+            DirectJobOutcome::Failed => {
+                self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+            }
+        }
+    }
+
     /// Replace the presentation mirror from the worker's actual held words.
     /// Call only after the ledger events for the same transition were sent.
     fn publish_unadmitted_words(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled || !self.apple_live_enabled {
+            return;
+        }
         let committed = {
             let ledger = self
                 .acoustic_ledger
@@ -2302,6 +2505,11 @@ impl AppleSealState {
     }
 
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        // Without admission there is no ledger text frontier to compare with.
+        // Capture energy and Silero sideband measurements remain independent.
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let ledger = self
             .acoustic_ledger
             .lock()
@@ -2449,6 +2657,16 @@ impl AppleSealState {
             session_id,
             capture_epoch,
             sample_rate,
+            seal_ledger_enabled: true,
+            apple_live_enabled: true,
+            direct_end: None,
+            direct_producer: LedgerObservationProducer::Apple,
+            direct_sample_end: 0,
+            direct_apple_epoch_has_final: false,
+            direct_suppressed_no_measured_speech: 0,
+            direct_words_over_silence: 0,
+            direct_unpinned_repeats: 0,
+            direct_jobs_suppressed: 0,
             preview_rev: 0,
             speech_progress,
             last_integrity: None,
@@ -2524,6 +2742,7 @@ impl AppleSealState {
             reconciled_silero: BTreeSet::new(),
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
+            existence_floor_rms: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
             cloud_commit_tx: None,
             cloud_uncommitted: BTreeSet::new(),
@@ -2719,6 +2938,15 @@ impl AppleSealState {
     }
 
     fn return_cloud_live_lost(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled
+            && self.direct_producer == LedgerObservationProducer::CloudLive
+            && self.direct_end.is_some()
+        {
+            let _ = ev_tx.send(EngineEvent::NoSpeech {
+                reason: "The selected Cloud recognizer closed before capture completed.".into(),
+            });
+            drop(self.direct_end.take());
+        }
         self.cloud_commit_tx = None;
         self.cloud_commit_retry.clear();
         for occurrence in self.take_outstanding_cloud() {
@@ -2794,6 +3022,30 @@ impl AppleSealState {
             return;
         };
         self.log_cloud_final(&commit);
+        if !self.seal_ledger_enabled {
+            if let Some(index) = self
+                .cloud_inflight
+                .iter()
+                .position(|pending| pending.sample_end <= commit.sample_end)
+            {
+                self.cloud_inflight.remove(index);
+            }
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::CloudLive,
+                commit.sample_start,
+                0,
+                OccurrenceIdentity::new(
+                    &self.session_id,
+                    self.capture_epoch,
+                    commit.sample_start,
+                    commit.sample_end,
+                ),
+            );
+            if self.publish_direct_transcript(ev_tx, observation, event.text, true) {
+                self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+            }
+            return;
+        }
         let matched = self
             .cloud_inflight
             .iter()
@@ -3592,6 +3844,9 @@ impl AppleSealState {
     }
 
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let owners = self.unsealed_word_owners();
         for (id, owner) in owners {
             let seal = {
@@ -4159,6 +4414,57 @@ impl AppleSealState {
         // Any matched return, valid or not, proves the engine is past
         // cold start; later stops may hold the warm closure budget.
         self.first_whisper_window_completed = true;
+        if !self.seal_ledger_enabled {
+            let quiet_before = self.direct_suppressed_no_measured_speech;
+            let outcome = if let Some(payload) = payload.filter(|payload| {
+                payload.identity == job.request_identity
+                    && payload.validate().is_ok()
+                    && payload.evidence.source == TailEvidenceSource::Whisper
+                    && payload.evidence.stability
+                        == crate::stt::tail_provider::TailEvidenceStability::Final
+            }) {
+                self.window_plan_receipt(&job.request_identity.range, "returned");
+                let text = direct_text_heard_by_silero(self, &payload);
+                let every_word_over_silence =
+                    text.trim().is_empty() && !payload.text.trim().is_empty();
+                let range = payload.identity.range;
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    job.request_identity.request_id,
+                    0,
+                    OccurrenceIdentity::new(
+                        range.session,
+                        range.capture_epoch,
+                        range.sample_start,
+                        range.sample_end,
+                    ),
+                );
+                if every_word_over_silence
+                    && !self.direct_range_measured_quiet(&observation.occurrence)
+                {
+                    // Speech exists in the window, but Silero heard none near
+                    // any word: nothing to publish. A window with no speech at
+                    // all stays with the whole-range suppression and its count.
+                    DirectJobOutcome::Suppressed
+                } else if self.publish_direct_transcript(ev_tx, observation, text, true) {
+                    DirectJobOutcome::Published
+                } else if self.direct_suppressed_no_measured_speech > quiet_before {
+                    DirectJobOutcome::Suppressed
+                } else {
+                    DirectJobOutcome::Failed
+                }
+            } else {
+                self.window_plan_receipt(&job.request_identity.range, "failed");
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "direct_decode_unavailable".into(),
+                    message: "The accepted PCM request returned no valid final decoder payload."
+                        .into(),
+                });
+                DirectJobOutcome::Failed
+            };
+            self.account_direct_job(outcome);
+            return;
+        }
         let valid = payload.as_ref().is_some_and(|payload| {
             payload.identity == job.request_identity
                 && payload.validate().is_ok()
@@ -4276,6 +4582,15 @@ impl AppleSealState {
             }
             return;
         }
+        // `word_grain` stays on the original segments. An all-refused window
+        // must not fall through to `payload.text`.
+        let filtered_segments = payload
+            .as_ref()
+            .is_some_and(|payload| {
+                payload.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
+            })
+            .then(|| retain_whisper_words_with_own_speech(self, ev_tx, request_id, segments));
+        let segments = filtered_segments.as_deref().unwrap_or(segments);
         let owners = if word_grain {
             self.word_owners_in_window(admit_sample_start, admit_sample_end, segments)
         } else {
@@ -5269,6 +5584,9 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         sample_start: u64,
     ) {
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
         self.schedule_bounded_word_trial(ev_tx);
@@ -5632,6 +5950,29 @@ fn seal_sliced_by_silero(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     disjoint: &[TranscriptSegment],
 ) -> bool {
+    if !state.seal_ledger_enabled {
+        // Cloud still consumes the same Silero silence decisions. A transport
+        // commit needs no acoustic occurrence or admitted source-language text.
+        if state.cloud_commit_tx.is_some() {
+            // Commits are cumulative capture ranges; the latest measured
+            // silence fence subsumes earlier closes without cloning a history.
+            let close = state.fusion.as_ref().and_then(|fusion| {
+                fusion
+                    .ledger()
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .filter_map(|utterance| fusion.ledger().close_receipt(utterance.id))
+                    .find(|receipt| {
+                        receipt.cause == super::silero_fusion::UtteranceCloseCause::SilenceFence
+                    })
+            });
+            if let Some(receipt) = close {
+                state.commit_cloud_close(ev_tx, receipt);
+            }
+        }
+        return false;
+    }
     let Some(fusion) = state.fusion.as_ref() else {
         return false;
     };
@@ -6456,6 +6797,9 @@ impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
 
 /// Qualification consumes owned PCM and calibration, never a candidate label.
 fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdentity) -> bool {
+    if !state.seal_ledger_enabled {
+        return false;
+    }
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
         return false;
     }
@@ -6521,6 +6865,15 @@ fn admit_ledger_label<'a>(
         label,
         energy,
     } = admission;
+    if !state.seal_ledger_enabled
+        || (!state.apple_live_enabled
+            && matches!(
+                observation.producer,
+                LedgerObservationProducer::Apple | LedgerObservationProducer::AppleDictation
+            ))
+    {
+        return None;
+    }
     let occurrence = observation.occurrence.clone();
     let producer = observation.producer;
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
@@ -6693,6 +7046,470 @@ fn admit_ledger_label<'a>(
     Some(receipt)
 }
 
+struct WhisperWindowSpeech {
+    facts: Vec<WhisperWordSpeech>,
+    decisions: Vec<WhisperWordSpeechDecision>,
+}
+
+/// Measure each Whisper word on the capture clock and judge it.
+///
+/// Silero comes from the session fusion evidence. Energy uses the calibrated
+/// existence floor only. A missing channel stays `None`.
+fn measure_whisper_window_speech(
+    state: &AppleSealState,
+    segments: &[TimedTailSegment],
+) -> WhisperWindowSpeech {
+    let mut facts = Vec::with_capacity(segments.len());
+    let mut previous_key: Option<String> = None;
+    let mut previous_span: Option<(u64, u64)> = None;
+    for segment in segments {
+        let key = repeat_key(&segment.text);
+        let separated = match (key.as_ref(), previous_key.as_ref(), previous_span) {
+            (Some(key), Some(previous), Some(span)) if key == previous => combine_word_separation(
+                energy_valley_between(
+                    state,
+                    span,
+                    (segment.range.sample_start, segment.range.sample_end),
+                ),
+                silero_dip_between(
+                    state,
+                    span,
+                    (segment.range.sample_start, segment.range.sample_end),
+                ),
+            ),
+            _ => None,
+        };
+        facts.push(WhisperWordSpeech {
+            text: segment.text.clone(),
+            sample_start: segment.range.sample_start,
+            sample_end: segment.range.sample_end,
+            sample_rate: state.sample_rate,
+            silero_speech: silero_speech_on_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            energy_above_floor: energy_above_existence_floor(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            speech_near_span: speech_near_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            separated_from_previous: separated,
+            silero_speech_distance: silero_speech_distance(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            silence_under_span: silence_under_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+        });
+        previous_key = key;
+        previous_span = Some((segment.range.sample_start, segment.range.sample_end));
+    }
+    let decisions = judge_whisper_words(&facts);
+    if decisions
+        .iter()
+        .any(|decision| matches!(decision.verdict, WhisperWordSpeechVerdict::Unmeasured))
+    {
+        debug!(
+            words = facts.len(),
+            "whisper word speech evidence unmeasured; words kept"
+        );
+    }
+    WhisperWindowSpeech { facts, decisions }
+}
+
+/// Direct-lane text without the Whisper words that have no sound of their own.
+///
+/// The direct lane has no ledger to receipt a refusal, so every drop is
+/// logged. Two drops apply here; the other repeat rules stay with the ledger:
+/// - a pinned word Silero heard no speech near, logged with its range,
+///   silence class and distance;
+/// - an unpinned word identical to the word before it. Pinning leaves out
+///   words with no lexical duration, which is what a decoder loop writes
+///   (`to, to, to, …` all at the window's last instant), so such a copy has
+///   nothing on the capture clock to show for itself.
+///
+/// The window text is walked token by token against the pins. An unpinned
+/// word that is not a copy stays: a failed pin is not evidence of silence.
+/// When every pinned word is over silence, nothing stays. When the pins do not
+/// line up with the text, the pins alone decide, as before. The text is
+/// rejoined only when something was dropped.
+fn direct_text_heard_by_silero(
+    state: &mut AppleSealState,
+    payload: &TailProviderPayload,
+) -> String {
+    if payload.evidence.segment_grain != TailSegmentGrain::Word {
+        return payload.text.clone();
+    }
+    let window = measure_whisper_window_speech(state, &payload.segments);
+    let mut over_silence = vec![false; payload.segments.len()];
+    for ((segment, decision), dropped) in payload
+        .segments
+        .iter()
+        .zip(&window.decisions)
+        .zip(over_silence.iter_mut())
+    {
+        if let WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+            silence,
+            distance_ms,
+        }) = decision.verdict
+        {
+            *dropped = true;
+            info!(
+                session = %state.session_id,
+                sample_start = segment.range.sample_start,
+                sample_end = segment.range.sample_end,
+                silence = silence.as_str(),
+                distance_ms = ?distance_ms,
+                "direct_word_over_silence"
+            );
+        }
+    }
+    let dropped = over_silence.iter().filter(|dropped| **dropped).count();
+    state.direct_words_over_silence = state
+        .direct_words_over_silence
+        .saturating_add(dropped as u64);
+    if dropped == payload.segments.len() {
+        return String::new();
+    }
+    let Some(pins) = pin_text_tokens(&payload.text, &payload.segments) else {
+        if dropped == 0 {
+            return payload.text.clone();
+        }
+        let kept: Vec<&str> = payload
+            .segments
+            .iter()
+            .zip(&over_silence)
+            .filter(|(_, dropped)| !**dropped)
+            .map(|(segment, _)| segment.text.trim())
+            .filter(|word| !word.is_empty())
+            .collect();
+        return kept.join(" ");
+    };
+    let mut kept = Vec::with_capacity(pins.len());
+    let mut copies = 0u64;
+    let mut previous: Option<String> = None;
+    for (token, pin) in payload.text.split_whitespace().zip(pins) {
+        let key = repeat_key(token);
+        let copy = pin.is_none() && key.is_some() && key == previous;
+        previous = key;
+        match pin {
+            Some(index) if over_silence[index] => {}
+            Some(_) => kept.push(token),
+            None if copy => copies += 1,
+            None => kept.push(token),
+        }
+    }
+    if copies > 0 {
+        state.direct_unpinned_repeats = state.direct_unpinned_repeats.saturating_add(copies);
+        info!(
+            session = %state.session_id,
+            sample_start = payload.identity.range.sample_start,
+            sample_end = payload.identity.range.sample_end,
+            copies,
+            "direct_unpinned_repeats_dropped"
+        );
+    }
+    if dropped == 0 && copies == 0 {
+        return payload.text.clone();
+    }
+    kept.join(" ")
+}
+
+/// The pin each whitespace token of a window's text belongs to, in order;
+/// `None` for a token no pin covers. `None` overall when the pins' own tokens
+/// do not appear in the text in that order.
+fn pin_text_tokens(text: &str, segments: &[TimedTailSegment]) -> Option<Vec<Option<usize>>> {
+    let pinned: Vec<(&str, usize)> = segments
+        .iter()
+        .enumerate()
+        .flat_map(|(index, segment)| {
+            segment
+                .text
+                .split_whitespace()
+                .map(move |token| (token, index))
+        })
+        .collect();
+    let mut next = 0;
+    let tokens = text
+        .split_whitespace()
+        .map(|token| {
+            let pin = pinned
+                .get(next)
+                .filter(|(pinned, _)| *pinned == token)
+                .map(|&(_, index)| index);
+            if pin.is_some() {
+                next += 1;
+            }
+            pin
+        })
+        .collect();
+    (next == pinned.len()).then_some(tokens)
+}
+
+fn retain_whisper_words_with_own_speech(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    request_id: u64,
+    segments: &[TimedTailSegment],
+) -> Vec<TimedTailSegment> {
+    let window = measure_whisper_window_speech(state, segments);
+    let mut kept = Vec::with_capacity(segments.len());
+    for (index, (segment, decision)) in segments.iter().zip(&window.decisions).enumerate() {
+        let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict else {
+            kept.push(segment.clone());
+            continue;
+        };
+        let energy_silent = window
+            .facts
+            .get(index)
+            .is_some_and(|fact| fact.energy_above_floor == Some(false));
+        emit_whisper_word_speech_refusal(
+            state,
+            ev_tx,
+            LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                request_id,
+                40_000 + index as u64,
+                OccurrenceIdentity::from(&segment.range),
+            ),
+            segment.text.trim(),
+            reason,
+            energy_silent,
+        );
+    }
+    kept
+}
+
+fn emit_whisper_word_speech_refusal(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    observation: LedgerObservationIdentity,
+    label: &str,
+    reason: RefuseReason,
+    energy_silent: bool,
+) {
+    let receipt = {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if energy_silent && reason == RefuseReason::NoVoicedHopInPin {
+            ledger.note_energy_lookup_without_voiced_hop();
+        }
+        ledger.refuse_replacement(&observation, label, reason)
+    };
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: label.to_string(),
+        receipt,
+    });
+}
+
+fn combine_word_separation(energy_valley: Option<bool>, silero_dip: Option<bool>) -> Option<bool> {
+    match (energy_valley, silero_dip) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (None, None) => None,
+        // A measured channel found no split. The missing channel is not a valley.
+        _ => Some(false),
+    }
+}
+
+fn energy_above_existence_floor(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let hops = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        start,
+        end,
+        floor,
+    )?;
+    Some(!hops.is_empty())
+}
+
+fn energy_valley_between(
+    state: &AppleSealState,
+    previous: (u64, u64),
+    current: (u64, u64),
+) -> Option<bool> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let Some(window) = separation_window(previous, current) else {
+        // Measured, and the current word does not start after the previous one.
+        return state
+            .capture_energy
+            .hops_at_or_above(
+                &state.session_id,
+                state.capture_epoch,
+                current.0,
+                current.1,
+                floor,
+            )
+            .map(|_| false);
+    };
+    let voiced = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        window.0,
+        window.1,
+        floor,
+    )?;
+    Some(window_has_energy_valley(window, &voiced))
+}
+
+/// Silero and the calibrated floor on the span widened by
+/// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. Where the widened end is past
+/// what a channel has observed yet, that channel reads the span's own end.
+fn speech_near_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let pad = u64::from(state.sample_rate) * WHISPER_WORD_SPEECH_NEAR_MS / 1_000;
+    let start = start.saturating_sub(pad);
+    let wide_end = end.saturating_add(pad);
+    let silero = silero_speech_on_span(state, start, wide_end)
+        .or_else(|| silero_speech_on_span(state, start, end));
+    let energy = energy_above_existence_floor(state, start, wide_end)
+        .or_else(|| energy_above_existence_floor(state, start, end));
+    match (silero, energy) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (None, None) => None,
+        _ => Some(false),
+    }
+}
+
+/// Silero alone: how far the nearest speech it heard lies from this span.
+///
+/// Speech already heard within the radius proves nearness at once. A larger
+/// distance, or none, is a measurement only once Silero has observed the
+/// whole radius after the span: speech may still start right after it.
+fn silero_speech_distance(state: &AppleSealState, start: u64, end: u64) -> SileroSpeechDistance {
+    let Some(evidence) = observed_silero(state) else {
+        return SileroSpeechDistance::Unmeasured;
+    };
+    if span_inside_observed(&evidence, end).is_none() {
+        return SileroSpeechDistance::Unmeasured;
+    }
+    let rate = u64::from(state.sample_rate.max(1));
+    let nearest = evidence
+        .ranges()
+        .iter()
+        // Zero when the range overlaps the span; otherwise the gap on either side.
+        .map(|range| {
+            start
+                .saturating_sub(range.sample_end)
+                .max(range.sample_start.saturating_sub(end))
+        })
+        .min()
+        .map(|samples| samples.saturating_mul(1_000) / rate);
+    if let Some(distance) = nearest
+        && distance <= WHISPER_WORD_SPEECH_NEAR_MS
+    {
+        return SileroSpeechDistance::Ms(distance);
+    }
+    let mut radius_end = end.saturating_add(rate * WHISPER_WORD_SPEECH_NEAR_MS / 1_000);
+    if state.capture_stopping {
+        // No audio follows a stopped capture, so its end closes the radius.
+        radius_end = radius_end.min(state.audio.session_sample_end().max(end));
+    }
+    if span_inside_observed(&evidence, radius_end).is_none() {
+        return SileroSpeechDistance::Unmeasured;
+    }
+    nearest.map_or(
+        SileroSpeechDistance::NoSpeechHeard,
+        SileroSpeechDistance::Ms,
+    )
+}
+
+/// What the span holds on the energy clock: exact digital zero, sound under
+/// the calibrated existence floor, or sound reaching it.
+fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUnderSpan {
+    let Some(audible) = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        start,
+        end,
+        DIGITAL_ZERO_ABS,
+    ) else {
+        return SilenceUnderSpan::EnergyUnmeasured;
+    };
+    if audible.is_empty() {
+        return SilenceUnderSpan::DigitalZero;
+    }
+    match energy_above_existence_floor(state, start, end) {
+        Some(true) => SilenceUnderSpan::SoundWithoutSpeech,
+        Some(false) => SilenceUnderSpan::BelowFloor,
+        None => SilenceUnderSpan::EnergyUnmeasured,
+    }
+}
+
+fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let evidence = observed_silero(state)?;
+    span_inside_observed(&evidence, end)?;
+    Some(ranges_overlap_span(&evidence, start, end))
+}
+
+fn silero_dip_between(
+    state: &AppleSealState,
+    previous: (u64, u64),
+    current: (u64, u64),
+) -> Option<bool> {
+    let evidence = observed_silero(state)?;
+    span_inside_observed(&evidence, previous.1.max(current.1))?;
+    let previous_on = ranges_overlap_span(&evidence, previous.0, previous.1);
+    let current_on = ranges_overlap_span(&evidence, current.0, current.1);
+    let window = separation_window(previous, current);
+    let (true, true, Some(window)) = (previous_on, current_on, window) else {
+        return Some(false);
+    };
+    Some(window_has_silero_dip(
+        window,
+        evidence
+            .ranges()
+            .iter()
+            .map(|range| (range.sample_start, range.sample_end)),
+    ))
+}
+
+fn observed_silero(state: &AppleSealState) -> Option<AcousticSpeechEvidence> {
+    let evidence = state.fusion.as_ref()?.acoustic_speech_evidence();
+    if !evidence
+        .identity()
+        .matches(&state.session_id, state.capture_epoch)
+    {
+        return None;
+    }
+    match evidence.availability() {
+        AcousticAvailability::Observed { .. } => Some(evidence),
+        _ => None,
+    }
+}
+
+fn span_inside_observed(evidence: &AcousticSpeechEvidence, end: u64) -> Option<()> {
+    match evidence.availability() {
+        AcousticAvailability::Observed { observed_samples } if end <= observed_samples => Some(()),
+        _ => None,
+    }
+}
+
+fn ranges_overlap_span(evidence: &AcousticSpeechEvidence, start: u64, end: u64) -> bool {
+    evidence
+        .ranges()
+        .iter()
+        .any(|range| range.sample_start < end && start < range.sample_end)
+}
+
 /// Admit only whole-session final-pass segments that fit wholly inside one
 /// material uncovered speech range.
 ///
@@ -6740,6 +7557,8 @@ fn admit_full_pass_gap_segments(
         .iter()
         .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
         .collect::<Vec<_>>();
+    let whisper_speech = (producer == LedgerObservationProducer::Whisper)
+        .then(|| measure_whisper_window_speech(state, &full_pass.segments));
     let mut admitted = 0usize;
     let mut contained = 0usize;
 
@@ -6771,6 +7590,24 @@ fn admit_full_pass_gap_segments(
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
         );
+        if let Some(window) = whisper_speech.as_ref()
+            && let Some(decision) = window.decisions.get(generation)
+            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+        {
+            let energy_silent = window
+                .facts
+                .get(generation)
+                .is_some_and(|fact| fact.energy_above_floor == Some(false));
+            emit_whisper_word_speech_refusal(
+                state,
+                ev_tx,
+                observation,
+                label,
+                reason,
+                energy_silent,
+            );
+            continue;
+        }
         if state
             .capture_energy
             .voiced_hops_in(
@@ -6942,6 +7779,7 @@ fn publish_terminal_coverage(
     );
 
     let no_voiced_hop = energy_lookup_without_voiced_hop(state);
+    let islands = measure_islands(state);
     let mut ledger = state
         .acoustic_ledger
         .lock()
@@ -6956,11 +7794,42 @@ fn publish_terminal_coverage(
         u64::from(state.sample_rate) * SEAL_COVERAGE_INCOMPLETE_MS / 1_000,
     );
     ledger.record_seal_coverage(receipt.clone());
+    if let Some(islands) = islands {
+        ledger.record_speech_islands(islands);
+    }
     let _ = ev_tx.send(EngineEvent::SealCoverage {
         receipt: receipt.clone(),
         comparison: None,
     });
     receipt
+}
+
+/// Silero speech of this capture joined into islands, with syllable nuclei
+/// counted from the capture energy. `None` while Silero has not observed this
+/// epoch: energy alone would turn noise into islands.
+fn measure_islands(state: &AppleSealState) -> Option<SpeechIslandEvidence> {
+    let silero = observed_silero(state)?;
+    let observed_samples = silero
+        .availability()
+        .observed_samples()?
+        .min(state.audio.session_sample_end());
+    let speech: Vec<(u64, u64)> = silero
+        .ranges()
+        .iter()
+        .map(|range| (range.sample_start, range.sample_end))
+        .collect();
+    let hops = state
+        .capture_energy
+        .session_hop_levels(&state.session_id, state.capture_epoch);
+    Some(measure_speech_islands(SpeechIslandInput {
+        session_id: &state.session_id,
+        capture_epoch: state.capture_epoch,
+        sample_rate: state.sample_rate,
+        observed_samples,
+        speech: &speech,
+        hops: hops.as_deref(),
+        existence_floor_rms: state.existence_floor_rms,
+    }))
 }
 
 /// Total samples described by a set of ranges, without merging overlaps.
@@ -7006,8 +7875,32 @@ fn admit_retained_unowned_words(
     {
         return false;
     }
+    let whisper_speech = measure_whisper_window_speech(state, &payload.segments);
     let mut qualified = false;
     for (index, segment) in payload.segments.iter().enumerate() {
+        if let Some(decision) = whisper_speech.decisions.get(index)
+            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+        {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                payload.identity.request_id,
+                50_000 + index as u64,
+                OccurrenceIdentity::from(&segment.range),
+            );
+            let energy_silent = whisper_speech
+                .facts
+                .get(index)
+                .is_some_and(|fact| fact.energy_above_floor == Some(false));
+            emit_whisper_word_speech_refusal(
+                state,
+                ev_tx,
+                observation,
+                segment.text.trim(),
+                reason,
+                energy_silent,
+            );
+            continue;
+        }
         if segment.grain != TailSegmentGrain::Word
             || segment.text.split_whitespace().count() != 1
             || !decode.contains(&segment.range)
@@ -7312,6 +8205,98 @@ fn record_dictation_witness_attempts(
     }
 }
 
+/// A witness window and the targets it may debit, as capture sample ranges.
+type WitnessQuestion = ((u64, u64), Vec<(u64, u64)>);
+
+/// The per-utterance witness question over outstanding targets (sorted,
+/// deduplicated, closed PCM only): the window and the targets it may debit.
+///
+/// Only debt the retained live capture still holds can be asked. Anchoring
+/// the window on evicted debt fails the lookup on every seal and starves every
+/// newer gap behind it, so older debt waits for the terminal archive pass. The
+/// window's leading context never reaches before the retained start.
+fn live_witness_question(
+    targets: &[(u64, u64)],
+    retained_start: u64,
+    sealed_end: u64,
+    context: u64,
+    max_window: u64,
+) -> Option<WitnessQuestion> {
+    let askable: Vec<(u64, u64)> = targets
+        .iter()
+        .copied()
+        .filter(|&(start, _)| start >= retained_start)
+        .collect();
+    let first_start = askable.first()?.0;
+    let last_end = askable.last()?.1;
+    let window_start = first_start.saturating_sub(context).max(retained_start);
+    let window_end = last_end
+        .saturating_add(context)
+        .min(sealed_end)
+        .min(window_start.saturating_add(max_window));
+    (window_end > window_start).then_some(((window_start, window_end), askable))
+}
+
+/// Terminal witness windows: targets (sorted, deduplicated) clustered into
+/// disjoint windows with bounded context, ordered by the debt each covers,
+/// largest first, earlier window on a tie.
+///
+/// The request budget is bounded. Spent in time order, a long take's whole
+/// budget went to its first minutes while later holes stayed empty.
+fn terminal_witness_windows(
+    targets: &[(u64, u64)],
+    capture_samples: u64,
+    context: u64,
+    max_window: u64,
+) -> Vec<(u64, u64)> {
+    // (first target start, last target end, summed target length)
+    let mut clusters: Vec<(u64, u64, u64)> = Vec::new();
+    for &(start, end) in targets {
+        let extend = match clusters.last() {
+            Some(&(first_start, last_end, _)) => {
+                start <= last_end.saturating_add(2 * context)
+                    && end
+                        .saturating_add(context)
+                        .saturating_sub(first_start.saturating_sub(context))
+                        <= max_window
+            }
+            None => false,
+        };
+        let debt = end.saturating_sub(start);
+        if extend {
+            let cluster = clusters
+                .last_mut()
+                .expect("a cluster matched the extension check");
+            cluster.1 = cluster.1.max(end);
+            cluster.2 = cluster.2.saturating_add(debt);
+        } else {
+            clusters.push((start, end, debt));
+        }
+    }
+    let mut windows: Vec<(u64, u64, u64)> = clusters
+        .iter()
+        .map(|&(first_start, last_end, debt)| {
+            let window_start = first_start.saturating_sub(context);
+            // A single oversized target must not widen the window past the
+            // cap either: the witness reads from the target's leading edge —
+            // the lost-beginning failure mode — and whatever does not fit
+            // stays honestly unresolved instead of silently exceeding the
+            // per-request PCM bound.
+            let window_end = last_end
+                .saturating_add(context)
+                .min(capture_samples)
+                .min(window_start.saturating_add(max_window));
+            (window_start, window_end, debt)
+        })
+        .filter(|&(start, end, _)| end > start)
+        .collect();
+    windows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    windows
+        .into_iter()
+        .map(|(start, end, _)| (start, end))
+        .collect()
+}
+
 /// Per-utterance witness trigger: after a seal commits, re-ask outstanding
 /// recovery debt on closed PCM in the background. One request in flight; a
 /// target range is asked at most twice per session; the worker admits the
@@ -7360,16 +8345,18 @@ fn maybe_spawn_utterance_witness(
     }
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
     let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
-    let first_start = targets.first().expect("nonempty targets").0;
-    let last_end = targets.last().expect("nonempty targets").1;
-    let window_start = first_start.saturating_sub(context);
-    let window_end = last_end
-        .saturating_add(context)
-        .min(sealed_end)
-        .min(window_start.saturating_add(max_window));
-    if window_end <= window_start {
+    // Before Stop the live buffer is the only PCM; once the archive owns the
+    // take, every target is askable.
+    let retained_start = if state.terminal_pcm.is_some() {
+        0
+    } else {
+        state.audio.retained_start_sample()
+    };
+    let Some(((window_start, window_end), targets)) =
+        live_witness_question(&targets, retained_start, sealed_end, context, max_window)
+    else {
         return;
-    }
+    };
     let Some(window) = state.window_by_samples(window_start, window_end) else {
         let _ = ev_tx.send(EngineEvent::Warning {
             code: "dictation_witness_pcm_unavailable".into(),
@@ -7434,6 +8421,9 @@ fn drain_dictation_witness_returns(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
 ) {
+    if !state.apple_live_enabled || !state.seal_ledger_enabled {
+        return;
+    }
     while let Ok((identity, result)) = witness_done.try_recv() {
         state.dictation_witness_inflight = false;
         let payload = match result {
@@ -7552,48 +8542,9 @@ fn run_terminal_dictation_witness(
     targets.sort_unstable();
     targets.dedup();
 
-    // Cluster targets into disjoint witness windows with bounded context.
     let context = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_CONTEXT_SECS);
     let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
-    let mut clusters: Vec<(u64, u64)> = Vec::new();
-    for (start, end) in targets {
-        let extend = match clusters.last() {
-            Some(&(first_start, last_end)) => {
-                start <= last_end.saturating_add(2 * context)
-                    && end
-                        .saturating_add(context)
-                        .saturating_sub(first_start.saturating_sub(context))
-                        <= max_window
-            }
-            None => false,
-        };
-        if extend {
-            let last_end = &mut clusters
-                .last_mut()
-                .expect("a cluster matched the extension check")
-                .1;
-            *last_end = (*last_end).max(end);
-        } else {
-            clusters.push((start, end));
-        }
-    }
-    let windows: Vec<(u64, u64)> = clusters
-        .iter()
-        .map(|&(first_start, last_end)| {
-            let window_start = first_start.saturating_sub(context);
-            // A single oversized target must not widen the window past the
-            // cap either: the witness reads from the target's leading edge —
-            // the lost-beginning failure mode — and whatever does not fit
-            // stays honestly unresolved instead of silently exceeding the
-            // per-request PCM bound.
-            let window_end = last_end
-                .saturating_add(context)
-                .min(capture_samples)
-                .min(window_start.saturating_add(max_window));
-            (window_start, window_end)
-        })
-        .filter(|&(start, end)| end > start)
-        .collect();
+    let windows = terminal_witness_windows(&targets, capture_samples, context, max_window);
 
     let budget_start = Instant::now();
     let mut requests_issued = 0usize;
@@ -7688,6 +8639,9 @@ fn admit_dictation_witness_payload(
     gaps: &[TailSampleRange],
     threshold_samples: u64,
 ) {
+    if !state.apple_live_enabled || !state.seal_ledger_enabled {
+        return;
+    }
     let decode_window = (identity.range.sample_start, identity.range.sample_end);
     // Committed word-slot PCM for this capture. A witness pin may only speak
     // for PCM no admitted word already owns: a pin intersecting a committed
@@ -8516,6 +9470,20 @@ fn seal_open_partial(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     audio_secs: f32,
 ) {
+    if !state.seal_ledger_enabled {
+        if state.direct_producer == LedgerObservationProducer::Apple
+            && !state.open_partial.is_empty()
+        {
+            let text = std::mem::take(&mut state.open_partial);
+            let segments = std::mem::take(&mut state.open_partial_segments);
+            emit_direct_apple_events(
+                std::iter::once(LiveStreamEvent::PhraseFinal { text, segments }),
+                ev_tx,
+                state,
+            );
+        }
+        return;
+    }
     let open = state.open_partial.trim().to_string();
     if open.is_empty() {
         return;
@@ -8647,6 +9615,23 @@ fn drain_cloud_stop_finals(
     }
 }
 
+/// The direct owner closes delivery on success, error, panic and input loss.
+/// It is deliberately independent of ledger seals and native decoder joining.
+struct DirectTranscriptEndGuard {
+    destination: mpsc::UnboundedSender<EngineEvent>,
+    session_id: String,
+    capture_epoch: u64,
+}
+
+impl Drop for DirectTranscriptEndGuard {
+    fn drop(&mut self) {
+        let _ = self.destination.send(EngineEvent::DirectTranscriptEnd {
+            session_id: std::mem::take(&mut self.session_id),
+            capture_epoch: self.capture_epoch,
+        });
+    }
+}
+
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
     input_enhanced: bool,
@@ -8709,13 +9694,28 @@ fn apple_stream_worker(
         live_finals_admitted,
         cloud,
     } = config;
+    let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();
+    let apple_live_enabled = runtime_settings.apple_live_enabled();
+    let direct_transcript_end = (!seal_ledger_enabled).then(|| DirectTranscriptEndGuard {
+        destination: ev_tx.clone(),
+        session_id: session_id.clone(),
+        capture_epoch,
+    });
+    if !apple_live_enabled && tail_patch.is_none() && cloud.is_none() {
+        let reason = "No enabled recognizer: Apple live is disabled and the selected Layer 1 source is not armed.";
+        let _ = ev_tx.send(EngineEvent::NoSpeech {
+            reason: reason.into(),
+        });
+        let _ = last_window_closed.send(());
+        let _ = apple_finished.send(());
+        drop(live_finals_admitted);
+        anyhow::bail!(reason);
+    }
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
     let _slot_receipts = SlotReceiptSink::for_session(&session_id, capture_epoch, sample_rate);
-    // The one read of calibration truth for this session: the measured profile
-    // of the device actually opened, converted to Σx² at the actual capture
-    // rate. Any refusal keeps the worker fail-closed (no floor is invented);
-    // the controller admission gate is expected to have refused earlier, so a
-    // refusal here is logged as the anomaly it is.
+    // Retain the real device profile even when word admission is disabled.
+    // Missing calibration stays absent; only the ledger path requires it.
+    // Direct publication never invents a floor or treats this lookup as a gate.
     let energy_calibration = match capture_device_name.as_deref() {
         Some(device) => {
             match runtime_settings.energy_calibration_for_capture(device, sample_rate) {
@@ -8768,6 +9768,12 @@ fn apple_stream_worker(
             energy_calibration,
         ),
     };
+    state.seal_ledger_enabled = seal_ledger_enabled;
+    state.apple_live_enabled = apple_live_enabled;
+    state.direct_end = direct_transcript_end;
+    if !seal_ledger_enabled {
+        state.window_plan.set_non_overlapping_publications();
+    }
     state.bind_capture_energy(capture_energy);
     if let Some(device) = capture_device_name.as_deref()
         && let Ok(floor) = runtime_settings
@@ -8780,6 +9786,13 @@ fn apple_stream_worker(
             .unwrap_or_else(|error| error.into_inner())
             .bind_speech_anchor_floor(floor);
     }
+    if let Some(device) = capture_device_name.as_deref()
+        && let Ok(floor) = runtime_settings
+            .energy_calibration()
+            .existence_floor_rms_for_capture(device, sample_rate)
+    {
+        state.existence_floor_rms = Some(floor);
+    }
     if input_enhanced {
         state.recognizer_audio = Some(LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS));
         state.recognizer_archive = input_archive;
@@ -8789,18 +9802,30 @@ fn apple_stream_worker(
     state.formatter = formatter;
     let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
     state.cloud_commit_tx = cloud_commit;
+    if !seal_ledger_enabled {
+        state.direct_producer = if state.tail_patch.is_some() {
+            LedgerObservationProducer::Whisper
+        } else if state.cloud_commit_tx.is_some() {
+            LedgerObservationProducer::CloudLive
+        } else {
+            LedgerObservationProducer::Apple
+        };
+    }
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
-    // whether identity reaches the seal, not whether the VAD exists.
+    // whether identity reaches the seal, not whether the VAD exists. The
+    // ledger-free direct lane is a third consumer: opting out of admission
+    // must not switch off the take's only audio observer.
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
     // Voice Lab witness: the immutable snapshot verdict replaces the
     // construction-time env read; the return lane belongs to this worker.
-    state.dictation_witness_armed = runtime_settings.dictation_witness_armed();
+    state.dictation_witness_armed =
+        seal_ledger_enabled && apple_live_enabled && runtime_settings.dictation_witness_armed();
     state.dictation_witness_language = language.map(str::to_owned);
     let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
     state.dictation_witness_return = Some(witness_done_tx);
-    if state.fusion_seal_armed || utterance_silence_sec.is_some() {
+    if state.fusion_seal_armed || utterance_silence_sec.is_some() || !seal_ledger_enabled {
         let ingress =
             SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);
         if ingress.vad_available() {
@@ -8822,7 +9847,9 @@ fn apple_stream_worker(
     // and every epoch closes on the product silence threshold.
     let mut epoch =
         EpochGate::for_session(sample_rate, utterance_silence_sec, state.fusion.is_some());
-    let mut stream = if epoch.is_armed() {
+    let mut stream = if !apple_live_enabled {
+        None
+    } else if epoch.is_armed() {
         info!(
             utterance_silence_sec = utterance_silence_sec.unwrap_or_default(),
             preroll_secs = EPOCH_PREROLL_SECS,
@@ -8928,6 +9955,7 @@ fn apple_stream_worker(
                             emit_stream_events(events, &ev_tx, &mut state, audio_secs);
                         }
                     }
+                    EpochDecision::Wake { .. } if !state.apple_live_enabled => {}
                     EpochDecision::Wake { preroll_from } => {
                         let mut session = LiveStreamSession::open(language, sample_rate)
                             .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
@@ -9025,7 +10053,7 @@ fn apple_stream_worker(
     // no Apple text waits for finish and residue admission before its ack.
     // Later refusals and K5 visibility receipts are NOT document revisions;
     // only an accepted mutation can revise the stop document.
-    let ack_before_finish = if state.fusion_seal_armed {
+    let ack_before_finish = if state.seal_ledger_enabled && state.fusion_seal_armed {
         let has_text = state.has_stop_canvas_text();
         seal_sliced_by_silero(&mut state, &ev_tx, &[]);
         seal_open_partial(&mut state, &ev_tx, audio_secs);
@@ -9078,13 +10106,20 @@ fn apple_stream_worker(
     state.pump_capture_windows(&ev_tx);
     state.close_admission_horizon(&ev_tx, u64::MAX);
     state.publish_unadmitted_words(&ev_tx);
-    if live_finals_complete && apple_final_received && state.stop_document_settled() {
-        let _ = live_finals_admitted.send(());
+    let direct_live_finals_admitted = if state.seal_ledger_enabled {
+        if live_finals_complete && apple_final_received && state.stop_document_settled() {
+            let _ = live_finals_admitted.send(());
+        } else {
+            // Ledger-mode terminal refinement retains the existing early
+            // failure receipt so its caller can hand off the archive.
+            drop(live_finals_admitted);
+        }
+        None
     } else {
-        // Release the controller immediately into terminal settlement. Do not
-        // spend its paint timeout before supplying the archive needed to drain.
-        drop(live_finals_admitted);
-    }
+        // Direct-mode callers publish their real PCM before waiting. Keep this
+        // native receipt until its selected decoder has actually drained.
+        Some(live_finals_admitted)
+    };
 
     if let Some(receiver) = terminal_audio {
         let archive = receiver
@@ -9247,6 +10282,38 @@ fn apple_stream_worker(
 
     // Formatting is not awaited here: it consumes sealed text on the async
     // side and cannot extend Stop, hold a seal or keep the microphone open.
+
+    if !state.seal_ledger_enabled {
+        let complete = live_finals_complete
+            && (state.direct_producer != LedgerObservationProducer::Apple || apple_final_received)
+            && state.direct_end.is_some()
+            && tail_patch_timeout_residue == 0
+            && state.tail_patch_jobs_skipped == 0
+            && state.unresolved_windows == 0
+            && !state.refinement_lane_lost;
+        // Queue the typed end before the native acknowledgement. Its forwarding
+        // arm drains these events through the reducer before releasing Stop.
+        drop(state.direct_end.take());
+        if let Some(sender) = direct_live_finals_admitted
+            && complete
+        {
+            let _ = sender.send(());
+        }
+        return Ok(AppleStreamOutcome {
+            sealed: 0,
+            filtered_empty_drops: state.filtered_empty_drops,
+            lexicon_rewrites: 0,
+            lexicon_entries_custom: 0,
+            unresolved_windows: state.unresolved_windows,
+            under_commit_escalations: 0,
+            tail_patch_replacements: 0,
+            tail_patch_refusals: state.tail_patch_refusals,
+            tail_patch_jobs_applied: state.tail_patch_jobs_applied,
+            tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
+            tail_patch_timeout_residue,
+            conservation: state.session_conservation(),
+        });
+    }
 
     // Capture is over: no later Apple callback can revise a span and no further
     // Whisper window can arrive, so both double-close gates are satisfied by
@@ -9451,7 +10518,9 @@ fn publish_apple_phrase_at_valley(
     audio_secs: f32,
     consultation: Option<&mut LiveConsultationCapture>,
 ) {
-    if !state.fusion_seal_armed
+    if !state.seal_ledger_enabled
+        || !state.apple_live_enabled
+        || !state.fusion_seal_armed
         || state.open_partial.is_empty()
         || state.open_partial_segments.is_empty()
         || state.open_partial_segments.iter().any(|word| {
@@ -9576,6 +10645,13 @@ fn emit_stream_events(
     state: &mut AppleSealState,
     audio_secs: f32,
 ) {
+    if !state.apple_live_enabled {
+        return;
+    }
+    if !state.seal_ledger_enabled {
+        emit_direct_apple_events(events, ev_tx, state);
+        return;
+    }
     for event in events {
         match event {
             LiveStreamEvent::Ready => {
@@ -9758,6 +10834,134 @@ fn emit_stream_events(
         }
     }
     state.publish_unadmitted_words(ev_tx);
+}
+
+/// Raw Apple output is a producer only when the explicit Layer 1 choice left
+/// Apple primary. Otherwise it is preview-only until that primary publishes;
+/// it can never replace a Whisper translation or a consent-owned Cloud result.
+fn emit_direct_apple_events(
+    events: impl IntoIterator<Item = LiveStreamEvent>,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    state: &mut AppleSealState,
+) {
+    for event in events {
+        if state.direct_end.is_none() {
+            break;
+        }
+        match event {
+            LiveStreamEvent::Ready => state.direct_apple_epoch_has_final = false,
+            LiveStreamEvent::End => {}
+            LiveStreamEvent::Partial { text, segments } => {
+                if state.direct_producer != LedgerObservationProducer::Apple
+                    && state.direct_sample_end > 0
+                {
+                    continue;
+                }
+                state.preview_rev = state.preview_rev.saturating_add(1);
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    // Retain one raw fallback for a transport that ends without
+                    // a phrase final. No spelling, lexicon or label admission.
+                    state.open_partial.clone_from(&text);
+                    state.open_partial_segments = segments;
+                    let observation = LedgerObservationIdentity::new(
+                        LedgerObservationProducer::Apple,
+                        state.phrase_id,
+                        state.preview_rev,
+                        OccurrenceIdentity::new(
+                            &state.session_id,
+                            state.capture_epoch,
+                            state.direct_sample_end,
+                            state.audio.session_sample_end(),
+                        ),
+                    );
+                    state.publish_direct_transcript(ev_tx, observation, text, false);
+                } else if state.direct_sample_end == 0 {
+                    let _ = ev_tx.send(EngineEvent::Preview {
+                        rev: state.preview_rev,
+                        text,
+                        pin: PreviewPin::open_occurrence(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start: 0,
+                            sample_end: state.audio.session_sample_end(),
+                        }),
+                    });
+                }
+            }
+            LiveStreamEvent::Summary { ok: true, .. } if state.direct_apple_epoch_has_final => {
+                // This is the whole recognizer epoch, not another physical
+                // phrase. Any outstanding partial closes at the finish seam.
+            }
+            LiveStreamEvent::PhraseFinal { text, segments }
+            | LiveStreamEvent::Summary {
+                text,
+                segments,
+                ok: true,
+                ..
+            } => {
+                state.direct_apple_epoch_has_final = true;
+                state.open_partial.clear();
+                state.open_partial_segments.clear();
+                if state.direct_producer != LedgerObservationProducer::Apple {
+                    continue;
+                }
+                let captured_end = state.audio.session_sample_end();
+                let sample_end = segments
+                    .iter()
+                    .filter(|segment| {
+                        segment.end_ts.is_finite()
+                            && segment.start_ts.is_finite()
+                            && segment.start_ts >= 0.0
+                            && segment.end_ts > segment.start_ts
+                    })
+                    .map(|segment| {
+                        seconds_to_captured_sample(segment.end_ts, state.sample_rate, captured_end)
+                    })
+                    .max()
+                    .unwrap_or(captured_end);
+                state.preview_rev = state.preview_rev.saturating_add(1);
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    state.phrase_id,
+                    state.preview_rev,
+                    OccurrenceIdentity::new(
+                        &state.session_id,
+                        state.capture_epoch,
+                        state.direct_sample_end,
+                        sample_end,
+                    ),
+                );
+                if state.publish_direct_transcript(ev_tx, observation, text, true) {
+                    state.phrase_id = state.phrase_id.saturating_add(1);
+                }
+            }
+            LiveStreamEvent::Summary {
+                ok: false, error, ..
+            } => {
+                let message = error.unwrap_or_else(|| "Apple returned no final summary.".into());
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    let _ = ev_tx.send(EngineEvent::NoSpeech { reason: message });
+                    drop(state.direct_end.take());
+                } else {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "direct_apple_summary_failed".into(),
+                        message,
+                    });
+                }
+            }
+            LiveStreamEvent::Error { message } => {
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    let _ = ev_tx.send(EngineEvent::NoSpeech { reason: message });
+                    drop(state.direct_end.take());
+                } else {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "direct_apple_stream_failed".into(),
+                        message,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy
@@ -25448,6 +26652,250 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn silero_distance_is_the_gap_to_the_nearest_speech_once_its_radius_was_heard() {
+        let ms = |samples: u64| SileroSpeechDistance::Ms(samples * 1_000 / u64::from(RATE));
+
+        let mut lane = open("silero-distance");
+        assert_eq!(
+            silero_speech_distance(&lane.state, 44_000, 45_000),
+            SileroSpeechDistance::Unmeasured,
+            "no Silero, no distance"
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let speech = observed_silero(&lane.state).expect("observed").ranges()[0].clone();
+        let state = &lane.state;
+        assert_eq!(silero_speech_distance(state, 44_000, 45_000), ms(0));
+        assert_eq!(
+            silero_speech_distance(state, speech.sample_end + 4_800, speech.sample_end + 6_000),
+            ms(4_800),
+            "inside the radius the distance needs no further audio"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 20_000, 24_000),
+            ms(speech.sample_start - 24_000),
+            "speech after the word counts too"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 100_000, 104_000),
+            ms(100_000 - speech.sample_end)
+        );
+        assert_eq!(
+            silero_speech_distance(state, 150_000, 154_000),
+            SileroSpeechDistance::Unmeasured,
+            "the radius after the word reaches past what Silero heard"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 170_000, 172_000),
+            SileroSpeechDistance::Unmeasured,
+            "the word itself lies past what Silero heard"
+        );
+
+        lane.state.capture_stopping = true;
+        assert_eq!(
+            silero_speech_distance(&lane.state, 150_000, 154_000),
+            ms(150_000 - speech.sample_end),
+            "a stopped capture has no audio after its end, so the radius is closed"
+        );
+
+        let mut quiet = open("silero-distance-quiet");
+        record_silero(&mut quiet, 160_000, None);
+        assert_eq!(
+            silero_speech_distance(&quiet.state, 100_000, 104_000),
+            SileroSpeechDistance::NoSpeechHeard
+        );
+    }
+
+    fn direct_payload(
+        session: &str,
+        segments: Vec<TimedTailSegment>,
+        grain: TailSegmentGrain,
+    ) -> TailProviderPayload {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: 1,
+                range: crate::stt::tail_provider::TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 0,
+                    sample_end: 160_000,
+                },
+            },
+            text,
+            segments,
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: TailProviderEvidence {
+                segment_grain: grain,
+                source: TailEvidenceSource::Whisper,
+                revision: Some("direct-over-silence".into()),
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::ExactSampleRange,
+                avg_logprob: Some(-0.2),
+            },
+        }
+    }
+
+    #[test]
+    fn direct_word_text_drops_only_words_silero_heard_no_speech_near() {
+        let session = "direct-over-silence";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let speech_end = observed_silero(&lane.state).expect("observed").ranges()[0].sample_end;
+        let words = || {
+            vec![
+                word_pin(session, "mowa", 41_000, 47_000),
+                word_pin(session, "dziękuję", 120_000, 126_000),
+            ]
+        };
+
+        let payload = direct_payload(session, words(), TailSegmentGrain::Word);
+        let window = measure_whisper_window_speech(&lane.state, &payload.segments);
+        assert_eq!(
+            window.decisions[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+                silence: SilenceUnderSpan::DigitalZero,
+                distance_ms: Some(((120_000 - speech_end) * 1_000 / u64::from(RATE)) as u32),
+            }),
+            "the word over digital zero, far from speech, carries its class and distance"
+        );
+        assert!(!matches!(
+            window.decisions[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan { .. })
+        ));
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+
+        let phrase = direct_payload(session, words(), TailSegmentGrain::Phrase);
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &phrase),
+            "mowa dziękuję",
+            "a phrase-grain payload has no word spans to judge"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+    }
+
+    /// A decoder loop writes copies with no lexical duration, so pinning
+    /// leaves them out; the direct lane drops each unpinned copy of the word
+    /// before it. Spoken repeats carry their own pins and all stay.
+    #[test]
+    fn direct_word_text_drops_unpinned_copies_and_keeps_pinned_repeats() {
+        let session = "direct-unpinned-loop";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+
+        let mut looped = direct_payload(
+            session,
+            vec![
+                word_pin(session, "gdzieś", 41_000, 43_000),
+                word_pin(session, "to,", 43_500, 44_500),
+            ],
+            TailSegmentGrain::Word,
+        );
+        looped.text = " gdzieś to, to, to, to, w".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &looped),
+            "gdzieś to, w",
+            "three unpinned copies go; the unpinned word after them is no copy"
+        );
+        assert_eq!(lane.state.direct_unpinned_repeats, 3);
+        assert_eq!(lane.state.direct_words_over_silence, 0);
+
+        let counted = direct_payload(
+            session,
+            vec![
+                word_pin(session, "trzy,", 41_000, 42_500),
+                word_pin(session, "trzy,", 43_000, 44_500),
+                word_pin(session, "trzy.", 45_000, 46_500),
+            ],
+            TailSegmentGrain::Word,
+        );
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &counted),
+            counted.text,
+            "each spoken repeat has its own pin"
+        );
+        assert_eq!(lane.state.direct_unpinned_repeats, 3);
+    }
+
+    /// Dropping a word over silence no longer drops the unpinned words of the
+    /// same window; pins that do not line up with the text keep the old rule.
+    #[test]
+    fn direct_word_text_keeps_unpinned_words_beside_a_word_over_silence() {
+        let session = "direct-unpinned-kept";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let words = || {
+            vec![
+                word_pin(session, "mowa", 41_000, 47_000),
+                word_pin(session, "dziękuję", 120_000, 126_000),
+            ]
+        };
+
+        let mut payload = direct_payload(session, words(), TailSegmentGrain::Word);
+        payload.text = "mowa jakby dziękuję".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa jakby"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+
+        assert_eq!(pin_text_tokens("dziękuję mowa", &words()), None);
+        payload.text = "dziękuję mowa".into();
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa",
+            "out-of-order pins fall back to the kept pins alone"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 2);
+        assert_eq!(lane.state.direct_unpinned_repeats, 0);
+    }
+
+    /// A valid direct final withheld by the take's own Silero evidence is
+    /// complete work: Stop's direct completion requires zero skipped jobs,
+    /// so counting it as skipped turned a quiet window into CaptureStopFailure.
+    #[test]
+    fn suppressed_direct_final_is_complete_work_not_a_skipped_job() {
+        let mut lane = open("direct-suppressed-accounting");
+        lane.state.account_direct_job(DirectJobOutcome::Suppressed);
+        lane.state.account_direct_job(DirectJobOutcome::Published);
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped,
+                lane.state.direct_jobs_suppressed,
+            ),
+            (1, 0, 1)
+        );
+        lane.state.account_direct_job(DirectJobOutcome::Failed);
+        assert_eq!(
+            lane.state.tail_patch_jobs_skipped, 1,
+            "a failed job still withholds the direct completion"
+        );
+    }
+
+    #[test]
     fn speech_seen_by_both_witnesses_keeps_the_exclusive_pin_route() {
         let mut lane = open("relay-both-speech");
         record_energy(&lane, &[vec![0.2; 48_000]]);
@@ -32255,3 +33703,7 @@ mod bounded_lexical_trial_tests {
         assert!(state.word_trial_requests.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "transcription_controls_tests.rs"]
+mod transcription_controls_tests;

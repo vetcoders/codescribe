@@ -22,6 +22,7 @@ use crate::pipeline::acoustic_ledger::AcousticLedger;
 #[cfg(test)]
 use crate::pipeline::acoustic_ledger::SealCoverageReceipt;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
+use crate::pipeline::replay_card::{ReplayBuild, ReplayCard};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
     stream_log_path, transcription_session,
@@ -49,7 +50,8 @@ pub const STOP_CAPTURE_GRACE: Duration = Duration::from_millis(1500);
 /// evidence. Silero segmentation, ledger qualification, and Layer 1 tail repair
 /// remain active for every variant — only the UI-visible epoch lifecycle and
 /// the *live* paid formatter lane read this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureTurnIntent {
     /// Hotkey toggle, hold, tray, and the assistive overlay.
     ///
@@ -321,6 +323,372 @@ pub async fn replay_production_session(
     })
 }
 
+/// One session input a recorded replay resolved: what the take recorded,
+/// what the replay used, and why they differ when they do.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReplayInputReceipt {
+    pub input: &'static str,
+    /// The take's value from its card; `None` when the take has no card.
+    pub recorded: Option<String>,
+    pub effective: Option<String>,
+    /// Set whenever `effective` is not the take's own value.
+    pub reason: Option<String>,
+}
+
+/// A recorded session rebuilt for [`crate::pipeline::streaming::replay_buffered_engine_session`].
+pub struct RecordedSessionReplay {
+    /// The archive's PCM on the recorder's own i16 scale.
+    pub samples: Vec<f32>,
+    pub config: SessionConfig,
+    pub inputs: Vec<ReplayInputReceipt>,
+    /// The build that ran the take, from its card.
+    pub recorded_build: Option<ReplayBuild>,
+}
+
+impl RecordedSessionReplay {
+    /// Inputs whose replay value is not the take's own.
+    pub fn divergences(&self) -> impl Iterator<Item = &ReplayInputReceipt> {
+        self.inputs.iter().filter(|input| input.reason.is_some())
+    }
+}
+
+/// Deliberate departures from the take. A replay under a scenario answers
+/// "what would this take have given with X", not "what did it give"; every
+/// input it changes is named in the receipt with a `scenario:` reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplayScenario {
+    /// Replay as if the take had been captured on this device.
+    pub capture_device: Option<String>,
+    /// Replay with seal-ledger admission on or off.
+    pub seal_ledger: Option<bool>,
+}
+
+impl ReplayScenario {
+    /// A short session id tag, so a scenario's evidence sits beside the plain
+    /// replay's instead of replacing it. At most 12 bytes: the trail limits a
+    /// session id to 80, and a channel take's own id already uses 52.
+    fn session_tag(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(enabled) = self.seal_ledger {
+            parts.push(if enabled { "lon" } else { "loff" }.to_string());
+        }
+        if let Some(device) = &self.capture_device {
+            // FNV-1a: stable across runs and builds, unlike the std hasher.
+            let hash = device.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+                (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+            });
+            parts.push(format!("d{:06x}", hash & 0x00ff_ffff));
+        }
+        (!parts.is_empty()).then(|| parts.join("-"))
+    }
+}
+
+/// Rebuild one recorded session from its replay card and WAV archive.
+///
+/// With a card every input is the take's own: the settings record reseals the
+/// take's digest, the capture device selects the same calibration, and the WAV
+/// reaches the session as its terminal archive the way a recorder stop hands
+/// it over. Without a card (sessions recorded before cards) each input
+/// resolves to the nearest honest value and names where it came from.
+///
+/// Two lanes are never replayed: cloud Layer 1, because the card keeps no
+/// credentials, and the live formatter, whose LLM output is not reproducible.
+/// Replay parity is the reducer's Raw document. A [`ReplayScenario`] changes
+/// named inputs on purpose; its replay is a what-if, not a parity check.
+pub fn prepare_recorded_replay(
+    recorded_session: Option<&str>,
+    card: Option<&ReplayCard>,
+    wav: &std::path::Path,
+    run: u32,
+    scenario: &ReplayScenario,
+) -> Result<RecordedSessionReplay> {
+    let (samples, sample_rate, recorder_native) = load_replay_pcm(wav)?;
+    if samples.is_empty() {
+        return Err(anyhow!("replay audio contains no samples"));
+    }
+    let no_card = |what: &str| Some(format!("no replay card: {what}"));
+    let mut inputs = Vec::new();
+
+    let snapshot = match card {
+        Some(card) => crate::config::Config::runtime_snapshot_from_captured(
+            card.settings.clone().into_captured(),
+        ),
+        None => crate::config::Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?,
+    };
+    let recorded_ledger = card.map(|_| snapshot.seal_ledger_enabled());
+    let ledger_changed = scenario
+        .seal_ledger
+        .is_some_and(|enabled| enabled != snapshot.seal_ledger_enabled());
+    let runtime_settings = match scenario.seal_ledger {
+        Some(enabled) if ledger_changed => {
+            let mut captured = snapshot.captured_inputs().clone();
+            captured.user_settings.seal_ledger_enabled = Some(enabled);
+            crate::config::Config::runtime_snapshot_from_captured(captured)
+        }
+        _ => snapshot,
+    };
+    let effective_digest = runtime_settings.digest().as_str().to_string();
+    inputs.push(ReplayInputReceipt {
+        input: "settings_digest",
+        recorded: card.map(|card| card.settings_digest.clone()),
+        reason: match card {
+            None => no_card("host settings at replay time"),
+            Some(_) if ledger_changed => {
+                Some("scenario: --ledger changes the take's settings".into())
+            }
+            Some(card) => (effective_digest != card.settings_digest).then(|| {
+                "this build resolves the recorded settings to another snapshot".to_string()
+            }),
+        },
+        effective: Some(effective_digest),
+    });
+    inputs.push(ReplayInputReceipt {
+        input: "seal_ledger",
+        recorded: recorded_ledger.map(|enabled| enabled.to_string()),
+        effective: Some(runtime_settings.seal_ledger_enabled().to_string()),
+        reason: match (scenario.seal_ledger, card) {
+            (Some(_), Some(_)) if !ledger_changed => None,
+            (Some(_), _) => Some("scenario: --ledger".into()),
+            (None, Some(_)) => None,
+            (None, None) => no_card("ledger choice from host settings"),
+        },
+    });
+    let runtime_settings = Arc::new(runtime_settings);
+    let values = runtime_settings.values();
+
+    let recorded_rate = card.map(|card| card.sample_rate);
+    inputs.push(ReplayInputReceipt {
+        input: "sample_rate",
+        recorded: recorded_rate.map(|rate| rate.to_string()),
+        effective: Some(sample_rate.to_string()),
+        reason: match recorded_rate {
+            Some(rate) if rate == sample_rate => None,
+            Some(_) => Some("the audio file is not at the take's capture rate".into()),
+            None => no_card("rate from the audio file"),
+        },
+    });
+
+    let calibrated_devices = runtime_settings
+        .energy_calibration()
+        .artifact()
+        .map(|artifact| artifact.device_names())
+        .unwrap_or_default();
+    let recorded_device = card.and_then(|card| card.capture_device_name.clone());
+    let capture_device_name = match (&scenario.capture_device, card) {
+        (Some(device), _) => Some(device.clone()),
+        (None, Some(_)) => recorded_device.clone(),
+        (None, None) if calibrated_devices.len() == 1 => calibrated_devices.first().cloned(),
+        (None, None) => None,
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "capture_device",
+        reason: match (&scenario.capture_device, card, &capture_device_name) {
+            (Some(device), Some(_), _) if recorded_device.as_ref() == Some(device) => None,
+            (Some(device), _, _) if calibrated_devices.contains(device) => {
+                Some("scenario: --device".into())
+            }
+            (Some(_), _, _) => Some(
+                "scenario: --device names a device the energy calibration has no profile for"
+                    .into(),
+            ),
+            (None, Some(_), _) => None,
+            (None, None, Some(_)) => no_card("the only calibrated device"),
+            (None, None, None) => no_card("device unknown, so no occurrence can qualify"),
+        },
+        recorded: recorded_device,
+        effective: capture_device_name.clone(),
+    });
+
+    let language = match card {
+        Some(card) => card.language.clone(),
+        None => values.whisper_language.whisper_hint().map(str::to_string),
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "language",
+        recorded: card.and_then(|card| card.language.clone()),
+        effective: language.clone(),
+        reason: card
+            .is_none()
+            .then(|| "no replay card: language from settings".into()),
+    });
+
+    let capture_turn = match card {
+        Some(card) => card.capture_turn,
+        None if recorded_session.is_some_and(|session| session.starts_with("agent-channel-")) => {
+            CaptureTurnIntent::AgentChannel
+        }
+        None => CaptureTurnIntent::HandsFree,
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "capture_turn",
+        recorded: card.map(|card| format!("{:?}", card.capture_turn)),
+        effective: Some(format!("{capture_turn:?}")),
+        reason: card.is_none().then(|| {
+            "no replay card: capture turn from the session id; a composer take reads as hands-free"
+                .into()
+        }),
+    });
+
+    let utterance_silence_sec = match card {
+        Some(card) => card.utterance_silence_sec,
+        None => capture_turn.utterance_silence_sec(values.toggle_silence_sec),
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "utterance_silence_sec",
+        recorded: card.and_then(|card| card.utterance_silence_sec.map(|sec| sec.to_string())),
+        effective: utterance_silence_sec.map(|sec| sec.to_string()),
+        reason: card
+            .is_none()
+            .then(|| "no replay card: threshold from settings".into()),
+    });
+
+    let (rebuilt, _receipt) = crate::asr_session::layer1_decision(&runtime_settings);
+    let rebuilt_token = rebuilt.receipt_token();
+    let cloud = matches!(
+        rebuilt,
+        crate::asr_session::recorder::Layer1Decision::Armed(_)
+            | crate::asr_session::recorder::Layer1Decision::Cloud { .. }
+    );
+    let layer1 = if cloud {
+        crate::asr_session::recorder::Layer1Decision::Disarmed
+    } else {
+        rebuilt
+    };
+    let recorded_layer1 = card.map(|card| card.layer1.clone());
+    inputs.push(ReplayInputReceipt {
+        input: "layer1",
+        effective: Some(layer1.receipt_token()),
+        reason: if cloud {
+            Some(format!(
+                "{rebuilt_token} is not replayed: the card keeps no credentials"
+            ))
+        } else if card.is_none() {
+            no_card("decision rebuilt from host settings")
+        } else {
+            (recorded_layer1.as_deref() != Some(rebuilt_token.as_str()))
+                .then(|| "the rebuilt decision differs from the take's".into())
+        },
+        recorded: recorded_layer1,
+    });
+
+    let recorded_formatter = card.map(|card| card.live_formatter);
+    inputs.push(ReplayInputReceipt {
+        input: "live_formatter",
+        recorded: recorded_formatter.map(|bound| bound.to_string()),
+        effective: Some(false.to_string()),
+        reason: (recorded_formatter != Some(false))
+            .then(|| "the formatter is not replayed: its LLM output is outside parity".into()),
+    });
+
+    let recorded_archive = card.map(|card| card.terminal_archive);
+    let terminal_archive = recorder_native && recorded_archive != Some(false);
+    inputs.push(ReplayInputReceipt {
+        input: "terminal_archive",
+        recorded: recorded_archive.map(|handed| handed.to_string()),
+        effective: Some(terminal_archive.to_string()),
+        reason: if !recorder_native && recorded_archive != Some(false) {
+            Some("the audio file is not a recorder archive (mono 16-bit PCM)".into())
+        } else {
+            card.is_none()
+                .then(|| "no replay card: the archive is handed over like a stop".into())
+        },
+    });
+
+    // Some engine modules read env during the take instead of the settings
+    // snapshot. The card cannot carry those values until they move into it.
+    inputs.push(ReplayInputReceipt {
+        input: "engine_env",
+        recorded: None,
+        effective: None,
+        reason: Some(
+            "env read by the engine outside the settings snapshot is this process's, not the take's"
+                .into(),
+        ),
+    });
+    // Read from the data dir when the session needs them, as they are now.
+    inputs.push(ReplayInputReceipt {
+        input: "data_dir_files",
+        recorded: None,
+        effective: None,
+        reason: Some(
+            "custom lexicon, protected terms and models are read as they are now, not as the take saw them"
+                .into(),
+        ),
+    });
+
+    let tag = scenario
+        .session_tag()
+        .map(|tag| format!("-{tag}"))
+        .unwrap_or_default();
+    let session_id = recorded_session
+        .map(|session| format!("replay-{session}{tag}-r{run}"))
+        .filter(|id| crate::pipeline::trail::trail_path(std::path::Path::new("/"), id).is_ok())
+        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4()));
+    let capture_epoch = card.map_or(1, |card| card.capture_epoch);
+    let terminal_audio = terminal_archive.then(|| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(Ok(
+            crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
+                session_id: session_id.clone(),
+                capture_epoch,
+                sample_rate,
+                sample_count: samples.len() as u64,
+                path: wav.to_path_buf(),
+            },
+        ));
+        receiver
+    });
+
+    Ok(RecordedSessionReplay {
+        config: SessionConfig {
+            session_id,
+            capture_epoch,
+            runtime_settings,
+            live_formatting_agent: None,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+            sample_rate,
+            capture_device_name,
+            language,
+            stream_log_path: None,
+            utterance_silence_sec,
+            capture_turn,
+            layer1,
+            // A live take's lifecycle channel carries host events (sleep,
+            // route loss) that a replay has none of; absent equals idle.
+            lifecycle_events: None,
+            terminal_audio,
+            last_window_closed: None,
+        },
+        samples,
+        inputs,
+        recorded_build: card.map(|card| card.build.clone()),
+    })
+}
+
+/// A take archive decodes on the recorder's own i16 scale, as the terminal
+/// witness reads it (`FinalizedPcmArchive::load`), so the fed PCM and the
+/// handed-over archive are the same samples. Other audio uses the shared loader.
+fn load_replay_pcm(wav: &std::path::Path) -> Result<(Vec<f32>, u32, bool)> {
+    if let Ok(reader) = hound::WavReader::open(wav) {
+        let spec = reader.spec();
+        if spec.channels == 1
+            && spec.bits_per_sample == 16
+            && spec.sample_format == hound::SampleFormat::Int
+        {
+            let samples = reader
+                .into_samples::<i16>()
+                .map(|sample| sample.map(|sample| f32::from(sample) / f32::from(i16::MAX)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| anyhow!("decode replay archive failed"))?;
+            return Ok((samples, spec.sample_rate, true));
+        }
+    }
+    let (samples, sample_rate) =
+        crate::audio::load_audio_file(wav).map_err(|_| anyhow!("load replay audio failed"))?;
+    Ok((samples, sample_rate, false))
+}
+
 /// A recording session that transcribes while it captures.
 ///
 /// Configure the sink and any callbacks first, then call
@@ -379,6 +747,8 @@ pub struct StreamingRecorder {
     /// The existing capture owner's archive result, frozen before a closed
     /// take can leave the controller slot. Consumed by its ordinary stop tail.
     prepared_capture_archive: Option<Result<Option<std::path::PathBuf>>>,
+    /// The actual close result, retained for inline direct-mode stop callers.
+    closed_capture_was_active: Option<bool>,
     /// Retained stop owner for callers that cancel and retry inline settlement.
     terminal_take: Option<ClosedTake>,
     terminal_audio_sender: Option<
@@ -577,6 +947,7 @@ impl StreamingRecorder {
             take_archive: None,
             prepared_capture_archive: None,
             terminal_take: None,
+            closed_capture_was_active: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -616,9 +987,23 @@ impl StreamingRecorder {
             take_archive: None,
             prepared_capture_archive: None,
             terminal_take: None,
+            closed_capture_was_active: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
+    }
+
+    /// Track choices from this take's frozen generation; absent snapshots carry no opt-in.
+    pub fn seal_ledger_enabled(&self) -> bool {
+        self.runtime_settings
+            .as_ref()
+            .is_some_and(|settings| settings.seal_ledger_enabled())
+    }
+
+    pub fn apple_live_enabled(&self) -> bool {
+        self.runtime_settings
+            .as_ref()
+            .is_some_and(|settings| settings.apple_live_enabled())
     }
 
     /// Bind the next capture to one immutable settings snapshot and one ledger.
@@ -884,6 +1269,7 @@ impl StreamingRecorder {
             .as_ref()
             .map(Arc::clone)
             .ok_or_else(|| anyhow!("start_event_session requires RuntimeSettingsSnapshot"))?;
+        self.closed_capture_was_active = None;
         let acoustic_ledger = self
             .acoustic_ledger
             .as_ref()
@@ -1237,19 +1623,35 @@ impl StreamingRecorder {
     /// belongs to this stop and must be passed to finalization; `false` covers
     /// both "no stream was active" and "the capture stays open for others".
     pub async fn close_capture(&mut self) -> bool {
-        match self.release_take_pcm_feed() {
+        let was_active = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.close_capture().await
             }
             TakeFeedRelease::CaptureShared => false,
-        }
+        };
+        self.closed_capture_was_active = Some(was_active);
+        was_active
     }
 
-    /// The live session sends this only after Apple and any armed CloudLive
-    /// end finals have passed the normal event sink. No archive, Whisper or
-    /// formatter completion is part of this signal. The controller owns the
-    /// single stop-instant deadline; lane loss closes the channel without an ack.
+    /// Ledger mode acknowledges painted Apple/Cloud end finals as before.
+    /// Direct mode first hands off real terminal PCM, then waits for its selected
+    /// recognizer's drain. Neither mode waits for formatting. The controller
+    /// owns its stop deadline; failure closes the channel without a success ack.
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        if self
+            .runtime_settings
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.seal_ledger_enabled())
+        {
+            if self.terminal_take.is_none()
+                && let Some(was_active) = self.closed_capture_was_active
+            {
+                self.terminal_take = Some(self.detach_closed_take(was_active));
+            }
+            if let Some(take) = self.terminal_take.as_mut() {
+                return take.wait_live_finals_admitted().await;
+            }
+        }
         let Some(receiver) = self.last_window_closed.as_mut() else {
             return false;
         };
@@ -1270,6 +1672,7 @@ impl StreamingRecorder {
         let result = take.finish().await;
         if take.is_settled() {
             self.terminal_take = None;
+            self.closed_capture_was_active = None;
         }
         result
     }
@@ -1278,6 +1681,7 @@ impl StreamingRecorder {
     /// The physical recorder and all channel interests stay here. The caller
     /// must first close_capture; releasing its feed fences archive PCM/count.
     pub fn detach_closed_take(&mut self, was_active: bool) -> ClosedTake {
+        self.closed_capture_was_active = None;
         if let Some(take) = self.terminal_take.take() {
             return take;
         }
@@ -1318,6 +1722,11 @@ impl StreamingRecorder {
             capture_epoch: self.capture_epoch,
             sample_rate: self.sample_rate,
             seal_lane_armed: self.seal_lane_armed(),
+            direct_transcript: self
+                .runtime_settings
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.seal_ledger_enabled()),
+            direct_decoder_complete: None,
             captured_samples: Arc::clone(&self.captured_samples),
             terminal_audio_sender: self.terminal_audio_sender.take(),
             lifecycle_handle: self.lifecycle_handle.take(),
@@ -1486,6 +1895,10 @@ pub struct ClosedTake {
     capture_epoch: u64,
     sample_rate: u32,
     seal_lane_armed: bool,
+    /// Projected once from this take's original immutable settings snapshot.
+    direct_transcript: bool,
+    /// Actual native completion receipt, retained across canceled stop waiters.
+    direct_decoder_complete: Option<bool>,
     captured_samples: Arc<AtomicU64>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
@@ -1523,17 +1936,28 @@ impl ClosedTake {
     }
 
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        if self.direct_transcript
+            && let Some(complete) = self.direct_decoder_complete
+        {
+            return complete;
+        }
+        if self.direct_transcript {
+            self.prepare_terminal_audio().await;
+        }
         let Some(receiver) = self.last_window_closed.as_mut() else {
             return false;
         };
         let admitted = receiver.await.is_ok();
         self.last_window_closed = None;
+        if self.direct_transcript {
+            self.direct_decoder_complete = Some(admitted);
+        }
         admitted
     }
 
-    /// Save the exact take PCM before terminal refinement and wait for the
-    /// original task/reducer. Blocking disk work never holds capture's mutex.
-    pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+    /// Publish the real archive before direct decoder acknowledgement without
+    /// joining its producer. Retained disk work makes cancellation retry-safe.
+    async fn prepare_terminal_audio(&mut self) {
         if self.archive_worker.is_none()
             && (self.archive.is_some() || self.physical_archive.is_some())
         {
@@ -1625,6 +2049,12 @@ impl ClosedTake {
             };
             let _ = sender.send(receipt);
         }
+    }
+
+    /// Save the exact take PCM before terminal refinement and wait for the
+    /// original task/reducer. Blocking disk work never holds capture's mutex.
+    pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+        self.prepare_terminal_audio().await;
         self.lifecycle_handle = None;
 
         // 2. Wait for worker to finish processing remaining chunks
@@ -1638,6 +2068,8 @@ impl ClosedTake {
                 .err();
             self.transcription_handle = None;
         }
+        let direct_decoder_complete =
+            self.direct_transcript && self.wait_live_finals_admitted().await;
 
         // 3. Fence the existing FIFO after the producer has joined. Neither
         // unchanged bytes nor an expired bound proves that publication ended.
@@ -1732,6 +2164,23 @@ impl ClosedTake {
                 cause,
                 task_failure,
             }));
+        }
+
+        // Direct output owes a real producer completion and the publication
+        // fence above, never an acoustic word/seal receipt. Do not turn source
+        // loss, canceled work or a missing native receipt into a successful take.
+        if self.direct_transcript {
+            return if direct_decoder_complete {
+                Ok((transcript, audio_path))
+            } else {
+                Err(anyhow::Error::new(CaptureStopFailure {
+                    session_id: self.authority_session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    audio_path,
+                    cause: anyhow!("direct recognizer completion unavailable or failed"),
+                    task_failure: None,
+                }))
+            };
         }
 
         // A gesture shorter than one complete speech window can contain PCM
@@ -3539,6 +3988,121 @@ mod capture_stop_failure_tests {
     }
 
     #[tokio::test]
+    async fn direct_stop_supplies_archive_before_completion_and_survives_cancelled_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("direct-tail.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.sample_rate = 16_000;
+        *recorder.transcript_buffer.lock().await = "English survives Stop".into();
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
+        let (archive_tx, archive_rx) = std::sync::mpsc::channel();
+        recorder.terminal_audio_sender = Some(archive_tx);
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        let mut closed = recorder.detach_take_state(Some(Ok(Some(path.clone()))), None, None);
+        closed.direct_transcript = true;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                closed.wait_live_finals_admitted()
+            )
+            .await
+            .is_err()
+        );
+        let archive = archive_rx
+            .try_recv()
+            .expect("archive must precede completion")
+            .unwrap();
+        assert_eq!(
+            (
+                archive.session_id.as_str(),
+                archive.capture_epoch,
+                archive.sample_count
+            ),
+            ("capture-owner", 7, 4)
+        );
+        assert_eq!(archive.path, path);
+        assert!(
+            closed.last_window_closed.is_some(),
+            "cancellation retains completion receiver"
+        );
+        assert!(closed.direct_decoder_complete.is_none());
+        done_tx.send(()).unwrap();
+        assert!(closed.wait_live_finals_admitted().await);
+        assert!(
+            closed.wait_live_finals_admitted().await,
+            "cached completion survives its consumer"
+        );
+        assert!(
+            closed.acoustic_ledger.is_none(),
+            "no invented ledger authority"
+        );
+        assert_eq!(
+            closed.finish().await.unwrap(),
+            ("English survives Stop".into(), Some(path.clone()))
+        );
+        assert!(closed.is_settled());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert!(archive_rx.try_recv().is_err(), "one archive publication");
+    }
+
+    #[tokio::test]
+    async fn direct_stop_requires_native_completion_and_preserves_failed_take_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("failed-direct-tail.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        *recorder.transcript_buffer.lock().await = "recoverable English".into();
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        drop(done_tx);
+        let mut closed = recorder.detach_take_state(Some(Ok(Some(path.clone()))), None, None);
+        closed.direct_transcript = true;
+        let error = closed.finish().await.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert_eq!(failure.audio_path.as_ref(), Some(&path));
+        assert!(
+            failure
+                .cause
+                .to_string()
+                .contains("direct recognizer completion")
+        );
+        assert_eq!(
+            &*closed.transcript_buffer.lock().await,
+            "recoverable English"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn direct_stop_waits_for_original_presentation_after_decoder_completion() {
+        let mut recorder = recorder();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
+            entered: entered.clone(),
+            release: release.clone(),
+        })));
+        let text = recorder.transcript_buffer.clone();
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        done_tx.send(()).unwrap();
+        let mut closed = recorder.detach_take_state(Some(Ok(None)), None, None);
+        closed.direct_transcript = true;
+        let task = tokio::spawn(async move { closed.finish().await });
+        entered.notified().await;
+        assert!(
+            !task.is_finished(),
+            "native completion is not presentation completion"
+        );
+        *text.lock().await = "final English".into();
+        release.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), ("final English".into(), None));
+    }
+
+    #[tokio::test]
     async fn short_capture_without_ledger_speech_ends_cleanly() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("take.wav");
@@ -4297,5 +4861,196 @@ mod capture_stop_failure_tests {
                 .is_some_and(|take| take.event_sink.is_some())
         );
         assert_eq!(std::fs::read(path).unwrap(), wav);
+    }
+}
+
+#[cfg(test)]
+mod recorded_replay_tests {
+    use super::*;
+    use crate::config::{CapturedRuntimeInputs, Config};
+
+    const SESSION: &str = "agent-channel-3-0123456789";
+
+    fn write_mono_archive(path: &std::path::Path, rate: u32, frames: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for index in 0..frames {
+            writer
+                .write_sample(((index % 200) as i16 - 100) * 50)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    /// A channel take's card, round-tripped through its JSON form.
+    fn channel_card(root: &std::path::Path) -> ReplayCard {
+        let snapshot = Arc::new(Config::runtime_snapshot_from_captured(
+            CapturedRuntimeInputs::defaults_at(root.to_path_buf(), 7),
+        ));
+        let (layer1, _) = crate::asr_session::layer1_decision(&snapshot);
+        let (_archive_sender, archive) = std::sync::mpsc::channel();
+        let config = SessionConfig {
+            session_id: SESSION.into(),
+            capture_epoch: 1,
+            runtime_settings: snapshot,
+            live_formatting_agent: None,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+            sample_rate: 16_000,
+            capture_device_name: Some("MacBook Pro Microphone".into()),
+            language: Some("pl".into()),
+            stream_log_path: None,
+            utterance_silence_sec: Some(2.0),
+            capture_turn: CaptureTurnIntent::AgentChannel,
+            layer1,
+            lifecycle_events: None,
+            terminal_audio: Some(archive),
+            last_window_closed: None,
+        };
+        let json = serde_json::to_vec(&ReplayCard::of_session(&config)).unwrap();
+        serde_json::from_slice(&json).unwrap()
+    }
+
+    #[test]
+    fn a_carded_take_replays_with_its_own_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+
+        let replay = prepare_recorded_replay(
+            Some(SESSION),
+            Some(&card),
+            &wav,
+            2,
+            &ReplayScenario::default(),
+        )
+        .unwrap();
+
+        let config = &replay.config;
+        assert_eq!(config.session_id, format!("replay-{SESSION}-r2"));
+        assert_eq!(
+            config.capture_device_name.as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(config.capture_turn, CaptureTurnIntent::AgentChannel);
+        assert_eq!(config.language.as_deref(), Some("pl"));
+        assert_eq!(config.utterance_silence_sec, Some(2.0));
+        assert_eq!(
+            config.runtime_settings.digest().as_str(),
+            card.settings_digest
+        );
+        assert_eq!(replay.samples.len(), 1_600);
+        let archive = config
+            .terminal_audio
+            .as_ref()
+            .expect("the archive is handed over like a stop")
+            .try_recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.session_id, config.session_id);
+        assert_eq!(archive.sample_count, 1_600);
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(diverged, ["engine_env", "data_dir_files"]);
+    }
+
+    #[test]
+    fn a_take_without_a_card_names_where_every_input_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+
+        let replay =
+            prepare_recorded_replay(Some(SESSION), None, &wav, 1, &ReplayScenario::default())
+                .unwrap();
+
+        assert_eq!(replay.config.capture_turn, CaptureTurnIntent::AgentChannel);
+        assert!(replay.config.terminal_audio.is_some());
+        for input in &replay.inputs {
+            assert!(input.recorded.is_none(), "{}", input.input);
+            assert!(input.reason.is_some(), "{} names no source", input.input);
+        }
+    }
+
+    #[test]
+    fn a_scenario_names_every_input_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+        let scenario = ReplayScenario {
+            capture_device: Some("USB Mic (2)".into()),
+            seal_ledger: Some(true),
+        };
+
+        let replay =
+            prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 1, &scenario).unwrap();
+
+        let config = &replay.config;
+        let tag = config
+            .session_id
+            .strip_prefix(&format!("replay-{SESSION}-lon-d"))
+            .and_then(|rest| rest.strip_suffix("-r1"))
+            .expect("the scenario tag sits between the take's id and the run");
+        assert_eq!(tag.len(), 6);
+        assert!(config.runtime_settings.seal_ledger_enabled());
+        assert_eq!(config.capture_device_name.as_deref(), Some("USB Mic (2)"));
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(
+            diverged,
+            [
+                "settings_digest",
+                "seal_ledger",
+                "capture_device",
+                "engine_env",
+                "data_dir_files"
+            ]
+        );
+        let device = replay
+            .inputs
+            .iter()
+            .find(|input| input.input == "capture_device")
+            .unwrap();
+        assert!(device.reason.as_deref().unwrap().contains("no profile"));
+    }
+
+    #[test]
+    fn a_scenario_id_fits_the_trail_limit_for_a_channel_take() {
+        let scenario = ReplayScenario {
+            capture_device: Some("A very long external USB microphone name".into()),
+            seal_ledger: Some(false),
+        };
+        let session = "agent-channel-0-0b47f573-d80d-4d87-8f26-7faaf85955cc";
+        let id = format!("replay-{session}-{}-r20", scenario.session_tag().unwrap());
+        assert!(
+            crate::pipeline::trail::trail_path(std::path::Path::new("/"), &id).is_ok(),
+            "{id}"
+        );
+    }
+
+    #[test]
+    fn a_scenario_that_matches_the_take_is_no_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+        let scenario = ReplayScenario {
+            capture_device: Some("MacBook Pro Microphone".into()),
+            seal_ledger: Some(false),
+        };
+
+        let replay =
+            prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 1, &scenario).unwrap();
+
+        assert_eq!(
+            replay.config.runtime_settings.digest().as_str(),
+            card.settings_digest
+        );
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(diverged, ["engine_env", "data_dir_files"]);
     }
 }

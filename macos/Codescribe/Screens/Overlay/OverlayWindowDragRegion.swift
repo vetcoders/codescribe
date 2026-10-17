@@ -47,21 +47,25 @@ final class OverlayWindowDragRegionView: NSView {
 /// Geometry and mounted identity only; this background never intercepts clicks.
 /// Cursor decisions stay with the existing FloatingOverlayPanel owner.
 struct OverlayMenuCursorRegion: NSViewRepresentable {
+  var cursor: NSCursor = .arrow
   var onHover: ((Bool) -> Void)? = nil
 
   func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
     let view = OverlayMenuCursorRegionView()
+    view.cursor = cursor
     view.onHover = onHover
     return view
   }
 
   func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {
+    nsView.cursor = cursor
     nsView.onHover = onHover
   }
 }
 
 final class OverlayMenuCursorRegionView: NSView {
   private weak var owner: FloatingOverlayPanel?
+  var cursor: NSCursor = .arrow
   var onHover: ((Bool) -> Void)?
   private(set) var hovered = false
   private var hoverArea: NSTrackingArea?

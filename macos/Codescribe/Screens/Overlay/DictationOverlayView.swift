@@ -324,6 +324,8 @@ struct DictationOverlayView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.openWindow) private var openWindow
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
+  @AppStorage("Overlay.agentDrawerWidth.v1") private var preferredAgentDrawerWidth = 300.0
+  @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
   @State private var closeDotHovered = false
   @Namespace private var bottomChromeNamespace
   @State private var actions = OverlayActionsPresentation()
@@ -446,10 +448,14 @@ struct DictationOverlayView: View {
         let columnShown =
           docked && !state.isCollapsed
           && (state.selectedConversation != nil || state.showsAgentMonitor)
+        let drawerWidth = OverlayAgentDrawerLayout.drawerWidth(
+          textScale: textScale,
+          preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
+          windowWidth: geometry.size.width)
         let canvasWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? OverlayAgentDrawerLayout.drawerWidth(textScale: textScale) : 0))
+            - (columnShown ? drawerWidth : 0))
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -543,9 +549,12 @@ struct DictationOverlayView: View {
           // 2026-10-16). Below the threshold the name pill opens the pill
           // stack instead. Esc on the transcription gives the width back.
           if columnShown {
-            agentDrawerColumn(maximumHeight: geometry.size.height)
-              .transition(.move(edge: .trailing).combined(with: .opacity))
-              .onExitCommand { state.hideAgentSidebar() }
+            agentDrawerColumn(
+              maximumHeight: geometry.size.height, width: drawerWidth,
+              windowWidth: geometry.size.width
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .onExitCommand { state.hideAgentSidebar() }
           }
         }
         // Animate the column's arrival, never the bare docked flag: that flag
@@ -555,6 +564,10 @@ struct DictationOverlayView: View {
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
+          if !docked { agentDrawerResize = nil }
+        }
+        .onChange(of: columnShown) { _, shown in
+          if !shown { agentDrawerResize = nil }
         }
       }
       VStack(spacing: 0) {
@@ -757,9 +770,11 @@ struct DictationOverlayView: View {
   }
 
   /// The docked roster column (wide windows): full height under the header,
-  /// 300 × scale wide, hairline on its left edge, never overlaying the
+  /// user-sized, with a draggable left edge, never overlaying the
   /// conversation. The name pill focuses the selected row via the revision.
-  private func agentDrawerColumn(maximumHeight: CGFloat) -> some View {
+  private func agentDrawerColumn(
+    maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
+  ) -> some View {
     channelStatusView.monitorBody(
       maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
       focusRevision: state.agentDrawerFocusRevision
@@ -767,16 +782,12 @@ struct DictationOverlayView: View {
     .padding(.top, headerHeight + 8)
     .padding(.horizontal, 10)
     .padding(.bottom, 16)
-    .frame(width: OverlayAgentDrawerLayout.drawerWidth(textScale: textScale))
+    .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
-      Rectangle()
-        .fill(palette.border.color)
-        .frame(width: 1 / max(displayScale, 1))
-        .padding(.top, headerHeight)
-        .accessibilityHidden(true)
+      agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
     }
     .accessibilityIdentifier("overlay-agent-sidebar")
     .background {
@@ -787,6 +798,49 @@ struct DictationOverlayView: View {
       }
       .allowsHitTesting(false)
     }
+  }
+
+  private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
+    Rectangle()
+      .fill(palette.border.color)
+      .frame(width: 1 / max(displayScale, 1))
+      .frame(width: 10, alignment: .leading)
+      .contentShape(Rectangle())
+      .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      .gesture(
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("overlay-canvas"))
+          .onChanged { value in
+            let start = agentDrawerResize?.start ?? width / textScale
+            agentDrawerResize = (start, start - value.translation.width / textScale)
+          }
+          .onEnded { value in
+            let start = agentDrawerResize?.start ?? width / textScale
+            preferredAgentDrawerWidth =
+              OverlayAgentDrawerLayout.drawerWidth(
+                textScale: textScale,
+                preferredWidth: start - value.translation.width / textScale,
+                windowWidth: windowWidth) / textScale
+            agentDrawerResize = nil
+          }
+      )
+      .accessibilityElement()
+      .accessibilityLabel(String(localized: "Resize agents sidebar"))
+      .accessibilityValue(Text(verbatim: "\(Int(width))"))
+      .accessibilityAdjustableAction { direction in
+        let step: CGFloat
+        switch direction {
+        case .increment: step = 20
+        case .decrement: step = -20
+        @unknown default: return
+        }
+        preferredAgentDrawerWidth =
+          OverlayAgentDrawerLayout.drawerWidth(
+            textScale: textScale, preferredWidth: width / textScale + step,
+            windowWidth: windowWidth) / textScale
+      }
+      .accessibilityIdentifier("overlay-agent-sidebar-resize")
+      .padding(.top, headerHeight)
+      .onDisappear { agentDrawerResize = nil }
   }
 
   // MARK: Header
@@ -1036,6 +1090,8 @@ struct DictationOverlayView: View {
     view.archivedOwners = state.archivedAgentOwners
     view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
     view.archiveError = state.agentArchiveError
+    view.gestureFocusID = state.agentGestureFocusID
+    view.onGestureHover = { state.hoverAgentGestureTarget($0) }
     return view
   }
 

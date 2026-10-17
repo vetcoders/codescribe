@@ -271,7 +271,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     var projection = OverlayChannelDelivery.Bus()
-    let path = "/Users/founder/.codescribe/assets/inline_0549d6ff.png"
+    let path = "/Users/tester/.codescribe/assets/inline_0549d6ff.png"
     let text =
       "Dodaj do listy\n[attachment] w prozie zostaje, to tekst Foundera\n"
       + "[attachment] inline_0549d6ff.png (image/png, 31113 bytes): \(path)"
@@ -758,6 +758,92 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(settledBuilds, 3)
     let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
     XCTAssertEqual(restored, acknowledged)
+  }
+
+  func testReaderRetainsTheExactBroadcastSkipAcrossCheckpointRestore() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var row = fixture.seal(1)
+    row["audience"] = "*"
+    row["channel"] = "0"
+    try fixture.append(row)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil)
+    let initial = try await reader.readSnapshot()
+    let recipient = try XCTUnwrap(
+      initial.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
+    let delivery = try XCTUnwrap(recipient.deliveryID)
+    let marker = fixture.root.appendingPathComponent(
+      "broadcast-skipped/\(Fixture.leaseID)/\(delivery).json")
+    try FileManager.default.createDirectory(
+      at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var skip = fixture.recipient()
+    skip.merge([
+      "schema": "codescribe.broadcast-policy.v1", "kind": "broadcast_skipped",
+      "delivery_id": delivery, "origin_channel": "0", "policy": "off",
+    ]) { _, new in new }
+    try fixture.write(skip, to: marker)
+    for snapshot in [
+      try await reader.readSnapshot(checkpointTime: .now.advanced(by: .seconds(31))),
+      try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil).readSnapshot(),
+    ] {
+      let observed = try XCTUnwrap(
+        snapshot.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
+      XCTAssertEqual(observed.broadcastSkipped, true)
+      XCTAssertFalse(observed.acknowledged, "Skipped is not an agent read receipt")
+      XCTAssertEqual(
+        OverlayConversationView.receiptStatusText(for: observed), "Skipped: off channel 0")
+    }
+  }
+
+  func testForeignSkipFileCannotHideAValidAcknowledgment() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var row = fixture.seal(1)
+    row["audience"] = "*"
+    row["channel"] = "0"
+    try fixture.append(row)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil)
+    let initial = try await reader.readSnapshot()
+    let message = try XCTUnwrap(initial.conversations.first { $0.id == "0" }?.messages.first)
+    let recipient = try XCTUnwrap(message.recipients.first)
+    let delivery = try XCTUnwrap(recipient.deliveryID)
+    let skip = fixture.root.appendingPathComponent(
+      "broadcast-skipped/\(Fixture.leaseID)/\(delivery).json")
+    try FileManager.default.createDirectory(
+      at: skip.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fixture.write(
+      [
+        "schema": "codescribe.broadcast-policy.v1", "kind": "broadcast_skipped",
+        "delivery_id": delivery, "lease_id": String(repeating: "f", count: 32),
+        "provider": "codex", "provider_session_id": "foreign-session",
+        "origin_channel": "0", "policy": "off", "bus": fixture.bus.path,
+      ], to: skip)
+    let acknowledgment = fixture.root.appendingPathComponent(
+      "acknowledgments/\(Fixture.leaseID)/\(delivery).json")
+    try FileManager.default.createDirectory(
+      at: acknowledgment.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var envelope = fixture.recipient()
+    envelope.merge([
+      "kind": "seal", "delivery_id": delivery, "session_id": "take-a",
+      "utterance_id": "u1", "sequence": 1, "audience": "*",
+    ]) { _, new in new }
+    try fixture.write(
+      [
+        "lease_id": Fixture.leaseID, "delivery_id": delivery,
+        "bus": fixture.bus.path, "envelope": envelope,
+      ], to: acknowledgment)
+    let withForeignSkip = try await reader.readSnapshot()
+    let observed = try XCTUnwrap(
+      withForeignSkip.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
+    XCTAssertNotEqual(observed.broadcastSkipped, true)
+    XCTAssertTrue(observed.acknowledged, "An ignored foreign skip cannot suppress a valid ACK")
+    // Positive control: the same reader and same valid ACK with only the
+    // foreign skip removed must have the identical read disposition.
+    try FileManager.default.removeItem(at: skip)
+    let withoutForeignSkip = try await reader.readSnapshot()
+    XCTAssertEqual(
+      withoutForeignSkip.conversations.first { $0.id == "0" }?
+        .messages.first?.recipients.first?.acknowledged, true)
   }
 
   func testAcknowledgedDeliveryStopsPollingWithoutAProviderAcceptanceReceipt() throws {

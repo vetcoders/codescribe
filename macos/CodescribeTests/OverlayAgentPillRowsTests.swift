@@ -325,7 +325,7 @@ final class OverlayAgentPillRowsTests: XCTestCase {
   }
 
   func testExpandedRowMirrorsTheHeaderWithControlsBeforeThePill() throws {
-    // Klaudiusz (host), 2026-10-17 01:41–01:43, after Maciej's placement
+    // 2026-10-17, after Maciej's placement
     // question: the header's cluster [microphone + speaker][name pill] and
     // the stack's mount both sit trailing inside the same horizontal padding,
     // so no measuring is needed. The row is the header's mirror image —

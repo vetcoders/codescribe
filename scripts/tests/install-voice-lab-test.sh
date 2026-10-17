@@ -151,71 +151,80 @@ exit 99
 EOF
 rm -f "$fake_git/gh"
 
-# Sibling-shaped checkout via CODESCRIBE_VOICE_LAB_SRC runs setup.sh.
-pack="$WORKDIR/pack"
-mkdir -p "$pack/examples/operator/keys"
-printf 'x' >"$pack/server.py"
-cat >"$pack/examples/operator/settings.json" <<'JSON'
-{
-  "schema_version": 3,
-  "speech": {
-    "engine": {
-      "cloud_transcription_endpoint": "wss://api.libraxis.cloud/v1/audio/transcribe",
-      "asr_mode": "local_power"
-    }
-  }
-}
-JSON
-cat >"$pack/setup.sh" <<EOF
+# A checkout is accepted only as a Git root with the org origin and live
+# access. This stub answers those probes for every path, like an operator
+# machine with access.
+cat >"$fake_git/git" <<EOF
+#!/bin/sh
+dir="\$PWD"
+if [ "\$1" = "-C" ]; then dir="\$2"; shift 2; fi
+case "\$1 \${2:-}" in
+  "rev-parse --show-toplevel") (cd "\$dir" && pwd) ;;
+  "remote get-url") echo "https://github.com/vetcoders/voice-lab.git" ;;
+  "ls-remote "*) exit 0 ;;
+  "fetch "*|"checkout "*|"merge "*) echo "git \$* in \$dir" >> "$WORKDIR/git.log" ;;
+  *) echo "unexpected git \$*" >&2; exit 99 ;;
+esac
+EOF
+
+make_pack() {
+  local pack="$1" label="$2"
+  mkdir -p "$pack/examples/operator/keys" "$pack/.git"
+  printf 'x' >"$pack/server.py"
+  printf '%s\n' '{"speech":{"engine":{"asr_mode":"local_power"}}}' \
+    >"$pack/examples/operator/settings.json"
+  cat >"$pack/setup.sh" <<EOF
 #!/bin/sh
 set -eu
 mkdir -p "\$HOME/.codescribe/voice-lab" "\$HOME/.codescribe/bin" "\$HOME/.vibecrafted/secrets/codescribe"
-echo setup-ok > "\$HOME/.codescribe/voice-lab/server.py"
+echo ${label} > "\$HOME/.codescribe/voice-lab/server.py"
 echo '#!/bin/sh' > "\$HOME/.codescribe/bin/voice-lab"
 chmod 755 "\$HOME/.codescribe/bin/voice-lab"
 echo sparkle > "\$HOME/.vibecrafted/secrets/codescribe/sparkle-public.b64"
 echo license > "\$HOME/.vibecrafted/secrets/codescribe/license-public.hex"
-echo ran-setup
+echo ran-setup-${label}
 EOF
-chmod +x "$pack/setup.sh"
+  chmod +x "$pack/setup.sh"
+}
 
+# A named checkout via CODESCRIBE_VOICE_LAB_SRC runs its setup.sh. App settings
+# are merged by Codescribe at launch, so the installer never writes them.
+pack="$WORKDIR/pack"
+make_pack "$pack" named
 out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
-[[ -f "$HOME/.codescribe/voice-lab/server.py" ]] || { echo "runtime not installed" >&2; exit 1; }
+[[ "$(cat "$HOME/.codescribe/voice-lab/server.py")" == named ]] || { echo "runtime not installed: $out" >&2; exit 1; }
 [[ -x "$HOME/.codescribe/bin/voice-lab" ]] || { echo "launcher missing" >&2; exit 1; }
-[[ "$out" == *ran-setup* ]] || { echo "setup.sh did not run: $out" >&2; exit 1; }
-[[ "$out" == *seeded\ app\ settings* ]] || { echo "expected seed on missing settings: $out" >&2; exit 1; }
-[[ "$out" == *endpoint=wss://api.libraxis.cloud/v1/audio/transcribe* ]] || {
-  echo "expected libraxis guarantee, got: $out" >&2
+[[ "$out" == *ran-setup-named* ]] || { echo "setup.sh did not run: $out" >&2; exit 1; }
+[[ ! -e "$HOME/Library/Application Support/Codescribe/settings.json" ]] || {
+  echo "installer must not write app settings" >&2
   exit 1
 }
 
-# Existing loopback endpoint must not be overwritten.
-export HOME="$WORKDIR/home-keep"
-mkdir -p "$HOME/Library/Application Support/Codescribe"
-cat >"$HOME/Library/Application Support/Codescribe/settings.json" <<'JSON'
-{
-  "speech": {
-    "engine": {
-      "cloud_transcription_endpoint": "ws://127.0.0.1:8446/v1/audio/transcribe",
-      "asr_mode": "local_power"
-    }
-  }
+# Without a named checkout the Lab comes from the cache on main, even when a
+# sibling checkout exists on another branch (2026-10-17: the Silero take chart
+# vanished because install-app copied the sibling's feature branch).
+export HOME="$WORKDIR/home-cache"
+tree="$WORKDIR/tree"
+mkdir -p "$tree/codescribe/scripts"
+cp "$INSTALL" "$tree/codescribe/scripts/install-voice-lab.sh"
+make_pack "$tree/voice-lab" sibling
+make_pack "$HOME/.codescribe/src/voice-lab" cache
+: >"$WORKDIR/git.log"
+out="$("$tree/codescribe/scripts/install-voice-lab.sh" 2>&1)"
+[[ "$out" == *ran-setup-cache* && "$out" != *ran-setup-sibling* ]] || {
+  echo "expected the cache on main, got: $out" >&2
+  exit 1
 }
-JSON
-out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
-[[ "$out" == *app\ settings\ kept* ]] || { echo "expected keep existing endpoint: $out" >&2; exit 1; }
-[[ "$out" == *endpoint=ws://127.0.0.1:8446/v1/audio/transcribe* ]] || {
-  echo "loopback must survive seed, got: $out" >&2
+[[ "$out" == *"$tree/voice-lab not installed"* ]] || { echo "expected the sibling note: $out" >&2; exit 1; }
+[[ "$(cat "$WORKDIR/git.log")" == *"merge --ff-only origin/main in $HOME/.codescribe/src/voice-lab"* ]] || {
+  echo "cache must fast-forward to origin/main: $(cat "$WORKDIR/git.log")" >&2
   exit 1
 }
 
-# Empty engine keys get the pack values without replacing the file wholesale.
-export HOME="$WORKDIR/home-fill"
-mkdir -p "$HOME/Library/Application Support/Codescribe"
-printf '%s\n' '{"schema_version":3,"speech":{"engine":{}}}' \
-  >"$HOME/Library/Application Support/Codescribe/settings.json"
-out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
-[[ "$out" == *filled\ empty\ engine\ keys* ]] || { echo "expected fill: $out" >&2; exit 1; }
-[[ "$out" == *asr_mode=local_power* ]] || { echo "expected mode fill: $out" >&2; exit 1; }
+# Before the first install the sibling still proves org access.
+export HOME="$WORKDIR/home-fresh"
+mkdir -p "$HOME"
+"$tree/codescribe/scripts/install-voice-lab.sh" --verify-access ||
+  { echo "sibling must prove access before the cache exists" >&2; exit 1; }
 
 echo "install-voice-lab: ok"

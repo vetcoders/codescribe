@@ -236,7 +236,7 @@ info "loopback check on '$DEVICE'"
 # -k: a capture blocked inside CoreAudio ignores SIGTERM, so escalate to KILL.
 #
 # NEVER hardcode avfoundation index `:0` — device order is machine-local and
-# changes with Zoom/NoMachine/iPhone mics. On div0 (2026-07-27) `:0` was
+# changes with Zoom/NoMachine/iPhone mics. On host-a (2026-07-27) `:0` was
 # ZoomAudioDevice while BlackHole sat at `:2`, so the preflight "passed"
 # mute-clear then captured pure silence (-91 dB) forever. Prefer the device
 # *name* (`none:BlackHole 2ch`); fall back to a parsed index if the name form

@@ -76,6 +76,8 @@ CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 #: later channel-session row would ever release its refused take.
 SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
+DIRECT_TERMINAL = "apply_direct_transcript_terminal"
+TERMINAL_PUBLICATIONS = (TERMINAL_SEAL, DIRECT_TERMINAL)
 #: A ledger that refuses terminal finality (incomplete acoustic coverage or
 #: pending text recovery) emits no terminal seal at all, and before this net
 #: the utterance silently vanished for the agent (observed live 2026-09-29:
@@ -1181,8 +1183,8 @@ class EvidenceNormalizer:
     terminal seal, so an addressed utterance would vanish without a trace.
     The normalizer keeps the latest whole snapshot of each unsealed
     channel session and, when the session is over — a ``channel-session``
-    receipt shows the channel moved on (any non-open state for the session,
-    or a fresh open of the same channel), or the session's own
+    receipt closes that exact session (any non-open state, including an
+    explicit orphan receipt), or the session's own
     ``session_ended`` lifecycle row marks a hang-up — flushes one message via
     :meth:`pop_flushes`. A ledger terminal receipt carries certification;
     without it the envelope keeps ``coverage: "refused"``. Physical occurrence
@@ -1260,14 +1262,17 @@ class EvidenceNormalizer:
                 return None
             # Even a ledger terminal phase is a preview until capture ends.
             return clean
-        if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+        if str(event.get("reducer_action") or "") in TERMINAL_PUBLICATIONS:
             self._settled_sessions.add(session)
             self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
             if seal_id in self._terminal_seals:
                 return None
             self._terminal_seals.add(seal_id)
-            return self._as_clean(event, SEALED, document)
+            clean = self._as_clean(event, SEALED, document)
+            if event.get("reducer_action") == DIRECT_TERMINAL:
+                clean["coverage"] = "direct"
+            return clean
         clean = self._as_clean(event, LIVE_STATUSES[1], document)
         return clean
 
@@ -1343,11 +1348,10 @@ class EvidenceNormalizer:
         if previous is not None and previous != identity:
             return
         self._channel_open_times[session] = identity
-        for cached in list(self._session_docs):
-            known = self._channel_open_times.get(cached)
-            if (cached != session and known is not None
-                    and known[0] == channel and known[1] < timestamp):
-                self._flush_session(cached, row.get("emitted_at"))
+        # Capture reopen can precede its predecessor's retained decoder tail.
+        # Only that predecessor's named close/session-ended (including an
+        # explicit orphan receipt) owns its delivery boundary. A newer open
+        # cannot settle or flush another capture's unfinished document.
         while len(self._channel_open_times) > self.MAX_TRACKED_SESSIONS:
             oldest = min(self._channel_open_times,
                          key=lambda key: self._channel_open_times[key][1])
@@ -1363,7 +1367,9 @@ class EvidenceNormalizer:
             return
         final = dict(clean)
         final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
-        if clean.get("reducer_action") != TERMINAL_SEAL:
+        if clean.get("reducer_action") == DIRECT_TERMINAL:
+            final["coverage"] = "direct"
+        elif clean.get("reducer_action") != TERMINAL_SEAL:
             final["coverage"] = COVERAGE_REFUSED
         self._flushes.append(final)
 
@@ -3046,7 +3052,7 @@ class SessionLease:
             phase_id = channel_message_phase_identity(payload)
         elif (
             payload.get("producer_schema") == EVIDENCE_SCHEMA
-            and payload.get("reducer_action") == TERMINAL_SEAL
+            and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
             and payload.get("status") == SEALED
         ):
             phase_id = terminal_seal_identity(payload)
@@ -3137,7 +3143,9 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
                 or not isinstance(expected_payload.get("bus"), str)):
             return False
         owner["bus"] = expected_payload["bus"]
-    matches = lambda value: isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+    def matches(value: Any) -> bool:
+        return isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+
     envelope = receipt.get("envelope")
     if not matches(receipt) or not matches(envelope) or envelope.get("delivery_id") != delivery_id:
         return False
@@ -4338,6 +4346,156 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
         return None, f"tts request failed ({error.__class__.__name__})", "network"
 
 
+SPEECH_CACHE_SCHEMA = "codescribe.speech-cache.v1"
+# Longer than one TTS request (60 s timeout), so a waiter normally gets the
+# first caller's recording; past it the waiter synthesizes on its own.
+SPEECH_LOCK_WAIT_SECONDS = 75.0
+SPEECH_LOCK_POLL_SECONDS = 0.05
+
+
+def speech_cache_key(fields: dict[str, Any]) -> str:
+    """sha256 of the canonical JSON of everything that shapes the audio."""
+    canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _read_cached_speech(path: Path) -> bytes | None:
+    """PCM s16le 24 kHz mono from one cached WAV, or None when absent or not that shape."""
+    import wave
+
+    try:
+        with wave.open(str(path), "rb") as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, 24000):
+                return None
+            return source.readframes(source.getnframes()) or None
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+def _write_speech_atomically(path: Path, write: Any) -> None:
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        staged = Path(handle.name)
+    try:
+        write(staged)
+        os.replace(staged, path)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _speech_lock(directory: Path, key: str) -> int | None:
+    """Single flight per key: a held flock on `<speech>/<sha256>.lock`, or None.
+
+    Bounded like the playback lock. None after the wait or on any OS error
+    means the caller synthesizes unlocked: a duplicate payment, never a refusal.
+    """
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(directory / f"{key}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    deadline = time.monotonic() + SPEECH_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return descriptor
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(descriptor)
+                return None
+            time.sleep(SPEECH_LOCK_POLL_SECONDS)
+        except OSError:
+            os.close(descriptor)
+            return None
+
+
+def _cached_speech(
+    root: Path | None,
+    fields: dict[str, Any],
+    synthesize: Any,
+    *,
+    reply_id: str | None = None,
+) -> tuple[bytes | None, str | None, str | None]:
+    """Every synthesis stays on disk; the same words in the same voice never call the API twice.
+
+    `<bridge_home>/speech/<sha256>.wav` holds the PCM and `<sha256>.json` says
+    what produced it. The key covers provider, voice, speed, language, text
+    and any provider model. A hit needs no credential and no network. A miss
+    synthesizes and stores both files atomically before playback is even
+    queued, so a refused, busy or stopped playback keeps the recording. A
+    failed write costs only the reuse: the fresh PCM still plays.
+    """
+    directory = (root if root is not None else bridge_home()) / "speech"
+    key = speech_cache_key(fields)
+    audio = directory / f"{key}.wav"
+    cached = _read_cached_speech(audio)
+    if cached is not None:
+        return cached, None, None
+    # Two callers missing the same key at once pay once: the second waits for
+    # the first and reads its recording.
+    lock = _speech_lock(directory, key)
+    try:
+        if lock is not None:
+            cached = _read_cached_speech(audio)
+            if cached is not None:
+                return cached, None, None
+        return _synthesize_and_store(directory, key, audio, fields, synthesize, reply_id)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def _synthesize_and_store(
+    directory: Path,
+    key: str,
+    audio: Path,
+    fields: dict[str, Any],
+    synthesize: Any,
+    reply_id: str | None,
+) -> tuple[bytes | None, str | None, str | None]:
+    import wave
+
+    pcm, error, reason = synthesize()
+    if pcm is None:
+        return pcm, error, reason
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # `text` is the exact string sent to TTS and the PCM is whole, silence
+        # included: an utterance-level text+audio pair for STT and ledger
+        # fixtures, not word timings. Synthesis does not prove every word was
+        # spoken, so fidelity stays unverified until a listener checks it.
+        sidecar = {"schema": SPEECH_CACHE_SCHEMA, **fields, "sha256": key,
+                   "alignment": "utterance", "tts_fidelity": "unverified",
+                   "format": {"sample_rate": 24000, "encoding": "s16le", "channels": 1,
+                              "samples": len(pcm) // 2},
+                   "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        if reply_id:
+            sidecar["reply_id"] = reply_id
+        # Sidecar first: a WAV on disk always has its provenance beside it.
+        _write_speech_atomically(directory / f"{key}.json", lambda path: path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"))
+
+        def write_wav(path: Path) -> None:
+            with wave.open(str(path), "wb") as sink:
+                sink.setnchannels(1)
+                sink.setsampwidth(2)
+                sink.setframerate(24000)
+                sink.writeframes(pcm)
+
+        _write_speech_atomically(audio, write_wav)
+    except OSError as failure:
+        sys.stderr.write(f"cs-bus: speech cache write failed ({failure.__class__.__name__})\n")
+    return pcm, None, None
+
+
+def _control_reply_id(control: ReplyPlaybackControl | None) -> str | None:
+    reply = getattr(control, "reply", None)
+    value = reply.get("reply_id") if isinstance(reply, dict) else None
+    return value if isinstance(value, str) else None
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -4350,32 +4508,37 @@ def _speak_xai(
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
 
-    key = _xai_speech_key()
-    if not key:
-        return (
-            False,
-            "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
-            "credential_missing",
+    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+        key = _xai_speech_key()
+        if not key:
+            return (
+                None,
+                "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
+                "credential_missing",
+            )
+        body = json.dumps(
+            {
+                "text": text,
+                "voice_id": voice,
+                "language": "auto",
+                "output_format": {"codec": "pcm", "sample_rate": 24000},
+                "speed": speed,
+            }
+        ).encode("utf-8")
+        # The URL stays literal where the Request is built. Headers ride on the
+        # Request: opener.addheaders lose to the default Content-Type that
+        # do_request_ installs first for any request with data, and the API
+        # rejects a JSON body labelled x-www-form-urlencoded (415).
+        request = urllib.request.Request(
+            "https://api.x.ai/v1/tts",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-    body = json.dumps(
-        {
-            "text": text,
-            "voice_id": voice,
-            "language": "auto",
-            "output_format": {"codec": "pcm", "sample_rate": 24000},
-            "speed": speed,
-        }
-    ).encode("utf-8")
-    # The URL stays literal where the Request is built. Headers ride on the
-    # Request: opener.addheaders lose to the default Content-Type that
-    # do_request_ installs first for any request with data, and the API
-    # rejects a JSON body labelled x-www-form-urlencoded (415).
-    request = urllib.request.Request(
-        "https://api.x.ai/v1/tts",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
+        return _tts_exchange(request)
+
+    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
+    return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
 
 def _speak_pcm(
@@ -4704,32 +4867,39 @@ def _speak_openai(
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
     import urllib.request
 
-    key = _openai_speech_key()
-    if not key:
-        return (
-            False,
-            "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
-            "credential_missing",
-        )
     model = (
         os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip()
         or "gpt-4o-mini-tts-2025-12-15"
     )
-    body = json.dumps(
-        {
-            "model": model,
-            "input": text,
-            "voice": voice,
-            "response_format": "pcm",
-            "speed": speed,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/audio/speech",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
-    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus, control=control)
+
+    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+        key = _openai_speech_key()
+        if not key:
+            return (
+                None,
+                "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
+                "credential_missing",
+            )
+        body = json.dumps(
+            {
+                "model": model,
+                "input": text,
+                "voice": voice,
+                "response_format": "pcm",
+                "speed": speed,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/audio/speech",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        )
+        return _tts_exchange(request)
+
+    fields = {"provider": "openai", "model": model, "voice": voice, "speed": float(speed),
+              "language": None, "text": text}
+    speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
+    return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
 
 # =============================================================================
@@ -4985,15 +5155,26 @@ def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
 
+def broadcast_skip_path(root: Path, lease_id: str, delivery_id: str) -> Path:
+    return root / "broadcast-skipped" / lease_id / f"{delivery_id}.json"
+
+
 def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
     # This is receipt history, never an acknowledgment marker: the agent did
-    # not read these words. Keep it in the follower's existing event stream.
+    # not read these words. The follower's event stream keeps the history; one
+    # file per delivery beside wakeups/ and acknowledgments/ is the receipt the
+    # overlay reads for that exact delivery and owner, since a follower stream
+    # runs to megabytes and the overlay polls twice a second.
+    marker = broadcast_skip_path(root, payload["lease_id"], payload["delivery_id"])
+    if marker.exists():
+        return
     _, path = follower_paths(root, payload["lease_id"])
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as stream:
         os.chmod(path, 0o600)
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.seek(0)
+        recorded = None
         for line in stream:
             try:
                 row = json.loads(line)
@@ -5001,13 +5182,17 @@ def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
                 continue
             if (isinstance(row, dict) and row.get("kind") == "broadcast_skipped"
                     and row.get("delivery_id") == payload["delivery_id"]):
-                return
-        row = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
-               **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
-               "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
-        stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+                recorded = row
+                break
+        if recorded is None:
+            recorded = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
+                        **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
+                        "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
+            stream.write(json.dumps(recorded, ensure_ascii=False, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    # A row the stream held before this marker existed is copied as recorded.
+    atomic_json(marker, recorded)
 
 
 def set_agent_broadcast_policy(args: argparse.Namespace) -> int:

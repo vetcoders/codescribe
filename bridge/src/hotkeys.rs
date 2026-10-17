@@ -14,7 +14,7 @@ use codescribe::controller::{
     HotkeyType, RecordingController, State, admission,
 };
 use codescribe::os::hold_badge::BadgeMode;
-use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
+use codescribe::os::hotkeys::{self, AgentGestureInput, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{
     detect_hotkey_conflicts, fn_tap_intercept_note, unreachable_binding_message,
@@ -160,6 +160,33 @@ pub trait CsAppActionListener: Send + Sync {
     fn on_show_agent(&self);
     /// Pending Max permission state changed; re-read its authoritative snapshot.
     fn on_max_approvals_changed(&self);
+    /// Pointer input for the overlay's agent chooser. UI-only: the overlay
+    /// decides what a click means and opens channels through its own path.
+    fn on_agent_gesture(&self, input: CsAgentGestureInput);
+}
+
+/// The pointer's input to the overlay's agent chooser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CsAgentGestureInput {
+    /// The middle button was clicked, not held into dictation.
+    MiddleClick,
+    /// Wheel movement while choosing. Positive steps move down the list.
+    Scroll { steps: i32 },
+    /// A left click while choosing: open the focused agent.
+    LeftClick,
+    /// Escape while choosing: leave without acting.
+    Cancel,
+}
+
+impl From<AgentGestureInput> for CsAgentGestureInput {
+    fn from(input: AgentGestureInput) -> Self {
+        match input {
+            AgentGestureInput::MiddleClick => Self::MiddleClick,
+            AgentGestureInput::Scroll { steps } => Self::Scroll { steps },
+            AgentGestureInput::LeftClick => Self::LeftClick,
+            AgentGestureInput::Cancel => Self::Cancel,
+        }
+    }
 }
 
 /// Capture ownership sentinel: no lane currently owns the microphone.
@@ -244,8 +271,8 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
 /// controller or runtime.
 ///
 /// Agent/Assistive events notify the Agent window and then continue through the
-/// same recording callback as Dictation. Only `ShowAgent` and `InsertHere` are
-/// UI-only commands.
+/// same recording callback as Dictation. `ShowAgent`, `InsertHere` and
+/// `AgentGesture` are UI-only commands.
 fn route_hotkey_event<F, G>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
@@ -272,6 +299,15 @@ fn route_hotkey_event<F, G>(
             }
         }
         HotkeyEvent::InsertHere => dispatch_deferred_insert(),
+        HotkeyEvent::AgentGesture(input) => {
+            tracing::debug!(
+                ?input,
+                "Agent chooser input: dispatching UI-only app action"
+            );
+            if let Some(listener) = app_action_listener {
+                listener.on_agent_gesture(input.into());
+            }
+        }
         recording_event => dispatch_recording(recording_event),
     }
 }
@@ -2151,7 +2187,7 @@ async fn dispatch_recording_hotkey_event(
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
-        HotkeyEvent::ShowAgent | HotkeyEvent::InsertHere => {
+        HotkeyEvent::ShowAgent | HotkeyEvent::InsertHere | HotkeyEvent::AgentGesture(_) => {
             unreachable!("UI-only commands must be routed before recording dispatch")
         }
         HotkeyEvent::Hold { action, mode } => {
@@ -2470,6 +2506,16 @@ mod app_action_tests {
     /// Test double that counts UI-only Agent summons.
     struct CountingAppActionListener {
         show_agent_calls: AtomicUsize,
+        agent_gestures: Mutex<Vec<CsAgentGestureInput>>,
+    }
+
+    impl CountingAppActionListener {
+        fn new() -> Self {
+            Self {
+                show_agent_calls: AtomicUsize::new(0),
+                agent_gestures: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl CsAppActionListener for CountingAppActionListener {
@@ -2478,6 +2524,47 @@ mod app_action_tests {
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
         }
+        fn on_agent_gesture(&self, input: CsAgentGestureInput) {
+            self.agent_gestures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(input);
+        }
+    }
+
+    /// The chooser's input reaches the UI listener and never the recording path.
+    #[test]
+    fn agent_chooser_input_is_ui_only() {
+        let listener = Arc::new(CountingAppActionListener::new());
+        for input in [
+            AgentGestureInput::MiddleClick,
+            AgentGestureInput::Scroll { steps: -2 },
+            AgentGestureInput::LeftClick,
+            AgentGestureInput::Cancel,
+        ] {
+            route_hotkey_event(
+                HotkeyEvent::AgentGesture(input),
+                Some(listener.clone()),
+                |event| panic!("chooser input reached the recording path: {event:?}"),
+                || panic!("chooser input must not dispatch deferred insert"),
+            );
+        }
+        assert_eq!(
+            *listener
+                .agent_gestures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            vec![
+                CsAgentGestureInput::MiddleClick,
+                CsAgentGestureInput::Scroll { steps: -2 },
+                CsAgentGestureInput::LeftClick,
+                CsAgentGestureInput::Cancel,
+            ]
+        );
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 0);
+        assert!(!event_can_start_capture(&HotkeyEvent::AgentGesture(
+            AgentGestureInput::MiddleClick
+        )));
     }
 
     /// Every session-starting gesture is recognized by the same capture gate.
@@ -2505,9 +2592,7 @@ mod app_action_tests {
     /// ShowAgent remains UI-only; recording gestures all reach the same callback.
     #[test]
     fn agent_notification_does_not_own_capture_or_transcript_payload() {
-        let listener = Arc::new(CountingAppActionListener {
-            show_agent_calls: AtomicUsize::new(0),
-        });
+        let listener = Arc::new(CountingAppActionListener::new());
         let recording_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
 
@@ -2577,9 +2662,7 @@ mod app_action_tests {
             mode: HoldMode::Chat,
         }));
 
-        let listener = Arc::new(CountingAppActionListener {
-            show_agent_calls: AtomicUsize::new(0),
-        });
+        let listener = Arc::new(CountingAppActionListener::new());
         let recording_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
         route_hotkey_event(
@@ -2767,6 +2850,14 @@ pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
             label: binding.label().to_string(),
         })
         .collect()
+}
+
+/// The overlay takes (or renews) the agent chooser's capture of the wheel, the
+/// left click and Escape, or releases it. Renewal is a lease: an overlay that
+/// stops renewing loses the capture on its own.
+#[uniffi::export]
+pub fn set_agent_chooser_capture(active: bool) {
+    hotkeys::set_agent_gesture_capture(active);
 }
 
 /// Pair a mode with its binding and attach the display copy sourced from the
@@ -3030,7 +3121,7 @@ fn project_admission_readiness(
             code: "admission_granted".to_string(),
             device_name: Some(grant.device_name),
             sample_rate: Some(grant.sample_rate),
-            calibration_version: Some(grant.calibration_version),
+            calibration_version: grant.calibration_version,
             ..base
         },
         Err(blocker) => CsAdmissionReadiness {

@@ -396,6 +396,7 @@ struct OverlayIntentRail: View {
       ((canPaste || canInsert) ? [.insertPaste] : [])
         + (canCopy ? [.copy] : [])
         + (canRetranscribe ? [.retranscribe] : [])
+        + (canFormat ? [.format] : [])
         + (canSendToAgent ? [.sendToAgent] : [])
         + [.close]
     case .noSpeech:

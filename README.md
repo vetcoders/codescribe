@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Source version](https://img.shields.io/badge/version-0.17.0-6a9bcc)](Cargo.toml)
+[![Source version](https://img.shields.io/badge/version-0.17.1-6a9bcc)](Cargo.toml)
 [![Latest release](https://img.shields.io/github/v/release/vetcoders/codescribe?label=release&color=788c5d)](https://github.com/vetcoders/codescribe/releases/latest)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
@@ -80,7 +80,7 @@ flowchart TB
 > it, behind an explicit audio-egress consent, and full-file Retranscribe is
 > its own deliberate action.
 
-> **Release status:** source is at `0.17.0`. Published builds are listed on
+> **Release status:** source is at `0.17.1`. Published builds are listed on
 > [GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest);
 > the [website download](https://codescribe.vetcoders.io/#install) always
 > serves the newest one.
@@ -106,6 +106,9 @@ marketplace at `~/.codescribe/agent-bridge/runtime/plugins`.
   `omp plugin install codescribe@codescribe`, then `/codescribe leon 4` inside `omp`. The
   bundled extension holds `cs-bus --omp-wake` between turns and starts a turn for each
   new message, with no model turn during silence. See [OMP](docs/OMP_PLUGIN.md).
+- **Any remote agent:** an agent that does not run on this machine joins the same
+  channels over MCP 2.0 instead of a plugin, with its identity and capabilities
+  fixed by a locally reviewed scope file. See [Agent MCP](docs/AGENT_MCP.md).
 
 ## OpenAI Provider
 

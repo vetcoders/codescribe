@@ -611,6 +611,8 @@ class Mailbox:
         self.wait_guard = threading.Lock()
         self.active_wait = None
         self.command = [sys.executable, str(Path(demux.__file__).with_name("cs-bus"))]
+        # None inherits this process's environment; a client may pin an exact one.
+        self.environment = None
 
     def run(self, flags, timeout=30):
         command = [*self.command, "--bridge-home", str(self.root)]
@@ -618,7 +620,8 @@ class Mailbox:
             command += ["--bus", str(self.bus)]
         if self.owner is not None:
             command += ["--provider", self.provider, "--session", self.owner]
-        result = subprocess.run([*command, *flags], capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run([*command, *flags], capture_output=True, text=True, timeout=timeout,
+                                env=self.environment)
         if result.returncode:
             # Voice failure still carries its durable reply receipt.
             if "--say" in flags and result.stdout.strip():

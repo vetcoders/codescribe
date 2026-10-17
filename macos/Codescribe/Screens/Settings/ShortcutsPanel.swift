@@ -377,6 +377,16 @@ struct ShortcutsPanel: View {
             .labelsHidden()
             .toggleStyle(.switch)
         }
+        divider
+        inputSurfaceRow(
+          title: "Middle click picks an agent",
+          detail:
+            "Click opens the agents. Scroll moves, left click opens, middle click talks until the next one."
+        ) {
+          Toggle("Middle click picks an agent", isOn: middleGestureBinding)
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
@@ -483,6 +493,11 @@ struct ShortcutsPanel: View {
 
   private var middleMouseBinding: Binding<Bool> {
     Binding(get: { model.middleMouseActsAsFn }, set: { model.setMiddleMouseActsAsFn($0) })
+  }
+
+  private var middleGestureBinding: Binding<Bool> {
+    Binding(
+      get: { model.middleMouseAgentGesture }, set: { model.setMiddleMouseAgentGesture($0) })
   }
 
   // MARK: Automatic paste mode

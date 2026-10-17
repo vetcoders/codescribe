@@ -987,7 +987,7 @@ pub fn compute_tail_patch_with_context(
                 continue;
             }
             if !g.has_prev_match {
-                // Leading prepend onto a healthy canvas is obsranie. Head-loss
+                // Leading prepend onto a healthy canvas is corruption. Head-loss
                 // recovery stays legal only on a 1–2 token canvas, and never
                 // for a single short function word ("po", "a", "no").
                 let short_function_preamble = recovered.len() == 1

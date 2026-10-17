@@ -1,6 +1,6 @@
 //! Admission readiness — the precondition of beginning a product recording.
 //!
-//! A take whose occurrences can never qualify is a lie: the WAV grows, the
+//! When ledger admission is enabled, a take whose occurrences can never qualify is a lie: the WAV grows, the
 //! overlay pulses, and the Transcript Bus never leaves `session_started`.
 //! Two independent authorities decide whether the acoustic ledger can seal
 //! anything at all, and both are known before any microphone opens:
@@ -11,7 +11,9 @@
 //!    regions qualify (`may_qualify = silero_bound`), so the lane must be
 //!    armed by the runtime settings snapshot and the Silero graph must load.
 //!
-//! This module evaluates both and returns one precise, actionable blocker or
+//! Direct transcription keeps real device checks and any usable measured profile,
+//! without requiring ledger qualification or inventing a calibration certificate.
+//! This module evaluates the selected policy and returns one precise blocker or
 //! a grant. It opens no stream, invents no floor, and owns no state: the
 //! controller calls it before the recorder lock, the bridge projects it for
 //! Settings, and the overlay renders the blocker code as a notice.
@@ -199,7 +201,7 @@ pub struct AdmissionGrant {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: u16,
-    pub calibration_version: String,
+    pub calibration_version: Option<String>,
 }
 
 /// Decide admission from already-probed facts. Pure, so every ordering and
@@ -242,20 +244,26 @@ fn evaluate_probed_admission_at(
         .for_capture_at(&capture, now_unix_ms)
         .map_err(|refusal| {
             AdmissionBlocker::from_calibration_refusal(&capture.device_name, refusal)
-        })?;
-    if !seal_lane.armed {
+        });
+    let ledger_enabled = snapshot.seal_ledger_enabled();
+    let calibration = if ledger_enabled {
+        Some(calibration?)
+    } else {
+        calibration.ok()
+    };
+    if ledger_enabled && !seal_lane.armed {
         return Err(AdmissionBlocker::SealLaneDisarmed {
             source: snapshot.seal_lane_source(),
         });
     }
-    if !seal_lane.vad_available {
+    if ledger_enabled && !seal_lane.vad_available {
         return Err(AdmissionBlocker::SealVadUnavailable);
     }
     Ok(AdmissionGrant {
         device_name: capture.device_name,
         sample_rate: capture.sample_rate,
         channels: capture.channels,
-        calibration_version: calibration.version,
+        calibration_version: calibration.map(|calibration| calibration.version),
     })
 }
 
@@ -405,6 +413,9 @@ mod tests {
     };
 
     fn snapshot() -> RuntimeSettingsSnapshot {
+        Config::default()
+            .save_to_env("CODESCRIBE_SEAL_LEDGER_ENABLED", "1")
+            .unwrap();
         Config::load_runtime_snapshot_without_keychain().expect("snapshot seals")
     }
 
@@ -433,6 +444,69 @@ mod tests {
         );
         assert!(blocker.explanation().contains("denied"));
         assert!(blocker.action().contains("Privacy & Security › Microphone"));
+    }
+
+    #[test]
+    #[serial]
+    fn direct_transcription_admission_does_not_require_a_ledger_profile() {
+        let _tmp = isolated_data_dir();
+        Config::default()
+            .save_to_env("CODESCRIBE_SEAL_LEDGER_ENABLED", "0")
+            .unwrap();
+        let direct = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!direct.seal_ledger_enabled());
+        let result = evaluate_admission_readiness_at(
+            &direct,
+            capture("Fixture Mic"),
+            SealLaneProbe {
+                armed: false,
+                vad_available: false,
+            },
+            7,
+        );
+        assert!(
+            result.is_ok(),
+            "direct decoder publication is not ledger admission: {result:?}"
+        );
+        assert!(
+            result.unwrap().calibration_version.is_none(),
+            "absence is not a synthetic profile"
+        );
+        let unavailable =
+            evaluate_admission_readiness_at(&direct, Err("device unavailable".into()), ARMED, 7)
+                .unwrap_err();
+        assert_eq!(unavailable.code(), "admission_capture_device_unavailable");
+    }
+
+    #[test]
+    #[serial]
+    fn direct_transcription_admission_retains_a_usable_measured_profile() {
+        let _tmp = isolated_data_dir();
+        let profile = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            7,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, 7).unwrap();
+        Config::default()
+            .save_to_env("CODESCRIBE_SEAL_LEDGER_ENABLED", "0")
+            .unwrap();
+        let direct = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let grant = evaluate_admission_readiness_at(
+            &direct,
+            capture("Fixture Mic"),
+            SealLaneProbe {
+                armed: false,
+                vad_available: false,
+            },
+            7,
+        )
+        .unwrap();
+        assert_eq!(
+            grant.calibration_version.as_deref(),
+            Some("cal2-fixture-mic-7@48000hz")
+        );
     }
 
     #[test]
@@ -502,7 +576,10 @@ mod tests {
             evaluate_admission_readiness_at(&snap, capture("Fixture Mic"), ARMED, 7).unwrap();
         assert_eq!(grant.device_name, "Fixture Mic");
         assert_eq!(grant.sample_rate, 48_000);
-        assert_eq!(grant.calibration_version, "cal2-fixture-mic-7@48000hz");
+        assert_eq!(
+            grant.calibration_version.as_deref(),
+            Some("cal2-fixture-mic-7@48000hz")
+        );
     }
 
     #[test]

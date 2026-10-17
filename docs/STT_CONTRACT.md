@@ -456,7 +456,9 @@ file vs raw Apple, never vs formatted text.
 **Terminal format command:** the overlay sends only the current session and
 reducer revision. Rust reads the current committed document, invokes the one
 production formatting policy pipeline, and commits an applied result through
-the ledger-backed revision corridor with `formatter` provenance. Provider
+the source-authenticated reducer revision corridor with `formatter` provenance:
+a ledger revision when admission is enabled, or the current reducer-minted
+direct document capability when it is disabled. Provider
 failure, disabled/short-text skip, and unchanged output are refusals: they must
 remain visible UI errors and must never become transcript history or Copy-last.
 
@@ -638,6 +640,31 @@ drops a `.partial` stranded beside a bundle that is already complete.
 | Recording service object      | `CodescribeHotkeys`                        | shared controller recording API                                 |
 | Tray status glyphs            | `CodescribeTrayStatus` + listener          | controller tray payload                                         |
 | Paste mode / auto-format tray | `set_paste_mode` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
+
+### Ledger admission opt-out
+
+`audio.seal_ledger_enabled` and `audio.apple_live_enabled` are independent
+immutable take settings, both defaulting to `false` when absent. Ledger opt-out
+uses range-authenticated `DirectTranscript` observations through the existing
+reducer and Bus; it never fabricates ledger occurrences or acoustic seals.
+Apple preview is optional. Whisper direct windows are disjoint 9-second ranges;
+the ledger path retains its overlapping evidence windows.
+
+Opting out of ledger admission does not opt out of measured audio. The take
+keeps its single Silero ingress and forwards its owned speech edges to channel
+cadence independently of text publication. Before suppressing a direct label,
+both Silero and the raw capture measurement must authenticate the same capture
+identity and fully cover the requested range with valid contiguous observations.
+Silero alone classifies speech: energy above the activity floor can be noise
+and cannot rescue a label over measured non-speech. Any intersecting Silero
+speech range preserves the recognizer's label, including another language;
+missing, partial, foreign or invalid evidence also preserves it. No string
+comparison, new threshold, second VAD or word alignment participates.
+
+A terminal direct document can be formatted, explicitly edited, retranscribed,
+and navigated through the same revision/history corridor as other committed
+documents. A stale or foreign revision is refused without changing history;
+late decoder callbacks cannot rewrite a terminal document.
 
 ### 3.4 STT engine dispatch (the nit)
 

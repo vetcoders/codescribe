@@ -586,6 +586,21 @@ final class OverlayController: ObservableObject {
     state.finishControllerRecording()
   }
 
+  /// The middle-click agent chooser is a summons by hand: it brings the panel
+  /// on screen as fresh channel evidence does, without re-anchoring a visible
+  /// one. Every other gesture input only moves state.
+  func handleAgentGesture(_ input: CsAgentGestureInput) {
+    state.handleAgentGesture(input)
+    guard state.agentChooserOpen else { return }
+    if let panel, panel.isVisible {
+      panel.alphaValue = 1
+      orderPanelFront(panel)
+      resizeForProjectedContent()
+    } else {
+      show()
+    }
+  }
+
   /// Called by the live TrayStatusStore listener. Assistive uses the shared
   /// controller and keeps the Dictation overlay up: a mid-hold upgrade
   /// (Fn → Fn+Shift) flips the semantics, never the window. Only a take the

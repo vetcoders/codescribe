@@ -366,6 +366,35 @@ impl NoAuthorityReason {
     }
 }
 
+/// What a word's own span holds when Silero heard no speech near it.
+///
+/// Measured on the capture clock, never a named sound: noise, breath and a
+/// cough are all `SoundWithoutSpeech`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SilenceUnderSpan {
+    /// Every hop is exact digital zero.
+    DigitalZero,
+    /// Sound is present, all of it under the calibrated existence floor.
+    BelowFloor,
+    /// A hop reaches the existence floor and Silero still heard no speech.
+    SoundWithoutSpeech,
+    /// The energy of the span was not measured, or no floor is calibrated.
+    EnergyUnmeasured,
+}
+
+impl SilenceUnderSpan {
+    /// Stable label for receipts and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DigitalZero => "digital_zero",
+            Self::BelowFloor => "below_floor",
+            Self::SoundWithoutSpeech => "sound_without_speech",
+            Self::EnergyUnmeasured => "energy_unmeasured",
+        }
+    }
+}
+
 /// Why an observation was refused outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefuseReason {
@@ -398,8 +427,20 @@ pub enum RefuseReason {
     /// The pin's own PCM range was measured, and no hop inside it was voiced.
     /// Mean loudness of a wider span is not this fact.
     NoVoicedHopInPin,
+    /// This Whisper word repeats the previous identical word, and the span
+    /// was measured. It does not contain its own voiced segment: no energy
+    /// valley and no Silero dip separates it from that previous word, or the
+    /// span is shorter than one syllable of a repeat.
+    IdenticalRepeatWithoutOwnVoicedSegment,
     /// A previous positive no-speech receipt covers the entire candidate pin.
     ConfirmedNoSpeech,
+    /// Silero observed the word's span and its surroundings and heard no
+    /// speech within the near radius. `distance_ms` is the distance to the
+    /// nearest speech it did hear; `None` when it heard none in the epoch.
+    NoSpeechNearSpan {
+        silence: SilenceUnderSpan,
+        distance_ms: Option<u32>,
+    },
 }
 
 impl RefuseReason {
@@ -418,7 +459,11 @@ impl RefuseReason {
             Self::ClockLie => "clock_lie",
             Self::UnrecoveredSpeech => "unrecovered_speech",
             Self::NoVoicedHopInPin => "no_voiced_hop_in_pin",
+            Self::IdenticalRepeatWithoutOwnVoicedSegment => {
+                "identical_repeat_without_own_voiced_segment"
+            }
             Self::ConfirmedNoSpeech => "confirmed_no_speech",
+            Self::NoSpeechNearSpan { .. } => "no_speech_near_span",
         }
     }
 }
@@ -625,7 +670,9 @@ fn edge_token_duplicate(
     normalized: &str,
 ) -> bool {
     // A neighbouring spelling or a token somewhere in a coarse label does
-    // not prove replay. Require one measured word on the same physical pin.
+    // not prove replay. Require one measured word on the same physical pin,
+    // or across an occurrence cut where each owner clipped the same declared
+    // word range to its side of the boundary.
     !normalized.is_empty()
         && word.text.split_whitespace().count() == 1
         && held.text.split_whitespace().count() == 1
@@ -635,7 +682,19 @@ fn edge_token_duplicate(
             .occurrence
             .same_capture(&word.observation.occurrence)
         && normalized == normalize_word_token(&held.text)
-        && ledger.pin_targets_source(held, word)
+        && (ledger.pin_targets_source(held, word)
+            || (held.observation.occurrence != word.observation.occurrence
+                && ledger
+                    .original_anchor_word_range(held)
+                    .zip(ledger.original_anchor_word_range(word))
+                    .is_some_and(|(left, right)| {
+                        declared_ranges_share_word(
+                            left.sample_start,
+                            left.sample_end,
+                            right.sample_start,
+                            right.sample_end,
+                        )
+                    })))
 }
 
 /// Whether `host` contains the centre of `subject`.
@@ -865,6 +924,7 @@ pub struct AcousticLedger {
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
+    latest_speech_islands: Option<super::speech_islands::SpeechIslandEvidence>,
     pending_text_recovery: BTreeSet<OccurrenceIdentity>,
     /// Observations handed to an admission API. Independent of [`Self::trail`].
     offered_observations: usize,
@@ -1998,6 +2058,7 @@ impl AcousticLedger {
                     .expect("unique source retained until its correction");
                 removed.push(slots[position].clone());
                 slots[position] = word;
+                slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
             } else if incoming
                 .iter()
                 .filter(|other| {
@@ -2059,6 +2120,9 @@ impl AcousticLedger {
                 // A new pin is not a new word if the same PCM edge already
                 // carries that token, including a group or a neighbouring owner.
                 let normalized = normalize_word_token(&word.text);
+                let boundary_tolerance = self
+                    .capture_rate_hz
+                    .map_or(8_000, |rate| u64::from(rate) / 2);
                 let duplicate_sources = slots
                     .iter()
                     .filter(|held| self.word_pin_observations.contains(&held.observation))
@@ -2070,8 +2134,12 @@ impl AcousticLedger {
                             .filter(|(other, _)| {
                                 *other != owner
                                     && other.same_capture(owner)
-                                    && (other.sample_end == owner.sample_start
-                                        || owner.sample_end == other.sample_start)
+                                    && ((other.sample_end <= owner.sample_start
+                                        && owner.sample_start.saturating_sub(other.sample_end)
+                                            <= boundary_tolerance)
+                                        || (owner.sample_end <= other.sample_start
+                                            && other.sample_start.saturating_sub(owner.sample_end)
+                                                <= boundary_tolerance))
                             })
                             .flat_map(|(_, held)| held.slots.iter())
                             .filter(|held| self.word_pin_observations.contains(&held.observation))
@@ -2119,6 +2187,7 @@ impl AcousticLedger {
                 self.refuse_replayed_range(&replay, &word.text);
             }
         }
+        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
         if removed.is_empty() && slots.as_slice() == self.slots_of(owner).unwrap_or(&[]) {
             if replayed_words == incoming.len() && replayed_words > 0 {
                 // Refusing another document occurrence does not erase a
@@ -2324,6 +2393,29 @@ impl AcousticLedger {
 
     pub fn latest_seal_coverage(&self) -> Option<&SealCoverageReceipt> {
         self.latest_seal_coverage.as_ref()
+    }
+
+    /// Store the latest island accounting for this capture. Observational:
+    /// nothing reads it to admit, refuse or seal. Another session or epoch
+    /// cannot replace it, as with [`Self::record_seal_coverage`].
+    pub fn record_speech_islands(
+        &mut self,
+        evidence: super::speech_islands::SpeechIslandEvidence,
+    ) -> bool {
+        let binds_this_ledger = self.committed.is_empty()
+            || self.committed.keys().any(|occurrence| {
+                occurrence.session == evidence.session_id
+                    && occurrence.capture_epoch == evidence.capture_epoch
+            });
+        if !binds_this_ledger {
+            return false;
+        }
+        self.latest_speech_islands = Some(evidence);
+        true
+    }
+
+    pub fn latest_speech_islands(&self) -> Option<&super::speech_islands::SpeechIslandEvidence> {
+        self.latest_speech_islands.as_ref()
     }
 
     /// Read issued finality for exactly one capture; never mint a seal here.
@@ -5451,12 +5543,13 @@ impl DocumentRevisionProvenance {
 
 /// Provenance for an explicit rewrite of a complete committed transcript.
 ///
-/// The receipt names every source occurrence and any issued seal but carries
-/// no fabricated per-word alignment for the replacement text. It is append-only
-/// evidence consumed by the Rust transcript reducer and its Bus projection.
+/// The receipt names source occurrences and issued seals when a ledger owns
+/// them. A direct reducer operation instead names its authenticated publication
+/// in `capture_receipt_id`, with both acoustic source lists empty. Neither
+/// path fabricates per-word alignment for the replacement text.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManualDocumentRevisionReceipt {
-    /// Stable identifier copied into each projected acoustic receipt.
+    /// Stable document identifier, also copied into acoustic receipts when present.
     pub receipt_id: String,
     /// Stable origin label for quality capture and external observers.
     pub provenance: String,
@@ -5472,9 +5565,10 @@ pub struct ManualDocumentRevisionReceipt {
     pub source_seal_receipts: Vec<String>,
     /// Complete user-authored replacement bytes.
     pub rendered_text: String,
-    /// Capture ownership for a human document with no acoustic source entries.
+    /// Capture epoch for a document with no ledger-owned acoustic source entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_epoch: Option<u64>,
+    /// Ledger capture ownership or an authenticated direct publication id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_receipt_id: Option<String>,
 }

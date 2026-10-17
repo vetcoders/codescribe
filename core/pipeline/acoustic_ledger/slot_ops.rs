@@ -1622,8 +1622,12 @@ impl AcousticLedger {
             // Word timestamps may refine a phrase's geometry, but cannot
             // silently reverse its polarity. Route that disagreement through
             // the existing lexical authority even while the source is coarse.
-            let lexical_refinement =
-                !all_coarse || negation_contexts(&held) != negation_contexts(&candidate);
+            let polarity_disagrees = if all_coarse {
+                super::word_adjudication::coarse_polarity_disagrees(&held, &candidate)
+            } else {
+                negation_contexts(&held) != negation_contexts(&candidate)
+            };
+            let lexical_refinement = !all_coarse || polarity_disagrees;
             let local_choice = if lexical_refinement && source_complete && geometry && !ambiguous {
                 self.adjudicate_word_sources(observation, &sources, &outputs)
             } else {

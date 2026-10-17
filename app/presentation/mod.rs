@@ -15,7 +15,11 @@ pub mod transcript_projection;
 
 pub use cli_transcript_lane::CliTranscriptLane;
 pub use emitter::{
-    PresentationEmitter, TerminalFormatterRequest, UserRevisionCommit, UserRevisionIntent,
+    DirectObservation, DirectPublicationCapability, PresentationEmitter, TerminalFormatterRequest,
+    TranscriptionControls, UserRevisionCommit, UserRevisionIntent,
 };
 pub use transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};
 pub use transcript_bus_maintenance::{BusStatus, CompactionReport, bus_status, compact_bus};
+
+#[cfg(test)]
+mod direct_transcript_tests;

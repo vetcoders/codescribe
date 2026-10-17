@@ -58,7 +58,7 @@ class TypographicQuotesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             args = argparse.Namespace(
-                bridge_home=root, provider="claude-code", session="say-session", name="klaudiusz",
+                bridge_home=root, provider="claude-code", session="say-session", name="agent",
                 say='Ścieżka "główna" to `~/.codescribe/"x"`', voice=None, speed=None,
                 tts_vendor=None, reply_to=None)
             with patch.object(DEMUX, "reply_delivery_envelope", return_value=(root / "bus.jsonl", None)), \

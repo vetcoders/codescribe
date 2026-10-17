@@ -3219,6 +3219,17 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Middle click opens the overlay's agent chooser. Off until chosen. While on,
+  /// the middle click belongs to Codescribe; with middle-as-Fn a hold still dictates.
+  var middleMouseAgentGesture: Bool { settings.middleMouseAgentGesture }
+
+  func setMiddleMouseAgentGesture(_ enabled: Bool) {
+    settings.middleMouseAgentGesture = enabled
+    writeHotkeySurface("MIDDLE_MOUSE_AGENT_GESTURE", enabled ? "1" : "0") {
+      try hotkeys?.setMiddleMouseAgentGesture(enabled)
+    }
+  }
+
   /// One settings.json write. The hotkeys seam persists when it is injected;
   /// otherwise the shared config router does. Either path reloads the detector.
   private func writeHotkeySurface(
@@ -3314,6 +3325,16 @@ final class SettingsViewModel: ObservableObject {
   func setDictationWitnessArmed(_ armed: Bool) {
     guard DeveloperSurface.isEnabled() else { return }
     persist("CODESCRIBE_APPLE_DICTATION_TRANSCRIBER", armed ? "1" : "0")
+  }
+
+  func setSealLedgerEnabled(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("CODESCRIBE_SEAL_LEDGER_ENABLED", enabled ? "1" : "0")
+  }
+
+  func setAppleLiveEnabled(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("CODESCRIBE_APPLE_LIVE_ENABLED", enabled ? "1" : "0")
   }
 
   private func persist(_ key: String, _ value: String) {

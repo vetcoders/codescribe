@@ -1273,7 +1273,7 @@ case " $* " in
     payload=$(cat)
     printf 'wake %s %s\\n' "$CLAUDE_CODE_SESSION_ID" "$payload" >> "$FAKE_REMOTE_LOG"
     if [ "$(cat "$FAKE_REMOTE_MODE" 2>/dev/null)" = wake ]; then
-      echo "Codescribe: 1 new message(s) for klaudiusz-div0, connected on channel 9 (claude-code session $CLAUDE_CODE_SESSION_ID); pending 1; new delivery ids: aaaaaaaaaaaaaaaaaaaaaaaa [channel 9, to you]. Read every pending message." >&2
+      echo "Codescribe: 1 new message(s) for agent-host-b, connected on channel 9 (claude-code session $CLAUDE_CODE_SESSION_ID); pending 1; new delivery ids: aaaaaaaaaaaaaaaaaaaaaaaa [channel 9, to you]. Read every pending message." >&2
       exit 75
     fi
     while :; do sleep 0.05; done ;;
@@ -1341,25 +1341,25 @@ class RemoteMailboxTests(MailboxFixture):
     def test_remote_mailbox_wakes_with_its_own_notice_and_names_the_host(self):
         self.pending = []
         self.save()
-        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        DEMUX.remember_remote_host(self.root, self.lease, "host-a", True)
         self.remote_mode.write_text("wake")
         code, said = self.wake()
         self.assertEqual(code, MCP.WAKE_EXIT)
-        relayed = [line for line in said.splitlines() if "[Mailbox on dragon, over ssh" in line]
+        relayed = [line for line in said.splitlines() if "[Mailbox on host-a, over ssh" in line]
         self.assertTrue(relayed, said)
-        self.assertTrue(relayed[-1].startswith("Codescribe: 1 new message(s) for klaudiusz-div0"),
+        self.assertTrue(relayed[-1].startswith("Codescribe: 1 new message(s) for agent-host-b"),
                         "the remote waiter's own notice is relayed word for word")
         self.assertIn("a" * 24, relayed[-1])
-        self.assertIn("cs-bus --remote dragon --provider claude-code --ack ID", said)
+        self.assertIn("cs-bus --remote host-a --provider claude-code --ack ID", said)
         payload = json.dumps({"session_id": self.session})
         self.assertIn(f"wake {self.session} {payload}", self.remote_lines())
-        self.assertEqual(json.loads(self.ssh_log.read_text().splitlines()[0])["host"], "dragon")
+        self.assertEqual(json.loads(self.ssh_log.read_text().splitlines()[0])["host"], "host-a")
         self.assert_not_acknowledged()
 
     def test_a_message_here_wakes_and_stops_the_remote_waiter(self):
         self.pending = []
         self.save()
-        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        DEMUX.remember_remote_host(self.root, self.lease, "host-a", True)
         outcome = queue.Queue()
         threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
         deadline = time.monotonic() + 5
@@ -1371,7 +1371,7 @@ class RemoteMailboxTests(MailboxFixture):
         code, said = outcome.get(timeout=5)
         self.assertEqual(code, MCP.WAKE_EXIT)
         self.assertEqual(self.notice(said, "e" * 24)["new_delivery_ids"], ["e" * 24])
-        self.assertNotIn("Mailbox on dragon", said)
+        self.assertNotIn("Mailbox on host-a", said)
         deadline = time.monotonic() + 5
         while "terminated" not in self.remote_lines():
             self.assertLess(time.monotonic(), deadline, "the remote waiter outlived this side")
@@ -1380,36 +1380,36 @@ class RemoteMailboxTests(MailboxFixture):
     def test_unreachable_host_is_retried_and_never_wakes_by_itself(self):
         self.pending = []
         self.save()
-        DEMUX.remember_remote_host(self.root, self.lease, "dragon", True)
+        DEMUX.remember_remote_host(self.root, self.lease, "host-a", True)
         self.environ["FAKE_SSH_EXIT"] = "255"
         with patch.object(MCP, "REMOTE_RETRY_SECONDS", 0.2):
             code, said = self.wake(window=2.5)
         self.assertEqual(code, MCP.WAKE_EXIT)
         self.assertEqual(self.notice(said, "in 2.5 s")["kind"], "codescribe_wait_idle")
-        self.assertNotIn("Mailbox on dragon", said)
+        self.assertNotIn("Mailbox on host-a", said)
         self.assertGreaterEqual(len(self.ssh_log.read_text().splitlines()), 2)
 
     def test_operations_run_on_the_host_under_this_session_and_attach_is_remembered(self):
-        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name",
-                                     "klaudiusz div0", "--provider", "claude-code"), 0)
+        self.assertEqual(self.remote("--remote", "host-a", "--attach", "--channel", "9", "--name",
+                                     "agent host-b", "--provider", "claude-code"), 0)
         args = [line[4:] for line in self.remote_lines() if line.startswith("arg ")]
-        self.assertEqual(args, ["--attach", "--channel", "9", "--name", "klaudiusz div0",
+        self.assertEqual(args, ["--attach", "--channel", "9", "--name", "agent host-b",
                                 "--provider", "claude-code", "--session", self.session])
-        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), ["dragon"])
-        self.assertEqual(self.remote("--remote=dragon", "--provider", "claude-code", "--ack", "a" * 24), 0)
-        self.assertEqual(self.remote("--remote", "dragon", "--detach", "--provider", "claude-code"), 0)
+        self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), ["host-a"])
+        self.assertEqual(self.remote("--remote=host-a", "--provider", "claude-code", "--ack", "a" * 24), 0)
+        self.assertEqual(self.remote("--remote", "host-a", "--detach", "--provider", "claude-code"), 0)
         self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
 
     def test_a_refused_attach_is_not_remembered_and_local_paths_never_travel(self):
-        self.assertEqual(self.remote("--remote", "dragon", "--attach", "--channel", "9", "--name", "k",
+        self.assertEqual(self.remote("--remote", "host-a", "--attach", "--channel", "9", "--name", "k",
                                      "--provider", "claude-code", FAKE_REMOTE_EXIT="3"), 3)
         self.assertEqual(DEMUX.remote_hosts(self.root, self.lease), [])
         calls = len(self.ssh_log.read_text().splitlines())
         errors = io.StringIO()
         with patch.object(sys, "stderr", errors):
-            self.assertEqual(self.remote("--remote", "dragon", "--read-pending", "--bus", "/tmp/x"), 2)
+            self.assertEqual(self.remote("--remote", "host-a", "--read-pending", "--bus", "/tmp/x"), 2)
             self.assertEqual(self.remote("--remote", "-oProxyCommand=x", "--status"), 2)
-            self.assertEqual(self.remote("--remote", "dragon", "--claude-code-wake"), 2)
+            self.assertEqual(self.remote("--remote", "host-a", "--claude-code-wake"), 2)
         self.assertEqual(len(self.ssh_log.read_text().splitlines()), calls, "nothing reached ssh")
 
 

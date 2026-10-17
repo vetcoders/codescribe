@@ -9,6 +9,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   var cloudConfigured = false
   func cloudRetranscribeConfigured() -> Bool { cloudConfigured }
   var onTranscribeFile: (() -> Void)?
+  var onRetranscribeCommit: ((CsUserRevisionResult) -> Void)?
   var receivedTranscribePath: String?
   var onFormatter: (() -> Void)?
   var onCopyTagged: (() -> Void)?
@@ -52,6 +53,16 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
       renderedText: "formatted",
       provenanceReceipt: "formatter-intent-boundary"
     )
+  }
+  func commitRetranscribeRevision(
+    sessionId: String, sourceRevision: UInt64, renderedText: String
+  ) async throws -> CsUserRevisionResult {
+    let result = CsUserRevisionResult(
+      sessionId: sessionId, sourceRevision: sourceRevision, revision: sourceRevision + 1,
+      renderedText: renderedText,
+      provenanceReceipt: "retranscribe-direct-\(sessionId)-\(sourceRevision + 1)")
+    onRetranscribeCommit?(result)
+    return result
   }
   func isRecording() async -> Bool { false }
   func initModel() async throws {}
@@ -202,7 +213,7 @@ final class OverlayIntentRailTests: XCTestCase {
         // the word "error" at exactly the moment they were the recovery.
         (
           "error", "draft", true, true, true, true, true, true,
-          [.insertPaste, .copy, .retranscribe, .close]
+          [.insertPaste, .copy, .retranscribe, .format, .close]
         ),
         // Sink failure with retained audio, no destination left: no Insert.
         (
@@ -466,12 +477,18 @@ final class OverlayIntentRailTests: XCTestCase {
       onRetranscribe: { state.retranscribe(pass: $0) }
     )
     XCTAssertTrue(rail.intents.contains(.retranscribe))
+    engine.onRetranscribeCommit = { [weak state] receipt in
+      guard let state else { return }
+      self.projectRetranscription(receipt, into: state)
+    }
 
     let cloud = expectation(description: "cloud pass reached the engine")
     engine.onTranscribeFile = { cloud.fulfill() }
     rail.retranscribe(.cloud)
     await fulfillment(of: [cloud], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "cloud:/tmp/overlay-intent-boundary.wav")
+    for _ in 0..<50 { await Task.yield() }
+    XCTAssertFalse(state.retranscribePending, "finish the first committed projection before the next pass")
 
     let local = expectation(description: "bare intent runs the local HQ pass")
     engine.onTranscribeFile = { local.fulfill() }
@@ -535,8 +552,8 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertEqual(OverlayIntentRail.recoveryIntents(for: clean), [])
     XCTAssertEqual(
-      OverlayIntentRail.projectedIntents(for: clean), [.insertPaste, .copy, .retranscribe, .close])
-    XCTAssertFalse(OverlayIntentRail.projectedIntents(for: clean).contains(.format))
+      OverlayIntentRail.projectedIntents(for: clean), [.insertPaste, .copy, .retranscribe, .format, .close])
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: clean).contains(.format))
     XCTAssertEqual(clean.mode, .error)
     XCTAssertEqual(clean.activeText, "draft")
     XCTAssertFalse(clean.hasRecoverableSupersededWork)
@@ -694,7 +711,9 @@ final class OverlayIntentRailTests: XCTestCase {
 
     await fulfillment(of: [reached], timeout: 0.2)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertEqual(state.toast, "retranscribed")
+    XCTAssertTrue(state.retranscribePending, "the engine boundary is not an applied projection")
+    XCTAssertNotEqual(state.toast, "retranscribed")
+    XCTAssertEqual(state.activeText, "final")
   }
 
   func testMissingEngineSurfacesCopyAndInsertFailuresOnCanvas() {
@@ -952,7 +971,7 @@ final class OverlayIntentRailTests: XCTestCase {
       (.formatted, [.insertPaste, .copy, .retranscribe, .format, .close]),
       (.coverageRefused, [.insertPaste, .copy, .retranscribe, .format, .close]),
       (.noSpeech, [.retranscribe, .close]),
-      (.error, [.insertPaste, .copy, .retranscribe, .close]),
+      (.error, [.insertPaste, .copy, .retranscribe, .format, .close]),
     ]
 
     for (mode, expected) in allBitsOn {
@@ -973,8 +992,7 @@ final class OverlayIntentRailTests: XCTestCase {
     }
   }
 
-  /// Refused coverage honors the producer bit; an error phase still withholds
-  /// Format because the user cannot start a terminal formatter there.
+  /// Terminal review honors the producer bit in every diagnostic phase.
   func testRefusedFormatUsesProducerPermission() {
     XCTAssertTrue(
       OverlayIntentRail.projectedIntents(
@@ -982,12 +1000,12 @@ final class OverlayIntentRailTests: XCTestCase {
         canRetranscribe: false, canFormat: true
       ).contains(.format))
     for mode in [OverlayMode.error] {
-      XCTAssertFalse(
+      XCTAssertTrue(
         OverlayIntentRail.projectedIntents(
           phase: mode, canPaste: false, canInsert: false, canCopy: false,
           canRetranscribe: false, canFormat: true
         ).contains(.format),
-        "\(mode) projected Format, whose relay refuses outside .formatted"
+        "\(mode) must retain an explicitly authorized document operation"
       )
     }
     XCTAssertTrue(
@@ -1052,7 +1070,7 @@ final class OverlayIntentRailTests: XCTestCase {
       palette: .dark,
       onIntent: state.relayIntent
     )
-    XCTAssertEqual(rail.intents, [.copy, .retranscribe, .close])
+    XCTAssertEqual(rail.intents, [.copy, .retranscribe, .format, .close])
     let copied = expectation(description: "error recovery copy reached the production relay")
     engine.onCopyTagged = { copied.fulfill() }
     rail.dispatch(.copy)
@@ -1111,6 +1129,23 @@ final class OverlayIntentRailTests: XCTestCase {
       OverlayIntentRail.projectedIntents(for: state),
       [.recoverSuperseded, .discardSuperseded, .copy, .retranscribe, .close]
     )
+  }
+
+  private func projectRetranscription(_ receipt: CsUserRevisionResult, into state: OverlayState) {
+    guard let current = state.latestTranscriptProjection else { return }
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: current.sequence + 1, emittedAt: "2026-10-17T00:00:01Z",
+        sessionId: receipt.sessionId, renderedText: receipt.renderedText,
+        phase: "formatted", terminal: true, reducerAction: "apply_direct_document_revision",
+        reducerRevision: receipt.revision, captureEpoch: current.captureEpoch,
+        canRetranscribe: current.canRetranscribe, canFormat: current.canFormat,
+        lifecycleTerminal: false,
+        documentRevisionReceipt: CsManualDocumentRevisionReceipt(
+          receiptId: receipt.provenanceReceipt, provenance: .retranscribe,
+          sessionId: receipt.sessionId, sourceRevision: receipt.sourceRevision,
+          revision: receipt.revision, renderedText: receipt.renderedText,
+          captureEpoch: current.captureEpoch, captureReceiptId: "fixture-direct-capability")))
   }
 
   private func projectedState(

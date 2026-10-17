@@ -47,6 +47,16 @@ mailbox before acting on it. The canonical mailbox retains the original
 envelope and its acoustic evidence. The queue copy never proves that a
 delivery is still unread. The installed Codex CLI must support `queue`.
 
+Native queue wakeup needs a thread the local Codex CLI can load: a
+`rollout-*-<thread-id>.jsonl` under `~/.codex/sessions`. A cloud-hosted thread
+— for example one started from the ChatGPT app with a cloud environment, where
+this Mac only runs `codex exec-server --remote …` — has none. Every submission
+is refused with `no rollout found for thread id …` and its receipt says
+`disposition: rejected`; `codex queue --remote unix://` does not help. Such an
+agent still reads, ACKs, sends and speaks, but cannot be woken after its turn
+ends: keep the turn open with one `cs-bus --watch --until-event`, or let an
+orchestrator woken through its own channel resume it. A `codex exec-server --remote` parent of the agent's `cs-bus --watch` process identifies a cloud thread.
+
 The default watch bell includes the complete message. Once this conversation
 receives its full text and matching owner coordinates, immediately ACK the
 delivery before any reply, work or wait. That ACK withdraws its exact native

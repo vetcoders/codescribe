@@ -9,6 +9,18 @@ mod capture_window_plan_contract_tests;
 
 use crate::stt::tail_provider::TailSampleRange;
 
+/// Length of one Layer 1 Whisper window on the capture clock, in seconds.
+///
+/// With [`LIVE_STEP_SECS`] every sample is decoded by up to three windows.
+/// That overlap is the engine's main second opinion on a word (Apple speaks
+/// for a median 16 % of a take's words, div0 15–17 X) and also where most
+/// duplicated words come from: 40 % of adjacent identical delivered words
+/// share one stretch of PCM.
+pub(crate) const LIVE_WINDOW_SECS: u32 = 9;
+
+/// Grid step between Layer 1 window starts, in seconds.
+pub(crate) const LIVE_STEP_SECS: u32 = 3;
+
 #[derive(Debug)]
 pub(crate) struct CaptureWindowPlan {
     session: String,
@@ -30,8 +42,8 @@ impl CaptureWindowPlan {
         Self {
             session,
             capture_epoch,
-            window_samples: u64::from(sample_rate) * 9,
-            step_samples: u64::from(sample_rate) * 3,
+            window_samples: u64::from(sample_rate) * u64::from(LIVE_WINDOW_SECS),
+            step_samples: u64::from(sample_rate) * u64::from(LIVE_STEP_SECS),
             capture_end: 0,
             eof: None,
             next_start: 0,
@@ -41,6 +53,14 @@ impl CaptureWindowPlan {
             trial_offer: false,
             last_trial_bucket: None,
         }
+    }
+
+    /// Raw decoder chunks own disjoint capture PCM. Without word admission,
+    /// overlapping inference text cannot be stitched by lexical deduplication.
+    pub(crate) fn set_non_overlapping_publications(&mut self) {
+        debug_assert_eq!(self.capture_end, 0);
+        debug_assert!(self.offered.is_none());
+        self.step_samples = self.window_samples;
     }
 
     /// Peeking never spends work. Backpressure retains the exact offered frame.

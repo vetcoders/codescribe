@@ -1,9 +1,9 @@
 # Copilot instructions — Codescribe
 
-`@AGENTS.md` is the authoritative per-repo contract (thrones of authority, worker
-embargo, shared compile cache, release cadence). This file adds what Copilot gets
-wrong most often: commit provenance, the two remotes, merge conflicts and the
-shared working tree. When this file and `AGENTS.md` disagree, `AGENTS.md` wins.
+`@AGENTS.md` is the authoritative per-repo contract (runtime owners, contracts,
+build and verification). This file adds what Copilot gets wrong most often:
+commit provenance, fast-forward pulls, merge conflicts and the shared working
+tree. When this file and `AGENTS.md` disagree, `AGENTS.md` wins.
 
 ## Commit messages — the provenance gate
 
@@ -51,16 +51,14 @@ Example of a complete message:
 Authored-By: copilot <agents@vetcoders.io>
 ```
 
-## Two remotes: fast-forward first
+## Pull fast-forward first
 
-The integration branch moves on two remotes: `origin` (GitHub) and the build
-host remote (`<build-remote>` below; `git remote -v` shows its name in your checkout). Founder's rule, 2026-10-13: pull `--ff-only` first; when a
-fast-forward is impossible, either `--rebase` or a `--no-ff` merge. Rewritten
-hashes of your own unpushed commits are not a problem. Never `--force` over a
-remote branch.
+Pull `--ff-only` first; when a fast-forward is impossible, either `--rebase` or
+a `--no-ff` merge. Rewritten hashes of your own unpushed commits are not a
+problem. Never `--force` over a remote branch.
 
 ```
-git pull <build-remote> <branch> --ff-only || git pull <build-remote> <branch> --rebase
+git pull <remote> <branch> --ff-only || git pull <remote> <branch> --rebase
 git push origin <branch>
 ```
 
@@ -91,11 +89,12 @@ conflicted file and how it was resolved.
 - Never rewrite published history: no `--force`, no `--force-with-lease` on a
   branch you did not create, no `reset --hard`, no interactive rebase, no deleting
   branches or tags, no `stash drop`. Pushing the branch you were given
-  fast-forward is fine; merging into `main` is the Founder's button.
+  fast-forward is fine; merging into `main` is left to the maintainers.
 
 ## Shared working tree
 
-Several agents and the Founder work in the same checkout and on the same branch.
+Several agents and maintainers may work in the same checkout and on
+the same branch.
 
 - A dirty worktree is usually someone else's work in progress. Never
   `git checkout -- <file>`, `git stash`, `git clean` or revert files you did not
@@ -116,16 +115,10 @@ Several agents and the Founder work in the same checkout and on the same branch.
   AppKit as a plain `String` is invisible to the extractor and loses its Polish.
 - Do not introduce the words `shim`, `compat`, `legacy`, `adapter-for-old`,
   `fallback-to-previous`, `bridge-until` or `TODO remove` in code, diffs or
-  commits. One throne per authority: replace a competing implementation, never wrap it.
+  commits. One owner per responsibility: replace a competing implementation, never wrap it.
 - Interface copy goes through `String(localized:)` with a Polish translation in the
   catalog; the product is spelled `Codescribe`, the framework `Vibecrafted`.
 - The only signature allowed in code and acknowledgements:
   `𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI`.
-
-## When dispatched as a worker on the STT engine
-
-The worker embargo in `AGENTS.md` applies: write the code, hand over the commit
-and the list of uncertainties, do not compile, do not run tests, do not install.
-The named integrator runs the gates.
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

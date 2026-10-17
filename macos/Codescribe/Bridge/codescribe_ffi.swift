@@ -6445,6 +6445,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onMaxApprovalsChanged()
 
+    /**
+     * Pointer input for the overlay's agent chooser. UI-only: the overlay
+     * decides what a click means and opens channels through its own path.
+     */
+    func onAgentGesture(input: CsAgentGestureInput)
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -6519,6 +6525,18 @@ open func onMaxApprovalsChanged()  {try! rustCall() {
 }
 }
 
+    /**
+     * Pointer input for the overlay's agent chooser. UI-only: the overlay
+     * decides what a click means and opens channels through its own path.
+     */
+open func onAgentGesture(input: CsAgentGestureInput)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsAgentGestureInput_lower(input),$0
+    )
+}
+}
+
 
 
 }
@@ -6581,6 +6599,30 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onMaxApprovalsChanged(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onAgentGesture: { (
+            uniffiHandle: UInt64,
+            input: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onAgentGesture(
+                     input: try FfiConverterTypeCsAgentGestureInput_lift(input)
                 )
             }
 
@@ -13586,6 +13628,11 @@ public struct CsSettings: Equatable, Hashable {
      * settings key plus the power-user env override.
      */
     public var dictationWitnessArmed: Bool
+    /**
+     * Independent next-take publication and Apple producer choices.
+     */
+    public var sealLedgerEnabled: Bool
+    public var appleLiveEnabled: Bool
     public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
@@ -13607,6 +13654,11 @@ public struct CsSettings: Equatable, Hashable {
      * The tap stays listen-only, so the click still reaches the frontmost app.
      */
     public var middleMouseActsAsFn: Bool
+    /**
+     * A short middle click opens the overlay's agent chooser. Default off.
+     * While it is on, the middle button is Codescribe's, not the frontmost app's.
+     */
+    public var middleMouseAgentGesture: Bool
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
     /**
@@ -13726,7 +13778,10 @@ public struct CsSettings: Equatable, Hashable {
          * Voice Lab: the DictationTranscriber witness re-checks unresolved
          * recovery debt after each sealed utterance. Effective value after the
          * settings key plus the power-user env override.
-         */dictationWitnessArmed: Bool, lightPlusSentencePauseSec: Float,
+         */dictationWitnessArmed: Bool,
+        /**
+         * Independent next-take publication and Apple producer choices.
+         */sealLedgerEnabled: Bool, appleLiveEnabled: Bool, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -13742,7 +13797,11 @@ public struct CsSettings: Equatable, Hashable {
         /**
          * Middle mouse button follows Fn press/release. Default off.
          * The tap stays listen-only, so the click still reaches the frontmost app.
-         */middleMouseActsAsFn: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */middleMouseActsAsFn: Bool,
+        /**
+         * A short middle click opens the overlay's agent chooser. Default off.
+         * While it is on, the middle button is Codescribe's, not the frontmost app's.
+         */middleMouseAgentGesture: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
          * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
          */pasteMode: CsPasteMode,
@@ -13800,11 +13859,14 @@ public struct CsSettings: Equatable, Hashable {
         self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
         self.formatOnDevice = formatOnDevice
         self.dictationWitnessArmed = dictationWitnessArmed
+        self.sealLedgerEnabled = sealLedgerEnabled
+        self.appleLiveEnabled = appleLiveEnabled
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
         self.fnTapTogglesDictation = fnTapTogglesDictation
         self.middleMouseActsAsFn = middleMouseActsAsFn
+        self.middleMouseAgentGesture = middleMouseAgentGesture
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
         self.pasteMode = pasteMode
@@ -13884,11 +13946,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
                 formatOnDevice: FfiConverterBool.read(from: &buf),
                 dictationWitnessArmed: FfiConverterBool.read(from: &buf),
+                sealLedgerEnabled: FfiConverterBool.read(from: &buf),
+                appleLiveEnabled: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
                 fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
+                middleMouseAgentGesture: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
@@ -13956,11 +14021,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
         FfiConverterBool.write(value.formatOnDevice, into: &buf)
         FfiConverterBool.write(value.dictationWitnessArmed, into: &buf)
+        FfiConverterBool.write(value.sealLedgerEnabled, into: &buf)
+        FfiConverterBool.write(value.appleLiveEnabled, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
         FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
+        FfiConverterBool.write(value.middleMouseAgentGesture, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
@@ -16141,6 +16209,103 @@ public func FfiConverterTypeCsWhisperModelSwitch_lift(_ buf: RustBuffer) throws 
 public func FfiConverterTypeCsWhisperModelSwitch_lower(_ value: CsWhisperModelSwitch) -> RustBuffer {
     return FfiConverterTypeCsWhisperModelSwitch.lower(value)
 }
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The pointer's input to the overlay's agent chooser.
+ */
+
+public enum CsAgentGestureInput: Equatable, Hashable {
+
+    /**
+     * The middle button was clicked, not held into dictation.
+     */
+    case middleClick
+    /**
+     * Wheel movement while choosing. Positive steps move down the list.
+     */
+    case scroll(steps: Int32
+    )
+    /**
+     * A left click while choosing: open the focused agent.
+     */
+    case leftClick
+    /**
+     * Escape while choosing: leave without acting.
+     */
+    case cancel
+
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentGestureInput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentGestureInput: FfiConverterRustBuffer {
+    typealias SwiftType = CsAgentGestureInput
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentGestureInput {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .middleClick
+
+        case 2: return .scroll(steps: try FfiConverterInt32.read(from: &buf)
+        )
+
+        case 3: return .leftClick
+
+        case 4: return .cancel
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsAgentGestureInput, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .middleClick:
+            writeInt(&buf, Int32(1))
+
+
+        case let .scroll(steps):
+            writeInt(&buf, Int32(2))
+            FfiConverterInt32.write(steps, into: &buf)
+
+
+        case .leftClick:
+            writeInt(&buf, Int32(3))
+
+
+        case .cancel:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentGestureInput_lift(_ buf: RustBuffer) throws -> CsAgentGestureInput {
+    return try FfiConverterTypeCsAgentGestureInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentGestureInput_lower(_ value: CsAgentGestureInput) -> RustBuffer {
+    return FfiConverterTypeCsAgentGestureInput.lower(value)
+}
+
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
@@ -20944,6 +21109,17 @@ public func savePastedImage(data: Data)throws  -> String  {
 })
 }
 /**
+ * The overlay takes (or renews) the agent chooser's capture of the wheel, the
+ * left click and Escape, or releases it. Renewal is a lease: an overlay that
+ * stops renewing loses the capture on its own.
+ */
+public func setAgentChooserCapture(active: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_agent_chooser_capture(
+        FfiConverterBool.lower(active),$0
+    )
+}
+}
+/**
  * Persist a picker selection and switch the running process to it.
  *
  * Validation happens before persistence: an unknown or unusable reference is
@@ -21136,6 +21312,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_save_pasted_image() != 45294) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture() != 16074) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_local_whisper_model() != 36491) {
@@ -21730,6 +21909,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 5950) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {

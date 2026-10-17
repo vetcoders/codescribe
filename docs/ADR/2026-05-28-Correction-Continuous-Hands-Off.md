@@ -61,7 +61,7 @@ Zamiast mnożyć tryby dyktowania na wejściu (Raw / Formatting / Assistive jako
 
 Dictation sam w sobie jest jeden (dla non-assistive hands-off). Różnicowanie zachowań dzieje się **po** nagraniu, nie podczas niego.
 
-To jest ucywilizowanie kontraktu, który obrosł historycznym gównem.
+To jest ucywilizowanie kontraktu, który obrosł historycznym balastem.
 
 ## Sztywny plan wykonania (kolejność nienegocjowalna)
 

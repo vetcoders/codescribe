@@ -371,6 +371,9 @@ struct RecordingEventPipeline {
 struct RecordingEventSinkOptions {
     preview_deltas_enabled: bool,
     sentence_pause_sec: f32,
+    /// Per-take track switches from the frozen runtime snapshot.
+    seal_ledger_enabled: bool,
+    apple_live_enabled: bool,
 }
 
 /// Safe filename fragment for a controller session id. Rejects path
@@ -4990,7 +4993,8 @@ impl RecordingController {
                     Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
                 }
             }))
-            .with_sentence_pause_sec(options.sentence_pause_sec),
+            .with_sentence_pause_sec(options.sentence_pause_sec)
+            .with_transcription_controls(options.seal_ledger_enabled, options.apple_live_enabled),
         );
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
@@ -5136,6 +5140,8 @@ impl RecordingController {
             RecordingEventSinkOptions {
                 preview_deltas_enabled,
                 sentence_pause_sec: recorder.light_plus_sentence_pause_sec(),
+                seal_ledger_enabled: recorder.seal_ledger_enabled(),
+                apple_live_enabled: recorder.apple_live_enabled(),
             },
             event_broadcast,
             transcript_bus,
@@ -6192,7 +6198,7 @@ impl RecordingController {
                     Ok(grant) => info!(
                         device = %grant.device_name,
                         sample_rate = grant.sample_rate,
-                        calibration_version = %grant.calibration_version,
+                        calibration_version = ?grant.calibration_version,
                         "acoustic admission granted for hold start"
                     ),
                     Err(blocker)
@@ -6505,7 +6511,7 @@ impl RecordingController {
                 Ok(grant) => info!(
                     device = %grant.device_name,
                     sample_rate = grant.sample_rate,
-                    calibration_version = %grant.calibration_version,
+                    calibration_version = ?grant.calibration_version,
                     "acoustic admission granted for toggle start"
                 ),
                 Err(blocker)
@@ -8651,6 +8657,8 @@ mod refusal_recovery_tests {
             RecordingEventSinkOptions {
                 preview_deltas_enabled: false,
                 sentence_pause_sec: 0.0,
+                seal_ledger_enabled: true,
+                apple_live_enabled: true,
             },
             take.controller.event_broadcast.clone(),
             Some(Arc::clone(&take.bus)),
@@ -9580,6 +9588,8 @@ mod refusal_recovery_tests {
             RecordingEventSinkOptions {
                 preview_deltas_enabled: false,
                 sentence_pause_sec: 0.7,
+                seal_ledger_enabled: true,
+                apple_live_enabled: true,
             },
             events,
             None,
@@ -10398,6 +10408,8 @@ mod refusal_recovery_tests {
             RecordingEventSinkOptions {
                 preview_deltas_enabled: false,
                 sentence_pause_sec: 0.7,
+                seal_ledger_enabled: true,
+                apple_live_enabled: true,
             },
             sender,
             Some(Arc::clone(&bus)),
@@ -10526,6 +10538,8 @@ mod refusal_recovery_tests {
             RecordingEventSinkOptions {
                 preview_deltas_enabled: false,
                 sentence_pause_sec: 0.7,
+                seal_ledger_enabled: true,
+                apple_live_enabled: true,
             },
             sender.clone(),
             Some(Arc::clone(&bus)),
@@ -11684,7 +11698,10 @@ mod c15d_settings_one_path_falsifiers {
             measured_at,
         )
         .expect("immediate readiness probe sees the persisted profile");
-        assert_eq!(grant.calibration_version, "cal2-fixture-mic-10000@48000hz");
+        assert_eq!(
+            grant.calibration_version.as_deref(),
+            Some("cal2-fixture-mic-10000@48000hz")
+        );
     }
 
     /// C15D-A lifecycle falsifier: an unfinished delayed hold owns its selected
@@ -13470,8 +13487,11 @@ mod closed_take_publication_tests {
         let published = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicBool::new(false));
         let mut recorder = StreamingRecorder::new().unwrap();
-        let inputs =
+        let mut inputs =
             codescribe_core::config::CapturedRuntimeInputs::defaults_at(root.path().to_owned(), 1);
+        // This no-provider fixture exercises ledger-mode publication ownership.
+        // Direct completion separately requires the real decoder acknowledgement.
+        inputs.user_settings.seal_ledger_enabled = Some(true);
         recorder.bind_session_authority(
             "old-take".into(),
             Arc::new(Config::runtime_snapshot_from_captured(inputs)),

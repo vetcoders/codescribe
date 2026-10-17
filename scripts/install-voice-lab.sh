@@ -11,7 +11,9 @@
 #                                 ordered by `gh config git_protocol` (https on
 #                                 the current host). Only vetcoders/
 #                                 voice-lab URLs are accepted.
-#   CODESCRIBE_VOICE_LAB_SRC      existing checkout (skips clone)
+#   CODESCRIBE_VOICE_LAB_SRC      existing checkout (skips clone). Without it
+#                                 the Lab comes from the cache on main, never
+#                                 from a sibling checkout's current branch.
 #   App settings are merged by Codescribe at launch, never by this installer.
 #   HOME                          runtime dest ~/.codescribe/voice-lab
 #
@@ -90,16 +92,27 @@ candidate_repo_urls() {
   fi
 }
 
+# The installed Lab follows voice-lab main through the cache. A sibling checkout
+# sits on whatever branch someone left it on, so installing from it silently
+# dropped merged work (the Silero take chart, gone on the next install-app,
+# 2026-10-17). Install a working copy only by naming it.
 resolve_src() {
   if [[ -n "${CODESCRIBE_VOICE_LAB_SRC:-}" ]]; then
     echo "${CODESCRIBE_VOICE_LAB_SRC}"
     return
   fi
-  if [[ -e "${SIBLING}/.git" ]] && looks_like_voice_lab "$SIBLING"; then
+  echo "$CACHE"
+}
+
+# Access proof only needs a checkout with the org origin; before the first
+# install the sibling may be the only one on the machine.
+resolve_access_src() {
+  if [[ -z "${CODESCRIBE_VOICE_LAB_SRC:-}" && ! -e "$CACHE" ]] &&
+    [[ -e "${SIBLING}/.git" ]] && looks_like_voice_lab "$SIBLING"; then
     echo "$SIBLING"
     return
   fi
-  echo "$CACHE"
+  resolve_src
 }
 
 need_git() {
@@ -199,13 +212,16 @@ verify_runtime() {
 main() {
   local src
   src="$(resolve_src)"
+  if [[ "$src" == "$CACHE" && -e "${SIBLING}/.git" ]]; then
+    echo "==> ${SIBLING} not installed; Voice Lab comes from main (CODESCRIBE_VOICE_LAB_SRC=${SIBLING} installs that checkout)"
+  fi
   ensure_checkout "$src"
   run_setup "$src"
   verify_runtime
 }
 
 if [[ "${1:-}" == "--verify-access" ]]; then
-  verify_checkout_access "$(resolve_src)"
+  verify_checkout_access "$(resolve_access_src)"
 else
   main "$@"
 fi

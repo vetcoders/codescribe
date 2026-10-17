@@ -479,9 +479,9 @@ final class OverlayState {
   /// One Undo/Redo/version pick in flight; a second is refused until the
   /// projection that answers it arrives.
   private(set) var pendingNavigation: OverlayPendingNavigation?
-  /// The live Retranscribe pass running for the projected take, if any. A
-  /// new take drops it; a finishing pass clears only its own ticket.
-  private var retranscribeTicket: UInt64?
+  /// One live pass owns its ticket until both the commit ACK and its
+  /// authenticated projection arrive. A new take drops the whole ticket.
+  private var retranscribeTicket: OverlayRetranscribeTicket?
   @ObservationIgnored private var retranscribeTickets: UInt64 = 0
   var retranscribePending: Bool { retranscribeTicket != nil }
   /// A transcript reopened from history. While set it owns the canvas and
@@ -710,7 +710,10 @@ final class OverlayState {
     }
     if presentationMode != mode {
       presentationMode = mode
-      if mode != .expanded { showsAgentMonitor = false }
+      if mode != .expanded {
+        showsAgentMonitor = false
+        endAgentChoosing()
+      }
       onPresentationModeChanged?(mode)
     }
     if expanding {
@@ -1514,6 +1517,9 @@ final class OverlayState {
   /// a followed reply or roster change is automatic. Nil keeps the form.
   private func selectConversation(_ id: String?, expansion: OverlayPresentationCause?) {
     guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
+    // Any surface change ends the chooser, so a list no longer shown never
+    // keeps the wheel and the left click.
+    endAgentChoosing()
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
@@ -1596,9 +1602,174 @@ final class OverlayState {
   }
 
   func hideAgentSidebar() {
+    endAgentChoosing()
     showsAgentMonitor = false
     markVisibleConversationRead()
     onChannelPresentationChanged?()
+  }
+
+  // MARK: Middle-click agent chooser
+
+  /// Maciej, 2026-10-17 12:19Z–12:23Z: a middle click opens the agents with
+  /// the first row focused and takes the wheel from other apps; the wheel moves
+  /// the focus, a left click opens that agent's conversation, and a middle
+  /// click opens its microphone until the next middle click, anywhere, which
+  /// closes and sends. A microphone clicked in the list disarms that next
+  /// click, so nothing is locked. Rust classifies the clicks and holds the
+  /// capture lease; this machine owns the targets.
+  enum AgentGesturePhase: Equatable {
+    case idle
+    /// The list is up and holds the wheel, the left click and Escape.
+    case choosing(focus: String?)
+    /// The gesture opened this channel; the next middle click closes it.
+    case talking(channel: String)
+  }
+
+  private(set) var agentGesturePhase: AgentGesturePhase = .idle
+  /// Test seam over the Rust capture lease. Each renewal holds it 30 s.
+  @ObservationIgnored var agentChooserCapture: (Bool) -> Void = {
+    setAgentChooserCapture(active: $0)
+  }
+  /// Choosing without input this long hands the wheel back.
+  @ObservationIgnored var agentChooserIdleSeconds: Double = 20
+  @ObservationIgnored private var agentChooserIdleTask: Task<Void, Never>?
+
+  var agentChooserOpen: Bool {
+    if case .choosing = agentGesturePhase { return true }
+    return false
+  }
+
+  var agentGestureFocusID: String? {
+    if case .choosing(let focus) = agentGesturePhase { return focus }
+    return nil
+  }
+
+  /// What the list on screen shows, in its order: 0 · All, then the roster.
+  /// The pill stack leaves out the conversation already open; the docked
+  /// column lists it too.
+  var agentGestureTargets: [OverlayConversation] {
+    let current = OverlayChannelStatusView.currentConversations(
+      conversations: conversations, archivedOwners: archivedAgentOwners,
+      hudStates: channelHudStates)
+    let ordered = OverlayChannelStatusView.rosterOrder(
+      current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
+    return dockedRosterColumnShown ? ordered : ordered.filter { $0.id != selectedConversationID }
+  }
+
+  private var agentListOnScreen: Bool {
+    !isCollapsed && (showsAgentMonitor || dockedColumnAlreadyOnScreen)
+  }
+
+  func handleAgentGesture(_ input: CsAgentGestureInput) {
+    switch (agentGesturePhase, input) {
+    case (.idle, .middleClick):
+      beginAgentChoosing()
+    case (.choosing(let focus), .middleClick):
+      talkToAgent(focus)
+    case (.talking(let channel), .middleClick):
+      finishAgentTalk(channel)
+    case (.choosing(let focus), .scroll(let steps)):
+      moveAgentFocus(from: focus, by: Int(steps))
+    case (.choosing(let focus), .leftClick):
+      endAgentChoosing()
+      if let focus { selectConversation(focus) }
+    case (.choosing, .cancel):
+      hideAgentSidebar()
+    case (_, .scroll), (_, .leftClick), (_, .cancel):
+      // A lease that outlived its chooser: hand the input back now.
+      agentChooserCapture(false)
+    }
+  }
+
+  /// The pointer entering a row focuses it while choosing.
+  func hoverAgentGestureTarget(_ id: String) {
+    guard agentChooserOpen, agentGestureFocusID != id,
+      agentGestureTargets.contains(where: { $0.id == id })
+    else { return }
+    agentGesturePhase = .choosing(focus: id)
+    renewAgentChooser()
+  }
+
+  private func beginAgentChoosing() {
+    showAgentMonitor(expansion: .user)
+    agentGesturePhase = .choosing(focus: agentGestureTargets.first?.id)
+    renewAgentChooser()
+  }
+
+  private func moveAgentFocus(from focus: String?, by steps: Int) {
+    // Something else took the surface while choosing: the wheel brings it back.
+    if !agentListOnScreen { showAgentMonitor(expansion: .user) }
+    let targets = agentGestureTargets
+    if !targets.isEmpty {
+      let current = focus.flatMap { id in targets.firstIndex { $0.id == id } }
+      let next = current.map { min(max($0 + steps, 0), targets.count - 1) } ?? 0
+      agentGesturePhase = .choosing(focus: targets[next].id)
+    }
+    renewAgentChooser()
+  }
+
+  /// Every input renews the Rust lease and restarts the idle countdown.
+  private func renewAgentChooser() {
+    agentChooserCapture(true)
+    agentChooserIdleTask?.cancel()
+    let seconds = agentChooserIdleSeconds
+    agentChooserIdleTask = Task { @MainActor [weak self] in
+      do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+      self?.endAgentChoosing()
+    }
+  }
+
+  private func endAgentChoosing() {
+    guard agentChooserOpen else { return }
+    agentChooserIdleTask?.cancel()
+    agentChooserIdleTask = nil
+    agentGesturePhase = .idle
+    agentChooserCapture(false)
+  }
+
+  private func talkToAgent(_ focus: String?) {
+    guard let focus else {
+      endAgentChoosing()
+      return
+    }
+    guard let conversation = conversations.first(where: { $0.id == focus }),
+      canToggleConversationMicrophone(conversation),
+      // A dead reader cannot be spoken to; the list disables its microphone too.
+      conversation.channel == "0" || channelHudStates[conversation.channel]?.followerAlive != false,
+      let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
+    else {
+      // Nothing to talk to on this row: the chooser stays for another one.
+      renewAgentChooser()
+      return
+    }
+    endAgentChoosing()
+    let channel = conversation.channel
+    agentGesturePhase = .talking(channel: channel)
+    // An open microphone stays open; the next middle click closes it.
+    guard channelHudStates[channel]?.open != true else { return }
+    // A stale error must not end this talk when the toggle below returns early
+    // behind one still pending; a failure of this toggle sets a fresh one.
+    channelToggleError = nil
+    Task {
+      await performAgentChannelToggle(digit, keepsAgentList: false)
+      if channelToggleError != nil, agentGesturePhase == .talking(channel: channel) {
+        agentGesturePhase = .idle
+      }
+    }
+  }
+
+  private func finishAgentTalk(_ channel: String) {
+    // The opening toggle is still in flight; this click must not race it.
+    guard !pendingChannelToggles.contains(channel) else { return }
+    agentGesturePhase = .idle
+    guard channelHudStates[channel]?.open == true,
+      let digit = OverlayChannelStatusView.toggleDigit(for: channel)
+    else {
+      // The microphone closed some other way: this click starts over.
+      beginAgentChoosing()
+      return
+    }
+    Task { await performAgentChannelToggle(digit, keepsAgentList: false) }
   }
 
   private func expandAgentSurface(cause: OverlayPresentationCause) {
@@ -2077,13 +2248,30 @@ final class OverlayState {
     // full idle interval. Unchanged roster polls must not extend that interval.
     if wasChannelCapturing != channelAudioCaptureActive {
       noteAutoCollapseActivity()
+      // The session counter runs for a channel take as it does for dictation:
+      // from the first open channel until the last one closes. An open
+      // dictation keeps its own clock.
+      if !recording {
+        if channelAudioCaptureActive {
+          beginCaptureClock()
+        } else {
+          freezeCaptureClock()
+        }
+      }
     }
     onChannelPresentationChanged?()
   }
 
   /// `keepsAgentList`: the click came from the agent list (pills or the
-  /// docked roster); while that list is shown, opening stays in it.
+  /// docked roster); while that list is shown, opening stays in it. A click
+  /// here is the hand's: it disarms the middle click that would close a
+  /// gesture-opened microphone (Maciej, 2026-10-17 12:19Z).
   func toggleAgentChannel(_ digit: UInt8, keepsAgentList: Bool = false) async {
+    if case .talking = agentGesturePhase { agentGesturePhase = .idle }
+    await performAgentChannelToggle(digit, keepsAgentList: keepsAgentList)
+  }
+
+  private func performAgentChannelToggle(_ digit: UInt8, keepsAgentList: Bool) async {
     let channel = String(digit)
     guard (0...9).contains(digit), let engine,
       !pendingChannelToggles.contains(channel)
@@ -2696,6 +2884,17 @@ final class OverlayState {
     relayRetranscribeIntent(pass: pass)
   }
 
+  private struct OverlayRetranscribeTicket {
+    let id: UInt64
+    let generation: UInt64
+    let sessionId: String
+    let sourceRevision: UInt64
+    let captureEpoch: UInt64
+    let engineLabel: String
+    var acknowledgment: CsUserRevisionResult?
+    var projectedReceipt: CsManualDocumentRevisionReceipt?
+  }
+
   private func relayRetranscribeIntent(pass: OverlayRetranscribePass) {
     if archivedTranscript != nil {
       retranscribeArchivedTranscript(pass: pass)
@@ -2739,63 +2938,59 @@ final class OverlayState {
     showFooterNotice(running, persists: true)
     retranscribeTickets &+= 1
     let ticket = retranscribeTickets
-    retranscribeTicket = ticket
+    retranscribeTicket = OverlayRetranscribeTicket(
+      id: ticket, generation: generation, sessionId: projection.sessionId,
+      sourceRevision: projection.reducerRevision, captureEpoch: projection.captureEpoch,
+      engineLabel: passEngine)
     Task { @MainActor [weak self] in
       defer {
-        if self?.retranscribeTicket == ticket { self?.retranscribeTicket = nil }
+        if let self, let pending = self.retranscribeTicket,
+          pending.id == ticket, pending.acknowledgment == nil
+        {
+          self.retranscribeTicket = nil
+        }
       }
-      guard let self, generation == self.captureGeneration else { return }
+      guard let self, self.ownsRetranscription(ticket) else { return }
       do {
         let result = try await engine.transcribeTake(
           sessionId: projection.sessionId, path: prefixedPath)
-        guard generation == self.captureGeneration,
-          self.latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
+        guard self.ownsRetranscription(ticket) else { return }
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+          self.retranscribeTicket = nil
           self.engineChip = previousChip
           self.presentActionFailure(
             String(
               localized: "The \(passEngine) pass returned no text",
               comment: "The placeholder is the name of the engine that ran the pass"),
             notice: String(localized: "retranscribe returned no text"))
+          self.restartAutoHideCountdown()
           return
         }
-        if !text.isEmpty {
-          if self.latestTranscriptProjection?.sessionId == projection.sessionId {
-            // Rust records the pass as a new step of the take's linear
-            // history, so Undo returns to the version it replaced. The CAS
-            // is the revision this pass started from: an Undo or another
-            // change in between refuses the result instead of stacking it.
-            let receipt = try await engine.commitRetranscribeRevision(
-              sessionId: projection.sessionId,
-              sourceRevision: projection.reducerRevision,
-              renderedText: text
-            )
-            guard generation == self.captureGeneration,
-              self.latestTranscriptProjection?.sessionId == projection.sessionId
-            else { return }
-            self.noteArchiveRefusal(receipt.archiveRefusal)
-          } else {
-            self.engineChip = previousChip
-            self.presentActionFailure(
-              String(localized: "A newer take replaced this overlay"),
-              notice: String(localized: "take changed"))
-            return
-          }
-          if self.mode == .noSpeech {
-            self.mode = .formatted
-          }
+        let receipt = try await engine.commitRetranscribeRevision(
+          sessionId: projection.sessionId,
+          sourceRevision: projection.reducerRevision,
+          renderedText: text)
+        guard self.ownsRetranscription(ticket) else { return }
+        guard receipt.sessionId == projection.sessionId,
+          receipt.sourceRevision == projection.reducerRevision,
+          receipt.sourceRevision < UInt64.max,
+          receipt.revision == receipt.sourceRevision + 1,
+          !receipt.provenanceReceipt.isEmpty
+        else {
+          self.retranscribeTicket = nil
+          self.engineChip = previousChip
+          self.presentActionFailure(
+            String(localized: "Couldn't apply the new transcription. Try again."),
+            notice: String(localized: "Retranscription failed"))
+          self.restartAutoHideCountdown()
+          return
         }
-        self.engineChip = passEngine
-        self.errorMessage = nil
-        self.errorDiagnosticDetail = nil
-        self.showFooterNotice(String(localized: "retranscribed"))
-        self.restartAutoHideCountdown()
+        self.retranscribeTicket?.acknowledgment = receipt
+        self.finishProjectedRetranscription()
       } catch {
-        guard generation == self.captureGeneration,
-          self.latestTranscriptProjection?.sessionId == projection.sessionId
-        else { return }
+        guard self.ownsRetranscription(ticket) else { return }
+        self.retranscribeTicket = nil
         self.engineChip = previousChip
         let described = error.userFacingMessage
         self.presentActionFailure(
@@ -2811,6 +3006,71 @@ final class OverlayState {
         self.restartAutoHideCountdown()
       }
     }
+  }
+
+  private func ownsRetranscription(_ ticket: UInt64) -> Bool {
+    guard let pending = retranscribeTicket, pending.id == ticket else { return false }
+    return pending.generation == captureGeneration
+      && latestTranscriptProjection?.sessionId == pending.sessionId
+      && latestTranscriptProjection?.captureEpoch == pending.captureEpoch
+  }
+
+  /// The listener queues projections independently of the FFI continuation.
+  /// Remember the real receipt even when it reaches the canvas before its ACK.
+  private func observeRetranscriptionProjection(_ projection: CsTranscriptProjectionEvent) {
+    guard let pending = retranscribeTicket else { return }
+    guard ownsRetranscription(pending.id) else {
+      // This callback runs only after the projection was admitted as the
+      // current canvas. Its replacement cannot inherit an obsolete request.
+      retranscribeTicket = nil
+      return
+    }
+    guard projection.terminal,
+      projection.sessionId == pending.sessionId,
+      projection.captureEpoch == pending.captureEpoch,
+      let receipt = projection.documentRevisionReceipt,
+      receipt.provenance == .retranscribe,
+      receipt.sessionId == pending.sessionId,
+      receipt.sourceRevision == pending.sourceRevision,
+      receipt.sourceRevision < UInt64.max,
+      receipt.revision == receipt.sourceRevision + 1,
+      receipt.revision == projection.reducerRevision,
+      !receipt.receiptId.isEmpty,
+      receipt.renderedText.utf8.elementsEqual(projection.renderedText.utf8)
+    else { return }
+    if let epoch = receipt.captureEpoch {
+      guard epoch > 0, epoch == pending.captureEpoch,
+        receipt.captureReceiptId?.isEmpty == false
+      else { return }
+    } else {
+      guard !projection.acousticReceipts.isEmpty else { return }
+    }
+    retranscribeTicket?.projectedReceipt = receipt
+    finishProjectedRetranscription()
+  }
+
+  private func finishProjectedRetranscription() {
+    guard let pending = retranscribeTicket, ownsRetranscription(pending.id),
+      let acknowledgment = pending.acknowledgment,
+      let receipt = pending.projectedReceipt,
+      acknowledgment.sessionId == receipt.sessionId,
+      acknowledgment.sourceRevision == receipt.sourceRevision,
+      acknowledgment.revision == receipt.revision,
+      acknowledgment.provenanceReceipt == receipt.receiptId,
+      acknowledgment.renderedText.utf8.elementsEqual(receipt.renderedText.utf8)
+    else { return }
+    retranscribeTicket = nil
+    // A later accepted revision or an archive owns its own chrome. Completing
+    // this attempt must not overwrite that successor with an old success.
+    guard archivedTranscript == nil,
+      latestTranscriptProjection?.reducerRevision == acknowledgment.revision
+    else { return }
+    noteArchiveRefusal(acknowledgment.archiveRefusal)
+    engineChip = pending.engineLabel
+    errorMessage = nil
+    errorDiagnosticDetail = nil
+    showFooterNotice(String(localized: "retranscribed"))
+    restartAutoHideCountdown()
   }
 
   /// Undo/Redo or a version pick waiting for the projection that answers it.
@@ -4002,7 +4262,7 @@ final class OverlayState {
       }
       compactProjection = nil
     }
-    let revisionReceipt: String?
+    let documentReceipt: CsManualDocumentRevisionReceipt?
     if let receipt = projection.documentRevisionReceipt {
       let matchesCapture: Bool
       if let epoch = receipt.captureEpoch {
@@ -4012,15 +4272,20 @@ final class OverlayState {
       } else {
         matchesCapture = !projection.acousticReceipts.isEmpty
       }
-      revisionReceipt =
-        receipt.provenance == .userEdit
-          && receipt.sessionId == projection.sessionId
+      documentReceipt =
+        receipt.sessionId == projection.sessionId
           && receipt.sourceRevision < UInt64.max
           && receipt.sourceRevision + 1 == receipt.revision
           && receipt.revision == projection.reducerRevision
           && receipt.renderedText.utf8.elementsEqual(projection.renderedText.utf8)
           && !receipt.receiptId.isEmpty && matchesCapture
-        ? receipt.receiptId : nil
+        ? receipt : nil
+    } else {
+      documentReceipt = nil
+    }
+    let revisionReceipt: String?
+    if projection.documentRevisionReceipt != nil {
+      revisionReceipt = documentReceipt?.provenance == .userEdit ? documentReceipt?.receiptId : nil
     } else {
       revisionReceipt = projection.acousticReceipts
         .compactMap(\.manualEditReceipt)
@@ -4031,7 +4296,8 @@ final class OverlayState {
         && projection.label.hasPrefix("formatter-") ? projection.label : nil
     let completesPendingRevision =
       revisionCommitPending
-      && projection.reducerAction == "apply_manual_edit"
+      && (projection.reducerAction == "apply_manual_edit"
+        || projection.reducerAction == "apply_direct_document_revision")
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
       && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
@@ -4048,8 +4314,10 @@ final class OverlayState {
       completesPendingNavigation =
         pending.expectsPresentation
         ? projection.reducerAction == "derived_projection"
-        : projection.reducerAction == "apply_manual_edit"
-          && projection.documentRevisionReceipt?.provenance == .navigation
+        : (projection.reducerAction == "apply_manual_edit"
+          || projection.reducerAction == "apply_direct_document_revision")
+          && documentReceipt?.provenance == .navigation
+          && documentReceipt?.sourceRevision == pending.sourceRevision
     } else {
       completesPendingNavigation = false
     }
@@ -4205,6 +4473,7 @@ final class OverlayState {
         captureQualityIfEdited(action: "revision")
       }
     }
+    observeRetranscriptionProjection(projection)
   }
 
   /// Offer one terminal document to the composer and record only what the
@@ -4293,7 +4562,12 @@ final class OverlayState {
       formatArchivedTranscript(level: level)
       return
     }
-    guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
+    // A quality refusal (coverage, delivery) is a diagnostic over an owned
+    // terminal document, not a reason to hide Format: the producer stays the
+    // authority throne and the corridor still enforces it. `canFormat` already
+    // encodes terminal text presence, so an error phase without a document
+    // still refuses here.
+    guard mode == .formatted || mode == .coverageRefused || mode == .error, terminal, canFormat,
       !isRevisionDraftDirty, !documentOperationPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {

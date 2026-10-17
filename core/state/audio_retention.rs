@@ -167,6 +167,40 @@ fn valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+/// The session whose completed receipt owns this exact file: same device,
+/// inode and length, never a basename. Tools that start from a retained WAV
+/// use it to find the take. Receipts are only read here; an unreadable or
+/// foreign receipt does not match.
+pub fn session_for_file(root: &Path, file: &Path) -> Option<String> {
+    let target = std::fs::metadata(file).ok()?;
+    for entry in std::fs::read_dir(root.join("sessions")).ok()?.flatten() {
+        if !entry.file_name().to_string_lossy().ends_with(SUFFIX)
+            || entry
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() > MAX_RECEIPT_BYTES)
+        {
+            continue;
+        }
+        let Ok(receipt) = std::fs::read(entry.path())
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| Ok(serde_json::from_slice::<Receipt>(&bytes)?))
+        else {
+            continue;
+        };
+        if receipt.schema == SCHEMA
+            && valid_id(&receipt.session_id)
+            && receipt.files.iter().any(|owned| {
+                owned.device == target.dev()
+                    && owned.inode == target.ino()
+                    && owned.length == target.len()
+            })
+        {
+            return Some(receipt.session_id);
+        }
+    }
+    None
+}
+
 /// Called before microphone admission, with the same immutable runtime snapshot
 /// as the recorder. Failure refuses capture; it cannot silently opt out.
 pub fn begin_capture(root: &Path, id: &str, policy: AudioRetention) -> Result<()> {

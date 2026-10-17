@@ -376,6 +376,13 @@ typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod1)(uint64_t, void
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD2
+typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod2)(uint64_t, RustBuffer, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_DOCUMENT_TOOL_HOST_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_DOCUMENT_TOOL_HOST_METHOD0
 typedef void (*UniffiCallbackInterfaceCsDocumentToolHostMethod0)(uint64_t, int8_t* _Nonnull,
@@ -549,6 +556,7 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceCsAppActionListenerMethod0 _Nonnull onShowAgent;
     UniffiCallbackInterfaceCsAppActionListenerMethod1 _Nonnull onMaxApprovalsChanged;
+    UniffiCallbackInterfaceCsAppActionListenerMethod2 _Nonnull onAgentGesture;
 } UniffiVTableCallbackInterfaceCsAppActionListener;
 
 #endif
@@ -1734,6 +1742,11 @@ void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_show_agent(uint64_t 
 void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_max_approvals_changed(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
+void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(uint64_t ptr, RustBuffer input, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSAUDIOREADLEASE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSAUDIOREADLEASE
 uint64_t uniffi_codescribe_ffi_fn_clone_csaudioreadlease(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -2074,6 +2087,11 @@ RustBuffer uniffi_codescribe_ffi_fn_func_save_pasted_attachment(RustBuffer data,
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_IMAGE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SAVE_PASTED_IMAGE
 RustBuffer uniffi_codescribe_ffi_fn_func_save_pasted_image(RustBuffer data, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_AGENT_CHOOSER_CAPTURE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_AGENT_CHOOSER_CAPTURE
+void uniffi_codescribe_ffi_fn_func_set_agent_chooser_capture(int8_t active, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_LOCAL_WHISPER_MODEL
@@ -2547,6 +2565,12 @@ uint16_t uniffi_codescribe_ffi_checksum_func_save_pasted_attachment(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SAVE_PASTED_IMAGE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SAVE_PASTED_IMAGE
 uint16_t uniffi_codescribe_ffi_checksum_func_save_pasted_image(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_AGENT_CHOOSER_CAPTURE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_AGENT_CHOOSER_CAPTURE
+uint16_t uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture(void
 
 );
 #endif
@@ -3735,6 +3759,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
 uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
+uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture(void
 
 );
 #endif

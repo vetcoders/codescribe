@@ -8,8 +8,11 @@
 //!
 //! Two properties are load-bearing and easy to break:
 //!
-//! - **The tap claims channel digit chords only.** Other keyboard and mouse
-//!   events retain their normal application behavior.
+//! - **The tap claims only what Codescribe owns.** Channel digit chords, the
+//!   middle button while the agent gesture is on, and — only while the
+//!   overlay's agent chooser holds its lease — the scroll wheel, the left
+//!   click and Escape. Every other keyboard and mouse event keeps its normal
+//!   application behavior.
 //! - **Teardown is a swap race, not a lock.** Every CoreFoundation handle lives
 //!   in an `AtomicPtr` inside `RuntimeControl`; whoever swaps a non-null value
 //!   out owns the teardown. That is what keeps `shutdown()` and `Drop` from
@@ -75,13 +78,25 @@ impl ChannelKeyClaims {
     }
 }
 
+/// With the agent gesture on, the middle button belongs to Codescribe: a
+/// click passed through would also open a link or start autoscroll in the app
+/// underneath, which then fights the chooser for the wheel.
+#[cfg(any(target_os = "macos", test))]
+fn claims_middle_button(
+    input: &HotkeyDetectorInput,
+    config: super::config::HotkeyRuntimeConfig,
+) -> bool {
+    config.middle_mouse_agent_gesture && matches!(input, HotkeyDetectorInput::MiddleButton { .. })
+}
+
 // --- macOS CGEventTap Implementation using raw bindings ---
 
 /// The real implementation: a session-level CGEventTap driven on its own
 /// thread by a CFRunLoop.
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::super::detector::digit_from_virtual_keycode;
+    use super::super::config::{agent_gesture_capture_active, set_agent_gesture_capture};
+    use super::super::detector::{AgentGestureInput, digit_from_virtual_keycode};
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
@@ -144,6 +159,12 @@ mod macos {
     const K_CG_EVENT_OTHER_MOUSE_DOWN: CGEventType = 25;
     /// A mouse button other than left or right was released.
     const K_CG_EVENT_OTHER_MOUSE_UP: CGEventType = 26;
+    /// The left mouse button went down. Observed only for the agent chooser.
+    const K_CG_EVENT_LEFT_MOUSE_DOWN: CGEventType = 1;
+    /// The left mouse button was released.
+    const K_CG_EVENT_LEFT_MOUSE_UP: CGEventType = 2;
+    /// A scroll wheel or trackpad scroll. Observed only for the agent chooser.
+    const K_CG_EVENT_SCROLL_WHEEL: CGEventType = 22;
 
     // CGEventType "tap disabled" sentinels. CoreGraphics emits these (the two
     // highest u32 values) when it forcibly disables a tap — either because a
@@ -173,6 +194,14 @@ mod macos {
     const K_CG_KEYBOARD_EVENT_KEYCODE: CGEventField = 9;
     /// Field selector that yields the mouse button number (2 = middle).
     const K_CG_MOUSE_EVENT_BUTTON_NUMBER: CGEventField = 3;
+    /// Vertical line delta of a scroll event (`kCGScrollWheelEventDeltaAxis1`).
+    const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1: CGEventField = 11;
+    /// Nonzero for a continuous scroll device (`kCGScrollWheelEventIsContinuous`).
+    const K_CG_SCROLL_WHEEL_EVENT_IS_CONTINUOUS: CGEventField = 88;
+    /// Vertical point delta (`kCGScrollWheelEventPointDeltaAxis1`).
+    const K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1: CGEventField = 96;
+    /// Nonzero inside a momentum tail (`kCGScrollWheelEventMomentumPhase`).
+    const K_CG_SCROLL_WHEEL_EVENT_MOMENTUM_PHASE: CGEventField = 123;
 
     // macOS virtual keycodes for Option keys
     /// Left Option — the formatting-mode double-tap side.
@@ -190,6 +219,8 @@ mod macos {
     const K_VK_SPACE: i64 = 49;
     /// V — half of the Insert-Here chord.
     const K_VK_V: i64 = 9;
+    /// Escape — leaves the agent chooser while it holds the capture.
+    const K_VK_ESCAPE: i64 = 53;
 
     // CGEventTap constants
     /// Tap at session scope: all events for this login session.
@@ -303,6 +334,8 @@ mod macos {
         /// callback only ever *reads* this pointer — never invalidates or
         /// frees it — so ownership/teardown in `request_stop`/`Drop` is intact.
         control: Arc<RuntimeControl>,
+        /// The chooser took a left-button press, so its release is taken too.
+        left_click_claimed: bool,
     }
 
     impl HotkeyState {
@@ -313,6 +346,7 @@ mod macos {
                 channel_keys: ChannelKeyClaims::default(),
                 tx,
                 control,
+                left_click_claimed: false,
             }
         }
     }
@@ -680,10 +714,83 @@ mod macos {
         }
     }
 
+    /// The agent chooser's share of the tap: the wheel, the left click and
+    /// Escape, taken only while the overlay holds the chooser lease.
+    ///
+    /// `None` leaves the event to the ordinary hotkey path. `Some(claimed)`
+    /// means the chooser decided it. A left click or Escape ends the chooser,
+    /// so the lease is released here, before the overlay hears of it: an
+    /// overlay that has stopped answering never keeps the next click.
+    fn chooser_event(
+        state: &mut HotkeyState,
+        event_type: CGEventType,
+        event: CGEventRef,
+    ) -> Option<bool> {
+        match event_type {
+            K_CG_EVENT_LEFT_MOUSE_UP => {
+                std::mem::take(&mut state.left_click_claimed).then_some(true)
+            }
+            K_CG_EVENT_SCROLL_WHEEL | K_CG_EVENT_LEFT_MOUSE_DOWN | K_CG_EVENT_KEY_DOWN
+                if agent_gesture_capture_active(Instant::now()) =>
+            {
+                let gesture = match event_type {
+                    K_CG_EVENT_SCROLL_WHEEL => {
+                        // SAFETY: read-only field accessors on the callback-owned
+                        // `event`; valid for the callback's duration.
+                        let input = unsafe {
+                            HotkeyDetectorInput::ScrollWheel {
+                                lines: CGEventGetIntegerValueField(
+                                    event,
+                                    K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS_1,
+                                ),
+                                points: CGEventGetIntegerValueField(
+                                    event,
+                                    K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
+                                ),
+                                continuous: CGEventGetIntegerValueField(
+                                    event,
+                                    K_CG_SCROLL_WHEEL_EVENT_IS_CONTINUOUS,
+                                ) != 0,
+                                momentum: CGEventGetIntegerValueField(
+                                    event,
+                                    K_CG_SCROLL_WHEEL_EVENT_MOMENTUM_PHASE,
+                                ) != 0,
+                            }
+                        };
+                        state.detector.feed(input, get_hotkey_runtime_config())
+                    }
+                    K_CG_EVENT_LEFT_MOUSE_DOWN => {
+                        set_agent_gesture_capture(false);
+                        state.left_click_claimed = true;
+                        Some(HotkeyEvent::AgentGesture(AgentGestureInput::LeftClick))
+                    }
+                    _ => {
+                        // SAFETY: read-only field accessor on the callback-owned `event`.
+                        let keycode = unsafe {
+                            CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE)
+                        };
+                        if keycode != K_VK_ESCAPE {
+                            return None;
+                        }
+                        set_agent_gesture_capture(false);
+                        Some(HotkeyEvent::AgentGesture(AgentGestureInput::Cancel))
+                    }
+                };
+                if let Some(gesture) = gesture {
+                    deliver_event(state, gesture);
+                }
+                Some(true)
+            }
+            K_CG_EVENT_SCROLL_WHEEL | K_CG_EVENT_LEFT_MOUSE_DOWN => Some(false),
+            _ => None,
+        }
+    }
+
     /// CGEventTap callback - thin adapter from CoreGraphics events to HotkeyDetector input.
     ///
-    /// Consume only channel digit down/repeat/up events. Modifier events,
-    /// ordinary typing, deferred paste and middle mouse still pass through.
+    /// Consumes channel digit down/repeat/up events, the middle button while
+    /// the agent gesture is on, and the chooser's events while it holds its
+    /// lease. Modifier events, ordinary typing and deferred paste pass through.
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -731,6 +838,10 @@ mod macos {
                 );
             }
             return event;
+        }
+
+        if let Some(claimed) = chooser_event(state, event_type, event) {
+            return if claimed { ptr::null_mut() } else { event };
         }
 
         // SAFETY: `event` is the CGEventRef CoreGraphics passes to this tap
@@ -809,9 +920,12 @@ mod macos {
                 }
             }
             K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
-                // The click still reaches the frontmost app.
+                // As Fn alone the click still reaches the frontmost app; with
+                // the agent gesture on, `claims_middle_button` keeps it.
                 // Buttons other than 2 (middle) are ignored, including click-drag.
-                if !runtime_config.middle_mouse_acts_as_fn {
+                if !runtime_config.middle_mouse_acts_as_fn
+                    && !runtime_config.middle_mouse_agent_gesture
+                {
                     return event;
                 }
                 // SAFETY: read-only field accessor on the callback-owned `event`.
@@ -829,7 +943,8 @@ mod macos {
             _ => return event,
         };
 
-        let claimed = state.channel_keys.claim(&input, runtime_config);
+        let claimed = state.channel_keys.claim(&input, runtime_config)
+            || claims_middle_button(&input, runtime_config);
         if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
             deliver_event(state, hotkey_event);
         }
@@ -898,12 +1013,17 @@ mod macos {
         let mut resources = EventTapResources::new(tx, control);
 
         // Key-up resets one-shot command chords so key repeat cannot emit duplicates.
-        // Other-mouse down/up observe button 2; the tap stays listen-only.
+        // Other-mouse down/up observe button 2. Left click and scroll are seen
+        // only so the agent chooser can take them while it holds its lease;
+        // outside it they return untouched before any other work.
         let event_mask: u64 = (1 << K_CG_EVENT_FLAGS_CHANGED)
             | (1 << K_CG_EVENT_KEY_DOWN)
             | (1 << K_CG_EVENT_KEY_UP)
             | (1 << K_CG_EVENT_OTHER_MOUSE_DOWN)
-            | (1 << K_CG_EVENT_OTHER_MOUSE_UP);
+            | (1 << K_CG_EVENT_OTHER_MOUSE_UP)
+            | (1 << K_CG_EVENT_LEFT_MOUSE_DOWN)
+            | (1 << K_CG_EVENT_LEFT_MOUSE_UP)
+            | (1 << K_CG_EVENT_SCROLL_WHEEL);
 
         // Create the event tap
         let tap = unsafe {
@@ -1283,8 +1403,31 @@ mod stop_preemption_tests {
             HotkeyEvent::AttachSelection,
             HotkeyEvent::ShowAgent,
             HotkeyEvent::InsertHere,
+            HotkeyEvent::AgentGesture(crate::os::hotkeys::AgentGestureInput::MiddleClick),
         ] {
             assert!(!preempts_stop_paste(&event), "{event:?}");
         }
+    }
+
+    /// Fn alone passes the middle click through; the agent gesture keeps it.
+    #[test]
+    fn the_middle_button_is_claimed_only_with_the_agent_gesture() {
+        let mut config = get_hotkey_runtime_config();
+        let press = HotkeyDetectorInput::MiddleButton {
+            now: Instant::now(),
+            pressed: true,
+            modifiers: Default::default(),
+        };
+        config.middle_mouse_acts_as_fn = true;
+        config.middle_mouse_agent_gesture = false;
+        assert!(!claims_middle_button(&press, config));
+        config.middle_mouse_agent_gesture = true;
+        assert!(claims_middle_button(&press, config));
+        let digit = HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Digit(2),
+            modifiers: Default::default(),
+        };
+        assert!(!claims_middle_button(&digit, config));
     }
 }

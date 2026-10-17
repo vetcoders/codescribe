@@ -299,7 +299,7 @@ fn load_optional(filename: &str) -> Option<String> {
 }
 
 /// Captured prompt source, before shared composition and hashing. No I/O on construction.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapturedPrompt {
     pub content: String,
     pub source: PromptSource,
@@ -349,7 +349,7 @@ impl CapturedPrompt {
 }
 
 /// All policy rungs are explicit; resolution never substitutes host prompt files.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapturedRuntimePrompts {
     pub correction: CapturedPrompt,
     pub smart: CapturedPrompt,

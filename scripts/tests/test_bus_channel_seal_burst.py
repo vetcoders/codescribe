@@ -107,6 +107,95 @@ class ChannelSealBurstTests(unittest.TestCase):
         return {(item["occurrence_session_id"], item["capture_epoch"], item["sample_start"], item["sample_end"])
                 for item in payload["occurrences"]}
 
+    def test_direct_terminal_closes_once_without_acoustic_refusal(self):
+        session = "agent-channel-1-direct-translation"
+        row = self.publication(session, 2, "apply_direct_transcript_terminal",
+                               "Iwo Iwo Iwo Iwo Iwo", 0, range(1, 5))
+        row.update(status=DEMUX.SEALED, terminal=True, coverage="direct",
+                   hold_until="2000-01-01T00:00:00.000000Z")
+        row["acoustic_receipts"] = []
+        for occurrence in row["occurrence_rows"]:
+            occurrence["acoustic_receipts"] = []
+        hangup = self.channel_row(session, "closed", "2026-10-17T10:00:00Z")
+        self.append(row, hangup)
+        surfaced = self.surfaced(self.follow())
+        self.assertEqual(len(surfaced), 1)
+        self.assertEqual(surfaced[0]["text"], "Iwo Iwo Iwo Iwo Iwo")
+        self.assertEqual(surfaced[0].get("coverage"), "direct")
+        self.assertEqual(surfaced[0].get("hold_until"), row["hold_until"])
+        self.assertTrue(all(not item.get("acoustic_receipts") for item in surfaced[0]["occurrences"]))
+        replay = self.surfaced(self.follow())
+        self.assertEqual([item["delivery_id"] for item in replay], [surfaced[0]["delivery_id"]],
+                         "an unacknowledged replay retains the same delivery identity")
+        self.assertEqual(sum(item.get("status") == DEMUX.SEALED for item in self.pending()), 1)
+
+    def test_successor_open_waits_for_predecessor_decoder_tail_and_named_close(self):
+        old, new = "agent-channel-1-draining", "agent-channel-1-successor"
+        old_open = self.channel_row(old, "open", "2026-10-17T12:40:34Z")
+        new_open = self.channel_row(new, "open", "2026-10-17T12:40:50Z")
+        first = self.publication(old, 1, "apply_direct_transcript", "Iwo Iwo", 0, [])
+        first["acoustic_receipts"] = []
+        self.append(old_open, first, new_open)
+        self.assertEqual(self.surfaced(self.follow()), [],
+                         "a successor capture is not authority to deliver its predecessor")
+        complete = self.publication(old, 3, "apply_direct_transcript_terminal",
+                                    "Iwo Iwo Iwo Iwo Iwo", 0, range(1, 5))
+        complete["acoustic_receipts"] = []
+        for entry in complete["occurrence_rows"]:
+            entry["acoustic_receipts"] = []
+        self.append(complete)
+        self.assertEqual(self.surfaced(self.follow()), [],
+                         "retained decoder tail still waits for its named close")
+        close = self.channel_row(old, "sealed", "2026-10-17T12:40:51Z")
+        close["reason"] = "silence"
+        self.append(close)
+        (sealed,) = self.surfaced(self.follow())
+        self.assertEqual(sealed["session_id"], old)
+        self.assertEqual(sealed["text"], "Iwo Iwo Iwo Iwo Iwo")
+        self.assertEqual(sealed["coverage"], "direct")
+        self.assertEqual(len(self.ranges(sealed)), 5)
+        self.assertEqual(sum(row.get("kind") == "seal" for row in self.pending()), 1)
+
+    def test_successor_open_keeps_full_tail_inside_the_original_send_hold(self):
+        old, new = "agent-channel-1-held-tail", "agent-channel-1-next-held"
+        partial = self.publication(old, 1, "apply_direct_transcript", "first words", 0, [])
+        complete = self.publication(old, 3, "apply_direct_transcript_terminal", "first words and real tail", 0, [1])
+        complete.update(status=DEMUX.SEALED, terminal=True, coverage="direct",
+                        hold_until="2099-10-17T12:41:03.000000Z")
+        self.append(self.channel_row(old, "open", "2026-10-17T12:40:00Z"), partial,
+                    self.channel_row(new, "open", "2026-10-17T12:40:50Z"), complete,
+                    self.channel_row(old, "sealed", "2026-10-17T12:40:51Z"))
+        self.assertEqual(self.surfaced(self.follow()), [])
+        lease = DEMUX.read_json(self.root / "leases" / f"{self.lease_id}.json")
+        self.assertEqual(len(lease["held"]), 1)
+        (held,) = lease["held"].values()
+        self.assertEqual(held["text"], "first words and real tail")
+        self.assertEqual(held["hold_until"], complete["hold_until"])
+        self.assertFalse(any(row.get("kind") == "seal" for row in self.pending()))
+
+    def test_explicit_orphan_close_recovers_only_its_named_capture(self):
+        session = "agent-channel-1-orphan-drain"
+        row = self.publication(session, 1, "apply_direct_transcript", "retained words", 0, [])
+        self.append(self.channel_row(session, "open", "2026-10-17T12:40:00Z"), row)
+        self.assertEqual(self.surfaced(self.follow()), [])
+        close = self.channel_row(session, "sealed", "2026-10-17T12:45:00Z")
+        close["reason"] = "orphan"
+        self.append(close)
+        (sealed,) = self.surfaced(self.follow())
+        self.assertEqual(sealed["text"], "retained words")
+        self.assertEqual(sealed["coverage"], DEMUX.COVERAGE_REFUSED)
+
+    def test_direct_nonchannel_terminal_is_a_single_final_phase(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        row = self.publication("dictation-direct", 7, "apply_direct_transcript_terminal",
+                               "English survives.", 0, [])
+        row.pop("audience")
+        row["acoustic_receipts"] = []
+        clean = normalizer.normalize(row)
+        self.assertEqual(clean["status"], DEMUX.SEALED)
+        self.assertEqual(clean.get("coverage"), "direct")
+        self.assertIsNone(normalizer.normalize(row))
+
     def test_storm_of_n_documents_is_one_delivery_with_every_pcm_entry(self):
         for documents in (2, 3, 11):
             with self.subTest(documents=documents):

@@ -74,13 +74,17 @@ extension OpenWindowAction {
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
-  private enum Action: Sendable { case showAgent, maxApprovalsChanged }
+  private enum Action: Sendable {
+    case showAgent, maxApprovalsChanged
+    case agentGesture(CsAgentGestureInput)
+  }
   private let continuation: AsyncStream<Action>.Continuation
   private let consumer: Task<Void, Never>
 
   @MainActor
   init(
     maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
+    agentGesture: @escaping @MainActor @Sendable (CsAgentGestureInput) -> Void = { _ in },
     summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
     let channel = AsyncStream<Action>.makeStream()
@@ -90,6 +94,7 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
         switch action {
         case .showAgent: summonAgent()
         case .maxApprovalsChanged: await maxApprovalsChanged()
+        case .agentGesture(let input): agentGesture(input)
         }
       }
     }
@@ -101,6 +106,10 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 
   func onMaxApprovalsChanged() {
     continuation.yield(.maxApprovalsChanged)
+  }
+
+  func onAgentGesture(input: CsAgentGestureInput) {
+    continuation.yield(.agentGesture(input))
   }
 
   func invalidate() {
@@ -1201,6 +1210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         {
           self.showAgent(activating: false)
         }
+      },
+      agentGesture: { [weak self] input in
+        self?.model.overlay.handleAgentGesture(input)
       },
       summonAgent: { [weak action] in
         action?.perform()

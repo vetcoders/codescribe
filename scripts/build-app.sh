@@ -57,7 +57,7 @@ if publisher is not None and (
 skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
 entrypoints = [helper_source, *(repo / "scripts" / name for name in (
-    "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-dot-mcp.py",
+    "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py",
     "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")

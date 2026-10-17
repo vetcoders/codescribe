@@ -97,7 +97,8 @@ class CodescribeSecretStore:
             self.check_executable()
             if self.image.closed:
                 raise NativeKeyError('Native binding already closed')
-            # Only non-secret process metadata; no inherited model/TTS/tunnel keys.
+            # Only non-secret process metadata; no inherited model, speech or
+            # transport credentials.
             environment = {k: os.environ[k] for k in
                 ('PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'CODESCRIBE_DISABLE_KEYCHAIN') if k in os.environ}
             process = subprocess.Popen([str(self.image_path), 'mcp-event-key', '--fd', str(child.fileno())],
