@@ -237,7 +237,8 @@ struct OverlayConversationView: View {
         }
         .onChange(of: isPresented) { _, presented in
           if #available(macOS 15.0, *) {
-            if presented { _ = scrollFollow.handle(.jumpToCurrent) }
+            // The size-change anchor keeps a following list at the bottom through
+            // the morph; a list the user scrolled up stays where it was.
           } else if presented, followsLatest {
             scrollToLatest(proxy)
           }
