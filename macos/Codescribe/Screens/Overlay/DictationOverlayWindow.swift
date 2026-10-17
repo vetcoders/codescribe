@@ -24,6 +24,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Mounted controls and the drawer share this panel's cursor authority.
   /// Weak membership prevents a removed or hidden SwiftUI candidate owning it.
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
+  /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
+  let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
   /// or default expanded size: manual sizing, an open editor, or a dirty draft.
   /// The panel remains the only writer of the transition frame.
@@ -247,6 +249,16 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
       return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
     }
+    // This panel is non-activating, so the app's Edit menu does not receive
+    // key equivalents while another app is active; the action has to be sent
+    // explicitly down the responder chain.
+    if isKeyWindow, event.type == .keyDown,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c",
+      firstResponder?.responds(to: #selector(NSText.copy(_:))) != true
+    {
+      return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+    }
     return super.performKeyEquivalent(with: event)
   }
 
@@ -344,6 +356,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if moved { onUserDragEnded?(origin) }
       if clickedPresentation { onPresentationClick?() }
     default:
+      if event.type == .leftMouseDown {
+        for case let region as OverlaySelectableTextRegionView in selectableTextRegions.allObjects
+        where region.contains(windowPoint: event.locationInWindow) {
+          takeKeyForTranscript()
+          break
+        }
+      }
       if event.type == .leftMouseDown, let contentView {
         var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
         while let view = hit {
