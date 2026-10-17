@@ -211,7 +211,8 @@ class NativeQueueTests(unittest.TestCase):
             self.assertIn("--read-pending", message)
             self.assertIn("--ack", message)
             self.assertIn(identity, message)
-            self.assertLess(len(message) - len(self.pending[0]["text"]), 250)
+            # Both read and ACK instructions now carry the explicit owner.
+            self.assertLess(len(message) - len(self.pending[0]["text"]), 512)
             self.assertNotIn("Delivery provenance", message)
             self.assertNotIn("read_delivery_ids", message)
             self.assertNotIn("sample_start", message)
@@ -377,7 +378,7 @@ class NativeQueueTests(unittest.TestCase):
         message = run.call_args.args[0][5]
         self.assertIn(text, message)
         # The wrapper carries the Founder source line (CS160-R013).
-        self.assertLess(len(message) - len(text), 250)
+        self.assertLess(len(message) - len(text), 512)
         self.assertNotIn("Delivery provenance", message)
 
     def test_watch_exits_quietly_when_its_consumer_closes_the_pipe(self):
