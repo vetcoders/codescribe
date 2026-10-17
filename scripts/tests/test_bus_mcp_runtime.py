@@ -234,21 +234,21 @@ class HTTPSCallbackTests(unittest.TestCase):
         for policy in ['close','keep-alive']:
             with self.subTest(connection=policy):
                 class FakeTLS:
-                    def __init__(inner):
-                        inner.chunks=[('HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body))+
+                    def __init__(self):
+                        self.chunks=[('HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body))+
                             '\r\nConnection: '+policy+'\r\n\r\n').encode(),body]
-                        inner.closed=False;inner.close_count=0
-                    def settimeout(inner,value):pass
-                    def connect(inner,address):pass
-                    def sendall(inner,data):pass
-                    def recv_into(inner,buffer):
-                        if inner.closed:raise OSError('socket closed before body')
-                        if not inner.chunks:return 0
-                        chunk=inner.chunks.pop(0)
+                        self.closed=False;self.close_count=0
+                    def settimeout(self,value):pass
+                    def connect(self,address):pass
+                    def sendall(self,data):pass
+                    def recv_into(self,buffer):
+                        if self.closed:raise OSError('socket closed before body')
+                        if not self.chunks:return 0
+                        chunk=self.chunks.pop(0)
                         count=min(len(buffer),len(chunk));buffer[:count]=chunk[:count]
-                        if count<len(chunk):inner.chunks.insert(0,chunk[count:])
+                        if count<len(chunk):self.chunks.insert(0,chunk[count:])
                         return count
-                    def close(inner):inner.closed=True;inner.close_count+=1
+                    def close(self):self.closed=True;self.close_count+=1
                 sock=FakeTLS()
                 def factory(host,address,deadline,**kwargs):
                     return RUNTIME.PinnedHTTPSConnection(host,address,deadline,
@@ -358,9 +358,10 @@ class RuntimeLifecycleTests(BASE.Fixture):
 
     def configure(self):
         transport=SimpleNamespace(resolve=lambda host:['1.1.1.1'])
+        case=self
         class Callback:
             resolve=staticmethod(transport.resolve)
-            def __call__(inner,*args):return self.callback(*args)
+            def __call__(self,*args):return case.callback(*args)
         pump=RUNTIME.configure(self.server,EVENTS,self.secret_store,callback_hosts=['callback.example.test'],
             transport=Callback(),synthetic=True,clock=lambda:self.now[0],
             timer_factory=lambda delay,callback:BASE.FakeTimer(self.alarms,delay,callback))
@@ -446,9 +447,9 @@ class RuntimeLifecycleTests(BASE.Fixture):
         self.server.dispatch(PRINCIPAL,'events/subscribe',self.subscription())
         used=[]
         class Trigger:
-            def __init__(inner,path,interval):used.append(path);inner.closed=False
-            def wait(inner,timeout):pump.stop_event.wait(timeout)
-            def close(inner):inner.closed=True;used.append('closed')
+            def __init__(self,path,interval):used.append(path);self.closed=False
+            def wait(self,timeout):pump.stop_event.wait(timeout)
+            def close(self):self.closed=True;used.append('closed')
         with patch.object(self.server.demux,'BusEventTrigger',Trigger):
             pump.start()
             deadline=time.monotonic()+1
