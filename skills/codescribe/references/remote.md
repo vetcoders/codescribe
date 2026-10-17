@@ -65,8 +65,10 @@ behind its RPC. Repeated confirmed ACKs reuse the valid marker and settled
 receipts without recurring fsyncs or worker tasks. Explicit `--ack` still waits
 for local settlement and reports its result.
 Use `--wakeup off` on the **watch** for deliberate monitor-only operation.
-An explicit `--wakeup codex-queue` on remote attach is refused because it would
-target the wrong provider store. Keep this watch alive after ending a reply:
+An explicit `--wakeup codex-queue` on remote attach resolves to `off`: queueing
+on the mailbox host would target the wrong provider store. The attach prints a
+`wakeup_resolved` receipt with `requested`, `effective` and `reason`, and the
+local watch above does the queueing. Keep this watch alive after ending a reply:
 the local process is the later-turn wakeup transport, not the output poll window.
 
 Other providers need an output-notifying monitor over
