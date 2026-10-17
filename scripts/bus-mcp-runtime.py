@@ -325,7 +325,7 @@ def main(argv=None):
         Path(__file__).resolve().with_name("bus-mcp-key-store.py"))
     keys = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(keys)
-    run(args.scope, callback_hosts=args.callback_host, secret_store_factory=lambda namespace:
+    return run(args.scope, callback_hosts=args.callback_host, secret_store_factory=lambda namespace:
         keys.CodescribeSecretStore(args.codescribe, namespace, args.native_sha256))
 
 
