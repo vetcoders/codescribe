@@ -44,7 +44,9 @@ expected = {
     if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
-expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py"})
+expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py",
+                 "bin/bus-mcp-agent.py", "bin/bus-mcp-events.py", "bin/bus-mcp-runtime.py",
+                 "bin/bus-mcp-key-store.py"})
 expected.update({
     "plugins/.claude-plugin/marketplace.json",
     "plugins/codescribe/.claude-plugin/plugin.json",
@@ -89,6 +91,7 @@ mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
 cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$ROOT/scripts/bus-mcp.py" "$FAKE_ROOT/scripts/"
+cp "$ROOT/scripts/bus-mcp-agent.py" "$ROOT/scripts/bus-mcp-events.py" "$ROOT/scripts/bus-mcp-runtime.py" "$ROOT/scripts/bus-mcp-key-store.py" "$FAKE_ROOT/scripts/"
 cp -R "$ROOT/plugins" "$FAKE_ROOT/plugins"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
 if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \
