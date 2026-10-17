@@ -293,7 +293,6 @@ def check_scope(scope_path):
     switching. It starts no server, reads no mailbox, builds no signing-key
     store and contacts no network. The namespace is a hash, not a secret.
     """
-    import json
     from pathlib import Path
     import sys
     sys.dont_write_bytecode = True  # Importing the components must not write next to them.
