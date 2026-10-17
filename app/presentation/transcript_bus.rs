@@ -678,6 +678,9 @@ fn document_history_at_counted(
         if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&line)
             && row["schema"] == "codescribe.derived-transcript.v1"
             && row["session_id"] == session_id
+            && row["source_state"] != "admitted_occurrence"
+            && row["source_observation"].is_null()
+            && row["status"] == "applied"
             && let (Some(revision), Some(text), Some(mode), Some(time)) = (
                 row["revision"].as_u64(),
                 row["rendered_text"].as_str(),

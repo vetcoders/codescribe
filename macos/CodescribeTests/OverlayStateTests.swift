@@ -5337,6 +5337,16 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(Set(engine.requestedAudioSessionIds), ["spoken-a"])
     XCTAssertEqual(engine.transcribedPaths, ["cloud:/tmp/spoken-a.wav"])
     XCTAssertEqual(engine.revisionRequests.first?.sessionId, "spoken-a")
+    XCTAssertTrue(state.retranscribePending, "the selected audio was decoded, but its projection is still in transit")
+    projectText(
+      "poprawione A", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "spoken-a", reducerRevision: 5, reducerAction: "apply_manual_edit",
+      documentReceipt: CsManualDocumentRevisionReceipt(
+        receiptId: "user-edit-test-5", provenance: .retranscribe,
+        sessionId: "spoken-a", sourceRevision: 4, revision: 5,
+        renderedText: "poprawione A", captureEpoch: nil, captureReceiptId: nil))
+    let settled = await waitUntil { !state.retranscribePending }
+    XCTAssertTrue(settled)
     XCTAssertEqual(state.engineChip, "cloud")
   }
 
