@@ -1648,7 +1648,7 @@ struct OverlayAgentStatusDot: View {
 /// and speaker lead, the pill (dot, name, agent/model/repo, unread) trails,
 /// right edges under the name pill, so pills stand in one column and controls
 /// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
-/// precyzyjniejszy"; host contract, klaudiusz). Clicking a pill selects; Esc
+/// precyzyjniejszy"). Clicking a pill selects; Esc
 /// closes; wake policy rides each row's context menu (Maciej, 2026-10-17,
 /// "Słowo"). Rows stagger in unless the user asked for reduced motion.
 struct OverlayAgentPillStack: View {

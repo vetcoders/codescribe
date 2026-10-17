@@ -218,7 +218,7 @@ enum LexiconAction {
         /// Also hold hand-written rows to the admission gate
         ///
         /// Hand-written does not mean correct: a curated row can list a term's
-        /// own inflections as mispronunciations (`Monika <- Moniki, Monikę`),
+        /// own inflections as mispronunciations (`Kraków <- Krakowa, Krakowie`),
         /// which rewrites correct speech and breaks the sentence.
         #[arg(long)]
         gate_curated: bool,
