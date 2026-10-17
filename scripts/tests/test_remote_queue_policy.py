@@ -7,7 +7,7 @@ import os
 import subprocess
 import threading
 import unittest
-from unittest.mock import patch
+import unittest.mock as mock
 
 if __package__:
     from . import test_remote_native_queue as base
@@ -62,7 +62,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
             except Exception as error:
                 failures.append(error)
 
-        with patch.object(D.os, "write", side_effect=short_write):
+        with mock.patch.object(D.os, "write", side_effect=short_write):
             threads = [threading.Thread(target=write, args=(i,), name="frame-" + letter, daemon=True)
                        for i, letter in enumerate(("A", "B"))]
             for thread in threads:
@@ -94,7 +94,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
     def change_policy(self, policy):
         args = argparse.Namespace(bridge_home=self.root, provider="codex", session=self.session,
                                   bus=self.root / "bus-current.jsonl", bus_overridden=False, broadcast=policy)
-        with patch.object(D, "NativeQueueWakeup") as queue, patch.object(D, "emit"):
+        with mock.patch.object(D, "NativeQueueWakeup") as queue, mock.patch.object(D, "emit"):
             self.assertEqual(D.set_agent_broadcast_policy(args), 0)
         queue.assert_not_called()
 
@@ -103,7 +103,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
         source.write_text("".join(json.dumps(row) + "\n" for row in payloads))
         args = argparse.Namespace(bridge_home=self.root, provider="codex", session=self.session,
                                   queue_relay=True, from_file=source, once=True, human=False, full=False)
-        with patch.object(D, "emit") as output:
+        with mock.patch.object(D, "emit") as output:
             self.assertEqual(D.watch_command(args), 0)
         return [call.args[0] for call in output.call_args_list]
 
@@ -112,7 +112,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
                      "--session", self.session, "--read-delivery", identity]
         if admit:
             arguments.append("--queue-admit")
-        with patch.object(D.sys, "argv", arguments), contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(D.sys, "argv", arguments), contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
             try:
                 code = D.main()
             except SystemExit as error:
@@ -160,7 +160,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
             if value.get("schema") == D.BROADCAST_POLICY_SCHEMA and value.get("policy") == "on":
                 self.state([payload])
             write(path, value)
-        with patch.object(D, "atomic_json", side_effect=arrival):
+        with mock.patch.object(D, "atomic_json", side_effect=arrival):
             self.change_policy("on")
         events = D.follower_paths(self.root, self.lease)[1]
         self.assertEqual(json.loads(events.read_text())["delivery_id"], payload["delivery_id"])
@@ -181,14 +181,14 @@ class RemoteQueuePolicyTests(unittest.TestCase):
     def test_remote_retry_requests_source_admission_on_the_existing_ssh_operation(self):
         payload = self.payload()
         response = subprocess.CompletedProcess([], 0, json.dumps(payload), "")
-        with patch("subprocess.run", return_value=response) as ssh, patch.object(D.NativeQueueWakeup, "enqueue"), patch.object(D, "emit"):
+        with mock.patch("subprocess.run", return_value=response) as ssh, mock.patch.object(D.NativeQueueWakeup, "enqueue"), mock.patch.object(D, "emit"):
             D.remote_codex_receipt_command("mailbox.test", ["--retry-wakeup", self.ids[0]], self.session, self.root, {})
         self.assertEqual(ssh.call_count, 1)
         self.assertIn("--queue-admit", ssh.call_args.args[0][-1])
         self.assertIn("--read-delivery " + self.ids[0], ssh.call_args.args[0][-1])
 
     def accepted_queue(self, identity):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted):
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted):
             wake = self.wake()
             wake.enqueue(self.envelope(identity))
             wake.close(wait=True)
@@ -206,7 +206,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
             if row.get("delivery_id") == self.ids[1]:
                 delivered.set()
                 release.set()
-        with patch("subprocess.Popen", return_value=self.process(control, self.payload(1))), patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted), patch.object(D, "delete_native_queue_submission", side_effect=delete), patch.object(D, "emit", side_effect=present):
+        with mock.patch("subprocess.Popen", return_value=self.process(control, self.payload(1))), mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted), mock.patch.object(D, "delete_native_queue_submission", side_effect=delete), mock.patch.object(D, "emit", side_effect=present):
             try:
                 self.assertEqual(D.remote_codex_watch("mailbox.test", ["--watch", "--bell"], self.session, self.root, {}), 0)
             finally:
@@ -218,9 +218,9 @@ class RemoteQueuePolicyTests(unittest.TestCase):
     def test_settled_replayed_ack_reuses_marker_without_fsync_or_executor_work(self):
         self.accepted_queue(self.ids[0])
         wake = self.wake()
-        with patch.object(D, "delete_native_queue_submission", return_value=True):
+        with mock.patch.object(D, "delete_native_queue_submission", return_value=True):
             self.assertTrue(wake.acknowledge_remote(self.ids[0]))
-        with patch.object(D, "atomic_json", wraps=D.atomic_json) as write, patch.object(wake.executor, "submit") as submit:
+        with mock.patch.object(D, "atomic_json", wraps=D.atomic_json) as write, mock.patch.object(wake.executor, "submit") as submit:
             self.assertTrue(wake.acknowledge_remote(self.ids[0], wait=False))
             self.assertTrue(wake.acknowledge_remote(self.ids[0], wait=False))
         wake.close(wait=True)
@@ -265,7 +265,7 @@ class RemoteQueuePolicyTests(unittest.TestCase):
                                   full=False, from_start=True, interval=0.1)
         trigger = mock.Mock()
         trigger.wait.side_effect = [None, KeyboardInterrupt]
-        with patch.object(D, "BusEventTrigger", return_value=trigger), patch.object(D, "delivery_acknowledged", wraps=D.delivery_acknowledged) as ack, patch.object(D, "unread_pending") as read, patch.object(D, "emit"):
+        with mock.patch.object(D, "BusEventTrigger", return_value=trigger), mock.patch.object(D, "delivery_acknowledged", wraps=D.delivery_acknowledged) as ack, mock.patch.object(D, "unread_pending") as read, mock.patch.object(D, "emit"):
             self.assertEqual(D.watch_command(args), 130)
         self.assertTrue(ack.call_args_list)
         self.assertTrue(all(call.args[2] == terminal["delivery_id"] for call in ack.call_args_list))
@@ -275,10 +275,10 @@ class RemoteQueuePolicyTests(unittest.TestCase):
     def test_replayed_ack_recovers_failed_withdrawal_without_rewriting_marker(self):
         self.accepted_queue(self.ids[0])
         wake = self.wake()
-        with patch.object(D, "delete_native_queue_submission", side_effect=ValueError("temporarily unavailable")):
+        with mock.patch.object(D, "delete_native_queue_submission", side_effect=ValueError("temporarily unavailable")):
             self.assertFalse(wake.acknowledge_remote(self.ids[0]))
         failed = self.receipt(self.ids[0])
-        with patch.object(D.time, "time", return_value=failed["withdrawal_attempt_at"] + 31), patch.object(D, "delete_native_queue_submission", return_value=True) as delete, patch.object(D, "atomic_json", wraps=D.atomic_json) as write:
+        with mock.patch.object(D.time, "time", return_value=failed["withdrawal_attempt_at"] + 31), mock.patch.object(D, "delete_native_queue_submission", return_value=True) as delete, mock.patch.object(D, "atomic_json", wraps=D.atomic_json) as write:
             self.assertFalse(wake.acknowledge_remote(self.ids[0], wait=False))
             wake.close(wait=True)
         delete.assert_called_once()
