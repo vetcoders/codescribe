@@ -9,9 +9,13 @@ import os
 /// Forensics first (Maciej, 2026-10-14: mini ⇄ midi ⇄ expanded sometimes
 /// jumps). A jump is attributed from this ledger — which writer, which frame,
 /// how many milliseconds after the animation landed — instead of guessed from
-/// a feeling. Mirrored to the unified log under `overlay-presentation`:
+/// a feeling. Mirrored to the unified log under `overlay-presentation`; that
+/// is the live view (debug entries are never persisted by macOS):
 ///
-///     log stream --predicate 'subsystem == "com.vetcoders.codescribe" && category == "overlay-presentation"'
+///     log stream --level debug --predicate 'subsystem == "com.vetcoders.codescribe" && category == "overlay-presentation"'
+///
+/// The persisted view is `~/.codescribe/logs/diagnostic.log` (`DiagnosticLog`),
+/// fed through `diagnosticSink` once the app installs it at launch.
 ///
 /// The ring keeps the last 512 entries; a morph paints 15–20 frames.
 @MainActor
@@ -66,6 +70,8 @@ final class OverlayPresentationTrace {
   var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   /// Mirrors every entry to the unified log; tests keep it quiet.
   var mirrorsToLog = true
+  /// Persists every entry beside the main log; nil (tests) writes nothing.
+  var diagnosticSink: DiagnosticLog?
 
   private let log = Logger(subsystem: "com.vetcoders.codescribe", category: "overlay-presentation")
 
@@ -85,10 +91,10 @@ final class OverlayPresentationTrace {
     entries.append(entry)
     recorded += 1
     if entries.count > Self.capacity { entries.removeFirst(entries.count - Self.capacity) }
-    if mirrorsToLog {
-      let line = Self.line(entry)
-      log.debug("\(line, privacy: .public)")
-    }
+    guard mirrorsToLog || diagnosticSink != nil else { return }
+    let line = Self.line(entry)
+    if mirrorsToLog { log.debug("\(line, privacy: .public)") }
+    diagnosticSink?.append(category: "overlay-presentation", line)
   }
 
   func reset() {

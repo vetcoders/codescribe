@@ -444,6 +444,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let trayToggles = config.trayToggles()
     DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
 
+    // Diagnostic log beside codescribe.log: the presentation ledger persists
+    // here because unified-log debug entries do not survive.
+    let diagnostic = DiagnosticLog.install(dataDirectory: config.configDir())
+    let launchInfo = Bundle.main.infoDictionary ?? [:]
+    let launchCommit = launchInfo["CSBuildCommit"] as? String ?? "dev"
+    let launchVersion = launchInfo["CFBundleShortVersionString"] as? String ?? "unknown"
+    diagnostic.append(
+      category: "launch",
+      "build=\(launchCommit) pid=\(ProcessInfo.processInfo.processIdentifier) version=\(launchVersion)"
+    )
+    OverlayPresentationTrace.shared.diagnosticSink = diagnostic
+
     do {
       let runtime = try startApplicationRuntime()
       appLogger.info(
