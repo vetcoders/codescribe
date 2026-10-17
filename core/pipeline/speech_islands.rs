@@ -18,6 +18,15 @@
 //! zero, bursts 10 dB over that floor, and nuclei 6 dB over the burst
 //! threshold that stand 4 dB over the dip to every kept nucleus and lie at
 //! least 120 ms apart.
+//!
+//! Cost, with H energy hops, S Silero ranges, I islands and W words:
+//! O(S log S + H log H) to measure, O(W log I) to place words. The floor
+//! percentile is a selection, not a sort; the dip to the kept nuclei is a
+//! range minimum, and only the nearest kept nucleus on each side is checked
+//! (both conditions only loosen further away); islands find their hops and
+//! nuclei by binary search, since hops tile the capture axis in order.
+
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +96,8 @@ pub struct SpeechIslandInput<'a> {
     pub observed_samples: u64,
     /// Silero speech ranges on the capture axis.
     pub speech: &'a [(u64, u64)],
-    /// The capture's energy hops, `None` when the clock cannot speak.
+    /// The capture's energy hops in capture order, tiling the axis as
+    /// `session_hop_levels` returns them; `None` when the clock cannot speak.
     pub hops: Option<&'a [EnergyHopLevel]>,
     /// Calibrated existence floor (linear RMS), when the device has one.
     pub existence_floor_rms: Option<f32>,
@@ -142,10 +152,8 @@ pub fn measure_speech_islands(input: SpeechIslandInput<'_>) -> SpeechIslandEvide
                 .get(index + 1)
                 .map_or(input.observed_samples, |next| next.0);
             let onsets = nuclei.as_ref().map_or(0, |(positions, _)| {
-                positions
-                    .iter()
-                    .filter(|&&sample| sample >= start && sample < end)
-                    .count()
+                positions.partition_point(|&sample| sample < end)
+                    - positions.partition_point(|&sample| sample < start)
             });
             SpeechIsland {
                 sample_start: start,
@@ -179,7 +187,8 @@ pub struct IslandWords {
 }
 
 /// Place each word on the island it overlaps most. Returns one entry per
-/// island and the number of words that overlap no island.
+/// island and the number of words that overlap no island. Islands are in
+/// capture order and disjoint, as [`measure_speech_islands`] returns them.
 pub fn words_per_island(
     islands: &[SpeechIsland],
     words: &[(u64, u64)],
@@ -187,10 +196,13 @@ pub fn words_per_island(
     let mut placed = vec![IslandWords::default(); islands.len()];
     let mut outside = 0;
     for &(start, end) in words {
-        let best = islands
+        let first = islands.partition_point(|island| island.sample_end <= start);
+        let best = islands[first..]
             .iter()
+            .take_while(|island| island.sample_start < end)
             .enumerate()
-            .map(|(index, island)| {
+            .map(|(offset, island)| {
+                let index = first + offset;
                 let overlap = end
                     .min(island.sample_end)
                     .saturating_sub(start.max(island.sample_start));
@@ -222,14 +234,13 @@ fn silence_class(
     let Some(hops) = hops else {
         return SilenceUnderSpan::EnergyUnmeasured;
     };
-    let mut inside = hops
-        .iter()
-        .filter(|hop| hop.sample_end > start && hop.sample_start < end)
-        .peekable();
-    if inside.peek().is_none() {
+    let first = hops.partition_point(|hop| hop.sample_end <= start);
+    let last = hops.partition_point(|hop| hop.sample_start < end);
+    let inside = hops.get(first..last).unwrap_or_default();
+    if inside.is_empty() {
         return SilenceUnderSpan::EnergyUnmeasured;
     }
-    let loudest = inside.map(|hop| hop.rms).fold(0.0_f32, f32::max);
+    let loudest = inside.iter().map(|hop| hop.rms).fold(0.0_f32, f32::max);
     if loudest <= DIGITAL_ZERO_ABS {
         return SilenceUnderSpan::DigitalZero;
     }
@@ -296,44 +307,102 @@ fn syllable_nuclei(hops: &[EnergyHopLevel], sample_rate: u32) -> Option<(Vec<u64
 
     let mut nuclei = Vec::new();
     for &(start, end) in bursts.iter().filter(|(start, end)| end - start >= shortest) {
-        let mut candidates: Vec<usize> = (start..end)
-            .filter(|&i| {
-                smooth[i] >= level
-                    && (i == start || smooth[i] >= smooth[i - 1])
-                    && (i + 1 == end || smooth[i] > smooth[i + 1])
-            })
-            .collect();
-        candidates.sort_by(|a, b| smooth[*b].total_cmp(&smooth[*a]));
-        let mut kept: Vec<usize> = Vec::new();
-        for candidate in candidates {
-            let stands = kept.iter().all(|&other| {
-                let (low, high) = (candidate.min(other), candidate.max(other));
-                let dip = smooth[low..=high]
-                    .iter()
-                    .copied()
-                    .fold(f64::INFINITY, f64::min);
-                high - low >= separation && smooth[candidate] - dip >= NUCLEUS_PROMINENCE_DB
-            });
-            if stands {
-                kept.push(candidate);
-            }
-        }
-        nuclei.extend(kept.into_iter().map(|i| hops[i].sample_start));
+        nuclei.extend(
+            burst_nuclei(&smooth, start, end, level, separation)
+                .into_iter()
+                .map(|i| hops[i].sample_start),
+        );
     }
     nuclei.sort_unstable();
     Some((nuclei, threshold))
 }
 
-/// Linear-interpolated percentile, as the take report computes it.
+/// Nuclei of one burst `start..end` of `smooth`, as indices into it: local
+/// peaks at `level` or above, loudest first, kept when they lie `separation`
+/// hops from every kept nucleus and stand the prominence over the dip to it.
+/// Away from a candidate the distance only grows and the dip only deepens, so
+/// the nearest kept nucleus on each side decides for all of them.
+fn burst_nuclei(
+    smooth: &[f64],
+    start: usize,
+    end: usize,
+    level: f64,
+    separation: usize,
+) -> BTreeSet<usize> {
+    let mut candidates: Vec<usize> = (start..end)
+        .filter(|&i| {
+            smooth[i] >= level
+                && (i == start || smooth[i] >= smooth[i - 1])
+                && (i + 1 == end || smooth[i] > smooth[i + 1])
+        })
+        .collect();
+    candidates.sort_by(|a, b| smooth[*b].total_cmp(&smooth[*a]));
+    let dips = RangeMin::new(&smooth[start..end]);
+    let mut kept = BTreeSet::new();
+    for candidate in candidates {
+        let stands = [
+            kept.range(..candidate).next_back(),
+            kept.range(candidate..).next(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|&other: &usize| {
+            let dip = dips.min(candidate.min(other) - start, candidate.max(other) - start);
+            candidate.abs_diff(other) >= separation
+                && smooth[candidate] - dip >= NUCLEUS_PROMINENCE_DB
+        });
+        if stands {
+            kept.insert(candidate);
+        }
+    }
+    kept
+}
+
+/// Minimum over any inclusive index range in O(1) after an O(n log n) build.
+struct RangeMin {
+    /// Row `k` holds the minimum of each window of `2^k` values.
+    rows: Vec<Vec<f64>>,
+}
+
+impl RangeMin {
+    fn new(values: &[f64]) -> Self {
+        let mut rows = vec![values.to_vec()];
+        let mut width = 1;
+        while width * 2 <= values.len() {
+            let below = &rows[rows.len() - 1];
+            let row = (0..=values.len() - width * 2)
+                .map(|i| below[i].min(below[i + width]))
+                .collect();
+            rows.push(row);
+            width *= 2;
+        }
+        Self { rows }
+    }
+
+    /// Minimum of `low..=high`, with `low <= high` inside the values.
+    fn min(&self, low: usize, high: usize) -> f64 {
+        let k = (high - low + 1).ilog2() as usize;
+        let row = &self.rows[k];
+        row[low].min(row[high + 1 - (1 << k)])
+    }
+}
+
+/// Linear-interpolated percentile, as the take report computes it. Selects
+/// the two order statistics it needs instead of sorting.
 fn percentile(mut values: Vec<f64>, q: f64) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
-    values.sort_by(f64::total_cmp);
     let k = (values.len() - 1) as f64 * q;
     let low = k.floor() as usize;
-    let high = (low + 1).min(values.len() - 1);
-    Some(values[low] + (values[high] - values[low]) * (k - low as f64))
+    let (_, at_low, above) = values.select_nth_unstable_by(low, f64::total_cmp);
+    let at_low = *at_low;
+    let at_high = above
+        .iter()
+        .copied()
+        .min_by(f64::total_cmp)
+        .unwrap_or(at_low);
+    Some(at_low + (at_high - at_low) * (k - low as f64))
 }
 
 #[cfg(test)]
@@ -520,6 +589,192 @@ mod tests {
                 last_word_end: Some(14_000),
             },
             "the straddling word belongs to the island it overlaps most"
+        );
+    }
+
+    /// Deterministic pseudo-random stream for the comparison tests below.
+    struct Stream(u64);
+
+    impl Stream {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) % bound
+        }
+    }
+
+    /// The rule as first written: every candidate against every kept nucleus.
+    fn pairwise_nuclei(
+        smooth: &[f64],
+        start: usize,
+        end: usize,
+        level: f64,
+        separation: usize,
+    ) -> BTreeSet<usize> {
+        let mut candidates: Vec<usize> = (start..end)
+            .filter(|&i| {
+                smooth[i] >= level
+                    && (i == start || smooth[i] >= smooth[i - 1])
+                    && (i + 1 == end || smooth[i] > smooth[i + 1])
+            })
+            .collect();
+        candidates.sort_by(|a, b| smooth[*b].total_cmp(&smooth[*a]));
+        let mut kept: Vec<usize> = Vec::new();
+        for candidate in candidates {
+            let stands = kept.iter().all(|&other| {
+                let (low, high) = (candidate.min(other), candidate.max(other));
+                let dip = smooth[low..=high]
+                    .iter()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min);
+                high - low >= separation && smooth[candidate] - dip >= NUCLEUS_PROMINENCE_DB
+            });
+            if stands {
+                kept.push(candidate);
+            }
+        }
+        kept.into_iter().collect()
+    }
+
+    #[test]
+    fn nearest_kept_nuclei_decide_as_every_kept_nucleus_would() {
+        let mut stream = Stream(17);
+        for round in 0..200 {
+            // Levels in 0.5 dB steps from -60 dB, so ties and plateaus occur.
+            let smooth: Vec<f64> = (0..240)
+                .map(|_| -60.0 + stream.below(120) as f64 * 0.5)
+                .collect();
+            let start = stream.below(40) as usize;
+            let end = 200 + stream.below(40) as usize;
+            let level = -45.0 + stream.below(20) as f64;
+            let separation = 1 + stream.below(8) as usize;
+            assert_eq!(
+                burst_nuclei(&smooth, start, end, level, separation),
+                pairwise_nuclei(&smooth, start, end, level, separation),
+                "round {round}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_minimum_matches_a_scan_of_every_range() {
+        let mut stream = Stream(5);
+        for len in 1..48 {
+            let values: Vec<f64> = (0..len).map(|_| stream.below(1_000) as f64).collect();
+            let dips = RangeMin::new(&values);
+            for low in 0..len {
+                for high in low..len {
+                    let scan = values[low..=high]
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min);
+                    assert_eq!(dips.min(low, high).to_bits(), scan.to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn percentile_by_selection_matches_the_sorted_interpolation() {
+        let mut stream = Stream(29);
+        for len in 1..60 {
+            let values: Vec<f64> = (0..len).map(|_| stream.below(500) as f64 * 0.1).collect();
+            for q in [0.0, 0.1, 0.5, 0.9, 1.0] {
+                let mut sorted = values.clone();
+                sorted.sort_by(f64::total_cmp);
+                let k = (len - 1) as f64 * q;
+                let low = k.floor() as usize;
+                let high = (low + 1).min(len - 1);
+                let expected = sorted[low] + (sorted[high] - sorted[low]) * (k - low as f64);
+                let got = percentile(values.clone(), q).unwrap();
+                assert_eq!(got.to_bits(), expected.to_bits(), "len {len}, q {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn binary_search_places_words_as_a_full_scan_would() {
+        let mut stream = Stream(41);
+        for _ in 0..100 {
+            let mut islands = Vec::new();
+            let mut cursor = 0;
+            for _ in 0..1 + stream.below(12) {
+                let start = cursor + stream.below(3_000);
+                let end = start + 1 + stream.below(4_000);
+                islands.push(SpeechIsland {
+                    sample_start: start,
+                    sample_end: end,
+                    onsets: 0,
+                    inner_pauses: 0,
+                    silence_before: None,
+                    silence_after: None,
+                });
+                cursor = end;
+            }
+            let words: Vec<(u64, u64)> = (0..40)
+                .map(|_| {
+                    let start = stream.below(cursor + 2_000);
+                    (start, start + 1 + stream.below(6_000))
+                })
+                .collect();
+            let mut scanned = vec![IslandWords::default(); islands.len()];
+            let mut scanned_outside = 0;
+            for &(start, end) in &words {
+                let best = islands
+                    .iter()
+                    .enumerate()
+                    .map(|(index, island)| {
+                        let overlap = end
+                            .min(island.sample_end)
+                            .saturating_sub(start.max(island.sample_start));
+                        (overlap, index)
+                    })
+                    .filter(|(overlap, _)| *overlap > 0)
+                    .max_by_key(|(overlap, index)| (*overlap, std::cmp::Reverse(*index)));
+                let Some((_, index)) = best else {
+                    scanned_outside += 1;
+                    continue;
+                };
+                let slot = &mut scanned[index];
+                slot.words += 1;
+                slot.first_word_start = Some(slot.first_word_start.map_or(start, |s| s.min(start)));
+                slot.last_word_end = Some(slot.last_word_end.map_or(end, |e| e.max(end)));
+            }
+            assert_eq!(
+                words_per_island(&islands, &words),
+                (scanned, scanned_outside)
+            );
+        }
+    }
+
+    #[test]
+    fn silence_class_reads_only_the_hops_under_its_span() {
+        // loud | zero | quiet | loud: the span over zero and quiet ignores both
+        // loud neighbours, including hops that only touch its edges.
+        let mut levels = vec![0.3_f32; 5];
+        levels.extend([0.0_f32; 5]);
+        levels.extend([0.001_f32; 5]);
+        levels.extend([0.3_f32; 5]);
+        let hops = hops(&levels);
+        assert_eq!(
+            silence_class(Some(&hops), 5 * HOP, 15 * HOP, Some(0.01)),
+            SilenceUnderSpan::BelowFloor
+        );
+        assert_eq!(
+            silence_class(Some(&hops), 5 * HOP, 10 * HOP, Some(0.01)),
+            SilenceUnderSpan::DigitalZero
+        );
+        assert_eq!(
+            silence_class(Some(&hops), 5 * HOP - 1, 10 * HOP, Some(0.01)),
+            SilenceUnderSpan::SoundWithoutSpeech,
+            "a span reaching one sample into a loud hop hears it"
+        );
+        assert_eq!(
+            silence_class(Some(&hops), 20 * HOP, 21 * HOP, Some(0.01)),
+            SilenceUnderSpan::EnergyUnmeasured,
+            "past the last hop nothing was measured"
         );
     }
 }

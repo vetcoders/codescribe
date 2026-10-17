@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Source version](https://img.shields.io/badge/version-0.17.0-6a9bcc)](Cargo.toml)
+[![Source version](https://img.shields.io/badge/version-0.17.1-6a9bcc)](Cargo.toml)
 [![Latest release](https://img.shields.io/github/v/release/vetcoders/codescribe?label=release&color=788c5d)](https://github.com/vetcoders/codescribe/releases/latest)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
@@ -80,7 +80,7 @@ flowchart TB
 > it, behind an explicit audio-egress consent, and full-file Retranscribe is
 > its own deliberate action.
 
-> **Release status:** source is at `0.17.0`. Published builds are listed on
+> **Release status:** source is at `0.17.1`. Published builds are listed on
 > [GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest);
 > the [website download](https://codescribe.vetcoders.io/#install) always
 > serves the newest one.
