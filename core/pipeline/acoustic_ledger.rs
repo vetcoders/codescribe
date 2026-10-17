@@ -633,7 +633,9 @@ fn edge_token_duplicate(
     normalized: &str,
 ) -> bool {
     // A neighbouring spelling or a token somewhere in a coarse label does
-    // not prove replay. Require one measured word on the same physical pin.
+    // not prove replay. Require one measured word on the same physical pin,
+    // or across an occurrence cut where each owner clipped the same declared
+    // word range to its side of the boundary.
     !normalized.is_empty()
         && word.text.split_whitespace().count() == 1
         && held.text.split_whitespace().count() == 1
@@ -643,7 +645,19 @@ fn edge_token_duplicate(
             .occurrence
             .same_capture(&word.observation.occurrence)
         && normalized == normalize_word_token(&held.text)
-        && ledger.pin_targets_source(held, word)
+        && (ledger.pin_targets_source(held, word)
+            || (held.observation.occurrence != word.observation.occurrence
+                && ledger
+                    .original_anchor_word_range(held)
+                    .zip(ledger.original_anchor_word_range(word))
+                    .is_some_and(|(left, right)| {
+                        declared_ranges_share_word(
+                            left.sample_start,
+                            left.sample_end,
+                            right.sample_start,
+                            right.sample_end,
+                        )
+                    })))
 }
 
 /// Whether `host` contains the centre of `subject`.
@@ -2006,6 +2020,7 @@ impl AcousticLedger {
                     .expect("unique source retained until its correction");
                 removed.push(slots[position].clone());
                 slots[position] = word;
+                slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
             } else if incoming
                 .iter()
                 .filter(|other| {
@@ -2067,6 +2082,9 @@ impl AcousticLedger {
                 // A new pin is not a new word if the same PCM edge already
                 // carries that token, including a group or a neighbouring owner.
                 let normalized = normalize_word_token(&word.text);
+                let boundary_tolerance = self
+                    .capture_rate_hz
+                    .map_or(8_000, |rate| u64::from(rate) / 2);
                 let duplicate_sources = slots
                     .iter()
                     .filter(|held| self.word_pin_observations.contains(&held.observation))
@@ -2078,8 +2096,12 @@ impl AcousticLedger {
                             .filter(|(other, _)| {
                                 *other != owner
                                     && other.same_capture(owner)
-                                    && (other.sample_end == owner.sample_start
-                                        || owner.sample_end == other.sample_start)
+                                    && ((other.sample_end <= owner.sample_start
+                                        && owner.sample_start.saturating_sub(other.sample_end)
+                                            <= boundary_tolerance)
+                                        || (owner.sample_end <= other.sample_start
+                                            && other.sample_start.saturating_sub(owner.sample_end)
+                                                <= boundary_tolerance))
                             })
                             .flat_map(|(_, held)| held.slots.iter())
                             .filter(|held| self.word_pin_observations.contains(&held.observation))
@@ -2127,6 +2149,7 @@ impl AcousticLedger {
                 self.refuse_replayed_range(&replay, &word.text);
             }
         }
+        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
         if removed.is_empty() && slots.as_slice() == self.slots_of(owner).unwrap_or(&[]) {
             if replayed_words == incoming.len() && replayed_words > 0 {
                 // Refusing another document occurrence does not erase a
