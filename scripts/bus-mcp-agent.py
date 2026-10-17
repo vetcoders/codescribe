@@ -208,8 +208,7 @@ class Scope:
         if not self.check_private_directory(self.state):
             (self.root / "runtime").mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
-                os.mkdir(self.state, 0o700)
-                os.chmod(self.state, 0o700)  # mkdir's mode is narrowed by umask only.
+                os.mkdir(self.state, 0o700)  # umask can only narrow this further.
             except FileExistsError:
                 pass  # A concurrent start created it; the check below decides.
         if not self.check_private_directory(self.state):
