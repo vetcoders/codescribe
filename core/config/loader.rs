@@ -2905,6 +2905,38 @@ mod tests {
 
     #[test]
     #[serial]
+    fn transcription_controls_are_independent_and_frozen_for_the_take() {
+        let _tmp = setup_isolated_data_dir();
+        let original = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!original.seal_ledger_enabled());
+        assert!(!original.apple_live_enabled());
+        for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
+            Config::default()
+                .save_to_env_many(&[
+                    (
+                        "CODESCRIBE_SEAL_LEDGER_ENABLED",
+                        if ledger { "1" } else { "0" },
+                    ),
+                    (
+                        "CODESCRIBE_APPLE_LIVE_ENABLED",
+                        if apple { "1" } else { "0" },
+                    ),
+                ])
+                .unwrap();
+            Config::default()
+                .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+                .unwrap();
+            let next = Config::load_runtime_snapshot_without_keychain().unwrap();
+            assert_eq!(next.seal_ledger_enabled(), ledger);
+            assert_eq!(next.apple_live_enabled(), apple);
+            assert!(!original.seal_ledger_enabled());
+            assert!(!original.apple_live_enabled());
+            assert_ne!(next.digest(), original.digest());
+        }
+    }
+
+    #[test]
+    #[serial]
     fn dictation_witness_lab_write_survives_other_settings_and_binds_next_take() {
         let _tmp = setup_isolated_data_dir();
         let _override = TestEnvGuard::unset(crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER);
