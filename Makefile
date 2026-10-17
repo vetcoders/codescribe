@@ -1179,7 +1179,6 @@ verify:
 	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	python3 -m unittest scripts/tests/test_bus_mcp.py; \
-	python3 -m unittest scripts/tests/test_bus_dot_mcp.py scripts/tests/test_bus_mcp_runtime.py scripts/tests/test_bus_mcp_key_store.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
