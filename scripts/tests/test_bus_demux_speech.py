@@ -549,6 +549,7 @@ def queued_say(
     speech_bus=None,
     take_wait_seconds=0.15,
     scan_delay=0.0,
+    slow_scans=None,
 ):
     """Real --say and flock in a process; only synthesis and afplay are replaced."""
     DEMUX.PLAYBACK_WAIT_SECONDS = wait_seconds
@@ -559,9 +560,13 @@ def queued_say(
     sentinel = Path(home) / "playing"
     probe = DEMUX.installation_idle
 
+    delayed = [0]
+
     def delayed_probe(*args, **kwargs):
-        # Delay the real safety probe only after playback has started.
-        if scan_delay and sentinel.exists():
+        # Delay the real safety probe only after playback has started; with
+        # slow_scans set, only that many scans are slow.
+        if scan_delay and sentinel.exists() and (slow_scans is None or delayed[0] < slow_scans):
+            delayed[0] += 1
             time.sleep(scan_delay)
         return probe(*args, **kwargs)
 
@@ -671,6 +676,7 @@ class PlaybackQueueTests(unittest.TestCase):
         speech_bus=None,
         take_wait_seconds=0.15,
         scan_delay=0.0,
+        slow_scans=None,
     ):
         events = [self.context.Event() for _ in range(3)]
         child = self.context.Process(
@@ -686,6 +692,7 @@ class PlaybackQueueTests(unittest.TestCase):
                 speech_bus,
                 take_wait_seconds,
                 scan_delay,
+                slow_scans,
             ),
         )
         child.start()
@@ -775,6 +782,23 @@ class PlaybackQueueTests(unittest.TestCase):
         log = (self.home / "playback.jsonl").read_text()
         self.assertFalse(early, f"premature lock release: {log}; {self.outcomes()}")
         self.assertTrue(all(row["spoken"] for row in self.outcomes()))
+
+    def test_one_scan_beyond_budget_does_not_cut_the_voice(self):
+        # CI, release/0.17.0 @ 100668a1f: a single scan that ran out of budget on
+        # a loaded runner stopped the first voice as "take_started" and let the
+        # second play. An unfinished scan is not a take; the cursor resumes.
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6, slow_scans=1
+        )
+        self.assertTrue(playing.wait(5))
+        time.sleep(0.9)
+        release.set()
+        self.join(child)
+        log = (self.home / "playback.jsonl").read_text()
+        self.assertNotIn('["filip", "terminate"]', log)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], f"{reply}; {log}")
 
     def test_scan_beyond_budget_still_terminates_playback(self):
         release = self.context.Event()
