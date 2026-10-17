@@ -2249,50 +2249,38 @@ struct AdmitWindow {
 }
 
 impl AppleSealState {
-    /// A direct observation may be suppressed only when at least one armed
-    /// observer actually measured this exact PCM range as quiet. Unmeasured,
-    /// unavailable, mismatched or incomplete evidence is not silence and
-    /// keeps the text. Range identity is the capture clock both observers
-    /// already measure; no string ever participates in this decision.
+    /// A direct observation may be suppressed only when BOTH armed observers
+    /// are identity-matched, have observed the whole claimed PCM range, and
+    /// report no measured speech intersecting it. Any speech positive keeps
+    /// the text, and so does any unmeasured, partial, invalid or discontinued
+    /// evidence — an unobserved tail is not silence. Range identity is the
+    /// capture clock both observers already measure; no string ever
+    /// participates in this decision.
     fn direct_range_measured_quiet(&self, range: &OccurrenceIdentity) -> bool {
-        let mut measured = false;
-        if let Some(fusion) = &self.fusion {
-            let evidence = fusion.acoustic_speech_evidence();
-            if matches!(
-                evidence.availability(),
-                AcousticAvailability::Observed { .. }
-            ) {
-                measured = true;
-                let heard = evidence.ranges().iter().any(|speech| {
+        let fully_observed_quiet = |evidence: &AcousticSpeechEvidence| match evidence.availability()
+        {
+            AcousticAvailability::Observed { observed_samples }
+                if observed_samples >= range.sample_end =>
+            {
+                !evidence.ranges().iter().any(|speech| {
                     speech.sample_end > range.sample_start
                         && speech.sample_start < range.sample_end
-                });
-                if heard {
-                    return false;
-                }
+                })
             }
-        }
+            _ => false,
+        };
+        let silero_quiet = match &self.fusion {
+            Some(fusion) => fully_observed_quiet(&fusion.acoustic_speech_evidence()),
+            None => false,
+        };
         // The energy ladder is fed by the raw capture arm; this read stays in
         // that measurement domain, never the recognizer's normalized track.
-        let energy = self.capture_energy.session_active_speech_ranges(
+        let energy_quiet = fully_observed_quiet(&self.capture_energy.session_active_speech_ranges(
             &self.session_id,
             self.capture_epoch,
             self.sample_rate,
-        );
-        if matches!(
-            energy.availability(),
-            AcousticAvailability::Observed { .. }
-        ) {
-            measured = true;
-            let heard = energy.ranges().iter().any(|speech| {
-                speech.sample_end > range.sample_start
-                    && speech.sample_start < range.sample_end
-            });
-            if heard {
-                return false;
-            }
-        }
-        measured
+        ));
+        silero_quiet && energy_quiet
     }
 
     /// Publish raw recognizer bytes without claiming word or seal authority.
