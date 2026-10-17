@@ -23,6 +23,24 @@ private struct BubbleOwnerNameButton: View {
   }
 }
 
+/// Maciej (2026-10-17): held controls hover like the owner name and Copy — muted at rest, brighter on hover.
+private struct OverlayHeldControlButton: View {
+  let title: LocalizedStringKey
+  let palette: OverlayAppearancePalette
+  let action: () -> Void
+  @State private var hovered = false
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    Button(action: action) {
+      Text(title)
+        .foregroundStyle(hovered && isEnabled ? palette.primaryText.color : palette.mutedText.color)
+    }
+    .buttonStyle(.plain)
+    .onHover { hovered = $0 }
+  }
+}
+
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
@@ -603,14 +621,17 @@ struct OverlayConversationView: View {
         .monospacedDigit()
         .accessibilityIdentifier("overlay-message-hold-countdown-\(message.id)")
       HStack(spacing: 12) {
-        Button("Edit") { edit(message) }
+        OverlayHeldControlButton(title: "Edit", palette: palette) { edit(message) }
           .accessibilityIdentifier("overlay-message-edit-\(message.id)")
-        Button("Withdraw") { performDeliveryControl(.withdraw, message: message) }
-          .accessibilityIdentifier("overlay-message-withdraw-\(message.id)")
-        Button("Send now") { performDeliveryControl(.release, message: message) }
-          .accessibilityIdentifier("overlay-message-release-\(message.id)")
+        OverlayHeldControlButton(title: "Withdraw", palette: palette) {
+          performDeliveryControl(.withdraw, message: message)
+        }
+        .accessibilityIdentifier("overlay-message-withdraw-\(message.id)")
+        OverlayHeldControlButton(title: "Send now", palette: palette) {
+          performDeliveryControl(.release, message: message)
+        }
+        .accessibilityIdentifier("overlay-message-release-\(message.id)")
       }
-      .buttonStyle(.borderless)
       .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
       if let error = deliveryControlErrors[message.id] {
         Text(verbatim: error).foregroundStyle(palette.errorStatus.color)
