@@ -1285,7 +1285,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let resolved = try XCTUnwrap(menu, "no context menu resolved at the passive header")
       resolved.delegate?.menuNeedsUpdate?(resolved)
       let titles = resolved.items.map(\.title)
-      for title in ["Agents", "Transcription", "Pin", "Free motion", "Show transcript by default"] {
+      for title in [
+        "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
+        "Auto fold after…",
+      ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
       }
     }
@@ -1512,6 +1515,15 @@ final class OverlayChromePolicyEngine: DictationEngine {
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
     pinWrites.append(enabled)
     pinEnabled = enabled
+    return true
+  }
+  var autoFoldSeconds: UInt32 = 10
+  var autoFoldWrites: [UInt32] = []
+  func overlayAutoFoldSeconds() -> UInt32 { autoFoldSeconds }
+  func setOverlayAutoFoldSeconds(_ seconds: UInt32) -> Bool {
+    autoFoldWrites.append(seconds)
+    guard [UInt32(0), 5, 10, 30, 60].contains(seconds) else { return false }
+    autoFoldSeconds = seconds
     return true
   }
   var expanded = true

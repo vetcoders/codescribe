@@ -43,7 +43,8 @@ final class ManualAutoCollapseScheduler {
 @MainActor
 final class OverlayAutoCollapseTests: XCTestCase {
   private func makeState(
-    expandedByDefault: Bool = true
+    expandedByDefault: Bool = true,
+    autoFoldSeconds: UInt32 = 10
   ) -> (OverlayState, ManualAutoCollapseScheduler) {
     let clock = ManualAutoCollapseScheduler()
     let state = OverlayState(
@@ -53,6 +54,7 @@ final class OverlayAutoCollapseTests: XCTestCase {
       autoCollapseScheduler: clock.scheduler)
     let engine = OverlayChromePolicyEngine()
     engine.expanded = expandedByDefault
+    engine.autoFoldSeconds = autoFoldSeconds
     state.engine = engine
     state.attach()
     return (state, clock)
@@ -178,8 +180,11 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .midi, "audio updates cannot reopen a manual fold")
     state.setPresentationMode(.expanded)
     state.applyConversationSnapshot(try replySnapshot(playback: "spoken"))
-    clock.advance(by: 120)
-    XCTAssertEqual(state.presentationMode, .expanded, "manual expansion remains pinned")
+    clock.advance(by: 9.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(
+      state.presentationMode, .midi, "a manual expansion folds back to the form it replaced")
   }
 
   func testTerminalHideCannotDismissPlaybackOrItsLongReplyReadingInterval() throws {
@@ -274,9 +279,9 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
   }
 
-  /// A manual Transcription choice while the hide waits cancels the return; the
-  /// manually chosen full panel stays full and leaves on the usual countdown.
-  func testManualChoiceWhileTheHideWaitsKeepsTheFormAndRestoresTheCountdown() throws {
+  /// Re-choosing the full panel while the hide waits keeps the return. The
+  /// hide stays deferred until the fold, then counts down on the compact form.
+  func testManualExpandedChoiceWhileTheHideWaitsKeepsTheReturnThenFolds() throws {
     let (state, clock) = makeState()
     var closes = 0
     state.onClose = { closes += 1 }
@@ -287,14 +292,14 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
 
     state.setPresentationMode(.expanded)
-    XCTAssertNil(state.autoCollapseRestoreMode)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .midi)
+    XCTAssertTrue(state.autoHideAwaitsAutoCollapse)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    XCTAssertEqual(state.presentationMode, .midi)
     XCTAssertFalse(state.autoHideAwaitsAutoCollapse)
-    XCTAssertEqual(
-      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
     clock.advance(by: OverlayState.autoHideDelaySeconds)
     state.fireAutoHideNowForTests()
     XCTAssertEqual(closes, 1)
-    XCTAssertEqual(state.presentationMode, .expanded, "a manual full panel is never collapsed")
   }
 
   /// Hover while the hide waits holds both timers; leaving re-arms both, and
@@ -529,15 +534,15 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .mini)
   }
 
-  func testManualExpandedChoiceStaysExpanded() {
+  func testManualRechoiceOfExpandedKeepsTheFirstCompactForm() {
     let (state, clock) = makeState()
     state.setPresentationMode(.mini)
     runTake(state)
     state.setPresentationMode(.expanded)
-    XCTAssertNil(state.autoCollapseRestoreMode)
-    XCTAssertEqual(clock.outstanding, 0)
-    clock.advance(by: 120)
-    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    XCTAssertEqual(clock.outstanding, 1)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    XCTAssertEqual(state.presentationMode, .mini)
   }
 
   func testManualCompactChoiceSupersedesTheRestore() throws {
@@ -552,14 +557,16 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertNil(state.autoCollapseRestoreMode)
   }
 
-  func testUserExpansionThroughTheSurfaceIsNotUndone() {
+  func testUserExpansionThroughTheSurfaceFoldsBackToMini() {
     let (state, clock) = makeState()
     state.setPresentationMode(.mini)
     state.showTranscription()
     XCTAssertEqual(state.presentationMode, .expanded)
-    XCTAssertNil(state.autoCollapseRestoreMode)
-    clock.advance(by: 120)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - 0.5)
     XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
   }
 
   func testHoverHoldsAndItsEndArmsAFreshInterval() {
@@ -739,6 +746,112 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .expanded)
     controller.show()
     clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testChosenBaseOfFiveFoldsAfterFiveSeconds() {
+    let (state, clock) = makeState(autoFoldSeconds: 5)
+    state.setPresentationMode(.mini)
+    runTake(state)
+    clock.advance(by: 4.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testChosenBaseOfSixtyDoesNotFoldAtTheOldTenSecondMark() {
+    let (state, clock) = makeState(autoFoldSeconds: 60)
+    state.setPresentationMode(.mini)
+    runTake(state)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 50)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testNeverArmsNoDeadlineAndDoesNotHoldTheTerminalHide() {
+    let (state, clock) = makeState(autoFoldSeconds: 0)
+    state.setPresentationMode(.mini)
+    state.setPresentationMode(.expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    XCTAssertNil(state.autoCollapseDeadline)
+    XCTAssertEqual(clock.outstanding, 0)
+    clock.advance(by: 120)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    runTake(state)
+    XCTAssertEqual(clock.outstanding, 0)
+    clock.advance(by: 120)
+    XCTAssertEqual(state.presentationMode, .expanded)
+
+    let (waiting, waitingClock) = makeState()
+    var closes = 0
+    waiting.onClose = { closes += 1 }
+    waiting.setPresentationMode(.mini)
+    runTerminalTake(waiting)
+    waitingClock.advance(by: OverlayState.autoHideDelaySeconds)
+    waiting.fireAutoHideNowForTests()
+    XCTAssertTrue(waiting.autoHideAwaitsAutoCollapse)
+    waiting.setAutoFoldSeconds(0)
+    XCTAssertEqual(waiting.autoFoldSeconds, 0)
+    XCTAssertFalse(waiting.autoHideAwaitsAutoCollapse)
+    XCTAssertNil(waiting.autoCollapseDeadline)
+    XCTAssertEqual(waiting.presentationMode, .expanded)
+    waitingClock.advance(by: OverlayState.autoHideDelaySeconds)
+    waiting.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
+  func testUserExpansionFromMiniFoldsBackToMini() {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    state.setPresentationMode(.expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .mini)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - 0.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testUserExpansionWithNoCompactMemoFoldsToMidi() {
+    let (state, clock) = makeState()
+    state.adoptExpandedFirstShowForTests()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertNil(state.autoCollapseRestoreMode)
+    state.setPresentationMode(.expanded)
+    XCTAssertEqual(state.autoCollapseRestoreMode, .midi)
+    clock.advance(by: OverlayAutoCollapse.idleSeconds - 0.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .midi)
+  }
+
+  func testLongReplyExtendsPastAFiveSecondBase() throws {
+    let (state, clock) = makeState(autoFoldSeconds: 5)
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text))
+    clock.advance(by: 5)
+    XCTAssertEqual(state.presentationMode, .expanded, "90 words outlast a 5 s base")
+    clock.advance(by: 24.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testHoverHoldsAFiveSecondBaseAndLeavingArmsThatBase() {
+    let (state, clock) = makeState(autoFoldSeconds: 5)
+    state.setPresentationMode(.mini)
+    runTake(state)
+    clock.advance(by: 2)
+    state.setPointerHovering(true)
+    XCTAssertEqual(clock.outstanding, 0, "a held panel keeps no timer")
+    clock.advance(by: 60)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    state.setPointerHovering(false)
+    clock.advance(by: 4.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
     XCTAssertEqual(state.presentationMode, .mini)
   }
 }

@@ -61,6 +61,8 @@ protocol DictationEngine: AnyObject {
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
   func overlayKeepVisibleBetweenTakes() -> Bool
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool
+  func overlayAutoFoldSeconds() -> UInt32
+  func setOverlayAutoFoldSeconds(_ seconds: UInt32) -> Bool
   func pasteText(text: String) async throws -> CsPasteResult
   func deferText(text: String) async throws -> CsPasteResult
   func copyTaggedTranscript(text: String) async throws
@@ -167,6 +169,8 @@ extension DictationEngine {
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
   func overlayKeepVisibleBetweenTakes() -> Bool { false }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
+  func overlayAutoFoldSeconds() -> UInt32 { 10 }
+  func setOverlayAutoFoldSeconds(_ seconds: UInt32) -> Bool { false }
   func channelRosterSnapshot() async -> [CsChannelRosterState] { [] }
   func toggleAgentChannel(digit _: UInt8) async throws {
     throw NSError(domain: "Agent channel unavailable", code: 1)
@@ -631,6 +635,9 @@ final class OverlayState {
   var isMini: Bool { presentationMode == .mini }
   private(set) var expandedByDefault = true
   private(set) var keepVisibleBetweenTakes = false
+  /// Seconds before an expanded overlay folds. `0` means never. Absence of a
+  /// saved choice is 10, the same interval `OverlayAutoCollapse.idleSeconds` names.
+  private(set) var autoFoldSeconds: UInt32 = 10
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onPresentationModeChanged: ((OverlayPresentationMode) -> Void)?
   /// The window's morph duration for the current change, written by the panel
@@ -666,9 +673,10 @@ final class OverlayState {
     relayIntent(intent)
   }
 
-  /// The user's choice (controls, resize gesture, explicit window entry). It
-  /// supersedes a pending automatic collapse, including a choice of the form
-  /// already on screen: a manually chosen expanded panel stays expanded.
+  /// The user's choice (controls, resize gesture, explicit window entry).
+  /// Choosing expanded remembers the compact form it replaced and arms the
+  /// idle return, the same as an automatic expansion. Choosing mini or midi
+  /// forgets that return. A fold the user chose is not undone by the pointer.
   func setPresentationMode(_ mode: OverlayPresentationMode) {
     applyPresentationMode(mode, cause: .user)
   }
@@ -681,20 +689,22 @@ final class OverlayState {
     applyPresentationMode(.midi, cause: .user)
   }
 
-  /// The one presentation write. An automatic expansion from mini/midi is
-  /// remembered once and receives a fresh idle interval, which also invalidates
-  /// any wake armed for its predecessor.
+  /// The one presentation write. Any expansion to `.expanded` remembers the
+  /// compact form it replaced — midi, when the panel was already expanded and
+  /// had no memo — and receives a fresh idle interval, which also invalidates
+  /// any wake armed for its predecessor. A write to mini or midi forgets the
+  /// return. Never (`autoFoldSeconds == 0`) records the memo and arms nothing.
   private func applyPresentationMode(
     _ mode: OverlayPresentationMode, cause: OverlayPresentationCause
   ) {
-    let automaticExpansion = cause == .automatic && mode == .expanded
+    let expanding = mode == .expanded
     OverlayPresentationTrace.shared.record(
       .modeRequested, from: presentationMode, mode: mode,
       note: (cause == .user ? "user" : "automatic") + (presentationMode == mode ? " same" : ""))
     // Any later presentation write supersedes a fold that could be undone.
     automaticFoldInFlight = nil
-    if automaticExpansion {
-      autoCollapse.noteAutomaticExpansion(from: presentationMode)
+    if expanding {
+      autoCollapse.noteExpansion(from: presentationMode)
     } else {
       autoCollapse.forget()
     }
@@ -703,7 +713,7 @@ final class OverlayState {
       if mode != .expanded { showsAgentMonitor = false }
       onPresentationModeChanged?(mode)
     }
-    if automaticExpansion {
+    if expanding {
       autoCollapse.suspend()
       noteAutoCollapseActivity()
     } else {
@@ -711,10 +721,11 @@ final class OverlayState {
     }
   }
 
-  /// An automatic expansion still owes its return to the remembered compact
-  /// form: the terminal hide must not close the full panel before it.
+  /// An expanded panel still owes its return to the remembered compact form,
+  /// and a deadline can still come: the terminal hide must not close the full
+  /// panel before it. Never arms nothing, so it must not wait.
   private var autoCollapsePending: Bool {
-    autoCollapse.restoreMode != nil && presentationMode == .expanded
+    autoFoldSeconds > 0 && autoCollapse.restoreMode != nil && presentationMode == .expanded
   }
 
   /// The return happened, or a manual choice or a lost memo cancelled it. A
@@ -732,12 +743,17 @@ final class OverlayState {
   /// the end of that interaction calls here again for a full interval.
   /// Unchanged polls and repaints do not reach this method.
   func noteAutoCollapseActivity() {
+    autoCollapse.baseIdleSeconds = TimeInterval(autoFoldSeconds)
+    guard autoFoldSeconds > 0 else {
+      autoCollapse.suspend()
+      return
+    }
     guard autoCollapse.restoreMode != nil, presentationMode == .expanded else { return }
     if autoCollapseInteractionHeld {
       autoCollapse.suspend()
     } else {
       autoCollapse.restartDeadline(
-        after: selectedReplyReadingSeconds ?? OverlayAutoCollapse.idleSeconds)
+        after: selectedReplyReadingSeconds ?? TimeInterval(autoFoldSeconds))
     }
   }
 
@@ -747,7 +763,7 @@ final class OverlayState {
     autoCollapse.suspend()
   }
 
-  /// The compact form a pending automatic collapse returns to, if any.
+  /// The compact form a pending fold returns to, if any.
   var autoCollapseRestoreMode: OverlayPresentationMode? { autoCollapse.restoreMode }
   var autoCollapseDeadline: TimeInterval? { autoCollapse.deadline }
 
@@ -756,14 +772,15 @@ final class OverlayState {
   @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
 
   /// Reading time comes from the canonical text actually selected on screen.
-  /// At 180 words/minute a long reply is not folded on the ten-second idle
-  /// timer. No receipt or document is marked read by this estimate.
+  /// At 180 words/minute a long reply is not folded on the chosen idle base.
+  /// The base is the floor: reading time never shortens it. Never has no
+  /// interval. No receipt or document is marked read by this estimate.
   private var selectedReplyReadingSeconds: TimeInterval? {
-    guard !showsAgentMonitor, let message = selectedConversation?.messages.last,
-      message.kind == .reply
+    guard autoFoldSeconds > 0, !showsAgentMonitor,
+      let message = selectedConversation?.messages.last, message.kind == .reply
     else { return nil }
     return max(
-      OverlayAutoCollapse.idleSeconds,
+      TimeInterval(autoFoldSeconds),
       Double(message.text.split(whereSeparator: \.isWhitespace).count) / 3)
   }
 
@@ -834,6 +851,26 @@ final class OverlayState {
     applyPresentationMode(
       expandedByDefault ? .expanded : (forTake ? .midi : .mini),
       cause: forTake ? .automatic : .user)
+  }
+
+  /// The menu's auto-fold choice. A refused or failed write leaves the interval
+  /// alone and surfaces the same preference error as the other overlay toggles.
+  /// Success re-arms a running deadline at the new base, or drops it for Never
+  /// and releases a terminal hide that was waiting on a fold.
+  func setAutoFoldSeconds(_ seconds: UInt32) {
+    guard let engine, engine.setOverlayAutoFoldSeconds(seconds) else {
+      expansionPreferenceError = String(localized: "Couldn't save overlay preference")
+      return
+    }
+    expansionPreferenceError = nil
+    autoFoldSeconds = engine.overlayAutoFoldSeconds()
+    autoCollapse.baseIdleSeconds = TimeInterval(autoFoldSeconds)
+    autoCollapse.suspend()
+    if autoFoldSeconds == 0 {
+      releaseAutoHideAwaitingCollapse()
+    } else {
+      noteAutoCollapseActivity()
+    }
   }
 
   func setKeepVisibleBetweenTakes(_ enabled: Bool) {
@@ -1068,6 +1105,8 @@ final class OverlayState {
     // Attaching loads policy; a new take or an explicit control opens the canvas.
     expandedByDefault = engine?.overlayExpandedByDefault() ?? true
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
+    autoFoldSeconds = engine?.overlayAutoFoldSeconds() ?? 10
+    autoCollapse.baseIdleSeconds = TimeInterval(autoFoldSeconds)
     onPinChanged?()
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
@@ -3514,10 +3553,11 @@ final class OverlayState {
       }
       return
     }
-    // The 5 s hide can come due before an automatic expansion's 10 s return.
+    // The terminal hide can come due before an expanded panel's idle return.
     // Closing then would take the full panel off screen, so the hide waits for
-    // the return. A deadline dropped without a later signal is re-armed here,
-    // otherwise neither timer would ever run.
+    // the return. Never folds nothing, so it does not wait. A deadline dropped
+    // without a later signal is re-armed here, otherwise neither timer would
+    // ever run.
     if autoCollapsePending {
       autoHideAwaitingCollapse = generation
       if autoCollapse.deadline == nil { noteAutoCollapseActivity() }
@@ -3538,6 +3578,14 @@ final class OverlayState {
   func fireAutoHideNowForTests(armedDeadline: TimeInterval? = nil) {
     if let armedDeadline { autoHideDeadline = armedDeadline }
     fireAutoHideForTests(generation: captureGeneration)
+  }
+
+  /// The first show is already expanded and owes no compact form. Production
+  /// preview helpers reach that by assigning the mode directly; tests cannot,
+  /// because `presentationMode` has no writer outside this type.
+  func adoptExpandedFirstShowForTests() {
+    presentationMode = .expanded
+    autoCollapse.forget()
   }
 
   /// Deterministic negative seam: replay a wake that was armed by an EARLIER
@@ -5009,6 +5057,12 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
     config.setOverlayKeepVisibleBetweenTakes(enabled: enabled)
+  }
+  func overlayAutoFoldSeconds() -> UInt32 {
+    config.overlayAutoFoldSeconds()
+  }
+  func setOverlayAutoFoldSeconds(_ seconds: UInt32) -> Bool {
+    config.setOverlayAutoFoldSeconds(seconds: seconds)
   }
   func pasteText(text: String) async throws -> CsPasteResult {
     try await hotkeys.pasteText(text: text)
