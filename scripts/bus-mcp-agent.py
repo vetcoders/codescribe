@@ -36,6 +36,19 @@ PROVIDER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 #: One reviewed per-connection directory directly under `<bridge_home>/runtime`.
 STATE_DIRECTORY_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}-mcp")
 
+#: The only variables BUS helper children (cs-bus and what it starts) receive.
+#: Bridge home, bus, provider and session travel as explicit arguments, and
+#: speech credentials come from Keychain or a CLI session, so whatever the
+#: transport or its launcher holds in this process's environment stays here.
+CHILD_ENVIRONMENT = frozenset({"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ",
+                               "SPEECH_TTS_MODEL_OPENAI", "CODESCRIBE_DISABLE_KEYCHAIN"})
+CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
+
+
+def child_environment(environ):
+    return {k: v for k, v in environ.items()
+            if k in CHILD_ENVIRONMENT or k.startswith(CHILD_ENVIRONMENT_PREFIXES)}
+
 
 def protocol_params(method, params):
     """Validate MCP 2.0's envelope; business validators never receive metadata."""
@@ -179,14 +192,19 @@ class Scope:
     def state_directory(self, path):
         """One reviewed per-connection directory under the bridge's runtime root.
 
-        Fail closed: no default, no fallback and no directory shared with
-        another connection. The resolved location keys the Events signing-key
-        namespace, so a deployment keeps its existing keys by naming the
-        directory it already uses. Validation writes nothing; `prepare_state`
-        creates an absent directory when a connection actually starts.
+        Fail closed: no default and no fallback; the owner names it in the
+        scope. The resolved location keys the Events signing-key namespace, so
+        a deployment keeps its existing keys by naming the directory it already
+        uses. Validation writes nothing; `prepare_state` creates an absent
+        directory when a connection actually starts.
         """
-        runtime = self.root / "runtime"
-        if (path.parent.resolve() != runtime.resolve()
+        runtime = self.root / "runtime"  # The root is already resolved.
+        try:
+            if stat.S_ISLNK(os.lstat(runtime).st_mode):
+                raise ValueError("The bridge runtime root must not be a symlink")
+        except FileNotFoundError:
+            pass
+        if (path.parent.resolve() != runtime
                 or not STATE_DIRECTORY_PATTERN.fullmatch(path.name)):
             raise ValueError("A '-mcp' directory directly inside the bridge runtime root is required")
         self.check_private_directory(path)
@@ -210,7 +228,8 @@ class Scope:
             try:
                 os.mkdir(self.state, 0o700)  # umask can only narrow this further.
             except FileExistsError:
-                pass  # A concurrent start created it; the check below decides.
+                pass  # A concurrent start created it; the checks below decide.
+        self.state_directory(self.state)  # Re-check the runtime root after creating it.
         if not self.check_private_directory(self.state):
             raise ValueError("The state directory could not be prepared")
         return self.state
@@ -224,6 +243,7 @@ class AgentMailbox:
         self.lock = threading.RLock()
         self.mailbox.provider, self.mailbox.owner = scope.provider, scope.session
         self.mailbox.bus = scope.bus
+        self.mailbox.environment = child_environment(os.environ)
         self.lease = demux.lease_identifier(scope.provider, scope.session)
         self.calls = scope.prepare_state() / self.lease / "calls"
 
@@ -249,9 +269,21 @@ class AgentMailbox:
                 if t["name"] in ("codescribe_status", "codescribe_call")]
 
     def call_owner(self):
-        """A fixed unsolicited call needs no listener; an existing lease must match."""
+        """A fixed unsolicited call needs no listener; an existing lease must match.
+
+        Without a lease the configured name still cannot be another
+        participant's: a BUS binding held by a different session under this
+        name refuses.
+        """
         path = self.scope.root / "leases" / (self.lease + ".json")
         if not path.exists():
+            binding = self.demux.read_json(self.scope.root / self.demux.AUDIENCE_BINDING_FILENAME) or {}
+            rows = binding.get("bindings") if binding.get("schema") == self.demux.AUDIENCE_BINDING_SCHEMA else None
+            if isinstance(rows, dict) and any(
+                    isinstance(r, dict) and str(r.get("audience", "")).casefold() == self.scope.name_key
+                    and (r.get("provider"), r.get("provider_session_id"))
+                    != (self.scope.provider, self.scope.session) for r in rows.values()):
+                raise PermissionError("This name belongs to another BUS participant")
             return
         state = self.demux.read_reply_json(path)
         owner = {"schema": self.demux.LEASE_SCHEMA, "provider": self.scope.provider,
