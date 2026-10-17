@@ -948,6 +948,21 @@ impl SealedEnergyCalibration {
         profile.ledger_calibration(sample_rate)
     }
 
+    /// Linear RMS of the profile's existence floor at this capture rate.
+    ///
+    /// This is the floor a Whisper word's own hops are compared with. It is not
+    /// the speech-anchor floor (`noise + 8 dB`) and it is not recoverable from
+    /// `min_energy_integral`. A refusal leaves the caller with no floor.
+    pub fn existence_floor_rms_for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<f32, EnergyCalibrationRefusal> {
+        self.for_capture(device_name, sample_rate)?;
+        let profile = self.profile_at(device_name, calibration_now_unix_ms()?)?;
+        Ok(db_to_linear(profile.floors.existence_threshold_dbfs))
+    }
+
     /// The same validated device profile supplies the speech-anchor floor.
     /// Reading the sealed snapshot does not probe or reload calibration files.
     pub fn speech_anchor_floor_for_capture(

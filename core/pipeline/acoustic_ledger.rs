@@ -398,6 +398,11 @@ pub enum RefuseReason {
     /// The pin's own PCM range was measured, and no hop inside it was voiced.
     /// Mean loudness of a wider span is not this fact.
     NoVoicedHopInPin,
+    /// This Whisper word repeats the previous identical word, and the span
+    /// was measured. It does not contain its own voiced segment: no energy
+    /// valley and no Silero dip separates it from that previous word, or the
+    /// span is shorter than one syllable of a repeat.
+    IdenticalRepeatWithoutOwnVoicedSegment,
     /// A previous positive no-speech receipt covers the entire candidate pin.
     ConfirmedNoSpeech,
 }
@@ -418,6 +423,9 @@ impl RefuseReason {
             Self::ClockLie => "clock_lie",
             Self::UnrecoveredSpeech => "unrecovered_speech",
             Self::NoVoicedHopInPin => "no_voiced_hop_in_pin",
+            Self::IdenticalRepeatWithoutOwnVoicedSegment => {
+                "identical_repeat_without_own_voiced_segment"
+            }
             Self::ConfirmedNoSpeech => "confirmed_no_speech",
         }
     }

@@ -94,6 +94,11 @@ use crate::pipeline::contracts::{
     SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use crate::pipeline::whisper_word_speech::{
+    WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech, WhisperWordSpeechDecision,
+    WhisperWordSpeechVerdict, judge_whisper_words, repeat_key, separation_window,
+    window_has_energy_valley, window_has_silero_dip,
+};
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
@@ -2086,6 +2091,10 @@ struct AppleSealState {
     /// Measured threshold frozen into the same settings snapshot. Absence is a
     /// fail-closed W2 state: no occurrence qualifies and no text mutates.
     energy_calibration: Option<EnergyCalibration>,
+    /// Linear RMS of the calibrated existence floor for this take.
+    /// `None` means this take has no measured floor. Word admission does not
+    /// invent one from `min_energy_integral` or from the −80 dBFS hop floor.
+    existence_floor_rms: Option<f32>,
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
@@ -2640,6 +2649,7 @@ impl AppleSealState {
             reconciled_silero: BTreeSet::new(),
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
+            existence_floor_rms: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
             cloud_commit_tx: None,
             cloud_uncommitted: BTreeSet::new(),
@@ -4466,6 +4476,15 @@ impl AppleSealState {
             }
             return;
         }
+        // `word_grain` stays on the original segments. An all-refused window
+        // must not fall through to `payload.text`.
+        let filtered_segments = payload
+            .as_ref()
+            .is_some_and(|payload| {
+                payload.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
+            })
+            .then(|| retain_whisper_words_with_own_speech(self, ev_tx, request_id, segments));
+        let segments = filtered_segments.as_deref().unwrap_or(segments);
         let owners = if word_grain {
             self.word_owners_in_window(admit_sample_start, admit_sample_end, segments)
         } else {
@@ -6921,6 +6940,266 @@ fn admit_ledger_label<'a>(
     Some(receipt)
 }
 
+struct WhisperWindowSpeech {
+    facts: Vec<WhisperWordSpeech>,
+    decisions: Vec<WhisperWordSpeechDecision>,
+}
+
+/// Measure each Whisper word on the capture clock and judge it.
+///
+/// Silero comes from the session fusion evidence. Energy uses the calibrated
+/// existence floor only. A missing channel stays `None`.
+fn measure_whisper_window_speech(
+    state: &AppleSealState,
+    segments: &[TimedTailSegment],
+) -> WhisperWindowSpeech {
+    let mut facts = Vec::with_capacity(segments.len());
+    let mut previous_key: Option<String> = None;
+    let mut previous_span: Option<(u64, u64)> = None;
+    for segment in segments {
+        let key = repeat_key(&segment.text);
+        let separated = match (key.as_ref(), previous_key.as_ref(), previous_span) {
+            (Some(key), Some(previous), Some(span)) if key == previous => combine_word_separation(
+                energy_valley_between(
+                    state,
+                    span,
+                    (segment.range.sample_start, segment.range.sample_end),
+                ),
+                silero_dip_between(
+                    state,
+                    span,
+                    (segment.range.sample_start, segment.range.sample_end),
+                ),
+            ),
+            _ => None,
+        };
+        facts.push(WhisperWordSpeech {
+            text: segment.text.clone(),
+            sample_start: segment.range.sample_start,
+            sample_end: segment.range.sample_end,
+            sample_rate: state.sample_rate,
+            silero_speech: silero_speech_on_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            energy_above_floor: energy_above_existence_floor(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            speech_near_span: speech_near_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
+            separated_from_previous: separated,
+        });
+        previous_key = key;
+        previous_span = Some((segment.range.sample_start, segment.range.sample_end));
+    }
+    let decisions = judge_whisper_words(&facts);
+    if decisions
+        .iter()
+        .any(|decision| matches!(decision.verdict, WhisperWordSpeechVerdict::Unmeasured))
+    {
+        debug!(
+            words = facts.len(),
+            "whisper word speech evidence unmeasured; words kept"
+        );
+    }
+    WhisperWindowSpeech { facts, decisions }
+}
+
+fn retain_whisper_words_with_own_speech(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    request_id: u64,
+    segments: &[TimedTailSegment],
+) -> Vec<TimedTailSegment> {
+    let window = measure_whisper_window_speech(state, segments);
+    let mut kept = Vec::with_capacity(segments.len());
+    for (index, (segment, decision)) in segments.iter().zip(&window.decisions).enumerate() {
+        let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict else {
+            kept.push(segment.clone());
+            continue;
+        };
+        let energy_silent = window
+            .facts
+            .get(index)
+            .is_some_and(|fact| fact.energy_above_floor == Some(false));
+        emit_whisper_word_speech_refusal(
+            state,
+            ev_tx,
+            LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                request_id,
+                40_000 + index as u64,
+                OccurrenceIdentity::from(&segment.range),
+            ),
+            segment.text.trim(),
+            reason,
+            energy_silent,
+        );
+    }
+    kept
+}
+
+fn emit_whisper_word_speech_refusal(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    observation: LedgerObservationIdentity,
+    label: &str,
+    reason: RefuseReason,
+    energy_silent: bool,
+) {
+    let receipt = {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if energy_silent && reason == RefuseReason::NoVoicedHopInPin {
+            ledger.note_energy_lookup_without_voiced_hop();
+        }
+        ledger.refuse_replacement(&observation, label, reason)
+    };
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: label.to_string(),
+        receipt,
+    });
+}
+
+fn combine_word_separation(energy_valley: Option<bool>, silero_dip: Option<bool>) -> Option<bool> {
+    match (energy_valley, silero_dip) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (None, None) => None,
+        // A measured channel found no split. The missing channel is not a valley.
+        _ => Some(false),
+    }
+}
+
+fn energy_above_existence_floor(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let hops = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        start,
+        end,
+        floor,
+    )?;
+    Some(!hops.is_empty())
+}
+
+fn energy_valley_between(
+    state: &AppleSealState,
+    previous: (u64, u64),
+    current: (u64, u64),
+) -> Option<bool> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let Some(window) = separation_window(previous, current) else {
+        // Measured, and the current word does not start after the previous one.
+        return state
+            .capture_energy
+            .hops_at_or_above(
+                &state.session_id,
+                state.capture_epoch,
+                current.0,
+                current.1,
+                floor,
+            )
+            .map(|_| false);
+    };
+    let voiced = state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        window.0,
+        window.1,
+        floor,
+    )?;
+    Some(window_has_energy_valley(window, &voiced))
+}
+
+/// Silero and the calibrated floor on the span widened by
+/// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. Where the widened end is past
+/// what a channel has observed yet, that channel reads the span's own end.
+fn speech_near_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let pad = u64::from(state.sample_rate) * WHISPER_WORD_SPEECH_NEAR_MS / 1_000;
+    let start = start.saturating_sub(pad);
+    let wide_end = end.saturating_add(pad);
+    let silero = silero_speech_on_span(state, start, wide_end)
+        .or_else(|| silero_speech_on_span(state, start, end));
+    let energy = energy_above_existence_floor(state, start, wide_end)
+        .or_else(|| energy_above_existence_floor(state, start, end));
+    match (silero, energy) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (None, None) => None,
+        _ => Some(false),
+    }
+}
+
+fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let evidence = observed_silero(state)?;
+    span_inside_observed(&evidence, end)?;
+    Some(ranges_overlap_span(&evidence, start, end))
+}
+
+fn silero_dip_between(
+    state: &AppleSealState,
+    previous: (u64, u64),
+    current: (u64, u64),
+) -> Option<bool> {
+    let evidence = observed_silero(state)?;
+    span_inside_observed(&evidence, previous.1.max(current.1))?;
+    let previous_on = ranges_overlap_span(&evidence, previous.0, previous.1);
+    let current_on = ranges_overlap_span(&evidence, current.0, current.1);
+    let window = separation_window(previous, current);
+    let (true, true, Some(window)) = (previous_on, current_on, window) else {
+        return Some(false);
+    };
+    Some(window_has_silero_dip(
+        window,
+        evidence
+            .ranges()
+            .iter()
+            .map(|range| (range.sample_start, range.sample_end)),
+    ))
+}
+
+fn observed_silero(state: &AppleSealState) -> Option<AcousticSpeechEvidence> {
+    let evidence = state.fusion.as_ref()?.acoustic_speech_evidence();
+    if !evidence
+        .identity()
+        .matches(&state.session_id, state.capture_epoch)
+    {
+        return None;
+    }
+    match evidence.availability() {
+        AcousticAvailability::Observed { .. } => Some(evidence),
+        _ => None,
+    }
+}
+
+fn span_inside_observed(evidence: &AcousticSpeechEvidence, end: u64) -> Option<()> {
+    match evidence.availability() {
+        AcousticAvailability::Observed { observed_samples } if end <= observed_samples => Some(()),
+        _ => None,
+    }
+}
+
+fn ranges_overlap_span(evidence: &AcousticSpeechEvidence, start: u64, end: u64) -> bool {
+    evidence
+        .ranges()
+        .iter()
+        .any(|range| range.sample_start < end && start < range.sample_end)
+}
+
 /// Admit only whole-session final-pass segments that fit wholly inside one
 /// material uncovered speech range.
 ///
@@ -6968,6 +7247,8 @@ fn admit_full_pass_gap_segments(
         .iter()
         .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
         .collect::<Vec<_>>();
+    let whisper_speech = (producer == LedgerObservationProducer::Whisper)
+        .then(|| measure_whisper_window_speech(state, &full_pass.segments));
     let mut admitted = 0usize;
     let mut contained = 0usize;
 
@@ -6999,6 +7280,24 @@ fn admit_full_pass_gap_segments(
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
         );
+        if let Some(window) = whisper_speech.as_ref()
+            && let Some(decision) = window.decisions.get(generation)
+            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+        {
+            let energy_silent = window
+                .facts
+                .get(generation)
+                .is_some_and(|fact| fact.energy_above_floor == Some(false));
+            emit_whisper_word_speech_refusal(
+                state,
+                ev_tx,
+                observation,
+                label,
+                reason,
+                energy_silent,
+            );
+            continue;
+        }
         if state
             .capture_energy
             .voiced_hops_in(
@@ -7234,8 +7533,32 @@ fn admit_retained_unowned_words(
     {
         return false;
     }
+    let whisper_speech = measure_whisper_window_speech(state, &payload.segments);
     let mut qualified = false;
     for (index, segment) in payload.segments.iter().enumerate() {
+        if let Some(decision) = whisper_speech.decisions.get(index)
+            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+        {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                payload.identity.request_id,
+                50_000 + index as u64,
+                OccurrenceIdentity::from(&segment.range),
+            );
+            let energy_silent = whisper_speech
+                .facts
+                .get(index)
+                .is_some_and(|fact| fact.energy_above_floor == Some(false));
+            emit_whisper_word_speech_refusal(
+                state,
+                ev_tx,
+                observation,
+                segment.text.trim(),
+                reason,
+                energy_silent,
+            );
+            continue;
+        }
         if segment.grain != TailSegmentGrain::Word
             || segment.text.split_whitespace().count() != 1
             || !decode.contains(&segment.range)
@@ -9065,6 +9388,13 @@ fn apple_stream_worker(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .bind_speech_anchor_floor(floor);
+    }
+    if let Some(device) = capture_device_name.as_deref()
+        && let Ok(floor) = runtime_settings
+            .energy_calibration()
+            .existence_floor_rms_for_capture(device, sample_rate)
+    {
+        state.existence_floor_rms = Some(floor);
     }
     if input_enhanced {
         state.recognizer_audio = Some(LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS));
