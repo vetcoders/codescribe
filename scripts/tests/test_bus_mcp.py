@@ -1267,13 +1267,15 @@ sys.exit(subprocess.call(["/bin/sh", "-c", command], env=dict(os.environ, HOME=o
 FAKE_REMOTE_HELPER = """#!/bin/sh
 case " $* " in
   *" --claude-code-wake "*)
+    # Armed before the "wake" line: the test treats that line as "waiting",
+    # so a TERM that lands right after it must still be recorded.
+    trap 'echo terminated >> "$FAKE_REMOTE_LOG"; exit 143' TERM
     payload=$(cat)
     printf 'wake %s %s\\n' "$CLAUDE_CODE_SESSION_ID" "$payload" >> "$FAKE_REMOTE_LOG"
     if [ "$(cat "$FAKE_REMOTE_MODE" 2>/dev/null)" = wake ]; then
       echo "Codescribe: 1 new message(s) for klaudiusz-div0, connected on channel 9 (claude-code session $CLAUDE_CODE_SESSION_ID); pending 1; new delivery ids: aaaaaaaaaaaaaaaaaaaaaaaa [channel 9, to you]. Read every pending message." >&2
       exit 75
     fi
-    trap 'echo terminated >> "$FAKE_REMOTE_LOG"; exit 143' TERM
     while :; do sleep 0.05; done ;;
   *)
     for arg in "$@"; do printf 'arg %s\\n' "$arg" >> "$FAKE_REMOTE_LOG"; done
