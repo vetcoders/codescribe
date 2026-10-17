@@ -33,12 +33,17 @@ broader reach than the agent needs.
 
 Credentials the transport or its launcher holds in this process's environment
 never reach the BUS helpers it starts: `cs-bus` and everything `cs-bus` starts
-receive only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, `TZ`
-and `SPEECH_TTS_MODEL_OPENAI` (`CHILD_ENVIRONMENT` in `bus-mcp-agent.py`).
-Bridge home, bus, provider and session travel as explicit arguments, and speech
-credentials come from Keychain or a CLI session, exactly as for `cs-say`. The
-native key helper has its own, narrower allowlist. Still start the process with
-the smallest environment your transport allows.
+receive only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, `TZ`,
+`SPEECH_TTS_MODEL_OPENAI`, `LLM_OPENAI_API_KEY`, `CODESCRIBE_ENV_PATH` and the
+bus location keys `bus-demux` declares in `BUS_PATH_ENV_KEYS`
+(`CODESCRIBE_TRANSCRIPT_BUS_PATH`, `XDG_STATE_HOME`, `CODESCRIBE_DATA_DIR`);
+see `CHILD_ENVIRONMENT` in `bus-mcp-agent.py`. The location keys let the speech
+capture guard find the same transcript bus the app writes, which it resolves on
+its own rather than from the mailbox `--bus`. `LLM_OPENAI_API_KEY` is the one
+credential the BUS helper itself reads: OpenAI speech takes it before Keychain,
+exactly as for `cs-say`. Bridge home, bus, provider and session travel as
+explicit arguments. The native key helper has its own, narrower allowlist. Still
+start the process with the smallest environment your transport allows.
 
 Everything the agent is allowed to be — provider, session, name, bus, paths,
 capabilities — comes from a scope file that the machine's owner writes and

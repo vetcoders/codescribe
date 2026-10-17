@@ -276,23 +276,50 @@ class ScopeContractTests(Fixture):
         self.assertEqual(sorted(p.name for p in scripts.iterdir()),
                          ["bus-demux.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py"])
 
-    def test_bus_helper_children_receive_only_the_allowlisted_environment(self):
+    def child_view(self, planted):
+        """What a BUS helper child sees: its environment and the canonical bus it resolves."""
         dump = self.root / "dump-env.py"
-        dump.write_text("import json, os\nprint(json.dumps(dict(os.environ)))\n")
-        planted = {"TRANSPORT_TOKEN": "transport-secret", "LLM_OPENAI_API_KEY": "model-secret",
-                   "CODESCRIBE_STT_SIDECAR_TOKEN": "sidecar-secret", "PATH": "/usr/bin:/bin",
-                   "HOME": str(self.root), "LANG": "pl_PL.UTF-8", "LC_ALL": "C", "TZ": "UTC"}
-        with patch.dict(os.environ, planted):
+        dump.write_text(
+            "import importlib.util, json, os, sys\n"
+            "spec = importlib.util.spec_from_file_location('child_demux', sys.argv[1])\n"
+            "demux = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(demux)\n"
+            "print(json.dumps({'env': dict(os.environ), 'bus_path': str(demux.bus_path())}))\n")
+        with patch.dict(os.environ, planted, clear=True):
             server = AGENT.AgentMailbox(DEMUX, NATIVE.Mailbox(DEMUX, self.root, self.bus), AGENT.Scope(self.config))
-        server.mailbox.command = [sys.executable, str(dump)]
-        seen = server.mailbox.run(["--status"])
-        for name in ("TRANSPORT_TOKEN", "LLM_OPENAI_API_KEY", "CODESCRIBE_STT_SIDECAR_TOKEN"):
+        server.mailbox.command = [sys.executable, "-B", str(dump), str(SCRIPTS / "bus-demux.py")]
+        return server.mailbox.run(["--status"])
+
+    def test_bus_helper_children_receive_only_the_allowlisted_environment(self):
+        planted = {"TRANSPORT_TOKEN": "transport-secret", "CODESCRIBE_STT_SIDECAR_TOKEN": "sidecar-secret",
+                   "LLM_ANTHROPIC_API_KEY": "model-secret", "LLM_OPENAI_API_KEY": "speech-key",
+                   "PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "pl_PL.UTF-8", "LC_ALL": "C",
+                   "TZ": "UTC"}
+        seen = self.child_view(planted)["env"]
+        for name in ("TRANSPORT_TOKEN", "CODESCRIBE_STT_SIDECAR_TOKEN", "LLM_ANTHROPIC_API_KEY"):
             self.assertNotIn(name, seen)
         self.assertNotIn("transport-secret", json.dumps(seen))
-        for name in ("PATH", "HOME", "LANG", "LC_ALL", "TZ"):
+        # The speech credential the BUS helper itself consumes before Keychain.
+        for name in ("LLM_OPENAI_API_KEY", "PATH", "HOME", "LANG", "LC_ALL", "TZ"):
             self.assertEqual(seen[name], planted[name])
-        self.assertTrue(set(seen) <= AGENT.CHILD_ENVIRONMENT | {k for k in seen if k.startswith("LC_")}
-                        | {"__CF_USER_TEXT_ENCODING"})
+        allowed = AGENT.CHILD_ENVIRONMENT | set(DEMUX.BUS_PATH_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}
+        self.assertTrue({k for k in seen if not k.startswith("LC_")} <= allowed)
+
+    def test_bus_helper_children_resolve_the_same_canonical_bus_as_the_agent(self):
+        custom = self.root / "custom" / "transcript.jsonl"
+        base = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TRANSPORT_TOKEN": "transport-secret"}
+        for config in ({"CODESCRIBE_TRANSCRIPT_BUS_PATH": str(custom)},
+                       {"XDG_STATE_HOME": str(self.root / "state")},
+                       {"CODESCRIBE_DATA_DIR": str(self.root / "data")},
+                       {"CODESCRIBE_ENV_PATH": str(self.root / "elsewhere.env")}):
+            with self.subTest(config=list(config)):
+                (self.root / "elsewhere.env").write_text(f"CODESCRIBE_TRANSCRIPT_BUS_PATH={custom}\n")
+                with patch.dict(os.environ, {**base, **config}, clear=True):
+                    expected = str(DEMUX.bus_path())
+                view = self.child_view({**base, **config})
+                self.assertEqual(view["bus_path"], expected)
+                self.assertNotIn("TRANSPORT_TOKEN", view["env"])
+        self.assertNotEqual(expected, str(self.root / ".codescribe" / DEMUX.BUS_FILENAME))
 
     def test_check_scope_refuses_other_modes_and_an_invalid_scope(self):
         path = self.root / "scope.json"
