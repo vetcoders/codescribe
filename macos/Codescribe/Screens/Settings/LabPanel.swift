@@ -26,6 +26,7 @@ struct LabPanel: View {
       transcriptionTracks
 
       dictationWitnessRow
+        .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
 
       Picker(
         "Whisper buffering",

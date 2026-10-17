@@ -76,6 +76,8 @@ CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 #: later channel-session row would ever release its refused take.
 SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
+DIRECT_TERMINAL = "apply_direct_transcript_terminal"
+TERMINAL_PUBLICATIONS = (TERMINAL_SEAL, DIRECT_TERMINAL)
 #: A ledger that refuses terminal finality (incomplete acoustic coverage or
 #: pending text recovery) emits no terminal seal at all, and before this net
 #: the utterance silently vanished for the agent (observed live 2026-09-29:
@@ -1260,14 +1262,17 @@ class EvidenceNormalizer:
                 return None
             # Even a ledger terminal phase is a preview until capture ends.
             return clean
-        if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+        if str(event.get("reducer_action") or "") in TERMINAL_PUBLICATIONS:
             self._settled_sessions.add(session)
             self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
             if seal_id in self._terminal_seals:
                 return None
             self._terminal_seals.add(seal_id)
-            return self._as_clean(event, SEALED, document)
+            clean = self._as_clean(event, SEALED, document)
+            if event.get("reducer_action") == DIRECT_TERMINAL:
+                clean["coverage"] = "direct"
+            return clean
         clean = self._as_clean(event, LIVE_STATUSES[1], document)
         return clean
 
@@ -1363,7 +1368,9 @@ class EvidenceNormalizer:
             return
         final = dict(clean)
         final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
-        if clean.get("reducer_action") != TERMINAL_SEAL:
+        if clean.get("reducer_action") == DIRECT_TERMINAL:
+            final["coverage"] = "direct"
+        elif clean.get("reducer_action") != TERMINAL_SEAL:
             final["coverage"] = COVERAGE_REFUSED
         self._flushes.append(final)
 
@@ -3046,7 +3053,7 @@ class SessionLease:
             phase_id = channel_message_phase_identity(payload)
         elif (
             payload.get("producer_schema") == EVIDENCE_SCHEMA
-            and payload.get("reducer_action") == TERMINAL_SEAL
+            and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
             and payload.get("status") == SEALED
         ):
             phase_id = terminal_seal_identity(payload)

@@ -625,6 +625,19 @@ impl StreamingRecorder {
         })
     }
 
+    /// Track choices from this take's frozen generation; absent snapshots carry no opt-in.
+    pub fn seal_ledger_enabled(&self) -> bool {
+        self.runtime_settings
+            .as_ref()
+            .is_some_and(|settings| settings.seal_ledger_enabled())
+    }
+
+    pub fn apple_live_enabled(&self) -> bool {
+        self.runtime_settings
+            .as_ref()
+            .is_some_and(|settings| settings.apple_live_enabled())
+    }
+
     /// Bind the next capture to one immutable settings snapshot and one ledger.
     pub fn bind_session_authority(
         &mut self,
@@ -3604,6 +3617,121 @@ mod capture_stop_failure_tests {
         recorder.captured_samples.store(4, Ordering::Relaxed);
         recorder.lifecycle_handle = Some(recorder_lifecycle_channel().0);
         recorder
+    }
+
+    #[tokio::test]
+    async fn direct_stop_supplies_archive_before_completion_and_survives_cancelled_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("direct-tail.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.sample_rate = 16_000;
+        *recorder.transcript_buffer.lock().await = "English survives Stop".into();
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
+        let (archive_tx, archive_rx) = std::sync::mpsc::channel();
+        recorder.terminal_audio_sender = Some(archive_tx);
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        let mut closed = recorder.detach_take_state(Some(Ok(Some(path.clone()))), None, None);
+        closed.direct_transcript = true;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                closed.wait_live_finals_admitted()
+            )
+            .await
+            .is_err()
+        );
+        let archive = archive_rx
+            .try_recv()
+            .expect("archive must precede completion")
+            .unwrap();
+        assert_eq!(
+            (
+                archive.session_id.as_str(),
+                archive.capture_epoch,
+                archive.sample_count
+            ),
+            ("capture-owner", 7, 4)
+        );
+        assert_eq!(archive.path, path);
+        assert!(
+            closed.last_window_closed.is_some(),
+            "cancellation retains completion receiver"
+        );
+        assert!(closed.direct_decoder_complete.is_none());
+        done_tx.send(()).unwrap();
+        assert!(closed.wait_live_finals_admitted().await);
+        assert!(
+            closed.wait_live_finals_admitted().await,
+            "cached completion survives its consumer"
+        );
+        assert!(
+            closed.acoustic_ledger.is_none(),
+            "no invented ledger authority"
+        );
+        assert_eq!(
+            closed.finish().await.unwrap(),
+            ("English survives Stop".into(), Some(path.clone()))
+        );
+        assert!(closed.is_settled());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert!(archive_rx.try_recv().is_err(), "one archive publication");
+    }
+
+    #[tokio::test]
+    async fn direct_stop_requires_native_completion_and_preserves_failed_take_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("failed-direct-tail.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        *recorder.transcript_buffer.lock().await = "recoverable English".into();
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        drop(done_tx);
+        let mut closed = recorder.detach_take_state(Some(Ok(Some(path.clone()))), None, None);
+        closed.direct_transcript = true;
+        let error = closed.finish().await.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert_eq!(failure.audio_path.as_ref(), Some(&path));
+        assert!(
+            failure
+                .cause
+                .to_string()
+                .contains("direct recognizer completion")
+        );
+        assert_eq!(
+            &*closed.transcript_buffer.lock().await,
+            "recoverable English"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn direct_stop_waits_for_original_presentation_after_decoder_completion() {
+        let mut recorder = recorder();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
+            entered: entered.clone(),
+            release: release.clone(),
+        })));
+        let text = recorder.transcript_buffer.clone();
+        let (done_tx, done_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(done_rx);
+        done_tx.send(()).unwrap();
+        let mut closed = recorder.detach_take_state(Some(Ok(None)), None, None);
+        closed.direct_transcript = true;
+        let task = tokio::spawn(async move { closed.finish().await });
+        entered.notified().await;
+        assert!(
+            !task.is_finished(),
+            "native completion is not presentation completion"
+        );
+        *text.lock().await = "final English".into();
+        release.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), ("final English".into(), None));
     }
 
     #[tokio::test]

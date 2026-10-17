@@ -1298,15 +1298,16 @@ pub(crate) async fn apple_stream_transcription_session(
     // Arming the transport schedules nothing; a sealed occurrence must acquire
     // a bounded queue permit first. Apple on-device counts as an engine on its
     // own: it needs no cloud key, endpoint or account.
-    let formatter_on = seal_ledger_enabled && live_formatter_lane_is_armed(
-        capture_turn,
-        runtime_settings.values().ai_formatting_enabled,
-        runtime_settings.formatting_policy(),
-        || {
-            crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
-                .is_none()
-        },
-    );
+    let formatter_on = seal_ledger_enabled
+        && live_formatter_lane_is_armed(
+            capture_turn,
+            runtime_settings.values().ai_formatting_enabled,
+            runtime_settings.formatting_policy(),
+            || {
+                crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
+                    .is_none()
+            },
+        );
     if !capture_turn.schedules_live_formatting() {
         info!(
             "Capture intent: the live formatter lane stays unarmed for this take, so no \
@@ -1345,7 +1346,8 @@ pub(crate) async fn apple_stream_transcription_session(
         });
     }
     let live_formatting_agent = live_formatting_agent.filter(|_| {
-        seal_ledger_enabled && capture_turn.schedules_live_formatting()
+        seal_ledger_enabled
+            && capture_turn.schedules_live_formatting()
             && runtime_settings.values().ai_formatting_enabled
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
@@ -9089,9 +9091,8 @@ fn apple_stream_worker(
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
     // Voice Lab witness: the immutable snapshot verdict replaces the
     // construction-time env read; the return lane belongs to this worker.
-    state.dictation_witness_armed = seal_ledger_enabled
-        && apple_live_enabled
-        && runtime_settings.dictation_witness_armed();
+    state.dictation_witness_armed =
+        seal_ledger_enabled && apple_live_enabled && runtime_settings.dictation_witness_armed();
     state.dictation_witness_language = language.map(str::to_owned);
     let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
     state.dictation_witness_return = Some(witness_done_tx);
@@ -9555,8 +9556,7 @@ fn apple_stream_worker(
 
     if !state.seal_ledger_enabled {
         let complete = live_finals_complete
-            && (state.direct_producer != LedgerObservationProducer::Apple
-                || apple_final_received)
+            && (state.direct_producer != LedgerObservationProducer::Apple || apple_final_received)
             && state.direct_end.is_some()
             && tail_patch_timeout_residue == 0
             && state.tail_patch_jobs_skipped == 0
@@ -10159,9 +10159,7 @@ fn emit_direct_apple_events(
                     });
                 }
             }
-            LiveStreamEvent::Summary {
-                ok: true, ..
-            } if state.direct_apple_epoch_has_final => {
+            LiveStreamEvent::Summary { ok: true, .. } if state.direct_apple_epoch_has_final => {
                 // This is the whole recognizer epoch, not another physical
                 // phrase. Any outstanding partial closes at the finish seam.
             }
@@ -10188,11 +10186,7 @@ fn emit_direct_apple_events(
                             && segment.end_ts > segment.start_ts
                     })
                     .map(|segment| {
-                        seconds_to_captured_sample(
-                            segment.end_ts,
-                            state.sample_rate,
-                            captured_end,
-                        )
+                        seconds_to_captured_sample(segment.end_ts, state.sample_rate, captured_end)
                     })
                     .max()
                     .unwrap_or(captured_end);
@@ -32736,3 +32730,7 @@ mod bounded_lexical_trial_tests {
         assert!(state.word_trial_requests.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "transcription_controls_tests.rs"]
+mod transcription_controls_tests;
