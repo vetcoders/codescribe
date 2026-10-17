@@ -129,33 +129,50 @@ struct OverlayConversationComposer: View {
 }
 
 /// A pasted attachment in the composer: the bubble's pill plus a remove cross.
+/// The pill body is the same preview button as a bubble's `AttachmentChip`;
+/// the cross stays a sibling control, so removing never opens the preview.
 struct OverlayComposerAttachmentPill: View {
   let path: String
   let palette: OverlayAppearancePalette
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
+  @State private var showPreview = false
 
   private var name: String { URL(fileURLWithPath: path).lastPathComponent }
 
+  private var attachment: MessageAttachment {
+    MessageAttachment(name: name, url: URL(fileURLWithPath: path))
+  }
+
   var body: some View {
     HStack(spacing: 6) {
-      if let thumbnail {
-        Image(nsImage: thumbnail)
-          .resizable()
-          .aspectRatio(contentMode: .fill)
-          .frame(width: 18, height: 18)
-          .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-      } else {
-        Image(systemName: "doc")
-          .font(.system(size: 10, weight: .medium))
-          .foregroundStyle(palette.mutedText.color)
+      Button {
+        showPreview = true
+      } label: {
+        HStack(spacing: 6) {
+          if let thumbnail {
+            Image(nsImage: thumbnail)
+              .resizable()
+              .aspectRatio(contentMode: .fill)
+              .frame(width: 18, height: 18)
+              .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+          } else {
+            Image(systemName: "doc")
+              .font(.system(size: 10, weight: .medium))
+              .foregroundStyle(palette.mutedText.color)
+          }
+          Text(verbatim: name)
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(palette.primaryText.color)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 160)
+        }
+        .contentShape(Rectangle())
       }
-      Text(verbatim: name)
-        .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(palette.primaryText.color)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(maxWidth: 160)
+      .buttonStyle(.plain)
+      .help("Preview attachment")
+      .accessibilityIdentifier("overlay-conversation-attachment-preview")
       Button(action: onRemove) {
         Image(systemName: "xmark")
           .font(.system(size: 8, weight: .bold))
@@ -176,10 +193,15 @@ struct OverlayComposerAttachmentPill: View {
         .strokeBorder(palette.primaryText.color.opacity(0.10), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
-    .help(path)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Text(verbatim: name))
     .task(id: path) { thumbnail = NSImage(contentsOf: URL(fileURLWithPath: path)) }
+    .sheet(isPresented: $showPreview) {
+      AttachmentPreviewSheet(attachment: attachment) {
+        showPreview = false
+        onRemove()
+      }
+    }
   }
 }
 
