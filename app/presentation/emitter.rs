@@ -228,8 +228,11 @@ pub struct DirectPublicationCapability {
     /// The complete accepted document at `revision`, in PCM occurrence order.
     pub(crate) observations: Vec<DirectObservation>,
     pub(crate) rendered_text: String,
-    /// True only for the `DirectTranscriptEnd` mint that closes the document.
+    /// Decoder completion or an explicit operation continuing that completed document.
     pub(crate) terminal: bool,
+    /// Explicit operation on the completed direct document: source CAS and provenance.
+    /// Decoder observations never carry this authority.
+    pub(crate) document_revision: Option<(u64, DocumentRevisionProvenance)>,
     digest: [u8; 32],
 }
 
@@ -249,6 +252,7 @@ impl DirectPublicationCapability {
             observations,
             rendered_text,
             terminal,
+            document_revision: None,
             digest: [0; 32],
         };
         capability.digest = capability.compute_digest();
@@ -267,6 +271,7 @@ impl DirectPublicationCapability {
                     &self.observations,
                     &self.rendered_text,
                     self.terminal,
+                    &self.document_revision,
                 )
             )
             .as_bytes(),
@@ -2147,6 +2152,41 @@ impl TranscriptReducer {
         Some(self.revision_for_action(ReducerAction::ApplyDirectTranscript { capability }))
     }
 
+    /// Authenticate the completed direct document, independently of acoustic
+    /// seals. Only the reducer can mint this capability; every operation must
+    /// name its current revision and the same opened capture.
+    fn authenticated_direct_document(
+        &self,
+        session_id: &str,
+        source_revision: u64,
+    ) -> Result<&DirectPublicationCapability, UserRevisionRefusal> {
+        let owner = self
+            .direct_terminal
+            .as_ref()
+            .ok_or(UserRevisionRefusal::NotTerminal)?;
+        if self.transcription_controls.seal_ledger_enabled
+            || !owner.terminal
+            || owner.digest != owner.compute_digest()
+            || owner.rendered_text != self.committed_rendered_text()
+            || owner.revision != self.revision
+        {
+            return Err(UserRevisionRefusal::AuthorityUnavailable);
+        }
+        if owner.session_id != session_id {
+            return Err(UserRevisionRefusal::SessionMismatch);
+        }
+        if source_revision != self.revision {
+            return Err(UserRevisionRefusal::StaleRevision {
+                expected: self.revision,
+                actual: source_revision,
+            });
+        }
+        if self.direct_document.is_empty() {
+            return Err(UserRevisionRefusal::NoCommittedDocument);
+        }
+        Ok(owner)
+    }
+
     /// A committed ledger-free document owns this take's canvas.
     fn direct_document_is_committed(&self) -> bool {
         !self.direct_document.is_empty()
@@ -2392,7 +2432,11 @@ impl TranscriptReducer {
         if intent.rendered_text.trim().is_empty() {
             return Err(UserRevisionRefusal::EmptyText);
         }
-        let source_occurrences = if self.document_by_occurrence.is_empty() {
+        let direct = self.direct_document_is_committed();
+        let source_occurrences = if direct {
+            self.authenticated_direct_document(&intent.session_id, intent.source_revision)?;
+            Vec::new()
+        } else if self.document_by_occurrence.is_empty() {
             if !matches!(
                 intent.provenance,
                 DocumentRevisionProvenance::UserEdit
@@ -2447,16 +2491,32 @@ impl TranscriptReducer {
         if accepted_operation {
             self.anchor_document_timeline(&intent.session_id);
         }
-        let receipt = ledger
-            .record_manual_document_revision(
-                &intent.session_id,
-                intent.source_revision,
-                revision,
-                &intent.rendered_text,
-                &source_occurrences,
-                intent.provenance,
+        let receipt = if direct {
+            None
+        } else {
+            Some(
+                ledger
+                    .record_manual_document_revision(
+                        &intent.session_id,
+                        intent.source_revision,
+                        revision,
+                        &intent.rendered_text,
+                        &source_occurrences,
+                        intent.provenance,
+                    )
+                    .map_err(UserRevisionRefusal::LedgerRefusal)?,
             )
-            .map_err(UserRevisionRefusal::LedgerRefusal)?;
+        };
+        let receipt_id = receipt.as_ref().map_or_else(
+            || {
+                format!(
+                    "direct-{}-{}-{revision}",
+                    intent.provenance.as_str(),
+                    intent.session_id
+                )
+            },
+            |receipt| receipt.receipt_id.clone(),
+        );
         let navigated_human_revision = navigation
             .and_then(|target| self.document_timeline.steps.get(target))
             .map(|step| step.raw_human_revision);
@@ -2480,21 +2540,32 @@ impl TranscriptReducer {
         // The manual document owns presentation until a later ledger edit
         // clears it. The cursor then starts at the first physical owner.
         self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
-        self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
+        self.manual_document_revision_receipt =
+            receipt.as_ref().map(|receipt| receipt.receipt_id.clone());
         match navigation {
             Some(target) => self.document_timeline.cursor = target,
             None if accepted_operation => {
-                let step = self.snapshot_step(
-                    intent.provenance.as_str(),
-                    None,
-                    receipt.receipt_id.clone(),
-                    None,
-                );
+                let step =
+                    self.snapshot_step(intent.provenance.as_str(), None, receipt_id.clone(), None);
                 self.push_document_step(step);
             }
             None => self.refresh_selected_step_raw(),
         }
-        Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
+        let action = if let Some(receipt) = receipt {
+            ReducerAction::ApplyUserRevision { receipt }
+        } else {
+            let epoch = self
+                .direct_terminal
+                .as_ref()
+                .expect("authenticated direct owner")
+                .capture_epoch;
+            let mut capability = self.mint_direct_capability(&intent.session_id, epoch, true);
+            capability.document_revision = Some((intent.source_revision, intent.provenance));
+            capability.digest = capability.compute_digest();
+            self.direct_terminal = Some(capability.clone());
+            ReducerAction::ApplyDirectTranscript { capability }
+        };
+        Ok(self.revision_for_action(action))
     }
 
     /// Derive a Max version from the admitted sealed group. Later suffix
@@ -2982,7 +3053,11 @@ impl TranscriptReducer {
         session_id: &str,
         source_revision: u64,
     ) -> Result<String, UserRevisionRefusal> {
-        self.authenticated_revision_occurrences(session_id, source_revision)?;
+        if self.direct_document_is_committed() {
+            self.authenticated_direct_document(session_id, source_revision)?;
+        } else {
+            self.authenticated_revision_occurrences(session_id, source_revision)?;
+        }
         Ok(self.selected_text())
     }
 
@@ -2995,10 +3070,16 @@ impl TranscriptReducer {
     /// against, so the one formatter corridor stays
     /// [`Self::terminal_revision_source`] → provider → `apply_formatter_revision`.
     pub fn terminal_formatter_request(&self) -> Option<TerminalFormatterRequest> {
-        if !(self.terminal || self.terminal_sealed) {
-            return None;
-        }
-        let session_id = self.document_by_occurrence.keys().next()?.session.clone();
+        let session_id = if let Some(owner) = self.direct_document.keys().next() {
+            self.authenticated_direct_document(&owner.session, self.revision)
+                .ok()?;
+            owner.session.clone()
+        } else {
+            if !(self.terminal || self.terminal_sealed) {
+                return None;
+            }
+            self.document_by_occurrence.keys().next()?.session.clone()
+        };
         let source_text = self.committed_rendered_text();
         if source_text.trim().is_empty() {
             return None;
@@ -4464,7 +4545,7 @@ impl PresentationEmitter {
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if state.document_by_occurrence.is_empty() {
+        if state.document_by_occurrence.is_empty() && !state.direct_document_is_committed() {
             if !matches!(
                 request.provenance(),
                 DocumentRevisionProvenance::UserEdit
@@ -4551,13 +4632,25 @@ impl PresentationEmitter {
             }
         };
         drop(state);
-        if !self.authenticates_revision(&revision, ledger) {
+        let direct = matches!(revision.action, ReducerAction::ApplyDirectTranscript { .. });
+        let authenticated = if direct {
+            revision
+                .authenticates_direct_publication(request.session_id())
+                .is_some()
+        } else {
+            self.authenticates_revision(&revision, ledger)
+        };
+        if !authenticated {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "publication_authentication_failed",
             ));
         }
         if let Some(bus) = &self.transcript_bus {
-            let events = bus.publish_revision(&revision, ledger);
+            let events = if direct {
+                bus.publish_direct_revision(&revision)
+            } else {
+                bus.publish_revision(&revision, ledger)
+            };
             if events.is_empty() {
                 return Err(UserRevisionRefusal::LedgerRefusal(
                     "bus_publication_refused",
@@ -4581,15 +4674,27 @@ impl PresentationEmitter {
                 provenance_receipt: projection.receipt_id.clone(),
             });
         }
-        let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
-            unreachable!("apply_user_revision must mint an ApplyUserRevision action")
+        let provenance_receipt = match &revision.action {
+            ReducerAction::ApplyUserRevision { receipt } => receipt.receipt_id.clone(),
+            ReducerAction::ApplyDirectTranscript { capability } => {
+                let (_, provenance) = capability
+                    .document_revision
+                    .expect("explicit direct operation");
+                format!(
+                    "direct-{}-{}-{}",
+                    provenance.as_str(),
+                    capability.session_id,
+                    capability.revision
+                )
+            }
+            _ => unreachable!("document operation must mint a document revision"),
         };
         Ok(UserRevisionCommit {
-            session_id: receipt.session_id.clone(),
-            source_revision: receipt.source_revision,
+            session_id: request.session_id().to_string(),
+            source_revision: request.source_revision(),
             revision: revision.revision,
             rendered_text: revision.rendered_text,
-            provenance_receipt: receipt.receipt_id.clone(),
+            provenance_receipt,
         })
     }
 
