@@ -7142,12 +7142,40 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     return line
 
 
+def native_wake_module() -> Any:
+    """bus-mcp.py: the native conversation server, its hook modes, and the
+    native waiter's lock and announced ledger."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@contextlib.contextmanager
+def until_event_mark(root: Path, provider: str, lease_id: str) -> Iterator[Any]:
+    """Tell this lease's native waiter (the Claude Code hooks, the OMP extension)
+    that this `--watch --until-event` task reports its deliveries, so a message
+    wakes the conversation once. Yields `announce(ids)`; without a native waiter
+    it does nothing."""
+    try:
+        module = native_wake_module()
+    except OSError:
+        module = None  # a helper installed without bus-mcp.py still waits
+    if module is None or provider not in module.NATIVE_WAKE_PROVIDERS:
+        yield lambda _ids: None
+        return
+    with module.until_event_watch(sys.modules[__name__], root, lease_id) as announce:
+        yield announce
+
+
 def wait_for_pending_command(args: argparse.Namespace) -> int:
     """A notification task for providers that wake on process completion.
 
     Without --max-wait the process ends only when the owned mailbox has an unread
     non-draft message, so an idle agent costs no model turn. --max-wait keeps a
-    bounded diagnostic variant that may also end with watch_timeout.
+    bounded diagnostic variant that may also end with watch_timeout. While it
+    runs, a native waiter of the same lease leaves the wake to this task.
     """
     lease_id = lease_identifier(args.provider, args.session)
     # No --max-wait: wait without a deadline. A provider that wakes its agent on
@@ -7156,24 +7184,28 @@ def wait_for_pending_command(args: argparse.Namespace) -> int:
     source = args.bridge_home / "leases" / f"{lease_id}.json"
     trigger = BusEventTrigger(source, args.interval)
     try:
-        while True:
-            _state, rows = unread_pending(args)
-            if rows:
-                emit({"kind": "mailbox_ready", "lease_id": lease_id,
-                      "provider": args.provider, "provider_session_id": args.session,
-                      "pending_count": len(rows),
-                      "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
-                return 0
-            if deadline is None:
-                trigger.wait(timeout=1.0)
-                continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                emit({"kind": "watch_timeout", "lease_id": lease_id,
-                      "provider": args.provider, "provider_session_id": args.session,
-                      "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
-                return 0
-            trigger.wait(timeout=min(1.0, remaining))
+        with until_event_mark(args.bridge_home, args.provider, lease_id) as announce:
+            while True:
+                _state, rows = unread_pending(args)
+                if rows:
+                    emit({"kind": "mailbox_ready", "lease_id": lease_id,
+                          "provider": args.provider, "provider_session_id": args.session,
+                          "pending_count": len(rows),
+                          "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
+                    # Recorded after the report and before the mark is released:
+                    # the waiter that takes over does not wake again for these.
+                    announce([row["delivery_id"] for row in rows])
+                    return 0
+                if deadline is None:
+                    trigger.wait(timeout=1.0)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    emit({"kind": "watch_timeout", "lease_id": lease_id,
+                          "provider": args.provider, "provider_session_id": args.session,
+                          "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
+                    return 0
+                trigger.wait(timeout=min(1.0, remaining))
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError) as error:
@@ -7643,10 +7675,7 @@ def main() -> int:
                 parser.error("--omp-wake requires --provider omp and --session ID")
         elif args.host_pid is not None or args.provider is not None or args.session is not None:
             parser.error("--host-pid, --provider and --session combine only with --omp-wake here")
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = native_wake_module()
         root = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
             if args.install_junie_extension:
