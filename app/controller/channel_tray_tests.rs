@@ -21,8 +21,9 @@ struct TrayRestore(TrayStatusSnapshot, bool);
 
 impl TrayRestore {
     fn capture() -> Self {
-        // Non-serial neighbours may have opened channels without closing
-        // them; this file owns the flag's truth for its own assertions.
+        // An earlier test's controller can drop with a channel still open,
+        // leaving the flag up; this file owns the flag's truth for its own
+        // assertions.
         tray_status::set_agent_channels_listening(false);
         Self(
             tray_status::current_tray_status_snapshot(),
@@ -60,7 +61,7 @@ fn settle_idle_hold() {
 /// Opening a channel at `Idle` must paint the tray dot Agent violet, exactly
 /// like the pointer dot: `Listening` on the `Assistive` lane.
 #[tokio::test]
-#[serial_test::serial(agent_ack_duck)]
+#[serial_test::serial]
 async fn an_open_channel_paints_the_tray_dot_agent_violet() {
     let _restore = TrayRestore::capture();
     settle_idle_hold();
@@ -101,7 +102,7 @@ async fn an_open_channel_paints_the_tray_dot_agent_violet() {
 /// Hanging up the last channel at `Idle` takes the dot with it: the tray goes
 /// back to the template dot instead of a violet that outlives the session.
 #[tokio::test]
-#[serial_test::serial(agent_ack_duck)]
+#[serial_test::serial]
 async fn hanging_up_the_last_channel_settles_the_tray_dot() {
     let _restore = TrayRestore::capture();
     settle_idle_hold();
@@ -134,7 +135,7 @@ async fn hanging_up_the_last_channel_settles_the_tray_dot() {
 /// listens, that foreign `Idle` must resolve to the channel's own Agent violet
 /// instead of blackening the dot in the middle of a conversation.
 #[tokio::test]
-#[serial_test::serial(agent_ack_duck)]
+#[serial_test::serial]
 async fn a_foreign_idle_cannot_blacken_a_live_channel() {
     let _restore = TrayRestore::capture();
     settle_idle_hold();
@@ -174,7 +175,7 @@ async fn a_foreign_idle_cannot_blacken_a_live_channel() {
 /// through. A violet that outlives the channel would be as wrong as the black
 /// dot this file started from.
 #[tokio::test]
-#[serial_test::serial(agent_ack_duck)]
+#[serial_test::serial]
 async fn a_dictation_handoff_lets_the_takes_idle_through() {
     let _restore = TrayRestore::capture();
     settle_idle_hold();

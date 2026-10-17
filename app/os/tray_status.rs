@@ -22,6 +22,14 @@ use crate::os::hold_badge::{self, BadgeMode, CursorVoice};
 /// most importantly the end of a dictation take — must not blacken the glyph
 /// while a channel still listens (Maciej, 2026-10-17: the tray dot stayed
 /// black when speaking to agents; it has to read Assistive violet).
+///
+/// Tests share this flag and the tray store process-wide: every test that
+/// opens a channel or asserts a tray status runs under the bare `#[serial]`
+/// key. A named key is a separate lock in `serial_test`, so a channel test
+/// on one ran beside the thermal test and turned its `Idle` into
+/// `Listening` (dragon gate, 2026-10-17). A test controller dropped with a
+/// channel still open never lowers the flag, so tray assertions lower it
+/// first.
 static AGENT_CHANNELS_LISTENING: AtomicBool = AtomicBool::new(false);
 
 /// Record whether any agent channel currently listens. The channel's close
@@ -295,6 +303,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn voice_lives_only_while_listening() {
+        set_agent_channels_listening(false);
         let token = hold_badge::take_token();
         update_tray_status(TrayStatus::Idle);
         set_tray_voice_for_take(token, CursorVoice::Speaking);
@@ -350,6 +359,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_refused_chord_never_repaints_the_tray() {
+        set_agent_channels_listening(false);
         update_tray_status(TrayStatus::Listening);
         set_tray_indicator_mode(BadgeMode::Assistive);
         let before = current_tray_status_snapshot();
