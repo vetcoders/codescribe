@@ -137,6 +137,7 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         );
     }
     if let Some(last) = receipt.runs.last() {
+        eprintln!("evidence: {}", last.evidence_dir.display());
         println!("{}", last.text);
     }
     Ok(())

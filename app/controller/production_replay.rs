@@ -7,7 +7,7 @@
 //! `TranscriptReducer` projection delivered to the overlay.
 
 use std::collections::{BTreeSet, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -303,6 +303,10 @@ pub struct RecordedTakeRun {
     pub elapsed_seconds: f64,
     /// Engine warning codes, without their messages.
     pub warning_codes: BTreeSet<String>,
+    /// `replays/<session>/` in the data dir: the run's private bus and the
+    /// sidecars its session wrote (trail, slots, replay card), comparable
+    /// with the recorded take's own.
+    pub evidence_dir: PathBuf,
 }
 
 /// A recorded take replayed once, with the inputs it resolved.
@@ -363,7 +367,7 @@ impl EventSink for RecordedTakeSink {
 /// live take or channel builds from the same snapshot, publishing to a private
 /// transcript bus: the bus authenticates every revision before the emitter
 /// paints it, so a replay without one would show text the overlay refused.
-/// The private bus file (`replays/` in the data dir) is removed after the run.
+/// The run keeps its evidence in `replays/<session>/`, never in `sessions/`.
 pub async fn replay_recorded_take(
     recorded_session: Option<String>,
     card: Option<ReplayCard>,
@@ -410,12 +414,12 @@ async fn replay_recorded_take_on_worker(
     let settings = Arc::clone(&config.runtime_settings);
     let ledger = Arc::clone(&config.acoustic_ledger);
 
-    // Inside the user's data dir, not a shared temp dir: the bus file opens
-    // for append, and a predictable name there could be planted first.
-    let bus_path = codescribe_core::config::Config::config_dir()
-        .join("replays")
-        .join(format!("{session_id}.transcript-events.jsonl"));
-    let _ = std::fs::remove_file(&bus_path);
+    // The session reads the live data dir (custom lexicon, protected terms,
+    // models), so it runs there. The evidence, not the session, is moved.
+    let root = codescribe_core::config::Config::config_dir();
+    let evidence = ReplayEvidence::open(&root, &session_id)
+        .map_err(|error| anyhow!("prepare replay evidence failed: {}", error.kind()))?;
+    let bus_path = evidence.dir.join("transcript-events.jsonl");
     let bus = Arc::new(
         TranscriptBus::open_at(
             TranscriptSession {
@@ -473,8 +477,9 @@ async fn replay_recorded_take_on_worker(
     };
     drop(bus);
     let rows = std::fs::read_to_string(&bus_path);
-    let _ = std::fs::remove_file(&bus_path);
+    let moved = evidence.collect_session_sidecars(&root, &session_id);
     replayed?;
+    moved.map_err(|error| anyhow!("collect replay evidence failed: {}", error.kind()))?;
     finished?;
     let rows = rows.map_err(|_| anyhow!("read the replay transcript bus failed"))?;
 
@@ -516,14 +521,144 @@ async fn replay_recorded_take_on_worker(
             document_rows: documents.len(),
             elapsed_seconds,
             warning_codes,
+            evidence_dir: evidence.dir.clone(),
         },
     })
+}
+
+/// A replay run's evidence directory, held under an exclusive lock.
+///
+/// The replay session id is stable per take and run, so two replays of one
+/// take queue on the lock instead of sharing a bus or a trail. Each run
+/// starts from nothing: leftovers of an interrupted run would otherwise
+/// trip the trail's single start record.
+struct ReplayEvidence {
+    dir: PathBuf,
+    _lock: std::fs::File,
+}
+
+impl ReplayEvidence {
+    fn open(root: &Path, session_id: &str) -> std::io::Result<Self> {
+        let replays = root.join("replays");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&replays)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(replays.join(format!("{session_id}.lock")))?;
+        lock.lock()?;
+        let dir = replays.join(session_id);
+        match std::fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        for leftover in session_sidecars(root, session_id)? {
+            std::fs::remove_file(leftover)?;
+        }
+        builder.create(&dir)?;
+        Ok(Self { dir, _lock: lock })
+    }
+
+    /// Move what the session wrote under `sessions/` into the evidence dir.
+    fn collect_session_sidecars(&self, root: &Path, session_id: &str) -> std::io::Result<()> {
+        for sidecar in session_sidecars(root, session_id)? {
+            if let Some(name) = sidecar.file_name() {
+                std::fs::rename(&sidecar, self.dir.join(name))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `sessions/<session>.*`. The session alphabet has no dot, so the prefix
+/// with its dot names exactly this session's files.
+fn session_sidecars(root: &Path, session_id: &str) -> std::io::Result<Vec<PathBuf>> {
+    let prefix = format!("{session_id}.");
+    let entries = match std::fs::read_dir(root.join("sessions")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut sidecars = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+        {
+            sidecars.push(entry.path());
+        }
+    }
+    Ok(sidecars)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use codescribe_core::pipeline::contracts::TranscriptSegment;
+
+    #[test]
+    fn replay_evidence_takes_only_its_own_session_files() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let session = "replay-agent-channel-3-0123456789-r1";
+        let stale = root.path().join("replays").join(session);
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("transcript-events.jsonl"), "old run\n").unwrap();
+        std::fs::write(sessions.join(format!("{session}.trail.jsonl")), "left over").unwrap();
+
+        let evidence = ReplayEvidence::open(root.path(), session).unwrap();
+        assert!(
+            std::fs::read_dir(&evidence.dir).unwrap().next().is_none(),
+            "a run starts from nothing"
+        );
+        assert!(!sessions.join(format!("{session}.trail.jsonl")).exists());
+
+        for name in [
+            format!("{session}.trail.jsonl"),
+            format!("{session}.slots.jsonl"),
+            "replay-agent-channel-3-0123456789-r10.trail.jsonl".to_string(),
+            "agent-channel-3-0123456789.trail.jsonl".to_string(),
+        ] {
+            std::fs::write(sessions.join(name), "row\n").unwrap();
+        }
+        evidence
+            .collect_session_sidecars(root.path(), session)
+            .unwrap();
+
+        let mut collected: Vec<_> = std::fs::read_dir(&evidence.dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        collected.sort();
+        assert_eq!(
+            collected,
+            [
+                format!("{session}.slots.jsonl"),
+                format!("{session}.trail.jsonl")
+            ]
+        );
+        assert!(
+            sessions
+                .join("agent-channel-3-0123456789.trail.jsonl")
+                .exists()
+        );
+        assert!(
+            sessions
+                .join("replay-agent-channel-3-0123456789-r10.trail.jsonl")
+                .exists()
+        );
+    }
 
     fn final_event(id: u64, text: &str, start_ts: f32, end_ts: f32) -> EngineEvent {
         EngineEvent::UtteranceFinal {
