@@ -159,9 +159,26 @@ struct CodescribeApp: App {
   init() {
     // Before any engine: a test host must not see the live runtime.
     QualityCaptureHost.isolateFromLiveRuntime()
-    if CommandLine.arguments.contains("--install-agent-bridge") {
+    switch AgentBridgeCommandLine.request(arguments: CommandLine.arguments) {
+    case .notRequested:
+      break
+    case .usage(let message):
+      print(message)
+      Darwin.exit(2)
+    case .runtime:
       do {
         print(try RealAgentBridgeInstaller().installRuntime())
+        Darwin.exit(0)
+      } catch {
+        print("Agent bridge installation failed: " + error.localizedDescription)
+        Darwin.exit(1)
+      }
+    case .clients(let selected):
+      // The same explicit selection act Settings performs, on a host with no window.
+      do {
+        print(
+          AgentBridgeCommandLine.summary(
+            try RealAgentBridgeInstaller().install(selectedClients: selected)))
         Darwin.exit(0)
       } catch {
         print("Agent bridge installation failed: " + error.localizedDescription)
