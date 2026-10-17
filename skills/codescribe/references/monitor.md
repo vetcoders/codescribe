@@ -98,7 +98,8 @@ cs-bus --retry-wakeup <delivery-id> --provider codex --session <thread-id>
 An uncertain attempt might already be queued: verify before retrying it.
 Reattachment with changed wakeup configuration restarts only the verified
 owned follower, preserving its cursor and unread mailbox. `--wakeup off`
-selects monitor-only operation; `--on-seal` selects a custom hook instead of
+selects monitor-only operation: nothing then wakes a Codex conversation that
+has finished its turn (Founder's test, 2026-10-18). `--on-seal` selects a custom hook instead of
 native queue. Neither touches microphone or app lifecycle.
 
 Every attachment must start the provider's output-notifying monitor on
@@ -383,8 +384,8 @@ Founder's observed test (Maciej, 2026-10-18) an idle Codex read a native-queue
 message 5.6 s after it was sent, while a Codex in the middle of a turn read a
 queue message only about 5 min later, after its turn ended. That same
 mid-turn Codex read a bus message through the cell 25 s after it was sent.
-Whether the cell alone wakes an idle Codex after a final answer is still
-untested; reattaching with `--wakeup off` for one test isolates it.
+A bus message to the idle Codex, without the queue, never woke it. Only the
+native queue wakes an idle Codex; the cell delivers during a turn.
 
 ## Acknowledge conversation receipt
 
