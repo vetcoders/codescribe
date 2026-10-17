@@ -80,8 +80,31 @@ enum AgentBroadcastPolicy: String, Decodable, Sendable, CaseIterable {
   case on, quiet, off
 
   var receivesWake: Bool { self == .on }
-  var statusSymbol: String? {
-    receivesWake ? nil : "antenna.radiowaves.left.and.right.slash"
+  /// One mark per state (Maciej, 2026-10-17: channel 0 and channel 0 plus
+  /// steer could not be told apart): on and quiet are both members of
+  /// channel 0, off is not; quiet queues every delivery without a wake.
+  var statusSymbol: String {
+    switch self {
+    case .on: "antenna.radiowaves.left.and.right"
+    case .quiet: "tray.and.arrow.down"
+    case .off: "antenna.radiowaves.left.and.right.slash"
+    }
+  }
+  var statusHelp: String {
+    switch self {
+    case .on:
+      String(
+        localized: "Channel 0 · steer: deliveries wake the agent",
+        comment: "Agent row mark: member of channel 0, deliveries start a turn")
+    case .quiet:
+      String(
+        localized: "Channel 0 · queued: deliveries wait, the agent is not woken",
+        comment: "Agent row mark: member of channel 0, deliveries queue without a wake")
+    case .off:
+      String(
+        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive",
+        comment: "Agent row mark: not a member of channel 0")
+    }
   }
 }
 
