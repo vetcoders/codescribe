@@ -4478,7 +4478,12 @@ final class OverlayState {
       formatArchivedTranscript(level: level)
       return
     }
-    guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
+    // A quality refusal (coverage, delivery) is a diagnostic over an owned
+    // terminal document, not a reason to hide Format: the producer stays the
+    // authority throne and the corridor still enforces it. `canFormat` already
+    // encodes terminal text presence, so an error phase without a document
+    // still refuses here.
+    guard mode == .formatted || mode == .coverageRefused || mode == .error, terminal, canFormat,
       !isRevisionDraftDirty, !documentOperationPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {
