@@ -23,9 +23,23 @@ use super::acoustic_ledger::RefuseReason;
 /// not bind this floor; those pins stay on today's path.
 pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
 
+/// How far from its own span a word that is not a repeat may find speech.
+///
+/// Polish speech decoded to English is a working use of Whisper: the
+/// translated words do not line up one to one with the voiced words, and
+/// their timestamps can land on a short pause inside the sentence. Such a
+/// word keeps today's path with its own receipt. 500 ms is chosen, not
+/// measured; it is wider than the 200 ms Silero merge gap and shorter than
+/// the silences the corpus hallucinations sit on (47–612 s of digital zero).
+pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 500;
+
 /// Receipt label when neither Silero nor the calibrated floor was measured.
 /// The word is kept. The string is the receipt; it is not a refusal.
 pub const WHISPER_WORD_SPEECH_UNMEASURED: &str = "unmeasured";
+
+/// Receipt label for a word whose own span is silent while speech lies within
+/// [`WHISPER_WORD_SPEECH_NEAR_MS`]. The word is kept.
+pub const WHISPER_WORD_SPEECH_NEAR: &str = "speech_near_span";
 
 /// One Whisper word plus the speech facts already measured for its span.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +55,10 @@ pub struct WhisperWordSpeech {
     /// `true` when a hop inside the span is at or above that floor. `None`
     /// keeps the word unmeasured, whatever Silero says.
     pub energy_above_floor: Option<bool>,
+    /// The same two channels on the span widened by
+    /// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. `true` when either finds
+    /// speech there.
+    pub speech_near_span: Option<bool>,
     /// Separation from the previous identical word, looked for in
     /// [`separation_window`].
     /// `Some(true)` when a measured channel shows an energy valley or a Silero
@@ -56,6 +74,9 @@ pub enum WhisperWordSpeechVerdict {
     Admit,
     /// A channel the rule needs was not measured. The word keeps today's path.
     Unmeasured,
+    /// Not a repeat; its own span is silent and speech lies near it. The
+    /// word keeps today's path.
+    NearSpeech,
     /// The span was measured and the word does not enter the document.
     Refuse(RefuseReason),
 }
@@ -67,7 +88,8 @@ pub struct WhisperWordSpeechDecision {
 }
 
 impl WhisperWordSpeechDecision {
-    /// Kept words are admitted or explicitly unmeasured. A refusal is not.
+    /// Kept words are admitted, near speech or explicitly unmeasured. A
+    /// refusal is not.
     pub fn admits(self) -> bool {
         !matches!(self.verdict, WhisperWordSpeechVerdict::Refuse(_))
     }
@@ -77,6 +99,7 @@ impl WhisperWordSpeechDecision {
         match self.verdict {
             WhisperWordSpeechVerdict::Admit => "admitted",
             WhisperWordSpeechVerdict::Unmeasured => WHISPER_WORD_SPEECH_UNMEASURED,
+            WhisperWordSpeechVerdict::NearSpeech => WHISPER_WORD_SPEECH_NEAR,
             WhisperWordSpeechVerdict::Refuse(reason) => reason.as_str(),
         }
     }
@@ -109,10 +132,16 @@ fn judge_one(
     if word.energy_above_floor.is_none() {
         return WhisperWordSpeechVerdict::Unmeasured;
     }
+    let repeat = is_identical_repeat(words, index);
     if !span_has_speech(word) {
+        // A repeat needs its own voiced segment, so nearby speech does not
+        // count for it. A loop copy beside the one real word stays refused.
+        if !repeat && word.speech_near_span == Some(true) {
+            return WhisperWordSpeechVerdict::NearSpeech;
+        }
         return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoVoicedHopInPin);
     }
-    if !is_identical_repeat(words, index) {
+    if !repeat {
         return WhisperWordSpeechVerdict::Admit;
     }
     // Energy above the floor is also what a loop on room noise has. A repeat
@@ -253,8 +282,14 @@ mod tests {
             sample_rate: 48_000,
             silero_speech: silero,
             energy_above_floor: energy,
+            speech_near_span: None,
             separated_from_previous: separated,
         }
+    }
+
+    fn near_speech(mut word: WhisperWordSpeech) -> WhisperWordSpeech {
+        word.speech_near_span = Some(true);
+        word
     }
 
     #[test]
@@ -474,6 +509,47 @@ mod tests {
             RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment.as_str(),
             "a loop on fluctuating room noise has valleys too; a repeat Silero observed and did \
              not hear is not its own voiced segment"
+        );
+    }
+
+    #[test]
+    fn a_translated_word_on_a_short_pause_beside_speech_stays() {
+        // Polish speech decoded to English: "the" lands on a pause inside the
+        // sentence, with speech on both sides of it.
+        let decisions = judge_whisper_words(&[
+            word("I", 0, 9_600, Some(true), Some(true), None),
+            near_speech(word("the", 9_600, 14_400, Some(false), Some(false), None)),
+            word("patient", 14_400, 33_600, Some(true), Some(true), None),
+        ]);
+        assert!(
+            decisions.iter().all(|decision| decision.admits()),
+            "translated words do not line up with the voiced Polish words; a word whose \
+             timestamp sits on a short pause beside speech must not be lost"
+        );
+        assert_eq!(
+            decisions[1].receipt(),
+            WHISPER_WORD_SPEECH_NEAR,
+            "the kept word says why it was kept: its own span was silent"
+        );
+    }
+
+    #[test]
+    fn nearby_speech_does_not_admit_a_silent_repeat() {
+        let decisions = judge_whisper_words(&[
+            word("nie", 0, 1_920, Some(true), Some(true), None),
+            near_speech(word(
+                "nie",
+                1_920,
+                3_840,
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+        ]);
+        assert_eq!(
+            decisions[1].receipt(),
+            RefuseReason::NoVoicedHopInPin.as_str(),
+            "a loop copy right after the one real nie is near speech, but a repeat needs its own"
         );
     }
 

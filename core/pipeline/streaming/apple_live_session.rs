@@ -90,8 +90,9 @@ use crate::pipeline::contracts::{
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use crate::pipeline::whisper_word_speech::{
-    WhisperWordSpeech, WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words,
-    repeat_key, separation_window, window_has_energy_valley, window_has_silero_dip,
+    WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech, WhisperWordSpeechDecision,
+    WhisperWordSpeechVerdict, judge_whisper_words, repeat_key, separation_window,
+    window_has_energy_valley, window_has_silero_dip,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -6759,6 +6760,11 @@ fn measure_whisper_window_speech(
                 segment.range.sample_start,
                 segment.range.sample_end,
             ),
+            speech_near_span: speech_near_span(
+                state,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            ),
             separated_from_previous: separated,
         });
         previous_key = key;
@@ -6890,6 +6896,24 @@ fn energy_valley_between(
         floor,
     )?;
     Some(window_has_energy_valley(window, &voiced))
+}
+
+/// Silero and the calibrated floor on the span widened by
+/// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. Where the widened end is past
+/// what a channel has observed yet, that channel reads the span's own end.
+fn speech_near_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
+    let pad = u64::from(state.sample_rate) * WHISPER_WORD_SPEECH_NEAR_MS / 1_000;
+    let start = start.saturating_sub(pad);
+    let wide_end = end.saturating_add(pad);
+    let silero = silero_speech_on_span(state, start, wide_end)
+        .or_else(|| silero_speech_on_span(state, start, end));
+    let energy = energy_above_existence_floor(state, start, wide_end)
+        .or_else(|| energy_above_existence_floor(state, start, end));
+    match (silero, energy) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (None, None) => None,
+        _ => Some(false),
+    }
 }
 
 fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
