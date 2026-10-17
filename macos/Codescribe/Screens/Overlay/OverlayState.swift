@@ -844,6 +844,7 @@ final class OverlayState {
     expansionPreferenceError = nil
     let pinWasHolding = pinKeepsOverlayVisible
     keepVisibleBetweenTakes = engine.overlayKeepVisibleBetweenTakes()
+    onPinChanged?()
     if pinKeepsOverlayVisible {
       pinReleaseArmed = false
       cancelAutoHide()
@@ -1030,6 +1031,8 @@ final class OverlayState {
   @ObservationIgnored private var pinReleaseArmed = false
   /// The pin's release: the controller fades the resting panel out.
   @ObservationIgnored var onPinReleased: (() -> Void)?
+  /// The panel re-resolves its window level: pinned on top, unpinned among windows.
+  @ObservationIgnored var onPinChanged: (() -> Void)?
 
   /// Idle return of an automatic expansion; see `OverlayAutoCollapse`.
   @ObservationIgnored private let autoCollapse: OverlayAutoCollapse
@@ -1065,6 +1068,7 @@ final class OverlayState {
     // Attaching loads policy; a new take or an explicit control opens the canvas.
     expandedByDefault = engine?.overlayExpandedByDefault() ?? true
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
+    onPinChanged?()
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
       let root = OverlayChannelDeliveryReader.productionRoot()

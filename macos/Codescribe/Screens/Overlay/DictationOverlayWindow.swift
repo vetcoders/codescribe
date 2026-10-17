@@ -202,6 +202,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     presence?.start()
   }
 
+  func refreshPresence() {
+    presence?.refresh()
+  }
+
   func invalidatePresence() {
     cancelUserResize()
     presence?.invalidate()
@@ -268,6 +272,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    // An unpinned panel sits among ordinary windows and never activates, so
+    // nothing else would lift it back out from under the window covering it.
+    if event.type == .leftMouseDown, level == .normal {
+      orderFrontRegardless()
+    }
     if event.type == .mouseMoved {
       for case let region as OverlayMenuCursorRegionView in menuCursorRegions.allObjects {
         region.updateHover(at: event.locationInWindow)
@@ -917,8 +926,13 @@ enum DictationOverlayWindow {
     panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
     panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-    let presence = OverlayPresence(panel: panel)
+    // Maciej (2026-10-17): Pin means on top no matter what; unpinned stays
+    // visible but slips under whatever window is clicked.
+    let presence = OverlayPresence(panel: panel) { [weak state] in
+      state?.keepVisibleBetweenTakes ?? true
+    }
     panel.presence = presence
+    state.onPinChanged = { [weak panel] in panel?.refreshPresence() }
     panel.startPresence()
 
     let appWindowYield = OverlayAppWindowYield(panel: panel, state: state)
@@ -963,17 +977,19 @@ enum DictationOverlayWindow {
   }
 }
 
-/// Rest / yield / capture. Screenshot chords rise above the forest so PrintScreen
-/// actually sees the panel; system alerts push it back down.
+/// Rest / unpinned / yield / capture. A pinned panel rests above ordinary
+/// windows; an unpinned one lives among them. Screenshot chords rise above the
+/// forest so PrintScreen actually sees the panel; system alerts push it back down.
 enum OverlayPresencePolicy: Equatable {
   case rest
+  case unpinned
   case yield
   case capture
 
   var windowLevel: NSWindow.Level {
     switch self {
     case .rest: .floating
-    case .yield: .normal
+    case .unpinned, .yield: .normal
     case .capture: .statusBar
     }
   }
@@ -985,10 +1001,12 @@ enum OverlayPresencePolicy: Equatable {
     "com.apple.loginwindow",
   ]
 
-  static func resolve(screenshotChord: Bool, shouldYield: Bool) -> OverlayPresencePolicy {
+  static func resolve(
+    screenshotChord: Bool, shouldYield: Bool, pinned: Bool = true
+  ) -> OverlayPresencePolicy {
     if screenshotChord { return .capture }
     if shouldYield { return .yield }
-    return .rest
+    return pinned ? .rest : .unpinned
   }
 
   static func isScreenshotChord(_ event: NSEvent) -> Bool {
@@ -1009,14 +1027,21 @@ enum OverlayPresencePolicy: Equatable {
 @MainActor
 final class OverlayPresence {
   private weak var panel: NSPanel?
+  private let pinned: @MainActor () -> Bool
   private var localMonitor: Any?
   private var globalMonitor: Any?
   private var workspaceObserver: NSObjectProtocol?
   private var captureUntil: Date?
   private var captureTimer: Timer?
 
-  init(panel: NSPanel) {
+  init(panel: NSPanel, pinned: @escaping @MainActor () -> Bool = { true }) {
     self.panel = panel
+    self.pinned = pinned
+  }
+
+  /// Re-resolve the level now, e.g. after the pin was toggled.
+  func refresh() {
+    apply()
   }
 
   func start() {
@@ -1071,7 +1096,8 @@ final class OverlayPresence {
       shouldYield: OverlayPresencePolicy.shouldYield(
         frontmostBundleId: front,
         modalWindowPresent: NSApp.modalWindow != nil
-      )
+      ),
+      pinned: pinned()
     )
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
