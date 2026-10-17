@@ -710,7 +710,10 @@ final class OverlayState {
     }
     if presentationMode != mode {
       presentationMode = mode
-      if mode != .expanded { showsAgentMonitor = false }
+      if mode != .expanded {
+        showsAgentMonitor = false
+        endAgentChoosing()
+      }
       onPresentationModeChanged?(mode)
     }
     if expanding {
@@ -1514,6 +1517,9 @@ final class OverlayState {
   /// a followed reply or roster change is automatic. Nil keeps the form.
   private func selectConversation(_ id: String?, expansion: OverlayPresentationCause?) {
     guard id == nil || conversations.contains(where: { $0.id == id }) else { return }
+    // Any surface change ends the chooser, so a list no longer shown never
+    // keeps the wheel and the left click.
+    endAgentChoosing()
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
@@ -1596,9 +1602,161 @@ final class OverlayState {
   }
 
   func hideAgentSidebar() {
+    endAgentChoosing()
     showsAgentMonitor = false
     markVisibleConversationRead()
     onChannelPresentationChanged?()
+  }
+
+  // MARK: Middle-click agent chooser
+
+  /// Maciej, 2026-10-17 12:19Z–12:23Z: a middle click opens the agents with
+  /// the first row focused and takes the wheel from other apps; the wheel moves
+  /// the focus, a left click opens that agent's conversation, and a middle
+  /// click opens its microphone until the next middle click, anywhere, which
+  /// closes and sends. A microphone clicked in the list disarms that next
+  /// click, so nothing is locked. Rust classifies the clicks and holds the
+  /// capture lease; this machine owns the targets.
+  enum AgentGesturePhase: Equatable {
+    case idle
+    /// The list is up and holds the wheel, the left click and Escape.
+    case choosing(focus: String?)
+    /// The gesture opened this channel; the next middle click closes it.
+    case talking(channel: String)
+  }
+
+  private(set) var agentGesturePhase: AgentGesturePhase = .idle
+  /// Test seam over the Rust capture lease. Each renewal holds it 30 s.
+  @ObservationIgnored var agentChooserCapture: (Bool) -> Void = {
+    setAgentChooserCapture(active: $0)
+  }
+  /// Choosing without input this long hands the wheel back.
+  @ObservationIgnored var agentChooserIdleSeconds: Double = 20
+  @ObservationIgnored private var agentChooserIdleTask: Task<Void, Never>?
+
+  var agentChooserOpen: Bool {
+    if case .choosing = agentGesturePhase { return true }
+    return false
+  }
+
+  var agentGestureFocusID: String? {
+    if case .choosing(let focus) = agentGesturePhase { return focus }
+    return nil
+  }
+
+  /// What the list on screen shows, in its order: 0 · All, then the roster.
+  /// The pill stack leaves out the conversation already open; the docked
+  /// column lists it too.
+  var agentGestureTargets: [OverlayConversation] {
+    let current = OverlayChannelStatusView.currentConversations(
+      conversations: conversations, archivedOwners: archivedAgentOwners,
+      hudStates: channelHudStates)
+    let ordered = OverlayChannelStatusView.rosterOrder(
+      current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
+    return dockedRosterColumnShown ? ordered : ordered.filter { $0.id != selectedConversationID }
+  }
+
+  private var agentListOnScreen: Bool {
+    !isCollapsed && (showsAgentMonitor || dockedColumnAlreadyOnScreen)
+  }
+
+  func handleAgentGesture(_ input: CsAgentGestureInput) {
+    switch (agentGesturePhase, input) {
+    case (.idle, .middleClick):
+      beginAgentChoosing()
+    case (.choosing(let focus), .middleClick):
+      talkToAgent(focus)
+    case (.talking(let channel), .middleClick):
+      finishAgentTalk(channel)
+    case (.choosing(let focus), .scroll(let steps)):
+      moveAgentFocus(from: focus, by: Int(steps))
+    case (.choosing(let focus), .leftClick):
+      endAgentChoosing()
+      if let focus { selectConversation(focus) }
+    case (.choosing, .cancel):
+      hideAgentSidebar()
+    case (_, .scroll), (_, .leftClick), (_, .cancel):
+      // A lease that outlived its chooser: hand the input back now.
+      agentChooserCapture(false)
+    }
+  }
+
+  /// The pointer entering a row focuses it while choosing.
+  func hoverAgentGestureTarget(_ id: String) {
+    guard agentChooserOpen, agentGestureFocusID != id,
+      agentGestureTargets.contains(where: { $0.id == id })
+    else { return }
+    agentGesturePhase = .choosing(focus: id)
+    renewAgentChooser()
+  }
+
+  private func beginAgentChoosing() {
+    showAgentMonitor(expansion: .user)
+    agentGesturePhase = .choosing(focus: agentGestureTargets.first?.id)
+    renewAgentChooser()
+  }
+
+  private func moveAgentFocus(from focus: String?, by steps: Int) {
+    // Something else took the surface while choosing: the wheel brings it back.
+    if !agentListOnScreen { showAgentMonitor(expansion: .user) }
+    let targets = agentGestureTargets
+    if !targets.isEmpty {
+      let current = focus.flatMap { id in targets.firstIndex { $0.id == id } }
+      let next = current.map { min(max($0 + steps, 0), targets.count - 1) } ?? 0
+      agentGesturePhase = .choosing(focus: targets[next].id)
+    }
+    renewAgentChooser()
+  }
+
+  /// Every input renews the Rust lease and restarts the idle countdown.
+  private func renewAgentChooser() {
+    agentChooserCapture(true)
+    agentChooserIdleTask?.cancel()
+    let seconds = agentChooserIdleSeconds
+    agentChooserIdleTask = Task { @MainActor [weak self] in
+      do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+      self?.endAgentChoosing()
+    }
+  }
+
+  private func endAgentChoosing() {
+    guard agentChooserOpen else { return }
+    agentChooserIdleTask?.cancel()
+    agentChooserIdleTask = nil
+    agentGesturePhase = .idle
+    agentChooserCapture(false)
+  }
+
+  private func talkToAgent(_ focus: String?) {
+    endAgentChoosing()
+    guard let focus, let conversation = conversations.first(where: { $0.id == focus }),
+      canToggleConversationMicrophone(conversation),
+      let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
+    else { return }
+    let channel = conversation.channel
+    agentGesturePhase = .talking(channel: channel)
+    // An open microphone stays open; the next middle click closes it.
+    guard channelHudStates[channel]?.open != true else { return }
+    Task {
+      await performAgentChannelToggle(digit, keepsAgentList: false)
+      if channelToggleError != nil, agentGesturePhase == .talking(channel: channel) {
+        agentGesturePhase = .idle
+      }
+    }
+  }
+
+  private func finishAgentTalk(_ channel: String) {
+    // The opening toggle is still in flight; this click must not race it.
+    guard !pendingChannelToggles.contains(channel) else { return }
+    agentGesturePhase = .idle
+    guard channelHudStates[channel]?.open == true,
+      let digit = OverlayChannelStatusView.toggleDigit(for: channel)
+    else {
+      // The microphone closed some other way: this click starts over.
+      beginAgentChoosing()
+      return
+    }
+    Task { await performAgentChannelToggle(digit, keepsAgentList: false) }
   }
 
   private func expandAgentSurface(cause: OverlayPresentationCause) {
@@ -2082,8 +2240,15 @@ final class OverlayState {
   }
 
   /// `keepsAgentList`: the click came from the agent list (pills or the
-  /// docked roster); while that list is shown, opening stays in it.
+  /// docked roster); while that list is shown, opening stays in it. A click
+  /// here is the hand's: it disarms the middle click that would close a
+  /// gesture-opened microphone (Maciej, 2026-10-17 12:19Z).
   func toggleAgentChannel(_ digit: UInt8, keepsAgentList: Bool = false) async {
+    if case .talking = agentGesturePhase { agentGesturePhase = .idle }
+    await performAgentChannelToggle(digit, keepsAgentList: keepsAgentList)
+  }
+
+  private func performAgentChannelToggle(_ digit: UInt8, keepsAgentList: Bool) async {
     let channel = String(digit)
     guard (0...9).contains(digit), let engine,
       !pendingChannelToggles.contains(channel)
