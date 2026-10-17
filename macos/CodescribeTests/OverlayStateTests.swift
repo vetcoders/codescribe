@@ -3898,6 +3898,77 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
+  func testDirectDocumentEditReceiptSettlesPendingAndKeepsANewerDraft() async {
+    for newerDraft in [false, true] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      state.applyTranscriptProjection(
+        emptyRecoveryProjection(sequence: 1, text: "Original direct document"))
+      state.beginTranscriptEdit()
+      let proposed = "  Poprawiony bezpośredni tekst\nIwo Iwo Iwo Iwo Iwo  "
+      state.updateRevisionDraft(proposed)
+      let requested = expectation(description: "direct edit submitted")
+      engine.onRevision = { requested.fulfill() }
+      state.commitRevisionDraft()
+      await fulfillment(of: [requested], timeout: 1)
+      XCTAssertTrue(state.revisionCommitPending)
+      XCTAssertEqual(state.activeText, "Original direct document", "ACK does not paint")
+      if newerDraft { state.updateRevisionDraft(proposed + " następna poprawka") }
+      var projection = emptyRecoveryProjection(
+        sequence: 2, text: proposed, revision: 1,
+        receipt: CsManualDocumentRevisionReceipt(
+          receiptId: "user-edit-direct-empty-native-recovery-1", provenance: .userEdit,
+          sessionId: "empty-native-recovery", sourceRevision: 0, revision: 1,
+          renderedText: proposed, captureEpoch: 7,
+          captureReceiptId: "direct-publication-test"))
+      projection.reducerAction = "apply_direct_document_revision"
+      projection.phase = "formatted"
+      state.applyTranscriptProjection(projection)
+      XCTAssertFalse(
+        state.revisionCommitPending, "the matching direct projection completes the edit")
+      XCTAssertNil(state.revisionCommitError)
+      XCTAssertEqual(state.activeText, proposed)
+      XCTAssertEqual(state.revisionDraft, newerDraft ? proposed + " następna poprawka" : proposed)
+      XCTAssertEqual(state.isRevisionDraftDirty, newerDraft)
+      XCTAssertTrue(state.isTranscriptEditable)
+      XCTAssertTrue(state.latestTranscriptProjection?.acousticReceipts.isEmpty == true)
+    }
+  }
+
+  func testMalformedDirectDocumentReceiptCannotSettlePendingEdit() async {
+    let proposed = "Poprawione słowa"
+    for receipt in [
+      emptyRecoveryReceipt(text: proposed, provenance: .formatter),
+      emptyRecoveryReceipt(text: proposed, sessionId: "foreign"),
+      emptyRecoveryReceipt(text: proposed, source: 1),
+      emptyRecoveryReceipt(text: proposed, revision: 2),
+      emptyRecoveryReceipt(text: proposed + " other"),
+      emptyRecoveryReceipt(text: proposed, epoch: 8),
+      emptyRecoveryReceipt(text: proposed, captureReceipt: ""),
+    ] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      state.applyTranscriptProjection(
+        emptyRecoveryProjection(sequence: 1, text: "Original direct document"))
+      state.beginTranscriptEdit()
+      state.updateRevisionDraft(proposed)
+      let requested = expectation(description: "direct edit remains pending")
+      engine.onRevision = { requested.fulfill() }
+      state.commitRevisionDraft()
+      await fulfillment(of: [requested], timeout: 1)
+      var projection = emptyRecoveryProjection(
+        sequence: 2, text: proposed, revision: 1, receipt: receipt)
+      projection.reducerAction = "apply_direct_document_revision"
+      state.applyTranscriptProjection(projection)
+      XCTAssertTrue(
+        state.revisionCommitPending, "foreign or malformed evidence cannot complete an edit")
+      XCTAssertNil(state.userRevisionProvenance)
+      XCTAssertEqual(state.revisionDraft, proposed)
+    }
+  }
+
   func testMalformedFirstDocumentReceiptCannotCompletePendingDraft() async {
     let text = "Odzyskany tekst"
     let receipts = [
@@ -4464,12 +4535,55 @@ final class OverlayStateTests: XCTestCase {
       reducerRevision: 4, reducerAction: "apply_manual_edit",
       documentReceipt: emptyRecoveryReceipt(
         text: "first", provenance: .navigation,
-        sessionId: "overlay-state-tests", source: 3, revision: 4))
+        sessionId: "overlay-state-tests", source: 3, revision: 4,
+        epoch: nil, captureReceipt: nil))
     await fulfillment(of: [refreshed], timeout: 1)
     XCTAssertEqual(state.formattedText, "first")
     XCTAssertEqual(state.transcriptVersions.options.count, 3)
     XCTAssertEqual(state.transcriptVersions.cursor, 0)
     XCTAssertTrue(state.transcriptVersions.canRedo)
+  }
+
+  func testDirectDocumentNavigationSettlesOnlyItsMatchingTypedReceipt() async {
+    for wrongEpoch in [false, true] {
+      let engine = OverlayStateTestEngine()
+      engine.historySourceRevision = 3
+      engine.historyEntries = ["original", "edited"].enumerated().map { index, text in
+        CsDocumentHistoryEntry(
+          revision: UInt64(index + 2), renderedText: text,
+          provenance: "user-edit", emittedAt: "2026-10-17T00:00:00Z")
+      }
+      let state = OverlayState()
+      state.engine = engine
+      let loaded = expectation(description: "direct versions loaded")
+      engine.onHistoryRead = { loaded.fulfill() }
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: 1, emittedAt: "2026-10-17T00:00:00Z",
+          sessionId: "direct-navigation", renderedText: "edited",
+          phase: "formatted", terminal: true, reducerAction: "session_ended",
+          reducerRevision: 3, captureEpoch: 7, lifecycleTerminal: true))
+      await fulfillment(of: [loaded], timeout: 1)
+      engine.onHistoryRead = nil
+      let requested = expectation(description: "direct version requested")
+      engine.onRestore = { requested.fulfill() }
+      state.selectDocumentVersion(0)
+      await fulfillment(of: [requested], timeout: 1)
+      XCTAssertNotNil(state.pendingNavigation, "ACK cannot finish a version move")
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: 2, emittedAt: "2026-10-17T00:00:01Z",
+          sessionId: "direct-navigation", renderedText: "original",
+          phase: "formatted", terminal: true, reducerAction: "apply_direct_document_revision",
+          reducerRevision: 4, captureEpoch: 7, lifecycleTerminal: false,
+          documentRevisionReceipt: CsManualDocumentRevisionReceipt(
+            receiptId: "navigation-direct-direct-navigation-4", provenance: .navigation,
+            sessionId: "direct-navigation", sourceRevision: 3, revision: 4,
+            renderedText: "original", captureEpoch: wrongEpoch ? 8 : 7,
+            captureReceiptId: "direct-publication-test")))
+      XCTAssertEqual(state.pendingNavigation != nil, wrongEpoch)
+      XCTAssertEqual(state.activeText, "original")
+    }
   }
 
   func testTerminalProjectionBurstReadsHistoryAtMostOnce() async {
@@ -5065,7 +5179,8 @@ final class OverlayStateTests: XCTestCase {
       sessionId: "take-undo", reducerRevision: 9, reducerAction: "apply_manual_edit",
       documentReceipt: emptyRecoveryReceipt(
         text: "dobra wersja", provenance: .navigation,
-        sessionId: "take-undo", source: 8, revision: 9))
+        sessionId: "take-undo", source: 8, revision: 9,
+        epoch: nil, captureReceipt: nil))
     let redoable = await waitUntil { state.transcriptVersions.canRedo }
     XCTAssertTrue(redoable, "revision 9 history applied at the restored step")
     XCTAssertEqual(engine.restoredSelections, [0])

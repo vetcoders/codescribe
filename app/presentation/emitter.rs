@@ -240,6 +240,37 @@ pub struct DirectPublicationCapability {
 }
 
 impl DirectPublicationCapability {
+    fn document_revision_receipt_id(
+        provenance: DocumentRevisionProvenance,
+        session_id: &str,
+        revision: u64,
+    ) -> String {
+        format!("{}-direct-{session_id}-{revision}", provenance.as_str())
+    }
+
+    /// Document provenance backed by this reducer capability, never an
+    /// acoustic claim. The Bus calls this only after authenticating the full
+    /// publication; decoder observations have no document-operation receipt.
+    pub(crate) fn document_revision_receipt(&self) -> Option<ManualDocumentRevisionReceipt> {
+        let (source_revision, provenance) = self.document_revision?;
+        Some(ManualDocumentRevisionReceipt {
+            receipt_id: Self::document_revision_receipt_id(
+                provenance,
+                &self.session_id,
+                self.revision,
+            ),
+            provenance: provenance.as_str().to_string(),
+            session_id: self.session_id.clone(),
+            source_revision,
+            revision: self.revision,
+            source_occurrences: Vec::new(),
+            source_seal_receipts: Vec::new(),
+            rendered_text: self.rendered_text.clone(),
+            capture_epoch: Some(self.capture_epoch),
+            capture_receipt_id: Some(format!("direct-publication-{}", hex::encode(self.digest))),
+        })
+    }
+
     fn mint(
         session_id: &str,
         capture_epoch: u64,
@@ -2522,10 +2553,10 @@ impl TranscriptReducer {
         };
         let receipt_id = receipt.as_ref().map_or_else(
             || {
-                format!(
-                    "direct-{}-{}-{revision}",
-                    intent.provenance.as_str(),
-                    intent.session_id
+                DirectPublicationCapability::document_revision_receipt_id(
+                    intent.provenance,
+                    &intent.session_id,
+                    revision,
                 )
             },
             |receipt| receipt.receipt_id.clone(),
@@ -4698,15 +4729,10 @@ impl PresentationEmitter {
         let provenance_receipt = match &revision.action {
             ReducerAction::ApplyUserRevision { receipt } => receipt.receipt_id.clone(),
             ReducerAction::ApplyDirectTranscript { capability } => {
-                let (_, provenance) = capability
-                    .document_revision
-                    .expect("explicit direct operation");
-                format!(
-                    "direct-{}-{}-{}",
-                    provenance.as_str(),
-                    capability.session_id,
-                    capability.revision
-                )
+                capability
+                    .document_revision_receipt()
+                    .expect("explicit direct operation")
+                    .receipt_id
             }
             _ => unreachable!("document operation must mint a document revision"),
         };

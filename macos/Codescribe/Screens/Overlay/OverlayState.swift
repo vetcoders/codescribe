@@ -4187,7 +4187,7 @@ final class OverlayState {
       }
       compactProjection = nil
     }
-    let revisionReceipt: String?
+    let documentReceipt: CsManualDocumentRevisionReceipt?
     if let receipt = projection.documentRevisionReceipt {
       let matchesCapture: Bool
       if let epoch = receipt.captureEpoch {
@@ -4197,15 +4197,20 @@ final class OverlayState {
       } else {
         matchesCapture = !projection.acousticReceipts.isEmpty
       }
-      revisionReceipt =
-        receipt.provenance == .userEdit
-          && receipt.sessionId == projection.sessionId
+      documentReceipt =
+        receipt.sessionId == projection.sessionId
           && receipt.sourceRevision < UInt64.max
           && receipt.sourceRevision + 1 == receipt.revision
           && receipt.revision == projection.reducerRevision
           && receipt.renderedText.utf8.elementsEqual(projection.renderedText.utf8)
           && !receipt.receiptId.isEmpty && matchesCapture
-        ? receipt.receiptId : nil
+        ? receipt : nil
+    } else {
+      documentReceipt = nil
+    }
+    let revisionReceipt: String?
+    if projection.documentRevisionReceipt != nil {
+      revisionReceipt = documentReceipt?.provenance == .userEdit ? documentReceipt?.receiptId : nil
     } else {
       revisionReceipt = projection.acousticReceipts
         .compactMap(\.manualEditReceipt)
@@ -4216,7 +4221,8 @@ final class OverlayState {
         && projection.label.hasPrefix("formatter-") ? projection.label : nil
     let completesPendingRevision =
       revisionCommitPending
-      && projection.reducerAction == "apply_manual_edit"
+      && (projection.reducerAction == "apply_manual_edit"
+        || projection.reducerAction == "apply_direct_document_revision")
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
       && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
@@ -4233,8 +4239,10 @@ final class OverlayState {
       completesPendingNavigation =
         pending.expectsPresentation
         ? projection.reducerAction == "derived_projection"
-        : projection.reducerAction == "apply_manual_edit"
-          && projection.documentRevisionReceipt?.provenance == .navigation
+        : (projection.reducerAction == "apply_manual_edit"
+          || projection.reducerAction == "apply_direct_document_revision")
+          && documentReceipt?.provenance == .navigation
+          && documentReceipt?.sourceRevision == pending.sourceRevision
     } else {
       completesPendingNavigation = false
     }
