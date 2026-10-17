@@ -107,6 +107,39 @@ class ChannelSealBurstTests(unittest.TestCase):
         return {(item["occurrence_session_id"], item["capture_epoch"], item["sample_start"], item["sample_end"])
                 for item in payload["occurrences"]}
 
+    def test_direct_terminal_closes_once_without_acoustic_refusal(self):
+        session = "agent-channel-1-direct-translation"
+        row = self.publication(session, 2, "apply_direct_transcript_terminal",
+                               "Iwo Iwo Iwo Iwo Iwo", 0, range(1, 5))
+        row.update(status=DEMUX.SEALED, terminal=True, coverage="direct",
+                   hold_until="2000-01-01T00:00:00.000000Z")
+        row["acoustic_receipts"] = []
+        for occurrence in row["occurrence_rows"]:
+            occurrence["acoustic_receipts"] = []
+        hangup = self.channel_row(session, "closed", "2026-10-17T10:00:00Z")
+        self.append(row, hangup)
+        surfaced = self.surfaced(self.follow())
+        self.assertEqual(len(surfaced), 1)
+        self.assertEqual(surfaced[0]["text"], "Iwo Iwo Iwo Iwo Iwo")
+        self.assertEqual(surfaced[0].get("coverage"), "direct")
+        self.assertEqual(surfaced[0].get("hold_until"), row["hold_until"])
+        self.assertTrue(all(not item.get("acoustic_receipts") for item in surfaced[0]["occurrences"]))
+        replay = self.surfaced(self.follow())
+        self.assertEqual([item["delivery_id"] for item in replay], [surfaced[0]["delivery_id"]],
+                         "an unacknowledged replay retains the same delivery identity")
+        self.assertEqual(sum(item.get("status") == DEMUX.SEALED for item in self.pending()), 1)
+
+    def test_direct_nonchannel_terminal_is_a_single_final_phase(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        row = self.publication("dictation-direct", 7, "apply_direct_transcript_terminal",
+                               "English survives.", 0, [])
+        row.pop("audience")
+        row["acoustic_receipts"] = []
+        clean = normalizer.normalize(row)
+        self.assertEqual(clean["status"], DEMUX.SEALED)
+        self.assertEqual(clean.get("coverage"), "direct")
+        self.assertIsNone(normalizer.normalize(row))
+
     def test_storm_of_n_documents_is_one_delivery_with_every_pcm_entry(self):
         for documents in (2, 3, 11):
             with self.subTest(documents=documents):

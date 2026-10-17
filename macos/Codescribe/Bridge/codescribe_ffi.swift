@@ -13586,6 +13586,11 @@ public struct CsSettings: Equatable, Hashable {
      * settings key plus the power-user env override.
      */
     public var dictationWitnessArmed: Bool
+    /**
+     * Independent next-take publication and Apple producer choices.
+     */
+    public var sealLedgerEnabled: Bool
+    public var appleLiveEnabled: Bool
     public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
@@ -13726,7 +13731,10 @@ public struct CsSettings: Equatable, Hashable {
          * Voice Lab: the DictationTranscriber witness re-checks unresolved
          * recovery debt after each sealed utterance. Effective value after the
          * settings key plus the power-user env override.
-         */dictationWitnessArmed: Bool, lightPlusSentencePauseSec: Float,
+         */dictationWitnessArmed: Bool,
+        /**
+         * Independent next-take publication and Apple producer choices.
+         */sealLedgerEnabled: Bool, appleLiveEnabled: Bool, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -13800,6 +13808,8 @@ public struct CsSettings: Equatable, Hashable {
         self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
         self.formatOnDevice = formatOnDevice
         self.dictationWitnessArmed = dictationWitnessArmed
+        self.sealLedgerEnabled = sealLedgerEnabled
+        self.appleLiveEnabled = appleLiveEnabled
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
@@ -13884,6 +13894,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
                 formatOnDevice: FfiConverterBool.read(from: &buf),
                 dictationWitnessArmed: FfiConverterBool.read(from: &buf),
+                sealLedgerEnabled: FfiConverterBool.read(from: &buf),
+                appleLiveEnabled: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
@@ -13956,6 +13968,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
         FfiConverterBool.write(value.formatOnDevice, into: &buf)
         FfiConverterBool.write(value.dictationWitnessArmed, into: &buf)
+        FfiConverterBool.write(value.sealLedgerEnabled, into: &buf)
+        FfiConverterBool.write(value.appleLiveEnabled, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)

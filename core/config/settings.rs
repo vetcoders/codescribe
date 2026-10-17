@@ -342,6 +342,12 @@ pub struct UserSettings {
     /// is the documented power-user override and wins when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictation_witness_armed: Option<bool>,
+    /// Opt out of word admission while retaining the original capture identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seal_ledger_enabled: Option<bool>,
+    /// Enable Apple live recognition and its witness lanes for the next take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_live_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1366,6 +1372,16 @@ impl RuntimeSettingsSnapshot {
         self.dictation_witness_armed
     }
 
+    /// Frozen persisted choice; ledger admission is an explicit opt-in.
+    pub fn seal_ledger_enabled(&self) -> bool {
+        self.user_settings.seal_ledger_enabled.unwrap_or(false)
+    }
+
+    /// Frozen persisted choice, shared by the producer and presentation owners.
+    pub fn apple_live_enabled(&self) -> bool {
+        self.user_settings.apple_live_enabled.unwrap_or(false)
+    }
+
     /// Agent-channel send hold for this generation. Zero means immediate delivery.
     pub const fn agent_send_hold_sec(&self) -> u32 {
         self.agent_send_hold_sec
@@ -1625,6 +1641,10 @@ struct AudioV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     dictation_witness_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    seal_ledger_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apple_live_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
 
@@ -1783,6 +1803,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AUDIO_RETENTION",
     SILERO_FUSION_ENV,
     crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
+    "CODESCRIBE_SEAL_LEDGER_ENABLED",
+    "CODESCRIBE_APPLE_LIVE_ENABLED",
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -1859,6 +1881,8 @@ typed_setting_writes! {
         "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
         SILERO_FUSION_ENV => seal_lane_armed,
         crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER => dictation_witness_armed,
+        "CODESCRIBE_SEAL_LEDGER_ENABLED" => seal_ledger_enabled,
+        "CODESCRIBE_APPLE_LIVE_ENABLED" => apple_live_enabled,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
         "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
@@ -1979,6 +2003,8 @@ impl UserSettings {
                 retention: self.audio_retention,
                 seal_lane_armed: self.seal_lane_armed,
                 dictation_witness_armed: self.dictation_witness_armed,
+                seal_ledger_enabled: self.seal_ledger_enabled,
+                apple_live_enabled: self.apple_live_enabled,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -2142,6 +2168,8 @@ impl UserSettings {
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.dictation_witness_armed),
+            seal_ledger_enabled: copy!(v2.audio, seal_ledger_enabled),
+            apple_live_enabled: copy!(v2.audio, apple_live_enabled),
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
@@ -3821,6 +3849,26 @@ mod tests {
         assert!(!called.get());
         assert!(path.is_dir());
         drop(root);
+    }
+
+    #[test]
+    #[serial]
+    fn transcription_controls_roundtrip_independently_in_the_canonical_projection() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
+            let input = serde_json::json!({
+                "schema_version": 3,
+                "audio": {
+                    "seal_ledger_enabled": ledger,
+                    "apple_live_enabled": apple
+                }
+            });
+            fs::write(&path, input.to_string()).unwrap();
+            let projected = serde_json::to_value(UserSettings::load().to_v2()).unwrap();
+            assert_eq!(projected["audio"]["seal_ledger_enabled"], ledger);
+            assert_eq!(projected["audio"]["apple_live_enabled"], apple);
+        }
     }
 
     /// Legacy schema-v3 files have no seal-lane field. Loading them performs

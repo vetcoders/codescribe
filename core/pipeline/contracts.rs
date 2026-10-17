@@ -831,8 +831,28 @@ pub struct RefusedPreviewEvidence {
 pub enum EngineEvent {
     /// Live acoustic-versus-text integrity, never transcript mutation authority.
     SpeechIntegrity { evidence: SpeechIntegrity },
-    /// The only transcript mutation input. Engines submit an observation to
-    /// `AcousticLedger`; this event carries its exact receipt to the reducer.
+    /// Recognizer output when this capture explicitly opts out of ledger admission.
+    ///
+    /// The observation identifies actual capture PCM and a decoder request; it
+    /// is not an acoustic serial, a word certificate, or a seal receipt. Text
+    /// retains the decoder's exact bytes, including translations and repetitions.
+    /// `final_chunk` closes this publication range, not the recording session.
+    #[serde(skip)]
+    DirectTranscript {
+        observation: ObservationIdentity,
+        text: String,
+        final_chunk: bool,
+    },
+    /// The direct capture has stopped accepting transcript updates. This closes
+    /// delivery after decoder drainage, including empty and failed recordings;
+    /// it does not claim acoustic ledger finality.
+    #[serde(skip)]
+    DirectTranscriptEnd {
+        session_id: String,
+        capture_epoch: u64,
+    },
+    /// Transcript mutation input for captures with ledger admission enabled.
+    /// This carries the exact `AcousticLedger` receipt to the reducer.
     #[serde(skip)]
     LedgerMutation {
         observation: ObservationIdentity,

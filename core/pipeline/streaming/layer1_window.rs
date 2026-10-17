@@ -43,6 +43,14 @@ impl CaptureWindowPlan {
         }
     }
 
+    /// Raw decoder chunks own disjoint capture PCM. Without word admission,
+    /// overlapping inference text cannot be stitched by lexical deduplication.
+    pub(crate) fn set_non_overlapping_publications(&mut self) {
+        debug_assert_eq!(self.capture_end, 0);
+        debug_assert!(self.offered.is_none());
+        self.step_samples = self.window_samples;
+    }
+
     /// Peeking never spends work. Backpressure retains the exact offered frame.
     /// The first Stop observation freezes the head. A later, larger sample
     /// count neither hides that offer nor opens another grid past the freeze.

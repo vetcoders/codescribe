@@ -19,7 +19,9 @@ use codescribe_core::pipeline::acoustic_ledger::{
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
-use super::emitter::{DerivedTranscriptProjection, ReducerAction, TranscriptRevision};
+use super::emitter::{
+    DerivedTranscriptProjection, DirectPublicationCapability, ReducerAction, TranscriptRevision,
+};
 use crate::controller::{
     TranscriptProjectionAvailability, resolve_transcript_projection_availability,
 };
@@ -923,6 +925,10 @@ struct TranscriptBusWriter {
     /// The joined controller tail published the final channel wire snapshot.
     /// A reducer seal alone cannot authorize a lifecycle delivery flush.
     channel_seal_published: bool,
+    /// Reducer-minted terminal of a ledger-free take: truthful document
+    /// completion without an acoustic seal. `sealed` stays ledger-owned; the
+    /// channel close reads this marker instead when the take opted out.
+    direct_terminal: Option<DirectPublicationCapability>,
     /// Documents whose start row already reached a channel bus. Quiet delivery
     /// contract (Founder seal cc6c8248): between that start row and the
     /// terminal seal, channel revisions stay in-process.
@@ -1352,6 +1358,10 @@ impl TranscriptBus {
                 "apply_consultation_presentation"
             }
             ReducerAction::RecordContextMarker { .. } => "record_context_marker",
+            // The direct lane publishes through publish_direct_revision; a
+            // direct revision arriving here fails authentication before this
+            // label is ever read.
+            ReducerAction::ApplyDirectTranscript { .. } => "apply_direct_transcript",
         };
         let is_user_revision = matches!(&revision.action, ReducerAction::ApplyUserRevision { .. });
         let phase = if is_user_revision {
@@ -1632,6 +1642,131 @@ impl TranscriptBus {
         emitted
     }
 
+    /// Publish a ledger-free reducer revision authenticated by its embedded
+    /// direct capability. Rows keep the existing schemas; the acoustic receipt
+    /// list stays honestly empty because no ledger attested this take. The
+    /// quiet channel contract and the FIFO ordering match the ledger lane;
+    /// the terminal mint records `direct_terminal` for the channel close.
+    pub fn publish_direct_revision(
+        &self,
+        revision: &TranscriptRevision,
+    ) -> Vec<TranscriptBusEvidenceEvent> {
+        // Atomic refusal: no partial rows, sequence changes or last-render
+        // update. The capability validator is owned by the reducer.
+        let Some(capability) = revision.authenticates_direct_publication(&self.session.session_id)
+        else {
+            return Vec::new();
+        };
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // The terminal mint closed the direct document; nothing follows it.
+        if writer.direct_terminal.is_some() {
+            return Vec::new();
+        }
+        if writer
+            .last_projection
+            .as_ref()
+            .is_some_and(|last| revision.revision <= last.reducer_revision)
+        {
+            return Vec::new();
+        }
+        if writer.ended {
+            return Vec::new();
+        }
+        let phase = if capability.terminal {
+            TranscriptProjectionPhase::Finalizing
+        } else {
+            TranscriptProjectionPhase::Listening
+        };
+        let availability =
+            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false);
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
+        // for the direct lane — one start row per document, the terminal row,
+        // intermediate revisions in-process only.
+        let channel_quiet = self.session.audience.is_some();
+        let mut emitted = Vec::new();
+        let mut persisted = Vec::new();
+        for (document_index, entry) in revision.entries.iter().enumerate() {
+            let event = TranscriptBusEvidenceEvent {
+                schema: "codescribe.transcript-evidence.v1".to_string(),
+                sequence: writer.sequence.saturating_add(1),
+                emitted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+                session_id: self.session.session_id.clone(),
+                mode: self.session.mode,
+                reducer_revision: revision.revision,
+                reducer_action: if capability.terminal {
+                    "apply_direct_transcript_terminal".to_string()
+                } else {
+                    "apply_direct_transcript".to_string()
+                },
+                occurrence_session_id: entry.occurrence.session.clone(),
+                capture_epoch: entry.occurrence.capture_epoch,
+                sample_start: entry.occurrence.sample_start,
+                sample_end: entry.occurrence.sample_end,
+                document_index: document_index as u64,
+                label: entry.label.clone(),
+                rendered_text: revision.rendered_text.clone(),
+                delivery_text: None,
+                phase,
+                can_paste: availability.can_paste,
+                can_insert: availability.can_insert,
+                can_copy: availability.can_copy,
+                can_retranscribe: availability.can_retranscribe,
+                can_format: availability.can_format,
+                can_send_to_agent: availability.can_send_to_agent,
+                // The channel close itself marks the closing snapshot terminal,
+                // exactly as in the ledger lane.
+                terminal: false,
+                lifecycle_terminal: false,
+                delivery: TranscriptDelivery::Unattempted,
+                audience: self.session.audience.clone(),
+                // No ledger, no acoustic receipts: the capability above is the
+                // whole authority behind this row.
+                acoustic_receipts: Vec::new(),
+                document_revision_receipt: None,
+                seal_coverage: None,
+                comparison: None,
+                consultation_presentations: Vec::new(),
+                uncertain_spans: Vec::new(),
+            };
+            let starts_document = channel_quiet
+                && !writer
+                    .announced_documents
+                    .contains(&(document_index as u64))
+                && !revision.rendered_text.trim().is_empty();
+            let persist = !channel_quiet || capability.terminal || starts_document;
+            if persist {
+                if starts_document {
+                    writer.announced_documents.insert(document_index as u64);
+                }
+                writer.sequence = event.sequence;
+                persisted.push(emitted.len());
+            }
+            writer.last_projection = Some(event.clone());
+            emitted.push(event);
+        }
+        if let Some(&first) = persisted.first() {
+            let durable = DurableRevision {
+                document: &emitted[first],
+                persistence_encoding: "shared-revision.v1",
+                occurrence_rows: persisted
+                    .iter()
+                    .skip(1)
+                    .map(|&index| DurableOccurrence::from(&emitted[index]))
+                    .collect(),
+            };
+            if let Err(error) = Self::append_projection_locked(&mut writer, &durable) {
+                self.log_write_error(error);
+            }
+        }
+        if capability.terminal {
+            writer.direct_terminal = Some(capability.clone());
+        }
+        emitted
+    }
+
     /// Resolve the production path and open the session bus. Failure disables
     /// only observability; it must never stop microphone capture or delivery.
     pub fn open(session: TranscriptSession) -> Option<Self> {
@@ -1690,10 +1825,12 @@ impl TranscriptBus {
 
     /// Publish the joined channel's final snapshot before its non-open receipt.
     /// The producer has stopped, so no ledger seal can follow. A sealed
-    /// document keeps its authority unchanged; an unsealed one still closes,
-    /// marked `coverage: refused`, so the send hold covers spoken words without
-    /// claiming the ledger certified them. Hold metadata belongs only to these
-    /// closing wire rows, never drafts.
+    /// document keeps its authority unchanged. A ledger-free document whose
+    /// closing snapshot is the reducer's terminal direct revision closes
+    /// marked `coverage: direct`: complete, but measured by no ledger. Any
+    /// other document still closes, marked `coverage: refused`, so the send
+    /// hold covers spoken words without claiming the ledger certified them.
+    /// Hold metadata belongs only to these closing wire rows, never drafts.
     ///
     /// Maciej, 2026-10-17 09:59Z: the pause before sending covered typed
     /// messages only. On a day the ledger sealed no channel take, every spoken
@@ -1711,11 +1848,22 @@ impl TranscriptBus {
         }
         let certified = writer.sealed;
         let Some(mut projection) = writer.last_projection.clone() else {
+            if writer.direct_terminal.is_some() {
+                writer.channel_seal_published = true;
+            }
             return Ok(());
         };
         if projection.rendered_text.trim().is_empty() {
+            if writer.direct_terminal.is_some() {
+                writer.channel_seal_published = true;
+            }
             return Ok(());
         }
+        let direct = !certified
+            && writer
+                .direct_terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.revision == projection.reducer_revision);
         let now = Utc::now();
         projection.sequence = writer.sequence.saturating_add(1);
         projection.emitted_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
@@ -1723,7 +1871,7 @@ impl TranscriptBus {
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
         if !certified {
-            evidence["coverage"] = serde_json::json!("refused");
+            evidence["coverage"] = serde_json::json!(if direct { "direct" } else { "refused" });
         }
         if hold_sec > 0 {
             evidence["hold_until"] = serde_json::json!(
@@ -1784,6 +1932,7 @@ impl TranscriptBus {
                 capture_comparison: None,
                 last_projection: None,
                 channel_seal_published: false,
+                direct_terminal: None,
                 announced_documents: HashSet::new(),
             }),
             persistence_diagnostic_sink: Arc::new(|_| {}),
