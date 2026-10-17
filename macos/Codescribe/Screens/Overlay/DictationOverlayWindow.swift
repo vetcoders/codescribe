@@ -1078,25 +1078,24 @@ enum OverlayResizeHit: Sendable {
   }
 
   static func edge(
-    at point: NSPoint, in bounds: NSRect, band: CGFloat = band,
-    mode: OverlayPresentationMode = .expanded
+    at point: NSPoint, in bounds: NSRect, mode: OverlayPresentationMode = .expanded
   ) -> Edge? {
     guard mode != .mini else { return nil }
     guard bounds.width > band * 2, bounds.height > band * 2 else { return nil }
     let left = point.x <= bounds.minX + band
     let right = point.x >= bounds.maxX - band
     if mode == .midi { return left ? .left : right ? .right : nil }
-    let corner = bottomCornerSide(in: bounds, band: band)
+    let corner = bottomCornerSide(in: bounds)
     if point.y <= bounds.minY + corner {
       if point.x <= bounds.minX + corner { return .bottomLeft }
       if point.x >= bounds.maxX - corner { return .bottomRight }
     }
+    // The bottom corner squares above already own every point that is both
+    // within the band of a side and of the bottom edge.
     let bottom = point.y <= bounds.minY + band
-    let top = point.y >= bounds.maxY - min(band, topBand)
+    let top = point.y >= bounds.maxY - topBand
     switch (left, right, bottom, top) {
-    case (true, false, true, false): return .bottomLeft
     case (true, false, false, true): return .topLeft
-    case (false, true, true, false): return .bottomRight
     case (false, true, false, true): return .topRight
     case (true, false, false, false): return .left
     case (false, true, false, false): return .right
@@ -1139,7 +1138,7 @@ enum OverlayResizeHit: Sendable {
 
   @MainActor
   static func cursorRects(
-    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode = .expanded
+    in bounds: NSRect, mode: OverlayPresentationMode = .expanded
   ) -> [(NSRect, NSCursor)] {
     if mode == .mini { return [] }
     if mode == .midi {
@@ -1155,8 +1154,8 @@ enum OverlayResizeHit: Sendable {
       ]
     }
     let b = band
-    let t = min(band, topBand)
-    let c = bottomCornerSide(in: bounds, band: band)
+    let t = topBand
+    let c = bottomCornerSide(in: bounds)
     let w = bounds.width
     let h = bounds.height
     return [
@@ -1172,16 +1171,14 @@ enum OverlayResizeHit: Sendable {
   }
 
   /// The bottom corner square, never larger than half the panel.
-  static func bottomCornerSide(in bounds: NSRect, band: CGFloat = band) -> CGFloat {
+  static func bottomCornerSide(in bounds: NSRect) -> CGFloat {
     max(band, min(bottomCorner, bounds.width / 2, bounds.height / 2))
   }
 
   /// Where the panel must own pointer events although the glass leaves its
   /// pixels transparent: the rounded corners. Every rect lies inside a resize
   /// zone, so the pad never takes a click that the content receives today.
-  static func grabPadRects(
-    in bounds: NSRect, band: CGFloat = band, mode: OverlayPresentationMode
-  ) -> [NSRect] {
+  static func grabPadRects(in bounds: NSRect, mode: OverlayPresentationMode) -> [NSRect] {
     guard mode != .mini, bounds.width > band * 2, bounds.height > band * 2 else { return [] }
     let b = band
     let w = bounds.width
@@ -1192,8 +1189,8 @@ enum OverlayResizeHit: Sendable {
         NSRect(x: w - b, y: 0, width: b, height: h),
       ]
     }
-    let t = min(band, topBand)
-    let c = bottomCornerSide(in: bounds, band: band)
+    let t = topBand
+    let c = bottomCornerSide(in: bounds)
     // Along each top edge the band reaches past the glass curve (~22 pt).
     let reach = min(c, w / 2, h / 2)
     return [
