@@ -798,10 +798,11 @@ struct DictationOverlayView: View {
       .padding(.horizontal, OverlayHeaderDensity.clipInset)
       .padding(.vertical, OverlayHeaderDensity.clipInset)
       .clipped()
-      .animation(
-        reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
-        value: state.presentationMode
-      )
+      // One clock: the window's frame morph is the only animation. A second
+      // SwiftUI interpolation of spacing, font and positions is retargeted on
+      // every AppKit frame step and puts controls at fractional positions
+      // that overlap their neighbours mid-morph.
+      .transaction { $0.animation = nil }
       .padding(.horizontal, 16 - OverlayHeaderDensity.clipInset)
       .padding(.vertical, 10 - OverlayHeaderDensity.clipInset)
       .coordinateSpace(name: "overlay-header")
@@ -876,8 +877,7 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
-    let compact = density != .expanded
-    return HStack(spacing: density == .expanded ? 10 : 6) {
+    return HStack(spacing: mini ? 6 : 10) {
       HStack(spacing: mini ? 6 : 5) {
         closeButton
 
@@ -930,7 +930,7 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
       }
 
-      HStack(spacing: compact ? 4 : 8) {
+      HStack(spacing: 8) {
         if !mini {
           transcriptionPreviewButton
           if let error = state.expansionPreferenceError {
@@ -944,7 +944,7 @@ struct DictationOverlayView: View {
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
         }
-        recordingControls(compact: compact && !mini)
+        recordingControls(compact: false)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
