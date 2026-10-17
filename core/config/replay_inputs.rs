@@ -46,6 +46,7 @@ pub struct RecordedCredential {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CapturedInputsRecord {
     pub values: Config,
+    #[serde(serialize_with = "exact_user_settings")]
     pub user_settings: UserSettings,
     pub settings_path: PathBuf,
     /// The settings file as read. It is JSON written by the app, so text keeps
@@ -172,6 +173,39 @@ impl CapturedInputsRecord {
     }
 }
 
+/// `UserSettings` omits `None` fields, and some of them read a missing key
+/// back as a migration default (`seal_lane_armed` returns as `Some(true)`).
+/// Wherever reading the written form back would add a key, the record writes
+/// an explicit `null` there, so the settings, and the digest, rebuild exactly.
+fn exact_user_settings<S: serde::Serializer>(
+    settings: &UserSettings,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::Error;
+    let mut written = serde_json::to_value(settings).map_err(S::Error::custom)?;
+    let read_back: UserSettings =
+        serde_json::from_value(written.clone()).map_err(S::Error::custom)?;
+    let read_back = serde_json::to_value(&read_back).map_err(S::Error::custom)?;
+    pin_omitted_keys(&mut written, &read_back);
+    written.serialize(serializer)
+}
+
+fn pin_omitted_keys(written: &mut serde_json::Value, read_back: &serde_json::Value) {
+    let (serde_json::Value::Object(written), serde_json::Value::Object(read_back)) =
+        (written, read_back)
+    else {
+        return;
+    };
+    for (key, value) in read_back {
+        match written.get_mut(key) {
+            Some(kept) => pin_omitted_keys(kept, value),
+            None => {
+                written.insert(key.clone(), serde_json::Value::Null);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +258,21 @@ mod tests {
             serde_json::from_slice(&json).expect("record deserializes");
         let replayed = Config::runtime_snapshot_from_captured(restored.into_captured());
         assert_eq!(replayed.digest(), live.digest());
+    }
+
+    #[test]
+    fn settings_left_unset_stay_unset_after_the_record() {
+        let captured = captured_with_secrets();
+        assert_eq!(captured.user_settings.seal_lane_armed, None);
+        let json = serde_json::to_value(CapturedInputsRecord::redacted(&captured))
+            .expect("record serializes");
+        assert_eq!(
+            json["user_settings"].get("seal_lane_armed"),
+            Some(&serde_json::Value::Null)
+        );
+        let restored: CapturedInputsRecord =
+            serde_json::from_value(json).expect("record deserializes");
+        assert_eq!(restored.user_settings, captured.user_settings);
     }
 
     #[test]
