@@ -5459,12 +5459,13 @@ impl DocumentRevisionProvenance {
 
 /// Provenance for an explicit rewrite of a complete committed transcript.
 ///
-/// The receipt names every source occurrence and any issued seal but carries
-/// no fabricated per-word alignment for the replacement text. It is append-only
-/// evidence consumed by the Rust transcript reducer and its Bus projection.
+/// The receipt names source occurrences and issued seals when a ledger owns
+/// them. A direct reducer operation instead names its authenticated publication
+/// in `capture_receipt_id`, with both acoustic source lists empty. Neither
+/// path fabricates per-word alignment for the replacement text.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManualDocumentRevisionReceipt {
-    /// Stable identifier copied into each projected acoustic receipt.
+    /// Stable document identifier, also copied into acoustic receipts when present.
     pub receipt_id: String,
     /// Stable origin label for quality capture and external observers.
     pub provenance: String,
@@ -5480,9 +5481,10 @@ pub struct ManualDocumentRevisionReceipt {
     pub source_seal_receipts: Vec<String>,
     /// Complete user-authored replacement bytes.
     pub rendered_text: String,
-    /// Capture ownership for a human document with no acoustic source entries.
+    /// Capture epoch for a document with no ledger-owned acoustic source entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_epoch: Option<u64>,
+    /// Ledger capture ownership or an authenticated direct publication id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_receipt_id: Option<String>,
 }

@@ -1744,7 +1744,7 @@ impl TranscriptBus {
                 // No ledger, no acoustic receipts: the capability above is the
                 // whole authority behind this row.
                 acoustic_receipts: Vec::new(),
-                document_revision_receipt: None,
+                document_revision_receipt: capability.document_revision_receipt(),
                 seal_coverage: None,
                 comparison: None,
                 consultation_presentations: Vec::new(),

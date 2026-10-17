@@ -557,6 +557,18 @@ paste policy. The controller snapshots the target before overlay focus can
 replace it, and checks the session-owned WAV only after the stop path has had a
 chance to retain it.
 
+An explicit edit, retranscription or version move carries its typed
+`document_revision_receipt` on the resulting projection. A direct document
+operation uses the reducer's authenticated publication capability: its
+`capture_receipt_id` starts with `direct-publication-`, and its acoustic source
+occurrence and seal lists remain empty. This is document provenance, never
+an acoustic seal. Operation identifiers keep the provenance first, for example
+`user-edit-direct-…`. The command acknowledgement and the projected receipt
+name the same operation. Receivers finish a pending edit or version move only
+after the matching document projection arrives; a command acknowledgement
+alone does not repaint or complete it. Such a revision has
+`lifecycle_terminal=false` and cannot release capture a second time.
+
 The Bus refuses the **whole revision** before any row or sequence mutation if
 the reducer's publication validator rejects it. Validation binds the exact ordered
 entries, action, rendered bytes and other snapshot fields to the private reducer
