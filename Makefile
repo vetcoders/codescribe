@@ -1188,6 +1188,8 @@ verify:
 	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
+	echo "=== Verify (Voice Lab install follows main) ==="; \
+	bash scripts/tests/install-voice-lab-test.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
 	bash scripts/tests/validate-gates-test.sh; \

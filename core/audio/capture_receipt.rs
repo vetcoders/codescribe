@@ -573,6 +573,28 @@ impl CaptureEnergyOwner {
         sample_start: u64,
         sample_end: u64,
     ) -> Option<Vec<(u64, u64)>> {
+        self.hops_at_or_above(
+            session,
+            capture_epoch,
+            sample_start,
+            sample_end,
+            ACTIVE_SPEECH_LINEAR_FLOOR,
+        )
+    }
+
+    /// Hops that overlap `[sample_start, sample_end)` at or above `floor_rms`.
+    ///
+    /// Same clock as [`Self::voiced_hops_in`]. `None` means this owner cannot
+    /// speak for the range. `Some` empty means every overlapping hop was
+    /// measured below `floor_rms`. The mean of the query is not read.
+    pub fn hops_at_or_above(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+        floor_rms: f32,
+    ) -> Option<Vec<(u64, u64)>> {
         if sample_end <= sample_start || !self.identity.matches(session, capture_epoch) {
             return None;
         }
@@ -596,7 +618,7 @@ impl CaptureEnergyOwner {
             if overlap_start > cursor {
                 return None;
             }
-            if hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR {
+            if hop.rms >= floor_rms {
                 let end = hop.sample_end.min(sample_end);
                 if end > overlap_start {
                     voiced.push((overlap_start, end));
