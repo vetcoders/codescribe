@@ -459,6 +459,43 @@ class SendHoldTests(unittest.TestCase):
                 lease=None, revise=None, withdraw="a" * 24, release=None))
             self.assertEqual({call.args[0] for call in publish.call_args_list}, {self.bus, other})
 
+    def test_broadcast_controls_skip_a_dead_peer_and_refuse_only_when_nobody_listens(self):
+        self.lease()
+        DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
+        other = self.home / "other.jsonl"
+        other.touch()
+        peer_id = DEMUX.lease_identifier("junie", "peer")
+        DEMUX.atomic_json(self.root / "leases" / f"{peer_id}.json", {
+            "schema": DEMUX.LEASE_SCHEMA, "lease_id": peer_id, "provider": "junie",
+            "provider_session_id": "peer", "bus": str(other)})
+        DEMUX.write_channel_binding(self.root, "3", "peer", "junie", "peer", str(other))
+        alive = {self.lease_id: 321}  # the peer's host restarted: binding and lease stay, no follower
+        control = dict(channel="0", provider=None, session=None, lease=None,
+                       revise=None, withdraw="a" * 24, release=None)
+        with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", side_effect=lambda root, lease_id: alive.get(lease_id)), \
+                mock.patch.object(DEMUX, "emit") as emitted:
+            self.assertEqual(DEMUX.delivery_control_command(self.args(**control)), 0)
+            self.assertEqual([call.args[0] for call in publish.call_args_list], [self.bus])
+            published = emitted.call_args.args[0]
+            # The held identity survives the roster walk: it names the row being withdrawn.
+            self.assertEqual((published["identity"], publish.call_args.args[1]["identity"]), ("a" * 24, "a" * 24))
+            self.assertEqual([r["channel"] for r in published["recipients"]], ["2"])
+            self.assertEqual([(s["channel"], s["audience"], s["reason"]) for s in published["skipped"]],
+                             [("3", "peer", "not_listening")])
+        with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=None):
+            with self.assertRaisesRegex(ValueError, "no agents are listening"):
+                DEMUX.delivery_control_command(self.args(**control))
+            publish.assert_not_called()
+        # Positive control: addressing the dead peer directly keeps the hard refusal.
+        with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=None):
+            with self.assertRaisesRegex(ValueError, "no longer matches"):
+                DEMUX.delivery_control_command(self.args(channel="3", provider="junie", session="peer",
+                    lease=peer_id, bus=other, revise=None, withdraw="a" * 24, release=None))
+            publish.assert_not_called()
+
     def test_voice_control_selects_the_capture_session_not_a_reused_numeric_label(self):
         self.lease()
         DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
