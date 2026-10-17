@@ -49,6 +49,10 @@ impl From<BadgeMode> for CsIndicatorMode {
     fn from(value: BadgeMode) -> Self {
         match value {
             BadgeMode::Hold => Self::Hold,
+            // `Refused` is the pointer-only flash for a vacant channel chord.
+            // The tray store drops it (`set_tray_indicator_mode`), so no tray
+            // payload ever carries it; the arm only keeps this mapping total.
+            BadgeMode::Refused => Self::Hold,
             BadgeMode::Toggle => Self::Toggle,
             BadgeMode::Processing => Self::Processing,
             BadgeMode::Assistive => Self::Assistive,
