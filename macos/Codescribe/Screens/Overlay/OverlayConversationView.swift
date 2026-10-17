@@ -18,6 +18,7 @@ private struct BubbleOwnerNameButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovered = $0 }
+    .background { OverlayMenuCursorRegion() }
     .accessibilityIdentifier("overlay-message-owner-\(messageID)")
     .accessibilityHint(Text("Opens this agent's conversation"))
   }
@@ -633,6 +634,9 @@ struct OverlayConversationView: View {
         }
         .accessibilityIdentifier("overlay-message-release-\(message.id)")
       }
+      // Buttons, not text: the bubble's selectable body must not lend them its
+      // I-beam, and the gaps between them are not text either.
+      .background { OverlayMenuCursorRegion() }
       .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
       if let error = deliveryControlErrors[message.id] {
         Text(verbatim: error).foregroundStyle(palette.errorStatus.color)
@@ -736,6 +740,8 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
         .buttonStyle(.borderless)
         .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
+      // Play, receipts and Copy are controls: the arrow, never the I-beam.
+      .background { OverlayMenuCursorRegion() }
       .font(.system(size: 10 * textScale))
       .foregroundStyle(palette.mutedText.color)
       // Founder, 2026-10-15: a red warning under a reply he had stopped
