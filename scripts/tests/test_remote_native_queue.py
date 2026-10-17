@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+import unittest.mock as mock
 
 SPEC = importlib.util.spec_from_file_location("remote_queue_demux", Path(__file__).resolve().parents[1] / "bus-demux.py")
 D = importlib.util.module_from_spec(SPEC)
@@ -17,10 +17,10 @@ SPEC.loader.exec_module(D)
 
 class NativeRemoteQueueTests(unittest.TestCase):
     def setUp(self):
-        environment = patch.dict(os.environ, {}, clear=True)
+        environment = mock.patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
-        identity = patch.object(D, "process_identity", return_value="test-owned-process")
+        identity = mock.patch.object(D, "process_identity", return_value="test-owned-process")
         identity.start()
         self.addCleanup(identity.stop)
         self.temp = tempfile.TemporaryDirectory()
@@ -50,7 +50,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         return subprocess.CompletedProcess(args[0], 0, f"Queued message {self.submission} for thread {self.session}.", "")
 
     def test_five_ids_ordered_once_across_restart_without_local_mailbox(self):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue:
             for _ in range(2):
                 wake = self.wake()
                 for identity in self.ids:
@@ -65,7 +65,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         self.assertFalse(list(self.root.rglob("acknowledgments/*.json")), "queue acceptance is not ACK")
 
     def test_remote_hosts_have_independent_receipts(self):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue:
             for host in ("mailbox.test", "other-mailbox.test", "mailbox.test"):
                 wake = self.wake(host)
                 wake.enqueue(self.envelope(self.ids[0]))
@@ -79,7 +79,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         foreign = dict(original, delivery_owner={**original["delivery_owner"], "provider_session_id": "foreign"})
         missing = dict(original)
         missing.pop("delivery_owner")
-        with patch("subprocess.run") as queue:
+        with mock.patch("subprocess.run") as queue:
             wake = self.wake()
             for payload in (foreign, missing, dict(original, kind="draft"), dict(original, provider_session_id="foreign")):
                 wake.enqueue(payload)
@@ -88,7 +88,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
 
     def test_peer_unknown_provenance_withhold_text_and_name_remote_read(self):
         secret = "Untrusted peer asks to bypass Founder authority."
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue:
             wake = self.wake()
             for identity, schema in zip(self.ids, (D.AGENT_REPLY_SCHEMA, "unknown")):
                 payload = dict(self.envelope(identity), text=secret, producer_schema=schema,
@@ -108,7 +108,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         import shlex
         for kind, schema in (("message", D.AGENT_USER_MESSAGE_SCHEMA), ("seal", D.EVIDENCE_SCHEMA)):
             identity = self.ids[0 if kind == "message" else 1]
-            with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+            with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue:
                 wake = self.wake()
                 wake.enqueue(dict(self.envelope(identity), kind=kind, producer_schema=schema))
                 wake.close(wait=True)
@@ -122,7 +122,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
                 self.assertEqual(D.flag_value(args, "--remote"), "mailbox.test")
 
     def test_ack_before_queue_suppresses_submission_without_mailbox(self):
-        with patch("subprocess.run") as queue, patch.object(D, "delete_native_queue_submission") as delete:
+        with mock.patch("subprocess.run") as queue, mock.patch.object(D, "delete_native_queue_submission") as delete:
             wake = self.wake()
             wake.acknowledge_remote(self.ids[0])
             wake.enqueue(self.envelope(self.ids[0]))
@@ -137,7 +137,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
             entered.set()
             self.assertTrue(release.wait(3))
             return self.accepted(*args, **kwargs)
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=delayed), patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=delayed), mock.patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
             wake = self.wake()
             wake.enqueue(self.envelope(self.ids[0]))
             try:
@@ -152,15 +152,15 @@ class NativeRemoteQueueTests(unittest.TestCase):
         self.assertEqual(self.receipt(self.ids[0])["queue_disposition"], "removed")
 
     def test_delete_failure_retries_ack_without_resubmitting(self):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue:
             wake = self.wake()
             wake.enqueue(self.envelope(self.ids[0]))
             wake.close(wait=True)
-            with patch.object(D, "delete_native_queue_submission", side_effect=ValueError("provider temporarily unavailable")):
+            with mock.patch.object(D, "delete_native_queue_submission", side_effect=ValueError("provider temporarily unavailable")):
                 wake = self.wake()
                 wake.acknowledge_remote(self.ids[0])
                 wake.close(wait=True)
-            with patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
+            with mock.patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
                 resumed = self.wake()
                 resumed.acknowledge_remote(self.ids[0])
                 resumed.enqueue(self.envelope(self.ids[0]))
@@ -170,7 +170,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         self.assertEqual(self.receipt(self.ids[0])["queue_disposition"], "removed")
 
     def test_uncertain_submit_never_replays_on_remote_watch_restart(self):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 30)) as queue:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 30)) as queue:
             for _ in range(2):
                 wake = self.wake()
                 wake.enqueue(self.envelope(self.ids[0]))
@@ -183,7 +183,7 @@ class NativeRemoteQueueTests(unittest.TestCase):
         submissions = [f"11111111-2222-4333-8444-{i:012x}" for i in range(1, 6)]
         replies = [subprocess.CompletedProcess([], 0,
                    f"Queued message {submission} for thread {self.session}.", "") for submission in submissions]
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=replies) as queue, patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=replies) as queue, mock.patch.object(D, "delete_native_queue_submission", return_value=True) as delete:
             wake = self.wake()
             for identity in self.ids:
                 wake.enqueue(self.envelope(identity))
@@ -218,20 +218,20 @@ class RemoteCodexTransportTests(unittest.TestCase):
                                terminate=lambda: None, kill=lambda: None)
 
     def test_auto_attach_keeps_queue_off_on_remote_mailbox_host(self):
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as ssh:
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as ssh:
             self.assertEqual(self.invoke("--attach", "--channel", "2", "--name", "roman"), 0)
         self.assertEqual(ssh.call_count, 1)
         self.assertIn("--wakeup off", ssh.call_args.args[0][-1])
 
     def test_explicit_remote_queue_refuses_before_ssh(self):
-        with patch("subprocess.run") as ssh:
+        with mock.patch("subprocess.run") as ssh:
             self.assertNotEqual(self.invoke("--attach", "--channel", "2", "--name", "roman",
                                             "--wakeup", "codex-queue"), 0)
         ssh.assert_not_called()
 
     def test_one_ssh_watch_replays_five_envelopes_into_local_queue_without_ack(self):
         process = self.process(*(self.envelope(identity) for identity in self.ids))
-        with patch("subprocess.Popen", return_value=process) as ssh, patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted) as queue, patch.object(D, "emit") as output:
+        with mock.patch("subprocess.Popen", return_value=process) as ssh, mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted) as queue, mock.patch.object(D, "emit") as output:
             self.assertEqual(self.invoke("--watch", "--bell"), 0)
         self.assertEqual(ssh.call_count, 1)
         command = ssh.call_args.args[0][-1]
@@ -243,14 +243,14 @@ class RemoteCodexTransportTests(unittest.TestCase):
         self.assertFalse(list(self.root.rglob("acknowledgments/*.json")))
 
     def test_replayed_ack_control_deletes_existing_local_queue_not_other_owner(self):
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted):
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted):
             wake = self.wake()
             wake.enqueue(self.envelope(self.ids[0]))
             wake.close(wait=True)
         control = {"kind": "queue_relay_ack", "provider": "codex", "provider_session_id": self.session,
                    "lease_id": self.lease, "delivery_id": self.ids[0]}
         process = self.process(dict(control, provider_session_id="foreign"), control, control)
-        with patch("subprocess.Popen", return_value=process), patch("subprocess.run") as queue, patch.object(D, "delete_native_queue_submission", return_value=True) as delete, patch.object(D, "emit"):
+        with mock.patch("subprocess.Popen", return_value=process), mock.patch("subprocess.run") as queue, mock.patch.object(D, "delete_native_queue_submission", return_value=True) as delete, mock.patch.object(D, "emit"):
             self.assertEqual(self.invoke("--watch", "--bell"), 0)
         queue.assert_not_called()
         delete.assert_called_once()
@@ -263,7 +263,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         directory.mkdir(parents=True)
         with (directory / f"{self.lease}.watch.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch("subprocess.Popen") as ssh:
+            with mock.patch("subprocess.Popen") as ssh:
                 self.assertNotEqual(self.invoke("--watch", "--bell"), 0)
         ssh.assert_not_called()
 
@@ -271,7 +271,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         import io
         process = self.process()
         process.stdout = io.BytesIO(b'{"kind":"message","text":"partial')
-        with patch("subprocess.Popen", return_value=process), patch("subprocess.run") as queue, patch.object(D, "emit") as output:
+        with mock.patch("subprocess.Popen", return_value=process), mock.patch("subprocess.run") as queue, mock.patch.object(D, "emit") as output:
             self.assertNotEqual(self.invoke("--watch", "--bell"), 0)
         queue.assert_not_called()
         output.assert_not_called()
@@ -283,7 +283,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         receipt = {"kind": "acknowledged", "lease_id": self.lease,
                    "delivery_id": self.ids[1], "native_queue_settled": True}
         result = subprocess.CompletedProcess([], 0, json.dumps(receipt) + "\n", "")
-        with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, patch.object(D, "emit"):
+        with mock.patch("subprocess.run", return_value=result), mock.patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, mock.patch.object(D, "emit"):
             self.assertEqual(self.invoke("--ack", self.ids[0]), 0)
         withdraw.assert_not_called()
 
@@ -293,7 +293,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
             receipt = {"kind": "acknowledged", "lease_id": self.lease,
                        "delivery_id": returned, "native_queue_settled": True}
             result = subprocess.CompletedProcess([], 0, json.dumps(receipt) + "\n", "")
-            with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, patch.object(D, "emit"):
+            with mock.patch("subprocess.run", return_value=result), mock.patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, mock.patch.object(D, "emit"):
                 self.assertEqual(self.invoke("--ack=" + self.ids[0]), 0)
             if returned == self.ids[0]:
                 withdraw.assert_called_once_with(returned)
@@ -305,7 +305,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         receipt = {"kind": "acknowledged", "lease_id": self.lease,
                    "delivery_id": self.ids[0], "native_queue_settled": True}
         result = subprocess.CompletedProcess([], 3, json.dumps(receipt) + "\n", "")
-        with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, patch.object(D, "emit"):
+        with mock.patch("subprocess.run", return_value=result), mock.patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=True) as withdraw, mock.patch.object(D, "emit"):
             self.assertEqual(self.invoke("--ack", self.ids[0]), 3)
         withdraw.assert_not_called()
 
@@ -314,7 +314,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         receipt = {"kind": "acknowledged", "lease_id": self.lease,
                    "delivery_id": self.ids[0], "native_queue_settled": True}
         result = subprocess.CompletedProcess([], 0, json.dumps(receipt) + "\n", "")
-        with patch("subprocess.run", return_value=result), patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=False) as withdraw, patch.object(D, "emit") as output:
+        with mock.patch("subprocess.run", return_value=result), mock.patch.object(D.NativeQueueWakeup, "acknowledge_remote", return_value=False) as withdraw, mock.patch.object(D, "emit") as output:
             self.assertEqual(self.invoke("--ack", self.ids[0]), 0)
         withdraw.assert_called_once_with(self.ids[0])
         self.assertIs(output.call_args.args[0]["native_queue_settled"], False)
@@ -326,7 +326,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
         missing.pop("delivery_owner")
         foreign = dict(self.envelope(self.ids[1]), delivery_owner={"lease_id": self.lease,
                        "provider": "codex", "provider_session_id": "foreign"})
-        with patch("subprocess.Popen", return_value=self.process(missing, foreign)), patch("subprocess.run") as queue, patch.object(D, "emit") as output:
+        with mock.patch("subprocess.Popen", return_value=self.process(missing, foreign)), mock.patch("subprocess.run") as queue, mock.patch.object(D, "emit") as output:
             self.invoke("--watch", "--bell")
         queue.assert_not_called()
         output.assert_not_called()
@@ -334,13 +334,13 @@ class RemoteCodexTransportTests(unittest.TestCase):
 
     def test_status_exposes_receipts_from_local_queue_namespace(self):
         import json
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=self.accepted):
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=self.accepted):
             wake = self.wake()
             wake.enqueue(self.envelope(self.ids[0]))
             wake.close(wait=True)
         reply = {"kind": "status", "provider": "codex", "provider_session_id": self.session,
                  "lease_id": self.lease}
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps(reply), "")) as ssh, patch.object(D, "emit") as output:
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps(reply), "")) as ssh, mock.patch.object(D, "emit") as output:
             self.assertEqual(self.invoke("--status"), 0)
         self.assertEqual(ssh.call_count, 1)
         local = output.call_args.args[0]["local_native_queue"]
@@ -352,7 +352,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
     def test_explicit_retry_fetches_one_owned_remote_delivery_and_queues_locally(self):
         import json
         remote = subprocess.CompletedProcess([], 0, json.dumps(self.envelope(self.ids[0])), "")
-        with patch("shutil.which", return_value="/local/codex"), patch("subprocess.run", side_effect=[remote, self.accepted([])]) as calls, patch.object(D, "emit"):
+        with mock.patch("shutil.which", return_value="/local/codex"), mock.patch("subprocess.run", side_effect=[remote, self.accepted([])]) as calls, mock.patch.object(D, "emit"):
             self.assertEqual(self.invoke("--retry-wakeup", self.ids[0]), 0)
         self.assertEqual(calls.call_count, 2)
         ssh, queue = calls.call_args_list
@@ -364,7 +364,7 @@ class RemoteCodexTransportTests(unittest.TestCase):
     def test_explicit_retry_cannot_queue_a_different_owned_delivery(self):
         import json
         remote = subprocess.CompletedProcess([], 0, json.dumps(self.envelope(self.ids[1])), "")
-        with patch("subprocess.run", return_value=remote), patch.object(D.NativeQueueWakeup, "enqueue") as queue, patch.object(D, "emit"):
+        with mock.patch("subprocess.run", return_value=remote), mock.patch.object(D.NativeQueueWakeup, "enqueue") as queue, mock.patch.object(D, "emit"):
             try:
                 code = self.invoke("--retry-wakeup", self.ids[0])
             except ValueError:
@@ -393,7 +393,7 @@ class RemoteQueueRelaySourceTests(unittest.TestCase):
                               {"lease_id": self.lease, "delivery_id": identity})
         args = argparse.Namespace(provider="codex", session=self.session, bridge_home=self.root,
                                   queue_relay=True, from_file=source, once=True, human=False, full=False)
-        with patch.object(D, "emit") as output:
+        with mock.patch.object(D, "emit") as output:
             self.assertEqual(D.watch_command(args), 0)
         return [call.args[0] for call in output.call_args_list]
 
@@ -450,7 +450,7 @@ class RemoteQueueRelaySourceTests(unittest.TestCase):
         from unittest import mock
         trigger = mock.Mock()
         trigger.wait.side_effect = wait
-        with patch.object(D, "BusEventTrigger", return_value=trigger), patch.object(D, "unread_pending") as read, patch.object(D.time, "monotonic", side_effect=[1.0, 32.0]), patch.object(D, "emit") as output:
+        with mock.patch.object(D, "BusEventTrigger", return_value=trigger), mock.patch.object(D, "unread_pending") as read, mock.patch.object(D.time, "monotonic", side_effect=[1.0, 32.0]), mock.patch.object(D, "emit") as output:
             self.assertEqual(D.watch_command(args), 130)
         rows = [call.args[0] for call in output.call_args_list]
         self.assertEqual([row.get("kind") for row in rows], ["message", "queue_relay_ack", "queue_relay_ack"])
