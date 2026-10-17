@@ -41,11 +41,14 @@ static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
     .expect("brand hearing pattern")
 });
 
-/// Byte ranges that hold data rather than speech: code in backtick runs and
-/// straight-quoted literals. A run of n backticks closes at the next run of
-/// exactly n (CommonMark), so ``a `b` c`` is one span; an unclosed run of
-/// three or more (a fence) protects the rest of the text, a shorter one
-/// protects nothing. A quote closes only when an even number of backslashes
+/// Byte ranges that hold data rather than speech: fenced code, inline code
+/// and straight-quoted literals, split the way CommonMark 0.31.2 splits them.
+/// A fence is a run of three or more backticks opening a line (at most three
+/// spaces before it); it closes at the first later line holding at most three
+/// spaces, a run at least as long and nothing else, and an unclosed fence
+/// protects the rest. Any other run of n backticks, even three mid-line, is
+/// an inline span that closes at the next run of exactly n, so ``a `b` c``
+/// is one span; an unclosed inline run protects nothing. A quote closes only when an even number of backslashes
 /// precedes it, so JSON escapes stay inside their string. An apostrophe
 /// inside a word (`Codescribe'a`, `don't`) does not open a literal.
 fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -55,8 +58,11 @@ fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
         let (end, skip) = match ch {
             '`' => {
                 let run = backtick_run(&text[index..]);
-                let end = closing_backtick_run(text, index + run, run)
-                    .or((run >= 3).then_some(text.len()));
+                let end = if run >= 3 && opens_line(text, index) {
+                    Some(closing_fence(text, index, run).unwrap_or(text.len()))
+                } else {
+                    closing_backtick_run(text, index + run, run)
+                };
                 (end, run)
             }
             '"' if unescaped(text, index) => (closing_quote(text, index + 1, '"'), 1),
@@ -84,6 +90,34 @@ fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
 /// Length of the backtick run that starts `text`.
 fn backtick_run(text: &str) -> usize {
     text.bytes().take_while(|&byte| byte == b'`').count()
+}
+
+/// True when only up to three spaces separate `at` from the line start.
+fn opens_line(text: &str, at: usize) -> bool {
+    let line_start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let indent = &text[line_start..at];
+    indent.len() <= 3 && indent.bytes().all(|byte| byte == b' ')
+}
+
+/// End of the line that closes the fence opened by `run` backticks at `at`:
+/// at most three spaces, at least `run` backticks, then only whitespace.
+fn closing_fence(text: &str, at: usize, run: usize) -> Option<usize> {
+    let mut line_start = at + text[at..].find('\n')? + 1;
+    loop {
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |newline| line_start + newline);
+        let line = &text[line_start..line_end];
+        let fence = line.trim_start_matches(' ');
+        let length = backtick_run(fence);
+        if line.len() - fence.len() <= 3 && length >= run && fence[length..].trim().is_empty() {
+            return Some(line_end);
+        }
+        if line_end == text.len() {
+            return None;
+        }
+        line_start = line_end + 1;
+    }
 }
 
 /// End of the first run of exactly `run` backticks at or after `from`.
@@ -538,6 +572,8 @@ mod tests {
             r#"{"text": "call \"CodeScript help\" now"}"#,
             "``CodeScript help``",
             "``a `CodeScript` b``",
+            "```\nx ``` y\nCodeScript help\n```",
+            "a ```CodeScript``` b",
         ] {
             assert_eq!(brand_spelling(kept), kept);
         }
@@ -554,6 +590,14 @@ mod tests {
             "```\nCodeScript\n```\npo bloku Codescribe działa"
         );
         assert_eq!(brand_spelling("`a` CodeScript `b`"), "`a` Codescribe `b`");
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n````\npo CodeScript"),
+            "```\nCodeScript\n````\npo Codescribe"
+        );
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n   ```\npo CodeScript"),
+            "```\nCodeScript\n   ```\npo Codescribe"
+        );
         assert_eq!(
             brand_spelling(r#""a\\" CodeScript "b""#),
             r#""a\\" Codescribe "b""#
