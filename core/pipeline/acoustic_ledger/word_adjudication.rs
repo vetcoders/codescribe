@@ -249,7 +249,6 @@ pub(super) fn negation_contexts(label: &str) -> Vec<(String, String, String)> {
                     | "bez"
                     | "nigdy"
                     | "not"
-                    | "no"
                     | "never"
                     | "without"
                     | "don't"
@@ -273,6 +272,36 @@ pub(super) fn negation_contexts(label: &str) -> Vec<(String, String, String)> {
             )
         })
         .collect()
+}
+
+/// Whether `candidate` reverses polarity within `held` when `held` is a coarse
+/// unanchored phrase stub, as opposed to uncovering a new clause that `held`
+/// never reached.
+pub(super) fn coarse_polarity_disagrees(held: &str, candidate: &str) -> bool {
+    let held_neg = negation_contexts(held);
+    let cand_neg = negation_contexts(candidate);
+    if held_neg == cand_neg {
+        return false;
+    }
+    let held_words = held
+        .split_whitespace()
+        .map(|token| normalize_word_token(token).replace('’', "'"))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let cand_words = candidate
+        .split_whitespace()
+        .map(|token| normalize_word_token(token).replace('’', "'"))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    if !held_words.is_empty()
+        && cand_words.len() > held_words.len()
+        && cand_words.starts_with(&held_words)
+    {
+        let prefix_end = (held_words.len() + 1).min(cand_words.len());
+        let cand_prefix = cand_words[..prefix_end].join(" ");
+        return negation_contexts(&cand_prefix) != held_neg;
+    }
+    true
 }
 
 /// `context_quality` saturation: the pin sits in the middle third of its
@@ -1493,10 +1522,16 @@ impl AcousticLedger {
             );
             return Some(false);
         }
-        let negation_disagrees = negation_contexts(&compose_label(sources))
-            != negation_contexts(&compose_label(outputs));
+        let all_coarse = sources.iter().all(|source| self.coarse_word_source(source));
+        let held_label = compose_label(sources);
+        let candidate_label = compose_label(outputs);
+        let negation_disagrees = if all_coarse {
+            coarse_polarity_disagrees(&held_label, &candidate_label)
+        } else {
+            negation_contexts(&held_label) != negation_contexts(&candidate_label)
+        };
         if sources.is_empty()
-            || (sources.iter().all(|source| self.coarse_word_source(source)) && !negation_disagrees)
+            || (all_coarse && !negation_disagrees)
             || !sources
                 .iter()
                 .all(|source| acoustic_pair(source.producer, observation.producer))

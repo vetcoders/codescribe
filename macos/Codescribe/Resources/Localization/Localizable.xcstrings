@@ -1976,16 +1976,6 @@
         }
       }
     },
-    "A newer take replaced this overlay" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "W nakładce pojawiło się nowsze nagranie"
-          }
-        }
-      }
-    },
     "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first." : {
       "localizations" : {
         "pl" : {
@@ -5963,6 +5953,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się rozpocząć nowej konsultacji: %@"
+          }
+        }
+      }
+    },
+    "Couldn't apply the new transcription. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zastosować nowej transkrypcji. Spróbuj ponownie."
           }
         }
       }
@@ -22525,16 +22525,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "dźwięk nagrania niedostępny"
-          }
-        }
-      }
-    },
-    "take changed" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "nagranie zmienione"
           }
         }
       }

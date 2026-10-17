@@ -58,5 +58,11 @@ Swift targets build without warning suppression; suppressors are not allowed.
 
 ## Commits
 
+Every completed cut must have its own authored commit before handoff or
+installation. Do not leave finished changes uncommitted for the user to commit.
+Stage only the cut's files or hunks; preserve unrelated work. Source-only workers
+return a committed checkpoint using `docs/COMPILE_EMBARGO.md` without running
+compiler or test hooks; the designated integrator owns verification and admission.
+
 Commit messages follow `.commitmsg`: a scoped subject, a body that explains
 what changed and why, and an `Authored-By:` trailer.
