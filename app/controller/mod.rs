@@ -13487,8 +13487,11 @@ mod closed_take_publication_tests {
         let published = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicBool::new(false));
         let mut recorder = StreamingRecorder::new().unwrap();
-        let inputs =
+        let mut inputs =
             codescribe_core::config::CapturedRuntimeInputs::defaults_at(root.path().to_owned(), 1);
+        // This no-provider fixture exercises ledger-mode publication ownership.
+        // Direct completion separately requires the real decoder acknowledgement.
+        inputs.user_settings.seal_ledger_enabled = Some(true);
         recorder.bind_session_authority(
             "old-take".into(),
             Arc::new(Config::runtime_snapshot_from_captured(inputs)),
