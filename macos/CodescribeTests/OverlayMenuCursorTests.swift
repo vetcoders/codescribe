@@ -6,6 +6,29 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testSidebarDividerCursorWinsInsideDrawerAndYieldsWhenRemoved() {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    defer { panel.close() }
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 500))
+    panel.contentView = content
+    let drawer = OverlayMenuCursorRegionView(
+      frame: NSRect(x: 700, y: 0, width: 300, height: 400))
+    let divider = OverlayMenuCursorRegionView(
+      frame: NSRect(x: 700, y: 0, width: 10, height: 400))
+    divider.cursor = .resizeLeftRight
+    content.addSubview(drawer)
+    content.addSubview(divider)
+    XCTAssertEqual(panel.cursor(at: NSPoint(x: 705, y: 200)), .resizeLeftRight)
+    XCTAssertEqual(panel.cursor(at: NSPoint(x: 800, y: 200)), .arrow)
+    XCTAssertEqual(
+      panel.cursor(at: NSPoint(x: 705, y: 450)), .arrow,
+      "the divider does not own the header")
+    divider.removeFromSuperview()
+    XCTAssertEqual(panel.cursor(at: NSPoint(x: 705, y: 200)), .arrow)
+  }
+
   func testHoverUsesPanelMotionAndClearsOnNativeExitAndRemoval() throws {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
