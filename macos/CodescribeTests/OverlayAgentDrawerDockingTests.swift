@@ -132,7 +132,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(agent.title, "3 · astra")
     XCTAssertEqual(agent.descriptor, "codex", "the pill shows the provider descriptor")
     XCTAssertEqual(agent.unread, 4)
-    XCTAssertNotNil(agent.quietSymbol, "a quiet broadcast policy marks the pill")
+    XCTAssertEqual(agent.broadcastPolicy, .quiet, "a quiet broadcast policy marks the pill")
+    XCTAssertNil(zero.broadcastPolicy, "the shared channel has no membership of its own")
     XCTAssertEqual(zero.dot, .broadcast, "the shared channel wears the antenna, not a delivery dot")
   }
 
@@ -413,22 +414,69 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "window clamping must not overwrite the user's remembered width")
   }
 
-  func testDrawerPreviewPrefixesOwnMessagesAndChannelZeroSenders() throws {
-    let (broadcast, lena, _) = try rosterFixture()
-    let own = OverlayConversationMessage(
-      id: "user:1", kind: .user, text: "first line\nsecond line", order: 1,
-      emittedAt: "2026-10-16T14:54:00Z", owner: nil, recipients: [],
-      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+  func testDrawerPreviewNamesWhoAddressedWhomFromTheMessagesOwnRoute() throws {
+    // Maciej (2026-10-17): "brak informacji jak who addressed whom". The
+    // route is the message's source channel and frozen recipients, never the
+    // row it is shown in.
+    let (_, lena, astra) = try rosterFixture()
+    let lenaOwner = try XCTUnwrap(lena.owner)
+    let astraOwner = try XCTUnwrap(astra.owner)
+    func recipient(_ owner: OverlayConversationOwner) -> OverlayConversationRecipient {
+      OverlayConversationRecipient(
+        owner: owner, deliveryID: nil, queued: false, accepted: false, acknowledged: false)
+    }
+    func message(
+      _ kind: OverlayConversationMessage.Kind, owner: OverlayConversationOwner? = nil,
+      to recipients: [OverlayConversationOwner] = [], source: String? = nil
+    ) -> OverlayConversationMessage {
+      var message = OverlayConversationMessage(
+        id: "\(kind):1", kind: kind, text: "first line\nsecond line", order: 1,
+        emittedAt: "2026-10-16T14:54:00Z", owner: owner, recipients: recipients.map(recipient),
+        deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+      message.sourceChannel = source
+      return message
+    }
+    func preview(_ message: OverlayConversationMessage) -> String {
+      OverlayChannelStatusView.drawerPreview(message: message)
+    }
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: own, channel: lena.channel),
-      "You: first line second line", "own messages carry the localized prefix, one line")
-    let reply = lena.messages[0]
+      preview(message(.user, to: [lenaOwner, astraOwner], source: "0")),
+      "You → All: first line second line",
+      "a broadcast stays → All in every recipient's row, one line")
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: reply, channel: broadcast.channel),
-      "lena: PR is green", "channel 0 names the sender")
+      preview(message(.user, to: [lenaOwner], source: "2")), "You → lena: first line second line")
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: reply, channel: lena.channel),
-      "PR is green", "an agent's own chat needs no prefix")
+      preview(message(.user, source: "2")), "You → 2: first line second line",
+      "without frozen recipients the channel stands, not the agent now on it")
+    XCTAssertEqual(
+      preview(message(.user)), "You: first line second line",
+      "no route recorded, no arrow invented")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner)), "lena → You: first line second line",
+      "a reply without a destination answered the Founder")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, source: "0")), "lena → All: first line second line")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, to: [astraOwner], source: "3")),
+      "lena → astra: first line second line", "a peer message names its frozen recipient")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, source: "3")),
+      "lena → 3: first line second line")
+  }
+
+  func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
+    // Maciej (2026-10-17): "ustalmy budżet 5 wierszy". Title, descriptor,
+    // two preview lines, one state line; unread is a badge on the title line.
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let label = try section(
+      of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
+    let limits = label.components(separatedBy: ".lineLimit(").dropFirst().compactMap {
+      Int($0.prefix { $0.isNumber })
+    }
+    XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
+    XCTAssertTrue(label.contains("unreadBadge(count)"), "unread rides the title line as a badge")
+    XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
+    XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {

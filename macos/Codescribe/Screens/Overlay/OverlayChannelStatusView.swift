@@ -431,14 +431,10 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
               Menu {
                 policyActions(for: member)
               } label: {
-                if let symbol = member.broadcastPolicy.statusSymbol {
-                  Label {
-                    Text(verbatim: "\(member.channel) · \(member.agent)")
-                  } icon: {
-                    Image(systemName: symbol)
-                  }
-                } else {
+                Label {
                   Text(verbatim: "\(member.channel) · \(member.agent)")
+                } icon: {
+                  Image(systemName: member.broadcastPolicy.statusSymbol)
                 }
               }
             }
@@ -899,8 +895,12 @@ struct OverlayChannelStatusView: View {
         palette: palette, enabled: !unavailable))
   }
 
-  /// The roster keeps identity above the preview in both wide and narrow modes.
-  /// Delivery receipts and explicitly labelled unread replies sit below the preview.
+  /// One roster row in at most five lines (Maciej, 2026-10-17: "ustalmy budżet
+  /// 5 wierszy"): identity with the channel-0 mark, the unread badge and the
+  /// time; the provider descriptor; a two-line preview that names who
+  /// addressed whom; one state line. The badge counts replies the Founder has
+  /// not opened, the state line carries the agent's receipts, so the two
+  /// never mix.
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
@@ -930,15 +930,15 @@ struct OverlayChannelStatusView: View {
             .lineLimit(1)
             .truncationMode(.middle)
             .layoutPriority(1)
-          if let statusChannel, let symbol = statusChannel.broadcastPolicy.statusSymbol {
-            Image(systemName: symbol)
-              .font(.system(size: 10 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .help(String(localized: "Broadcasts do not wake this agent"))
-              .accessibilityLabel(String(localized: "Broadcasts do not wake this agent"))
-              .accessibilityIdentifier("overlay-broadcast-quiet-\(statusChannel.channel)")
+          if let statusChannel {
+            broadcastPolicyMark(statusChannel.broadcastPolicy)
+              .accessibilityIdentifier("overlay-broadcast-policy-\(statusChannel.channel)")
           }
           Spacer(minLength: 4)
+          if let conversation, let count = unreadCounts[conversation.id], count > 0 {
+            unreadBadge(count)
+              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversation.id)")
+          }
           if let last = conversation?.messages.last,
             let date = MessageTimestamp.date(fromISO8601: last.emittedAt)
           {
@@ -951,13 +951,13 @@ struct OverlayChannelStatusView: View {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale))
             .foregroundStyle(palette.mutedText.color)
-            .lineLimit(2)
-            .truncationMode(.tail)
+            .lineLimit(1)
+            .truncationMode(.middle)
             .help(descriptor)
             .accessibilityIdentifier("overlay-agent-descriptor-\(statusChannel.channel)")
         }
         if let conversation, let last = conversation.messages.last {
-          Text(verbatim: Self.drawerPreview(message: last, channel: conversation.channel))
+          Text(verbatim: Self.drawerPreview(message: last))
             .font(.system(size: 12.5 * textScale))
             .foregroundStyle(
               (unreadCounts[conversation.id] ?? 0) > 0
@@ -967,37 +967,39 @@ struct OverlayChannelStatusView: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let statusChannel {
-          if let receiptText {
-            Text(receiptText)
-              .font(.system(size: 11 * textScale, weight: .medium))
-              .foregroundStyle(palette.mutedText.color)
-              .lineLimit(2)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("overlay-agent-receipt-\(statusChannel.channel)")
-          }
-          if receiptText == nil || hasDeadFollower(statusChannel) || hasStalledFollower(statusChannel) {
-            Text(shortStatus(for: statusChannel))
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .lineLimit(2)
-              .accessibilityIdentifier("overlay-agent-connection-\(statusChannel.channel)")
-          }
-        }
-        if let conversation, let count = unreadCounts[conversation.id], count > 0 {
-          Text("\(count) unread replies")
+          Text(verbatim: rowStateText(for: statusChannel, receiptText: receiptText))
             .font(.system(size: 11 * textScale, weight: .medium))
-            .foregroundStyle(palette.processingStatus.color)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("overlay-agent-unread-replies-\(conversation.id)")
+            .foregroundStyle(palette.mutedText.color)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .accessibilityIdentifier("overlay-agent-state-\(statusChannel.channel)")
         }
       }
     }
     .contentShape(Rectangle())
   }
 
-  /// The "0 · All" row keeps the roster's two-line model; its title carries
-  /// the broadcast wake count and the disclosure under it the policy menus.
+  /// The receipt of the newest delivery, then the reader's state when there is
+  /// no receipt or the reader is gone or stalled: one line, never two.
+  func rowStateText(for channel: OverlayChannelDelivery, receiptText: String?) -> String {
+    guard let receiptText else { return shortStatus(for: channel) }
+    guard hasDeadFollower(channel) || hasStalledFollower(channel) else { return receiptText }
+    return receiptText + " · " + shortStatus(for: channel)
+  }
+
+  /// Every agent row and pill wears its channel-0 state: the antenna in the
+  /// accent while deliveries wake, the queue tray while they wait, the
+  /// slashed antenna off channel 0.
+  private func broadcastPolicyMark(_ policy: AgentBroadcastPolicy) -> some View {
+    Image(systemName: policy.statusSymbol)
+      .font(.system(size: 10 * textScale))
+      .foregroundStyle(policy == .on ? palette.agentAccent.color : palette.mutedText.color)
+      .help(policy.statusHelp)
+      .accessibilityLabel(policy.statusHelp)
+  }
+
+  /// The "0 · All" row keeps the roster's model; its title carries the
+  /// broadcast wake count and its context menu every member's policy.
   private func broadcastRow(
     _ broadcast: OverlayConversation, rowFocus: FocusState<String?>.Binding?
   ) -> some View {
@@ -1280,6 +1282,13 @@ struct OverlayChannelStatusView: View {
       comment: "Drawer cross on an agent whose reader process is still alive")
   }
 
+  /// A broadcast this agent's follower skipped because it is off channel 0.
+  static var skippedBroadcastText: String {
+    String(
+      localized: "Skipped: off channel 0",
+      comment: "Agent row receipt: a broadcast skipped because the agent is off channel 0")
+  }
+
   /// The newest completed delivery to this frozen owner, never a reply or another lease.
   /// Liveness and the Founder's unread replies remain separate row metadata.
   func deliveryReceiptText(
@@ -1289,18 +1298,26 @@ struct OverlayChannelStatusView: View {
     if let conversation, let owner = conversation.owner {
       for message in conversation.messages.reversed()
       where message.kind == .user && message.showsDeliveryReceipts {
-        guard let recipient = message.recipients.first(where: {
-          $0.owner.provider == owner.provider
-            && $0.owner.providerSessionID == owner.providerSessionID
-            && $0.owner.leaseID == owner.leaseID
-        }) else { continue }
+        guard
+          let recipient = message.recipients.first(where: {
+            $0.owner.provider == owner.provider
+              && $0.owner.providerSessionID == owner.providerSessionID
+              && $0.owner.leaseID == owner.leaseID
+          })
+        else { continue }
         guard message.withdrawn != true else { return nil }
         if message.holdSecondsRemaining != nil { return String(localized: "Held") }
+        if message.sourceChannel == "0", channel.broadcastPolicy == .off,
+          !recipient.queued, !recipient.accepted, !recipient.acknowledged
+        {
+          return Self.skippedBroadcastText
+        }
         return OverlayConversationView.receiptStatusText(for: recipient)
       }
     }
     switch channel.stage {
     case .held: return String(localized: "Held")
+    case .sent where channel.skippedBroadcast: return Self.skippedBroadcastText
     case .sent: return String(localized: "Addressed")
     case .queued: return String(localized: "Queued")
     case .received: return String(localized: "Read")
@@ -1315,6 +1332,7 @@ struct OverlayChannelStatusView: View {
       return String(localized: "Not reading", comment: "Agent alive, backlog unread for long")
     }
     if isOpen(channel) { return String(localized: "Listening") }
+    if channel.skippedBroadcast { return String(localized: "Ready") }
     switch channel.stage {
     case nil: return String(localized: "Ready")
     case .held: return String(localized: "Held")
@@ -1352,6 +1370,7 @@ struct OverlayChannelStatusView: View {
     if unavailable { return .idle }
     if isOpen(channel) { return .listening }
     if hasDeadFollower(channel) || hasStalledFollower(channel) { return .sleeping }
+    if channel.skippedBroadcast { return .idle }
     switch channel.stage {
     case .received: return .received
     case .held: return .waiting
@@ -1370,6 +1389,7 @@ struct OverlayChannelStatusView: View {
     switch channel.stage {
     case nil: delivery = String(localized: "no sealed utterance")
     case .held: delivery = String(localized: "Held")
+    case .sent where channel.skippedBroadcast: delivery = Self.skippedBroadcastText
     case .sent: delivery = String(localized: "sent · waiting for receipt")
     case .queued: delivery = String(localized: "queued · waiting for receipt")
     case .received: delivery = String(localized: "receipt confirmed by the agent")
@@ -1434,7 +1454,7 @@ struct OverlayChannelStatusView: View {
       unread: unreadCounts[conversation.id] ?? 0,
       dot: conversation.channel == "0"
         ? .broadcast : (channel.map { statusDotKind(for: $0) } ?? .received),
-      quietSymbol: channel?.broadcastPolicy.statusSymbol,
+      broadcastPolicy: channel?.broadcastPolicy,
       isBroadcast: conversation.channel == "0",
       disconnected: channel.map(hasDeadFollower) ?? false,
       controls: pillControls(for: conversation, channel: channel))
@@ -1466,20 +1486,57 @@ struct OverlayChannelStatusView: View {
       onPlayback: { onTogglePlayback?(id) })
   }
 
-  /// The drawer's one-glance preview of the last message: own messages take
-  /// the localized "You: " prefix, channel 0 names the sender, agent chats
-  /// stay bare. Newlines fold so the two-line cap holds.
-  static func drawerPreview(message: OverlayConversationMessage, channel: String) -> String {
+  /// The drawer's one-glance preview of the last message, naming who
+  /// addressed whom (Maciej, 2026-10-17: "brak informacji jak who addressed
+  /// whom"). The route comes from the message itself — its source channel and
+  /// frozen recipients — never from the row showing it: a broadcast copied
+  /// into an agent's row still reads "→ All". Newlines fold so the two-line
+  /// cap holds.
+  static func drawerPreview(message: OverlayConversationMessage) -> String {
     let body = message.bodyText.replacingOccurrences(of: "\n", with: " ")
+    let target = recipientNames(of: message) ?? message.sourceChannel
     if message.kind == .user {
+      if message.sourceChannel == "0" {
+        return String(
+          localized: "You → All: \(body)",
+          comment: "Drawer preview of the user's channel-0 broadcast; the placeholder is the text")
+      }
+      guard let target else {
+        return String(
+          localized: "You: \(body)",
+          comment: "Drawer preview of the user's own message; the placeholder is the text")
+      }
       return String(
-        localized: "You: \(body)",
-        comment: "Drawer preview of the user's own message; the placeholder is the text")
+        localized: "You → \(target): \(body)",
+        comment: "Drawer preview of the user's direct message: the agent names, then the text")
     }
-    if channel == "0", let owner = message.owner {
-      return "\(owner.name): \(body)"
+    guard let sender = message.owner?.name, !sender.isEmpty else { return body }
+    // A peer message records its destination channel; a reply without one
+    // answered the Founder.
+    guard let destination = message.sourceChannel else {
+      return String(
+        localized: "\(sender) → You: \(body)",
+        comment: "Drawer preview of an agent's reply to the user: the agent, then the text")
     }
-    return body
+    if destination == "0" {
+      return String(
+        localized: "\(sender) → All: \(body)",
+        comment: "Drawer preview of an agent's message to channel 0: the agent, then the text")
+    }
+    return "\(sender) → \(target ?? destination): \(body)"
+  }
+
+  /// The frozen recipients' names in publication order, at most two named.
+  private static func recipientNames(of message: OverlayConversationMessage) -> String? {
+    var names: [String] = []
+    for recipient in message.recipients
+    where !recipient.owner.name.isEmpty && !names.contains(recipient.owner.name) {
+      names.append(recipient.owner.name)
+    }
+    guard let first = names.first else { return nil }
+    if names.count == 1 { return first }
+    let named = names.prefix(2).joined(separator: ", ")
+    return names.count == 2 ? named : "\(named) +\(names.count - 2)"
   }
 
   /// The narrow-window roster surface under the name pill, built from the
@@ -1509,8 +1566,9 @@ struct OverlayAgentPillEntry: Identifiable {
   let descriptor: String?
   let unread: Int
   let dot: DotKind
-  /// Slashed-antenna symbol when broadcasts do not wake this agent.
-  let quietSymbol: String?
+  /// This agent's channel-0 state, marked on every agent pill; nil on the
+  /// shared channel's own pill and on a conversation without a bound channel.
+  let broadcastPolicy: AgentBroadcastPolicy?
   let isBroadcast: Bool
   /// The roster keeps this channel's binding but its reader process is gone
   /// (the shape a restarted host leaves): the row dims and its microphone sleeps.
@@ -1680,12 +1738,14 @@ struct OverlayAgentPillStack: View {
           HStack(spacing: 4) {
             Text(verbatim: entry.title)
               .font(.system(size: 13 * textScale, weight: .bold))
-            if let quietSymbol = entry.quietSymbol {
-              Image(systemName: quietSymbol)
+            if let policy = entry.broadcastPolicy {
+              Image(systemName: policy.statusSymbol)
                 .font(.system(size: 10 * textScale))
-                .foregroundStyle(palette.mutedText.color)
-                .help(String(localized: "Broadcasts do not wake this agent"))
-                .accessibilityLabel(String(localized: "Broadcasts do not wake this agent"))
+                .foregroundStyle(
+                  policy == .on ? palette.agentAccent.color : palette.mutedText.color
+                )
+                .help(policy.statusHelp)
+                .accessibilityLabel(policy.statusHelp)
             }
           }
           .lineLimit(1)
