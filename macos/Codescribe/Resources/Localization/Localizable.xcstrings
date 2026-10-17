@@ -2518,6 +2518,17 @@
         }
       }
     },
+    "Addressed · now off channel 0" : {
+      "comment" : "Agent row receipt: a broadcast with no receipt yet; the agent is off channel 0 now",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wskazany odbiorca · teraz poza kanałem 0"
+          }
+        }
+      }
+    },
     "Adjust how quickly text appears in the preview window while recording." : {
       "localizations" : {
         "pl" : {

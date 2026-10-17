@@ -1282,11 +1282,12 @@ struct OverlayChannelStatusView: View {
       comment: "Drawer cross on an agent whose reader process is still alive")
   }
 
-  /// A broadcast this agent's follower skipped because it is off channel 0.
-  static var skippedBroadcastText: String {
+  /// Sent to channel 0, no receipt, and the agent is off channel 0 now. A
+  /// present fact beside the receipt, not a claim about the delivery's fate.
+  static var unconfirmedOffChannelZeroText: String {
     String(
-      localized: "Skipped: off channel 0",
-      comment: "Agent row receipt: a broadcast skipped because the agent is off channel 0")
+      localized: "Addressed · now off channel 0",
+      comment: "Agent row receipt: a broadcast with no receipt yet; the agent is off channel 0 now")
   }
 
   /// The newest completed delivery to this frozen owner, never a reply or another lease.
@@ -1307,17 +1308,21 @@ struct OverlayChannelStatusView: View {
         else { continue }
         guard message.withdrawn != true else { return nil }
         if message.holdSecondsRemaining != nil { return String(localized: "Held") }
+        // Skipped only on the follower's receipt for this delivery and owner
+        // (`receiptStatusText`); without one the row states the present policy.
         if message.sourceChannel == "0", channel.broadcastPolicy == .off,
+          recipient.broadcastSkipped != true,
           !recipient.queued, !recipient.accepted, !recipient.acknowledged
         {
-          return Self.skippedBroadcastText
+          return Self.unconfirmedOffChannelZeroText
         }
         return OverlayConversationView.receiptStatusText(for: recipient)
       }
     }
     switch channel.stage {
     case .held: return String(localized: "Held")
-    case .sent where channel.skippedBroadcast: return Self.skippedBroadcastText
+    case .sent where channel.broadcastSkipped: return OverlayConversationView.skippedBroadcastText
+    case .sent where channel.unconfirmedOffChannelZero: return Self.unconfirmedOffChannelZeroText
     case .sent: return String(localized: "Addressed")
     case .queued: return String(localized: "Queued")
     case .received: return String(localized: "Read")
@@ -1332,7 +1337,7 @@ struct OverlayChannelStatusView: View {
       return String(localized: "Not reading", comment: "Agent alive, backlog unread for long")
     }
     if isOpen(channel) { return String(localized: "Listening") }
-    if channel.skippedBroadcast { return String(localized: "Ready") }
+    if channel.broadcastSkipped { return String(localized: "Ready") }
     switch channel.stage {
     case nil: return String(localized: "Ready")
     case .held: return String(localized: "Held")
@@ -1370,7 +1375,7 @@ struct OverlayChannelStatusView: View {
     if unavailable { return .idle }
     if isOpen(channel) { return .listening }
     if hasDeadFollower(channel) || hasStalledFollower(channel) { return .sleeping }
-    if channel.skippedBroadcast { return .idle }
+    if channel.broadcastSkipped { return .idle }
     switch channel.stage {
     case .received: return .received
     case .held: return .waiting
@@ -1389,7 +1394,8 @@ struct OverlayChannelStatusView: View {
     switch channel.stage {
     case nil: delivery = String(localized: "no sealed utterance")
     case .held: delivery = String(localized: "Held")
-    case .sent where channel.skippedBroadcast: delivery = Self.skippedBroadcastText
+    case .sent where channel.broadcastSkipped:
+      delivery = OverlayConversationView.skippedBroadcastText
     case .sent: delivery = String(localized: "sent · waiting for receipt")
     case .queued: delivery = String(localized: "queued · waiting for receipt")
     case .received: delivery = String(localized: "receipt confirmed by the agent")

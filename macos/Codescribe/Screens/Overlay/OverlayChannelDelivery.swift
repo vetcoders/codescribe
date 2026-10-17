@@ -15,14 +15,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   var broadcastPolicy: AgentBroadcastPolicy = .on
   /// The delivery this row reports went to channel 0, not to this agent alone.
   var addressedByBroadcast = false
+  /// The follower's skip receipt for exactly that delivery and owner: off
+  /// channel 0 a broadcast is never queued (`queue_delivery` in bus-demux.py),
+  /// so "sent" would otherwise wait for a receipt that never comes.
+  var broadcastSkipped = false
   var id: String { channel }
 
-  /// A channel-0 delivery the follower skipped: off channel 0 a broadcast is
-  /// never queued (`queue_delivery` in bus-demux.py records it as skipped),
-  /// so "sent" would wait for a receipt that never comes. The current policy
-  /// stands in for the policy at delivery time.
-  var skippedBroadcast: Bool {
-    stage == .sent && addressedByBroadcast && broadcastPolicy == .off
+  /// Sent to channel 0 with no receipt of any kind while the agent is off
+  /// channel 0 now. A present fact, not the delivery's fate: the policy at
+  /// delivery time is known only from a skip receipt.
+  var unconfirmedOffChannelZero: Bool {
+    stage == .sent && addressedByBroadcast && !broadcastSkipped && broadcastPolicy == .off
   }
 
   /// Metadata projection of the bus; never a document reducer or delivery writer.
@@ -191,6 +194,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       var stage: Stage? = deliveryID == nil ? nil : .sent
       var broadcast = seal?.audience == "*"
+      var skipped = false
       if let deliveryID {
         let pending = lease["pending"] as? [[String: Any]] ?? []
         if pending.contains(where: {
@@ -206,6 +210,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
         if observations.contains(where: \.queued) { stage = .queued }
         if observations.contains(where: \.acknowledged) { stage = .received }
+        skipped = stage == .sent && observations.contains { $0.broadcastSkipped == true }
       }
       // A hold or a withdrawal is the only news this projection adds on top
       // of the seal-derived stage; an ordinary delivery keeps its receipts.
@@ -223,11 +228,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           deliveryID = addressed.recipients.first?.deliveryID
           stage = .held
           broadcast = addressed.sourceChannel == "0"
+          skipped = false
         }
       }
       var delivery = OverlayChannelDelivery(
         channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
       delivery.addressedByBroadcast = broadcast
+      delivery.broadcastSkipped = skipped
       return delivery
     }
 
@@ -281,21 +288,61 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         acknowledged: false)
     }
 
-    /// Unacknowledged recipients still worth a receipt poll. The third
-    /// element says whether provider acceptance was already observed, so the
-    /// reader can skip the wakeup receipt and only watch for the acknowledgment.
-    mutating func receiptCoordinates() -> [(OverlayConversationOwner, String, Bool)] {
-      var result: [(OverlayConversationOwner, String, Bool)] = []
+    /// The follower's skip receipt (`record_broadcast_skipped` in
+    /// bus-demux.py) marks exactly this delivery to exactly this owner; a
+    /// receipt naming another lease, session or delivery marks nothing.
+    mutating func observeBroadcastSkip(
+      _ receipt: [String: Any], owner: OverlayConversationOwner, delivery: String
+    ) {
+      guard receipt["schema"] as? String == "codescribe.broadcast-policy.v1",
+        receipt["kind"] as? String == "broadcast_skipped",
+        receipt["delivery_id"] as? String == delivery,
+        receipt["lease_id"] as? String == owner.leaseID,
+        receipt["provider"] as? String == owner.provider,
+        receipt["provider_session_id"] as? String == owner.providerSessionID
+      else { return }
+      var changed = false
+      for id in messageOrder {
+        guard var message = messages[id] else { continue }
+        var rowChanged = false
+        for index in message.recipients.indices
+        where message.recipients[index].owner.id == owner.id
+          && message.recipients[index].deliveryID == delivery
+          && message.recipients[index].broadcastSkipped != true
+        {
+          message.recipients[index].broadcastSkipped = true
+          rowChanged = true
+        }
+        if rowChanged {
+          messages[id] = message
+          changed = true
+        }
+      }
+      if changed { revision &+= 1 }
+    }
+
+    typealias ReceiptCoordinate = (
+      owner: OverlayConversationOwner, delivery: String, accepted: Bool, broadcast: Bool
+    )
+
+    /// Unacknowledged recipients still worth a receipt poll. `accepted` says
+    /// whether provider acceptance was already observed, so the reader can
+    /// skip the wakeup receipt and only watch for the acknowledgment;
+    /// `broadcast` marks a channel-0 delivery, the only kind a follower skips.
+    /// A recorded skip settles the recipient: nothing reads it afterwards.
+    mutating func receiptCoordinates() -> [ReceiptCoordinate] {
+      var result: [ReceiptCoordinate] = []
       var seen: Set<String> = []
       for id in messageOrder {
         guard let message = messages[id] else { continue }
-        for recipient in message.recipients {
+        for recipient in message.recipients where recipient.broadcastSkipped != true {
           // Conversation receipt settles observation even when provider queue
           // acceptance was absent (for example, monitor-only delivery).
           if let delivery = recipient.deliveryID, !recipient.acknowledged,
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
-            result.append((recipient.owner, delivery, recipient.accepted))
+            result.append(
+              (recipient.owner, delivery, recipient.accepted, message.sourceChannel == "0"))
           }
         }
       }
@@ -1112,6 +1159,9 @@ struct OverlayConversationRecipient: Codable, Equatable, Sendable {
   var queued: Bool
   var accepted: Bool
   var acknowledged: Bool
+  /// The owner's follower recorded this channel-0 delivery as skipped
+  /// (`broadcast-skipped/<lease>/<delivery>.json`): it was off channel 0.
+  var broadcastSkipped: Bool? = nil
 }
 
 struct OverlayReplyPlayback: Codable, Equatable, Sendable {
