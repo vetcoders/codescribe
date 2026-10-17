@@ -1700,8 +1700,23 @@ impl TranscriptBus {
         } else {
             TranscriptProjectionPhase::Listening
         };
-        let availability =
-            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false);
+        // A terminal close or a post-terminal document operation is not a take
+        // in progress: action availability computes from the ended state and
+        // inherits the already proven wav existence, exactly like the ledger
+        // lane's post-stop user revisions. Live observations keep the
+        // in-progress tuple.
+        let availability = if operation.is_some() || capability.terminal {
+            self.projection_availability(
+                !revision.rendered_text.trim().is_empty(),
+                false,
+                writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|last| last.can_retranscribe),
+            )
+        } else {
+            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
+        };
         // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
         // for the direct lane — one start row per document, the terminal row,
         // intermediate revisions in-process only.
