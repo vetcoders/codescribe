@@ -309,11 +309,11 @@ class SpeechCacheTests(unittest.TestCase):
         fields = {"provider": "xai", "voice": "leo", "speed": 1.0, "language": "auto", "text": "late"}
         directory = DEMUX.bridge_home() / "speech"
         directory.mkdir(parents=True)
-        holder = os.open(directory / f"{DEMUX.speech_cache_key(fields)}.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        self.addCleanup(os.close, holder)
-        fcntl.flock(holder, fcntl.LOCK_EX)
-        with patch.object(DEMUX, "SPEECH_LOCK_WAIT_SECONDS", 0.1):
-            result = DEMUX._cached_speech(None, fields, lambda: (b"\x04\x00", None, None))
+        lock = directory / f"{DEMUX.speech_cache_key(fields)}.lock"
+        with os.fdopen(os.open(lock, os.O_RDWR | os.O_CREAT, 0o600), "a+b") as holder:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            with patch.object(DEMUX, "SPEECH_LOCK_WAIT_SECONDS", 0.1):
+                result = DEMUX._cached_speech(None, fields, lambda: (b"\x04\x00", None, None))
         self.assertEqual(result, (b"\x04\x00", None, None))
         self.assertIn(f"{DEMUX.speech_cache_key(fields)}.wav", self.cached())
 
