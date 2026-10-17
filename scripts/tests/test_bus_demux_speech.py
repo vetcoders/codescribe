@@ -211,6 +211,60 @@ class SpeechTransportTests(unittest.TestCase):
         self.opener.open.assert_not_called()
 
 
+class SpeechCacheTests(unittest.TestCase):
+    """Paid syntheses stay on disk; repeats of the same words never call TTS."""
+
+    setUp = SpeechTransportTests.setUp
+
+    def cached(self):
+        directory = DEMUX.bridge_home() / "speech"
+        return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
+
+    def test_same_words_and_voice_synthesize_once_and_keep_an_aligned_pair(self):
+        for _ in range(2):
+            self.assertEqual(DEMUX._speak_xai("hello", "leo", 1.0), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, 1)
+        key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
+                                      "language": "auto", "text": "hello"})
+        self.assertEqual(self.cached(), [f"{key}.json", f"{key}.wav"])
+        directory = DEMUX.bridge_home() / "speech"
+        sidecar = json.loads((directory / f"{key}.json").read_text())
+        self.assertEqual((sidecar["provider"], sidecar["voice"], sidecar["text"]), ("xai", "leo", "hello"))
+        self.assertEqual(sidecar["format"], {"sample_rate": 24000, "encoding": "s16le",
+                                             "channels": 1, "samples": 3})
+        self.assertEqual((sidecar["alignment"], sidecar["tts_fidelity"]), ("utterance", "unverified"))
+        with wave.open(str(directory / f"{key}.wav"), "rb") as audio:
+            self.assertEqual(audio.readframes(3), self.response.read.return_value)
+
+    def test_refused_playback_after_synthesis_keeps_the_recording(self):
+        for reason in ("take_started", "playback_busy", "stopped"):
+            with self.subTest(reason=reason), patch.object(
+                    DEMUX, "_play_pcm_24k", return_value=(False, "refused", reason)):
+                text = f"kept after {reason}"
+                self.assertEqual(DEMUX._speak_xai(text, "leo", 1.0), (False, "refused", reason))
+                key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
+                                              "language": "auto", "text": text})
+                self.assertIn(f"{key}.wav", self.cached())
+                self.assertIn(f"{key}.json", self.cached())
+        calls = self.opener.open.call_count
+        self.assertEqual(DEMUX._speak_xai("kept after stopped", "leo", 1.0), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, calls)
+
+    def test_other_voice_speed_or_vendor_is_a_new_synthesis(self):
+        for voice, speed in (("leo", 1.0), ("rex", 1.0), ("leo", 1.1), ("leo", 1.0)):
+            DEMUX._speak_xai("hello", voice, speed)
+        self.assertEqual(self.opener.open.call_count, 3)
+        with patch.object(DEMUX, "_openai_speech_key", return_value="test-only-key"):
+            DEMUX._speak_openai("hello", "leo", 1.0)
+        self.assertEqual(self.opener.open.call_count, 4)
+        self.assertEqual(len(self.cached()), 8)
+
+    def test_failed_synthesis_stores_nothing(self):
+        self.response.status = 500
+        self.assertFalse(DEMUX._speak_xai("hello", "leo", 1.0)[0])
+        self.assertEqual(self.cached(), [])
+
+
 class SayReplyTests(unittest.TestCase):
     """``--say`` end to end through main(); the speaker itself is mocked."""
 
@@ -342,6 +396,34 @@ class SayReplyTests(unittest.TestCase):
             self.assertEqual(DEMUX.speak_published_reply(
                 args, self.bus, reply, "a" * 24), 0)
         spoken.assert_called_once()
+
+    def test_replay_of_a_cached_reply_needs_no_network_or_credential(self):
+        self.attach_lease("session-a", "filip")
+        _, reply, _ = self.say("--session", "session-a")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        played = (True, None, None)
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="test-only-key"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)) as paid,
+            patch.object(DEMUX, "_play_pcm_24k", return_value=played),
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.speak_published_reply(args, self.bus, reply, "a" * 24), 0)
+        paid.assert_called_once()
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value=None),
+            patch.object(DEMUX, "_tts_exchange", side_effect=AssertionError("network on a hit")),
+            patch.object(DEMUX, "_play_pcm_24k", return_value=played) as player,
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.speak_published_reply(args, self.bus, reply, "b" * 24), 0)
+        self.assertEqual(player.call_args.args[0], b"\x01\x00")
+        sidecars = list((self.home / "speech").glob("*.json"))
+        self.assertEqual(len(sidecars), 1)
+        sidecar = json.loads(sidecars[0].read_text())
+        self.assertEqual((sidecar["reply_id"], sidecar["text"]), (reply["reply_id"], reply["text"]))
 
     def test_malformed_mute_receipt_never_authorizes_automatic_speech(self):
         self.attach_lease("session-a", "filip")
