@@ -4470,7 +4470,7 @@ def _synthesize_and_store(
                    "alignment": "utterance", "tts_fidelity": "unverified",
                    "format": {"sample_rate": 24000, "encoding": "s16le", "channels": 1,
                               "samples": len(pcm) // 2},
-                   "created_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")}
+                   "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
         if reply_id:
             sidecar["reply_id"] = reply_id
         # Sidecar first: a WAV on disk always has its provenance beside it.

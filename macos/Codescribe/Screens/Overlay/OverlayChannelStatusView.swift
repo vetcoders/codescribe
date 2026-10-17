@@ -675,12 +675,14 @@ struct OverlayChannelStatusView: View {
 
   /// The roster body. Wide windows dock it as the right-hand column, so the
   /// header carries the agent count, not a close button; `focusRevision` is the
-  /// docked name pill's channel for focusing the selected row. The narrow
+  /// docked name pill's channel for focusing the selected row. The middle-click
+  /// chooser's focus scrolls into view, as in the pill stack. The narrow
   /// window's surface is `pillStack(onSelect:onDismiss:)`.
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
-      focusRevision: focusRevision, focusedRowID: selectedConversationID
+      focusRevision: focusRevision, focusedRowID: selectedConversationID,
+      scrollTargetID: gestureFocusID
     ) {
       HStack {
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
@@ -717,6 +719,7 @@ struct OverlayChannelStatusView: View {
               shape: RoundedRectangle(cornerRadius: 10), palette: palette,
               targetID: broadcast.id, onHover: onGestureHover)
           )
+          .id(broadcast.id)
           .modifier(
             OverlayBroadcastPolicyMenu(
               members: broadcastMembers, palette: palette, enabled: !unavailable))
@@ -885,6 +888,7 @@ struct OverlayChannelStatusView: View {
         shape: RoundedRectangle(cornerRadius: 10), palette: palette,
         targetID: conversation?.id, onHover: onGestureHover)
     )
+    .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
     .help(tooltip)
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
@@ -1648,7 +1652,7 @@ struct OverlayAgentStatusDot: View {
 /// and speaker lead, the pill (dot, name, agent/model/repo, unread) trails,
 /// right edges under the name pill, so pills stand in one column and controls
 /// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
-/// precyzyjniejszy"; host contract, klaudiusz). Clicking a pill selects; Esc
+/// precyzyjniejszy"). Clicking a pill selects; Esc
 /// closes; wake policy rides each row's context menu (Maciej, 2026-10-17,
 /// "Słowo"). Rows stagger in unless the user asked for reduced motion.
 struct OverlayAgentPillStack: View {
@@ -1874,11 +1878,14 @@ struct ChannelRosterContent<Content: View>: View {
 /// The header stays outside the scroll viewport so the channel count is always
 /// visible. The focus state is the docked column's name-pill channel: bumping
 /// `focusRevision` moves keyboard focus to the selected conversation's row.
+/// `scrollTargetID` is the middle-click chooser's focus, kept in view.
 private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let maximumHeight: CGFloat
   let palette: OverlayAppearancePalette
   var focusRevision: UInt64 = 0
   var focusedRowID: String? = nil
+  var scrollTargetID: String? = nil
   @State private var headerHeight: CGFloat = 22
   @State private var contentHeight: CGFloat?
   @FocusState private var rowFocus: String?
@@ -1887,7 +1894,7 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
 
   init(
     maximumHeight: CGFloat, palette: OverlayAppearancePalette,
-    focusRevision: UInt64 = 0, focusedRowID: String? = nil,
+    focusRevision: UInt64 = 0, focusedRowID: String? = nil, scrollTargetID: String? = nil,
     @ViewBuilder header: () -> Header,
     @ViewBuilder content: @escaping (FocusState<String?>.Binding) -> Content
   ) {
@@ -1895,6 +1902,7 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
     self.palette = palette
     self.focusRevision = focusRevision
     self.focusedRowID = focusedRowID
+    self.scrollTargetID = scrollTargetID
     self.header = header()
     contentBuilder = content
   }
@@ -1914,18 +1922,26 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
           } action: {
             headerHeight = $0
           }
-        ScrollView(.vertical) {
-          contentBuilder($rowFocus)
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) {
-              $0.size.height
-            } action: {
-              contentHeight = $0
+        ScrollViewReader { proxy in
+          ScrollView(.vertical) {
+            contentBuilder($rowFocus)
+              .fixedSize(horizontal: false, vertical: true)
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                contentHeight = $0
+              }
+          }
+          .scrollIndicators(.visible)
+          .frame(height: viewportHeight)
+          .clipped()
+          .onChange(of: scrollTargetID) { _, target in
+            guard let target else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+              proxy.scrollTo(target, anchor: .center)
             }
+          }
         }
-        .scrollIndicators(.visible)
-        .frame(height: viewportHeight)
-        .clipped()
       }
     }
     .onChange(of: focusRevision) { _, _ in

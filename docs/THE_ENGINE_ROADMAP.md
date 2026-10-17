@@ -173,7 +173,7 @@ All measured 2026-08-12/13 unless noted.
 - **Duplication vs. theft (both measured on the operator's canvas):**
   gap-appends double text when the engine later re-delivers the same
   span; naive content dedup ATE a deliberately repeated sentence
-  ("wpierdalało = zabierało"). Scope by time, never by similarity.
+  (a sentence the speaker repeated on purpose). Scope by time, never by similarity.
 - **Early-2026 mirror disease:** Whisper-alone produced
   over-hallucination and repetition storms (window overlap, decode
   derailment — see `whisper-window-alignment-fragility` incident record).

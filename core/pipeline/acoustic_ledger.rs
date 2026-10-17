@@ -366,6 +366,35 @@ impl NoAuthorityReason {
     }
 }
 
+/// What a word's own span holds when Silero heard no speech near it.
+///
+/// Measured on the capture clock, never a named sound: noise, breath and a
+/// cough are all `SoundWithoutSpeech`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SilenceUnderSpan {
+    /// Every hop is exact digital zero.
+    DigitalZero,
+    /// Sound is present, all of it under the calibrated existence floor.
+    BelowFloor,
+    /// A hop reaches the existence floor and Silero still heard no speech.
+    SoundWithoutSpeech,
+    /// The energy of the span was not measured, or no floor is calibrated.
+    EnergyUnmeasured,
+}
+
+impl SilenceUnderSpan {
+    /// Stable label for receipts and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DigitalZero => "digital_zero",
+            Self::BelowFloor => "below_floor",
+            Self::SoundWithoutSpeech => "sound_without_speech",
+            Self::EnergyUnmeasured => "energy_unmeasured",
+        }
+    }
+}
+
 /// Why an observation was refused outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefuseReason {
@@ -405,6 +434,13 @@ pub enum RefuseReason {
     IdenticalRepeatWithoutOwnVoicedSegment,
     /// A previous positive no-speech receipt covers the entire candidate pin.
     ConfirmedNoSpeech,
+    /// Silero observed the word's span and its surroundings and heard no
+    /// speech within the near radius. `distance_ms` is the distance to the
+    /// nearest speech it did hear; `None` when it heard none in the epoch.
+    NoSpeechNearSpan {
+        silence: SilenceUnderSpan,
+        distance_ms: Option<u32>,
+    },
 }
 
 impl RefuseReason {
@@ -427,6 +463,7 @@ impl RefuseReason {
                 "identical_repeat_without_own_voiced_segment"
             }
             Self::ConfirmedNoSpeech => "confirmed_no_speech",
+            Self::NoSpeechNearSpan { .. } => "no_speech_near_span",
         }
     }
 }
@@ -887,6 +924,7 @@ pub struct AcousticLedger {
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
+    latest_speech_islands: Option<super::speech_islands::SpeechIslandEvidence>,
     pending_text_recovery: BTreeSet<OccurrenceIdentity>,
     /// Observations handed to an admission API. Independent of [`Self::trail`].
     offered_observations: usize,
@@ -2355,6 +2393,29 @@ impl AcousticLedger {
 
     pub fn latest_seal_coverage(&self) -> Option<&SealCoverageReceipt> {
         self.latest_seal_coverage.as_ref()
+    }
+
+    /// Store the latest island accounting for this capture. Observational:
+    /// nothing reads it to admit, refuse or seal. Another session or epoch
+    /// cannot replace it, as with [`Self::record_seal_coverage`].
+    pub fn record_speech_islands(
+        &mut self,
+        evidence: super::speech_islands::SpeechIslandEvidence,
+    ) -> bool {
+        let binds_this_ledger = self.committed.is_empty()
+            || self.committed.keys().any(|occurrence| {
+                occurrence.session == evidence.session_id
+                    && occurrence.capture_epoch == evidence.capture_epoch
+            });
+        if !binds_this_ledger {
+            return false;
+        }
+        self.latest_speech_islands = Some(evidence);
+        true
+    }
+
+    pub fn latest_speech_islands(&self) -> Option<&super::speech_islands::SpeechIslandEvidence> {
+        self.latest_speech_islands.as_ref()
     }
 
     /// Read issued finality for exactly one capture; never mint a seal here.
