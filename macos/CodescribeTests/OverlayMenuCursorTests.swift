@@ -115,6 +115,168 @@ final class OverlayMenuCursorTests: XCTestCase {
     XCTAssertEqual(panel.cursor(at: NSPoint(x: 40, y: 30)), .iBeam, "text keeps its cursor")
   }
 
+  // MARK: - Pill stack, composer chips, bubble chips (Maciej, 2026-10-17 01:15Z)
+
+  /// Maciej, 2026-10-17 01:15Z (channel 0, three screenshots): an I-beam sat
+  /// on the agent pills and their microphone/speaker in the unfolded stack and
+  /// on the attachment chip in the composer. The non-activating panel gets no
+  /// native cursor updates, so the I-beam a text view set stays until the
+  /// panel resets it, and the panel resets it only above registered regions.
+  /// Each pill row claims the arrow the way the audio pair already does.
+  func testAgentPillRowsClaimTheArrowAboveTheTranscript() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    defer { panel.close() }
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 260))
+    let text = NSTextView(frame: content.bounds)
+    text.isHorizontallyResizable = false
+    text.isVerticallyResizable = false
+    text.isEditable = false
+    text.string = String(repeating: "Transkrypcja pod stosem pigułek agentów. ", count: 14)
+    content.addSubview(text)
+    // Rows without audio controls: the transcription entry and a listener
+    // whose controls stayed home. Any region found belongs to the row itself.
+    let entries = [
+      OverlayAgentPillEntry(
+        id: "transcription", conversationID: nil, title: "Transkrypcja",
+        descriptor: "Na żywo z mikrofonu", unread: 0, dot: .idle, quietSymbol: nil,
+        isBroadcast: false),
+      OverlayAgentPillEntry(
+        id: "channel-2", conversationID: "codex:stasiu", title: "2 · stasiu",
+        descriptor: nil, unread: 5, dot: .listening, quietSymbol: nil, isBroadcast: false),
+    ]
+    let stack = NSHostingView(
+      rootView: OverlayAgentPillStack(
+        palette: .dark, entries: entries, broadcastMembers: [], broadcastEnabled: true,
+        onSelect: { _ in }, onDismiss: {}))
+    stack.frame = NSRect(x: 190, y: 30, width: 240, height: 210)
+    content.addSubview(stack)
+    panel.contentView = content
+    content.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    content.layoutSubtreeIfNeeded()
+
+    let rows = panel.menuCursorRegions.allObjects.filter {
+      $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
+    }
+    let frames = rows.map { $0.convert($0.bounds, to: nil) }
+    XCTAssertEqual(rows.count, entries.count, "one region per pill row, got \(frames)")
+    let saved = NSCursor.current
+    defer { saved.set() }
+    for frame in frames {
+      XCTAssertGreaterThan(frame.width, 120, "the row covers the pill, not a glyph: \(frame)")
+      NSCursor.iBeam.set()
+      XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: frame.midX, y: frame.midY)), "row \(frame)")
+      XCTAssertEqual(NSCursor.current, .arrow)
+    }
+    NSCursor.iBeam.set()
+    XCTAssertFalse(
+      panel.refreshCursor(at: NSPoint(x: 40, y: 30)), "the transcript keeps native tracking")
+    XCTAssertEqual(NSCursor.current, .iBeam)
+  }
+
+  /// The composer's attachment chips sit above the editor whose tracking set
+  /// the I-beam. The chip row claims the arrow; the editable field under it
+  /// keeps its text cursor, like the drawer's live search does.
+  func testComposerAttachmentChipsClaimTheArrowAndTheEditorKeepsItsTextCursor() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 440, height: 180),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    defer { panel.close() }
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 180))
+    // Only pointers into Codescribe's own stores become pills, so the fixture
+    // lives under the isolated config directory's assets store.
+    let configDirectory = CodescribeConfig().configDir()
+    guard configDirectory != NSHomeDirectory() + "/.codescribe" else {
+      throw XCTSkip("needs an isolated CODESCRIBE_DATA_DIR, as make test-swift provides")
+    }
+    let store = URL(fileURLWithPath: configDirectory, isDirectory: true)
+      .appendingPathComponent("assets", isDirectory: true)
+    try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+    let asset = store.appendingPathComponent("inline_cursor_\(UUID().uuidString).png")
+    try Data([0x89, 0x50, 0x4E, 0x47]).write(to: asset)
+    defer { try? FileManager.default.removeItem(at: asset) }
+    let draft = ConversationDraft.compose(
+      text: "Również pilla informacyjna", attachments: [asset.path])
+    XCTAssertEqual(ConversationDraft.split(draft).attachments.count, 1, "fixture is a pill")
+    let composer = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant(draft), sending: false, onSubmit: {}))
+    composer.frame = NSRect(x: 10, y: 10, width: 420, height: 160)
+    content.addSubview(composer)
+    panel.contentView = content
+    content.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    content.layoutSubtreeIfNeeded()
+
+    let chips = panel.menuCursorRegions.allObjects.filter {
+      $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
+    }
+    let chipRow = try XCTUnwrap(chips.first, "the attachment row registers a cursor region")
+    XCTAssertEqual(chips.count, 1, "only the chip row, never the editor")
+    let frame = chipRow.convert(chipRow.bounds, to: nil)
+    let saved = NSCursor.current
+    defer { saved.set() }
+    NSCursor.iBeam.set()
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: frame.midX, y: frame.midY)), "chips \(frame)")
+    XCTAssertEqual(NSCursor.current, .arrow)
+
+    let editor = try XCTUnwrap(editableTextView(in: content), "the composer mounts its editor")
+    let typing = editor.convert(NSPoint(x: editor.bounds.midX, y: editor.bounds.midY), to: nil)
+    XCTAssertFalse(frame.contains(typing), "chips do not cover the editor: \(frame) vs \(typing)")
+    XCTAssertEqual(panel.cursor(at: typing), .iBeam)
+    NSCursor.iBeam.set()
+    XCTAssertFalse(panel.refreshCursor(at: typing), "typing keeps native tracking")
+    XCTAssertEqual(NSCursor.current, .iBeam)
+  }
+
+  /// A bubble's attachment chip floats above message text in the same panel.
+  func testConversationAttachmentChipClaimsTheArrowAboveMessageText() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 300, height: 120),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    defer { panel.close() }
+    let content = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 120))
+    let text = NSTextView(frame: content.bounds)
+    text.isHorizontallyResizable = false
+    text.isVerticallyResizable = false
+    text.isEditable = false
+    text.string = String(repeating: "Wiadomość z załącznikiem pod chipem. ", count: 12)
+    content.addSubview(text)
+    let chip = NSHostingView(
+      rootView: AttachmentChip(
+        attachment: MessageAttachment(
+          name: "inline_d0d0…09372302.png", url: URL(fileURLWithPath: "/tmp/inline_d0d0.png"),
+          type: "image/png")))
+    chip.frame = NSRect(x: 120, y: 70, width: 170, height: 32)
+    content.addSubview(chip)
+    panel.contentView = content
+    content.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    content.layoutSubtreeIfNeeded()
+
+    let region = try XCTUnwrap(
+      panel.menuCursorRegions.allObjects.first { $0.window === panel },
+      "the chip registers a cursor region")
+    let frame = region.convert(region.bounds, to: nil)
+    XCTAssertGreaterThan(frame.width, 60, "thumbnail and name, got \(frame)")
+    let saved = NSCursor.current
+    defer { saved.set() }
+    NSCursor.iBeam.set()
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: frame.midX, y: frame.midY)), "chip \(frame)")
+    XCTAssertEqual(NSCursor.current, .arrow)
+    XCTAssertEqual(panel.cursor(at: NSPoint(x: 40, y: 30)), .iBeam, "text keeps its cursor")
+  }
+
+  private func editableTextView(in view: NSView) -> NSTextView? {
+    if let text = view as? NSTextView, text.isEditable { return text }
+    for child in view.subviews {
+      if let found = editableTextView(in: child) { return found }
+    }
+    return nil
+  }
+
   func testDrawerTextInputKeepsItsTextCursor() {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
