@@ -1298,11 +1298,13 @@ struct OverlayChannelStatusView: View {
     if let conversation, let owner = conversation.owner {
       for message in conversation.messages.reversed()
       where message.kind == .user && message.showsDeliveryReceipts {
-        guard let recipient = message.recipients.first(where: {
-          $0.owner.provider == owner.provider
-            && $0.owner.providerSessionID == owner.providerSessionID
-            && $0.owner.leaseID == owner.leaseID
-        }) else { continue }
+        guard
+          let recipient = message.recipients.first(where: {
+            $0.owner.provider == owner.provider
+              && $0.owner.providerSessionID == owner.providerSessionID
+              && $0.owner.leaseID == owner.leaseID
+          })
+        else { continue }
         guard message.withdrawn != true else { return nil }
         if message.holdSecondsRemaining != nil { return String(localized: "Held") }
         if message.sourceChannel == "0", channel.broadcastPolicy == .off,
