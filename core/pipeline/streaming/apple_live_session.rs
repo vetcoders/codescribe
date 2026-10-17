@@ -26525,6 +26525,143 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn silero_distance_is_the_gap_to_the_nearest_speech_once_its_radius_was_heard() {
+        let ms = |samples: u64| SileroSpeechDistance::Ms(samples * 1_000 / u64::from(RATE));
+
+        let mut lane = open("silero-distance");
+        assert_eq!(
+            silero_speech_distance(&lane.state, 44_000, 45_000),
+            SileroSpeechDistance::Unmeasured,
+            "no Silero, no distance"
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let speech = observed_silero(&lane.state).expect("observed").ranges()[0].clone();
+        let state = &lane.state;
+        assert_eq!(silero_speech_distance(state, 44_000, 45_000), ms(0));
+        assert_eq!(
+            silero_speech_distance(state, speech.sample_end + 4_800, speech.sample_end + 6_000),
+            ms(4_800),
+            "inside the radius the distance needs no further audio"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 20_000, 24_000),
+            ms(speech.sample_start - 24_000),
+            "speech after the word counts too"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 100_000, 104_000),
+            ms(100_000 - speech.sample_end)
+        );
+        assert_eq!(
+            silero_speech_distance(state, 150_000, 154_000),
+            SileroSpeechDistance::Unmeasured,
+            "the radius after the word reaches past what Silero heard"
+        );
+        assert_eq!(
+            silero_speech_distance(state, 170_000, 172_000),
+            SileroSpeechDistance::Unmeasured,
+            "the word itself lies past what Silero heard"
+        );
+
+        lane.state.capture_stopping = true;
+        assert_eq!(
+            silero_speech_distance(&lane.state, 150_000, 154_000),
+            ms(150_000 - speech.sample_end),
+            "a stopped capture has no audio after its end, so the radius is closed"
+        );
+
+        let mut quiet = open("silero-distance-quiet");
+        record_silero(&mut quiet, 160_000, None);
+        assert_eq!(
+            silero_speech_distance(&quiet.state, 100_000, 104_000),
+            SileroSpeechDistance::NoSpeechHeard
+        );
+    }
+
+    fn direct_payload(
+        session: &str,
+        segments: Vec<TimedTailSegment>,
+        grain: TailSegmentGrain,
+    ) -> TailProviderPayload {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: 1,
+                range: crate::stt::tail_provider::TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 0,
+                    sample_end: 160_000,
+                },
+            },
+            text,
+            segments,
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: TailProviderEvidence {
+                segment_grain: grain,
+                source: TailEvidenceSource::Whisper,
+                revision: Some("direct-over-silence".into()),
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::ExactSampleRange,
+                avg_logprob: Some(-0.2),
+            },
+        }
+    }
+
+    #[test]
+    fn direct_word_text_drops_only_words_silero_heard_no_speech_near() {
+        let session = "direct-over-silence";
+        let mut lane = open(session);
+        record_energy(
+            &lane,
+            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+        );
+        record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
+        let speech_end = observed_silero(&lane.state).expect("observed").ranges()[0].sample_end;
+        let words = || {
+            vec![
+                word_pin(session, "mowa", 41_000, 47_000),
+                word_pin(session, "dziękuję", 120_000, 126_000),
+            ]
+        };
+
+        let payload = direct_payload(session, words(), TailSegmentGrain::Word);
+        let window = measure_whisper_window_speech(&lane.state, &payload.segments);
+        assert_eq!(
+            window.decisions[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
+                silence: SilenceUnderSpan::DigitalZero,
+                distance_ms: Some(((120_000 - speech_end) * 1_000 / u64::from(RATE)) as u32),
+            }),
+            "the word over digital zero, far from speech, carries its class and distance"
+        );
+        assert!(!matches!(
+            window.decisions[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan { .. })
+        ));
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &payload),
+            "mowa"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+
+        let phrase = direct_payload(session, words(), TailSegmentGrain::Phrase);
+        assert_eq!(
+            direct_text_heard_by_silero(&mut lane.state, &phrase),
+            "mowa dziękuję",
+            "a phrase-grain payload has no word spans to judge"
+        );
+        assert_eq!(lane.state.direct_words_over_silence, 1);
+    }
+
+    #[test]
     fn speech_seen_by_both_witnesses_keeps_the_exclusive_pin_route() {
         let mut lane = open("relay-both-speech");
         record_energy(&lane, &[vec![0.2; 48_000]]);
