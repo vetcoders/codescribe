@@ -66,8 +66,9 @@ holds normally and later lands without a wake.
 Attach, status and `--read-pending` receipts expose only
 `"held": [{"identity": "…", "hold_until": "…"}]` beside `broadcast`, never held
 text. The overlay projects these source rows and controls into held bubbles;
-the existing 500 ms poll derives the countdown, with Edit, Withdraw and Send now
-actions. Draft evidence is not a held message, and countdown display is not
+the existing 500 ms poll derives the countdown, with Cancel/Edit and Send now
+actions. Cancel/Edit withdraws the held message and returns its text to the
+composer. Draft evidence is not a held message, and countdown display is not
 delivery authority.
 
 ## Agent attachment and conversation history

@@ -3943,6 +3943,17 @@
         }
       }
     },
+    "Cancel/Edit" : {
+      "comment" : "Held message control: take it off the send countdown and return its text to the composer",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij/Edytuj"
+          }
+        }
+      }
+    },
     "Capabilities: %lld native · %lld enhanced · %lld unavailable" : {
       "comment" : "Capability summary counts per tier",
       "localizations" : {
@@ -18616,16 +18627,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Typ API"
-          }
-        }
-      }
-    },
-    "Withdraw" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wycofaj"
           }
         }
       }

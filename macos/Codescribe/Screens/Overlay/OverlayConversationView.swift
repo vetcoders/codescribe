@@ -410,31 +410,17 @@ struct OverlayConversationView: View {
   /// the typing where it was and names the error on the bubble.
   private func edit(_ message: OverlayConversationMessage) {
     guard message.holdSecondsRemaining != nil else { return }
-    guard !pendingDeliveryControls.contains(message.id) else { return }
-    let owner = message.sourceChannel == "0" ? nil : conversation.owner
-    guard owner != nil || message.sourceChannel == "0" else { return }
     let returning = message.text
-    pendingDeliveryControls.insert(message.id)
-    deliveryControlErrors.removeValue(forKey: message.id)
-    Task { @MainActor in
-      defer { pendingDeliveryControls.remove(message.id) }
-      do {
-        try await onDeliveryControl(.withdraw, message, owner, nil)
-        if draft.isEmpty {
-          draft = returning
-        } else {
-          draft += "\n\n" + returning
-        }
-        revisionFocus &+= 1
-        onComposerTypingActivity()
-      } catch {
-        deliveryControlErrors[message.id] = error.userFacingMessage
-      }
+    performDeliveryControl(.withdraw, message: message) {
+      draft = draft.isEmpty ? returning : draft + "\n\n" + returning
+      revisionFocus &+= 1
+      onComposerTypingActivity()
     }
   }
 
   private func performDeliveryControl(
-    _ control: OverlayDeliveryControl, message: OverlayConversationMessage, text: String? = nil
+    _ control: OverlayDeliveryControl, message: OverlayConversationMessage,
+    then succeeded: @escaping @MainActor () -> Void = {}
   ) {
     guard !pendingDeliveryControls.contains(message.id) else { return }
     // A broadcast mirror is still one broadcast, never a newly private edit.
@@ -445,7 +431,8 @@ struct OverlayConversationView: View {
     Task { @MainActor in
       defer { pendingDeliveryControls.remove(message.id) }
       do {
-        try await onDeliveryControl(control, message, owner, text)
+        try await onDeliveryControl(control, message, owner, nil)
+        succeeded()
       } catch {
         deliveryControlErrors[message.id] = error.userFacingMessage
       }
@@ -593,12 +580,10 @@ struct OverlayConversationView: View {
         .monospacedDigit()
         .accessibilityIdentifier("overlay-message-hold-countdown-\(message.id)")
       HStack(spacing: 12) {
-        OverlayHeldControlButton(title: "Edit", palette: palette) { edit(message) }
-          .accessibilityIdentifier("overlay-message-edit-\(message.id)")
-        OverlayHeldControlButton(title: "Withdraw", palette: palette) {
-          performDeliveryControl(.withdraw, message: message)
-        }
-        .accessibilityIdentifier("overlay-message-withdraw-\(message.id)")
+        // One control takes the message back: it leaves the clock and its text
+        // returns to the composer, where deleting it is the plain withdraw.
+        OverlayHeldControlButton(title: "Cancel/Edit", palette: palette) { edit(message) }
+          .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
         OverlayHeldControlButton(title: "Send now", palette: palette) {
           performDeliveryControl(.release, message: message)
         }

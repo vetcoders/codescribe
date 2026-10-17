@@ -274,7 +274,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "")
     XCTAssertEqual(
-      try host.press("overlay-message-edit-\(host.messageID)"), AXError.success.rawValue)
+      try host.press("overlay-message-cancel-edit-\(host.messageID)"), AXError.success.rawValue)
     host.waitUntil { host.log.events.count == 1 && host.editorString() == host.messageText }
     XCTAssertEqual(
       host.log.events.map(\.control), [.withdraw],
@@ -297,7 +297,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "Już piszę")
     XCTAssertEqual(
-      try host.press("overlay-message-edit-\(host.messageID)"), AXError.success.rawValue)
+      try host.press("overlay-message-cancel-edit-\(host.messageID)"), AXError.success.rawValue)
     let expected = "Już piszę\n\n\(host.messageText)"
     host.waitUntil { host.editorString() == expected }
     XCTAssertEqual(
@@ -316,7 +316,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     let host = try mountHeldComposer(draft: "zostaje", thrown: HeldWithdrawRefusal())
     defer { host.close() }
     XCTAssertEqual(
-      try host.press("overlay-message-edit-\(host.messageID)"), AXError.success.rawValue)
+      try host.press("overlay-message-cancel-edit-\(host.messageID)"), AXError.success.rawValue)
     let shown = try NativeAccessibilityProbe.waitForElements(
       "overlay-message-delivery-error-\(host.messageID)")
     let element = try XCTUnwrap(
@@ -340,7 +340,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     let host = try mountHeldComposer(at: now.addingTimeInterval(7), draft: "zostaje")
     defer { host.close() }
     XCTAssertNil(host.holdSecondsRemaining)
-    let edit = try NativeAccessibilityProbe.query("overlay-message-edit-\(host.messageID)")
+    let edit = try NativeAccessibilityProbe.query("overlay-message-cancel-edit-\(host.messageID)")
     XCTAssertTrue(
       edit.elements.isEmpty,
       "an expired hold must not offer Edit; a leftover control would withdraw a message that already went out, or copy it into the composer as if it were still on the clock"
@@ -352,19 +352,32 @@ final class OverlayHeldDeliveryTests: XCTestCase {
   }
 
   @MainActor
-  func testWithdrawOnAHeldMessageStillWithdrawsWithoutTouchingTheComposer() throws {
-    let host = try mountHeldComposer(draft: "zostaje")
+  func testAHeldBubbleOffersOnlyCancelEditAndSendNow() throws {
+    let host = try mountHeldComposer(draft: "")
     defer { host.close() }
-    XCTAssertEqual(
-      try host.press("overlay-message-withdraw-\(host.messageID)"), AXError.success.rawValue)
-    host.waitUntil { host.log.events.count == 1 }
-    XCTAssertEqual(
-      host.log.events.map(\.control), [.withdraw],
-      "Withdraw still publishes withdraw and does not turn the click into a revise")
-    XCTAssertEqual(host.log.events.map(\.text), [nil])
-    XCTAssertEqual(
-      try host.editor().string, "zostaje",
-      "Withdraw leaves the composer alone; only Edit returns the text")
+    for identifier in ["cancel-edit", "release"] {
+      XCTAssertEqual(
+        try NativeAccessibilityProbe.waitForElements(
+          "overlay-message-\(identifier)-\(host.messageID)"
+        ).elements.count, 1, "the held bubble must offer \(identifier)")
+    }
+    for retired in ["edit", "withdraw"] {
+      XCTAssertTrue(
+        try NativeAccessibilityProbe.query("overlay-message-\(retired)-\(host.messageID)")
+          .elements.isEmpty,
+        "a separate \(retired) control would take the message off the clock without returning its text, or return it while the original still goes out"
+      )
+    }
+    XCTAssertTrue(host.log.events.isEmpty, "showing the controls publishes nothing")
+  }
+
+  func testCancelEditLabelInEnglishAndPolish() throws {
+    for (language, expected) in [("en", "Cancel/Edit"), ("pl", "Cofnij/Edytuj")] {
+      let path = try XCTUnwrap(Bundle.main.path(forResource: language, ofType: "lproj"))
+      let bundle = try XCTUnwrap(Bundle(path: path))
+      XCTAssertEqual(
+        bundle.localizedString(forKey: "Cancel/Edit", value: nil, table: nil), expected)
+    }
   }
 
   func testCountdownCopyForSevenSecondsInEnglishAndPolish() throws {
