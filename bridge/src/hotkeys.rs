@@ -2047,8 +2047,10 @@ fn report_hotkey_dispatch_error(error: &anyhow::Error, notify: impl FnOnce(&str,
         error.downcast_ref::<ChannelOpenRefusal>(),
         Some(ChannelOpenRefusal::DigitUnbound { .. } | ChannelOpenRefusal::BindingMissing { .. })
     ) {
-        // A vacant slot is a refused user action, not a broken runtime. Leave
-        // the current tray state (including any genuine earlier error) intact.
+        // A vacant slot is a refused user action, not a broken runtime; the
+        // controller already answered it with the refusal sound and a pointer
+        // flash. Leave the current tray state (including any genuine earlier
+        // error) intact.
         tracing::warn!(%error, "Agent channel shortcut has no connected agent");
     } else {
         tray_status::update_tray_status(TrayStatus::Error);
