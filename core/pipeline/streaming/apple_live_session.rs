@@ -8081,6 +8081,9 @@ fn record_dictation_witness_attempts(
     }
 }
 
+/// A witness window and the targets it may debit, as capture sample ranges.
+type WitnessQuestion = ((u64, u64), Vec<(u64, u64)>);
+
 /// The per-utterance witness question over outstanding targets (sorted,
 /// deduplicated, closed PCM only): the window and the targets it may debit.
 ///
@@ -8094,7 +8097,7 @@ fn live_witness_question(
     sealed_end: u64,
     context: u64,
     max_window: u64,
-) -> Option<((u64, u64), Vec<(u64, u64)>)> {
+) -> Option<WitnessQuestion> {
     let askable: Vec<(u64, u64)> = targets
         .iter()
         .copied()
