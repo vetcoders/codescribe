@@ -1028,7 +1028,10 @@ impl TranscriptReducer {
             "unavailable"
         };
         let mut delivered = policy;
-        let mut text = result.text;
+        // Every formatter version leaves through here: a model that rewrites
+        // the words may also rewrite the brand.
+        let mut text =
+            codescribe_core::pipeline::light_plus::brand_spelling(&result.text).into_owned();
         if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
@@ -11228,6 +11231,32 @@ mod tests {
             .apply_incremental_shaping(&mut ledger, &occurrence)
             .expect("the corrected label is shaped");
         assert_eq!(shaped.rendered_text, "Pracuję nad Codescribe");
+    }
+
+    /// Acceptance: a formatter that misspells the brand still delivers
+    /// "Codescribe"; the published digest covers the corrected bytes.
+    #[test]
+    fn formatter_versions_spell_the_brand() {
+        let mut reducer = TranscriptReducer::default();
+        for policy in [FormattingPolicy::Smart, FormattingPolicy::Max] {
+            let projection = reducer.mint_derived_projection(
+                "brand-format".into(),
+                1,
+                "pracuję nad kodem".into(),
+                policy,
+                AiFormatResult {
+                    text: "Pracuję nad CodeScript, a Python script zostaje.".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
+            assert_eq!(
+                projection.rendered_text,
+                "Pracuję nad Codescribe, a Python script zostaje."
+            );
+            assert_eq!(projection.publication_digest, projection.digest());
+        }
     }
 
     /// Acceptance: a terminal whole-document revision keeps ownership of the
