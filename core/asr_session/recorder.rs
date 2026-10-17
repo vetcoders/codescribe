@@ -215,6 +215,24 @@ pub enum Layer1Decision {
 }
 
 impl Layer1Decision {
+    /// Stable content-free token for a take's replay card. A replay compares
+    /// the decision it rebuilt against the one the take started with.
+    pub fn receipt_token(&self) -> String {
+        match self {
+            Self::Disarmed => "disarmed".to_string(),
+            Self::LocalTailPatch(disposition) => {
+                format!("local_tail_patch:{}", disposition.as_token())
+            }
+            Self::Armed(_) => "armed_provider".to_string(),
+            Self::Cloud {
+                tail, transport, ..
+            } => {
+                let transport = format!("{transport:?}").to_lowercase();
+                format!("cloud:{}:{transport}", tail.as_token())
+            }
+        }
+    }
+
     /// Whether this decision carries a provider.
     pub fn is_armed(&self) -> bool {
         matches!(
