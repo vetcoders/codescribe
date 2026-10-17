@@ -975,6 +975,10 @@ final class SettingsTruthTests: XCTestCase {
     model.setWhisperAdaptiveBuffer(true)
     model.setFormatOnDevice(true)
     model.setFormatOnDevice(false)
+    model.setSealLedgerEnabled(false)
+    model.setAppleLiveEnabled(false)
+    model.setSealLedgerEnabled(true)
+    model.setAppleLiveEnabled(true)
 
     guard DeveloperSurface.isEnabled() else {
       XCTAssertTrue(writes.isEmpty, "production bundle must not persist Lab knobs")
@@ -986,8 +990,12 @@ final class SettingsTruthTests: XCTestCase {
         "WHISPER_ADAPTIVE_BUFFER",
         "CODESCRIBE_FORMAT_ON_DEVICE",
         "CODESCRIBE_FORMAT_ON_DEVICE",
+        "CODESCRIBE_SEAL_LEDGER_ENABLED",
+        "CODESCRIBE_APPLE_LIVE_ENABLED",
+        "CODESCRIBE_SEAL_LEDGER_ENABLED",
+        "CODESCRIBE_APPLE_LIVE_ENABLED",
       ])
-    XCTAssertEqual(writes.map(\.value), ["1", "1", "0"])
+    XCTAssertEqual(writes.map(\.value), ["1", "1", "0", "0", "0", "1", "1"])
   }
 
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {

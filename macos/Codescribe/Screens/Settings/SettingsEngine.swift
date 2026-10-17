@@ -989,6 +989,8 @@ extension CsSettings {
     whisperAdaptiveBuffer: false,
     formatOnDevice: false,
     dictationWitnessArmed: false,
+    sealLedgerEnabled: true,
+    appleLiveEnabled: true,
     lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
