@@ -1,11 +1,12 @@
-//! Apple live session — the only target of the normal live dispatcher.
+//! Shared live session — one capture clock with independently optional Apple
+//! recognition and ledger admission.
 //!
-//! One long-lived SFSpeech stream maps:
-//! - `partial` → `EngineEvent::Preview` (RAW — previews are not canvas yet)
-//! - phrase `final` → `EngineEvent::UtteranceFinal` (multi-seal freezed+append)
-//! - open partial on stop → sealed as a last final when non-empty
+//! Enabled Apple streams provide raw previews and phrase finals. Ledger mode
+//! admits their observations normally; direct mode publishes the selected
+//! recognizer's exact bytes without word certificates or acoustic seals.
 //!
-//! At seal, Apple and Lexicon/Light+ are separate observations of the same
+//! With ledger admission enabled, Apple and Lexicon/Light+ are separate
+//! observations of the same
 //! PCM-identified occurrence. `admit_ledger_label` offers them to
 //! `AcousticLedger::admit`; a closed occurrence passes through
 //! `AcousticLedger::seal`; `EngineEvent::LedgerMutation` and
@@ -13,27 +14,31 @@
 //! `PresentationEmitter` / `TranscriptReducer`. Neither raw Apple text nor the
 //! seal-time shaping pass owns the document.
 //!
-//! Whisper is never the primary live engine here. Local Power arms it as the
-//! required Layer 1 observer on capture-clock 9-second windows every 3 seconds.
-//! Stop drains that same plan, including at most one next-grid partial window.
-//! Original returns are shared with qualified owners through `AcousticLedger`;
-//! Conflicts may use one planner-budgeted bounded witness before their horizon
-//! closes. Stop cannot open work outside its last nine seconds or mutate a seal.
+//! Local Power arms Whisper through the explicit Layer 1 decision, never an
+//! implicit model load. Ledger mode retains capture-clock 9-second windows
+//! every 3 seconds, shared with physically qualified owners. Without Apple,
+//! Whisper can supply those owners without an Apple label prerequisite.
+//! Direct mode uses disjoint 9-second publication ranges and a final short
+//! range at Stop; it forwards raw payloads rather than stitching overlapping
+//! text or slicing translations against source-language word counts.
 //! One deliberate exception: the terminal DictationTranscriber witness. When
-//! the armed opt-in lane is available, Stop may run a bounded number of final
+//! both controls permit Apple/ledger work and the opt-in lane is available,
+//! Stop may run a bounded number of final
 //! DT decodes over the recorder-owned terminal archive, aimed only at ranges
 //! still unresolved after every retained replay (pending text recovery and
 //! material speech gaps). Its segments enter through the same occurrence
 //! admission as any producer; the whole-take DT text never replaces the
 //! document and never reopens a seal.
-//! Apple-only deliberately omits this lane; explicit off/invalid overrides in
-//! Local Power produce a typed degraded state.
+//! Apple-only never implicitly loads Whisper. If Apple is disabled and no
+//! consent-owned Layer 1 source is armed, the take closes with a no-source
+//! outcome. Explicit off/invalid Local Power overrides retain their degraded
+//! disposition.
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
 //! temp-WAV request transport for A/B comparison with live AudioBuffer delivery.
 //! It does not restore the deleted VAD/scheduler pipeline or create another
 //! transcript authority.
 //!
-//! The bridge global lock + child process live on a **dedicated OS thread**
+//! When enabled, the Apple bridge global lock and child live on a dedicated OS thread
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
 //! `EngineEvent`s out.
 
@@ -1180,6 +1185,7 @@ pub(crate) async fn apple_stream_transcription_session(
         terminal_audio,
         mut last_window_closed,
     } = config;
+    let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();
     // One owner for this capture epoch's acoustic evidence. This async arm is
     // the writer and the blocking Apple worker below is the reader; both hold
     // the same handle, so no process-global slot and no reset entrypoint sit
@@ -1267,6 +1273,9 @@ pub(crate) async fn apple_stream_transcription_session(
             .tail_provider()
             .unwrap_or(crate::stt::tail_provider::TailProviderId::InProcess),
     );
+    // Direct publication needs the decoder payload, never a computed char patch.
+    // The existing in-flight gate and execution owner bound both job kinds.
+    let mut direct_decode_job: Option<BoxFuture<'static, Result<TailProviderPayload>>> = None;
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
     // branch's guard does not borrow what the collect branch holds mutably.
     let mut tail_patch_in_flight = false;
@@ -1289,7 +1298,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // Arming the transport schedules nothing; a sealed occurrence must acquire
     // a bounded queue permit first. Apple on-device counts as an engine on its
     // own: it needs no cloud key, endpoint or account.
-    let formatter_on = live_formatter_lane_is_armed(
+    let formatter_on = seal_ledger_enabled && live_formatter_lane_is_armed(
         capture_turn,
         runtime_settings.values().ai_formatting_enabled,
         runtime_settings.formatting_policy(),
@@ -1336,7 +1345,7 @@ pub(crate) async fn apple_stream_transcription_session(
         });
     }
     let live_formatting_agent = live_formatting_agent.filter(|_| {
-        capture_turn.schedules_live_formatting()
+        seal_ledger_enabled && capture_turn.schedules_live_formatting()
             && runtime_settings.values().ai_formatting_enabled
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
@@ -1617,7 +1626,7 @@ pub(crate) async fn apple_stream_transcription_session(
             // call itself runs on a retained native worker, so this loop
             // only ever schedules and collects — inference never sits on the
             // event-drain path (F1).
-            Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
+            Some(mut req) = tp_rx.recv(), if !tail_patch_in_flight => {
                 info!(
                     session = %req.provider_request.identity.range.session,
                     capture_epoch = req.provider_request.identity.range.capture_epoch,
@@ -1636,7 +1645,24 @@ pub(crate) async fn apple_stream_transcription_session(
                     admit_sample_end: req.admit_sample_end,
                     member_occurrences: req.member_occurrences.clone(),
                 };
-                tail_patch_lane.push_request(req);
+                if seal_ledger_enabled {
+                    tail_patch_lane.push_request(req);
+                } else {
+                    req.provider_request.language = tail_patch_lane.language.clone();
+                    let provider = tail_patch_lane.provider;
+                    let audio = req.audio;
+                    let request = req.provider_request;
+                    let receiver = tail_patch_lane.execution.spawn(move |control| {
+                        crate::stt::tail_provider::transcribe_selected_controlled(
+                            provider, &request, &audio, control,
+                        )
+                    });
+                    direct_decode_job = Some(Box::pin(async move {
+                        receiver?
+                            .await
+                            .map_err(|error| anyhow::anyhow!("direct decoder worker: {error}"))?
+                    }));
+                }
                 tail_patch_in_flight = true;
                 // One job is in flight; the coalesce map rides alongside so
                 // the completion can close every member seal.
@@ -1665,6 +1691,39 @@ pub(crate) async fn apple_stream_transcription_session(
                         utterance_id = rejected_id,
                         "Layer 1 completion rejected — Apple seal worker already closed"
                     );
+                }
+            }
+            result = async {
+                match direct_decode_job.as_mut() {
+                    Some(job) => job.await,
+                    None => std::future::pending().await,
+                }
+            }, if !seal_ledger_enabled && tail_patch_in_flight => {
+                direct_decode_job = None;
+                tail_patch_in_flight = false;
+                let Some(inflight) = tail_patch_lane_in_flight.take() else {
+                    warn!("Direct decoder completion has no accepted request");
+                    continue;
+                };
+                let payload = match result {
+                    Ok(payload) => Some(payload),
+                    Err(error) => {
+                        event_sink.on_event(&EngineEvent::Warning {
+                            code: "direct_decode_failed".into(),
+                            message: error.to_string(),
+                        });
+                        None
+                    }
+                };
+                let completion = TailPatchCompletion {
+                    submission_sequence: inflight.submission_sequence,
+                    utterance_id: inflight.utterance_id,
+                    request_identity: Some(inflight.request_identity),
+                    payload,
+                    member_occurrences: inflight.member_occurrences,
+                };
+                if !tail_patch_lane.forward_completion_to_worker(&tp_done_tx, completion) {
+                    warn!("Direct decoder returned after its capture worker closed");
                 }
             }
             Some(request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
@@ -1894,6 +1953,15 @@ struct AppleSealState {
     session_id: String,
     capture_epoch: u64,
     sample_rate: u32,
+    /// Immutable, independent per-capture policy; neither changes PCM ownership.
+    seal_ledger_enabled: bool,
+    apple_live_enabled: bool,
+    /// Taking this owner closes delivery exactly once and fences late results.
+    direct_end: Option<DirectTranscriptEndGuard>,
+    /// Selected once from the actually armed, consent-owned recognizer lanes.
+    direct_producer: LedgerObservationProducer,
+    direct_sample_end: u64,
+    direct_apple_epoch_has_final: bool,
     preview_rev: u64,
     speech_progress: SpeechProgress,
     last_integrity: Option<SpeechIntegrity>,
@@ -2176,9 +2244,44 @@ struct AdmitWindow {
 }
 
 impl AppleSealState {
+    /// Publish raw recognizer bytes without claiming word or seal authority.
+    fn publish_direct_transcript(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        observation: LedgerObservationIdentity,
+        text: String,
+        final_chunk: bool,
+    ) -> bool {
+        let range = &observation.occurrence;
+        if self.seal_ledger_enabled
+            || self.direct_end.is_none()
+            || observation.producer != self.direct_producer
+            || range.session != self.session_id
+            || range.capture_epoch != self.capture_epoch
+            || range.sample_start < self.direct_sample_end
+            || range.sample_end <= range.sample_start
+            || range.sample_end > self.audio.session_sample_end()
+        {
+            return false;
+        }
+        if final_chunk {
+            self.direct_sample_end = range.sample_end;
+        }
+        ev_tx
+            .send(EngineEvent::DirectTranscript {
+                observation,
+                text,
+                final_chunk,
+            })
+            .is_ok()
+    }
+
     /// Replace the presentation mirror from the worker's actual held words.
     /// Call only after the ledger events for the same transition were sent.
     fn publish_unadmitted_words(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled || !self.apple_live_enabled {
+            return;
+        }
         let committed = {
             let ledger = self
                 .acoustic_ledger
@@ -2302,6 +2405,11 @@ impl AppleSealState {
     }
 
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        // Without admission there is no ledger text frontier to compare with.
+        // Capture energy and Silero sideband measurements remain independent.
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let ledger = self
             .acoustic_ledger
             .lock()
@@ -2449,6 +2557,12 @@ impl AppleSealState {
             session_id,
             capture_epoch,
             sample_rate,
+            seal_ledger_enabled: true,
+            apple_live_enabled: true,
+            direct_end: None,
+            direct_producer: LedgerObservationProducer::Apple,
+            direct_sample_end: 0,
+            direct_apple_epoch_has_final: false,
             preview_rev: 0,
             speech_progress,
             last_integrity: None,
@@ -2719,6 +2833,15 @@ impl AppleSealState {
     }
 
     fn return_cloud_live_lost(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled
+            && self.direct_producer == LedgerObservationProducer::CloudLive
+            && self.direct_end.is_some()
+        {
+            let _ = ev_tx.send(EngineEvent::NoSpeech {
+                reason: "The selected Cloud recognizer closed before capture completed.".into(),
+            });
+            drop(self.direct_end.take());
+        }
         self.cloud_commit_tx = None;
         self.cloud_commit_retry.clear();
         for occurrence in self.take_outstanding_cloud() {
@@ -2794,6 +2917,30 @@ impl AppleSealState {
             return;
         };
         self.log_cloud_final(&commit);
+        if !self.seal_ledger_enabled {
+            if let Some(index) = self
+                .cloud_inflight
+                .iter()
+                .position(|pending| pending.sample_end <= commit.sample_end)
+            {
+                self.cloud_inflight.remove(index);
+            }
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::CloudLive,
+                commit.sample_start,
+                0,
+                OccurrenceIdentity::new(
+                    &self.session_id,
+                    self.capture_epoch,
+                    commit.sample_start,
+                    commit.sample_end,
+                ),
+            );
+            if self.publish_direct_transcript(ev_tx, observation, event.text, true) {
+                self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+            }
+            return;
+        }
         let matched = self
             .cloud_inflight
             .iter()
@@ -3592,6 +3739,9 @@ impl AppleSealState {
     }
 
     fn publish_resolved_word_seals(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let owners = self.unsealed_word_owners();
         for (id, owner) in owners {
             let seal = {
@@ -4159,6 +4309,44 @@ impl AppleSealState {
         // Any matched return, valid or not, proves the engine is past
         // cold start; later stops may hold the warm closure budget.
         self.first_whisper_window_completed = true;
+        if !self.seal_ledger_enabled {
+            let published = if let Some(payload) = payload.filter(|payload| {
+                payload.identity == job.request_identity
+                    && payload.validate().is_ok()
+                    && payload.evidence.source == TailEvidenceSource::Whisper
+                    && payload.evidence.stability
+                        == crate::stt::tail_provider::TailEvidenceStability::Final
+            }) {
+                self.window_plan_receipt(&job.request_identity.range, "returned");
+                let range = payload.identity.range;
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    job.request_identity.request_id,
+                    0,
+                    OccurrenceIdentity::new(
+                        range.session,
+                        range.capture_epoch,
+                        range.sample_start,
+                        range.sample_end,
+                    ),
+                );
+                self.publish_direct_transcript(ev_tx, observation, payload.text, true)
+            } else {
+                self.window_plan_receipt(&job.request_identity.range, "failed");
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "direct_decode_unavailable".into(),
+                    message: "The accepted PCM request returned no valid final decoder payload."
+                        .into(),
+                });
+                false
+            };
+            if published {
+                self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
+            } else {
+                self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+            }
+            return;
+        }
         let valid = payload.as_ref().is_some_and(|payload| {
             payload.identity == job.request_identity
                 && payload.validate().is_ok()
@@ -5269,6 +5457,9 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         sample_start: u64,
     ) {
+        if !self.seal_ledger_enabled {
+            return;
+        }
         let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
         self.schedule_bounded_word_trial(ev_tx);
@@ -5632,6 +5823,29 @@ fn seal_sliced_by_silero(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     disjoint: &[TranscriptSegment],
 ) -> bool {
+    if !state.seal_ledger_enabled {
+        // Cloud still consumes the same Silero silence decisions. A transport
+        // commit needs no acoustic occurrence or admitted source-language text.
+        if state.cloud_commit_tx.is_some() {
+            // Commits are cumulative capture ranges; the latest measured
+            // silence fence subsumes earlier closes without cloning a history.
+            let close = state.fusion.as_ref().and_then(|fusion| {
+                fusion
+                    .ledger()
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .filter_map(|utterance| fusion.ledger().close_receipt(utterance.id))
+                    .find(|receipt| {
+                        receipt.cause == super::silero_fusion::UtteranceCloseCause::SilenceFence
+                    })
+            });
+            if let Some(receipt) = close {
+                state.commit_cloud_close(ev_tx, receipt);
+            }
+        }
+        return false;
+    }
     let Some(fusion) = state.fusion.as_ref() else {
         return false;
     };
@@ -6456,6 +6670,9 @@ impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
 
 /// Qualification consumes owned PCM and calibration, never a candidate label.
 fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdentity) -> bool {
+    if !state.seal_ledger_enabled {
+        return false;
+    }
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
         return false;
     }
@@ -6521,6 +6738,15 @@ fn admit_ledger_label<'a>(
         label,
         energy,
     } = admission;
+    if !state.seal_ledger_enabled
+        || (!state.apple_live_enabled
+            && matches!(
+                observation.producer,
+                LedgerObservationProducer::Apple | LedgerObservationProducer::AppleDictation
+            ))
+    {
+        return None;
+    }
     let occurrence = observation.occurrence.clone();
     let producer = observation.producer;
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
@@ -7434,6 +7660,9 @@ fn drain_dictation_witness_returns(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
 ) {
+    if !state.apple_live_enabled || !state.seal_ledger_enabled {
+        return;
+    }
     while let Ok((identity, result)) = witness_done.try_recv() {
         state.dictation_witness_inflight = false;
         let payload = match result {
@@ -7688,6 +7917,9 @@ fn admit_dictation_witness_payload(
     gaps: &[TailSampleRange],
     threshold_samples: u64,
 ) {
+    if !state.apple_live_enabled || !state.seal_ledger_enabled {
+        return;
+    }
     let decode_window = (identity.range.sample_start, identity.range.sample_end);
     // Committed word-slot PCM for this capture. A witness pin may only speak
     // for PCM no admitted word already owns: a pin intersecting a committed
@@ -8516,6 +8748,20 @@ fn seal_open_partial(
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     audio_secs: f32,
 ) {
+    if !state.seal_ledger_enabled {
+        if state.direct_producer == LedgerObservationProducer::Apple
+            && !state.open_partial.is_empty()
+        {
+            let text = std::mem::take(&mut state.open_partial);
+            let segments = std::mem::take(&mut state.open_partial_segments);
+            emit_direct_apple_events(
+                std::iter::once(LiveStreamEvent::PhraseFinal { text, segments }),
+                ev_tx,
+                state,
+            );
+        }
+        return;
+    }
     let open = state.open_partial.trim().to_string();
     if open.is_empty() {
         return;
@@ -8647,6 +8893,23 @@ fn drain_cloud_stop_finals(
     }
 }
 
+/// The direct owner closes delivery on success, error, panic and input loss.
+/// It is deliberately independent of ledger seals and native decoder joining.
+struct DirectTranscriptEndGuard {
+    destination: mpsc::UnboundedSender<EngineEvent>,
+    session_id: String,
+    capture_epoch: u64,
+}
+
+impl Drop for DirectTranscriptEndGuard {
+    fn drop(&mut self) {
+        let _ = self.destination.send(EngineEvent::DirectTranscriptEnd {
+            session_id: std::mem::take(&mut self.session_id),
+            capture_epoch: self.capture_epoch,
+        });
+    }
+}
+
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
     input_enhanced: bool,
@@ -8709,13 +8972,28 @@ fn apple_stream_worker(
         live_finals_admitted,
         cloud,
     } = config;
+    let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();
+    let apple_live_enabled = runtime_settings.apple_live_enabled();
+    let direct_transcript_end = (!seal_ledger_enabled).then(|| DirectTranscriptEndGuard {
+        destination: ev_tx.clone(),
+        session_id: session_id.clone(),
+        capture_epoch,
+    });
+    if !apple_live_enabled && tail_patch.is_none() && cloud.is_none() {
+        let reason = "No enabled recognizer: Apple live is disabled and the selected Layer 1 source is not armed.";
+        let _ = ev_tx.send(EngineEvent::NoSpeech {
+            reason: reason.into(),
+        });
+        let _ = last_window_closed.send(());
+        let _ = apple_finished.send(());
+        drop(live_finals_admitted);
+        anyhow::bail!(reason);
+    }
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
     let _slot_receipts = SlotReceiptSink::for_session(&session_id, capture_epoch, sample_rate);
-    // The one read of calibration truth for this session: the measured profile
-    // of the device actually opened, converted to Σx² at the actual capture
-    // rate. Any refusal keeps the worker fail-closed (no floor is invented);
-    // the controller admission gate is expected to have refused earlier, so a
-    // refusal here is logged as the anomaly it is.
+    // Retain the real device profile even when word admission is disabled.
+    // Missing calibration stays absent; only the ledger path requires it.
+    // Direct publication never invents a floor or treats this lookup as a gate.
     let energy_calibration = match capture_device_name.as_deref() {
         Some(device) => {
             match runtime_settings.energy_calibration_for_capture(device, sample_rate) {
@@ -8768,6 +9046,12 @@ fn apple_stream_worker(
             energy_calibration,
         ),
     };
+    state.seal_ledger_enabled = seal_ledger_enabled;
+    state.apple_live_enabled = apple_live_enabled;
+    state.direct_end = direct_transcript_end;
+    if !seal_ledger_enabled {
+        state.window_plan.set_non_overlapping_publications();
+    }
     state.bind_capture_energy(capture_energy);
     if let Some(device) = capture_device_name.as_deref()
         && let Ok(floor) = runtime_settings
@@ -8789,6 +9073,15 @@ fn apple_stream_worker(
     state.formatter = formatter;
     let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
     state.cloud_commit_tx = cloud_commit;
+    if !seal_ledger_enabled {
+        state.direct_producer = if state.tail_patch.is_some() {
+            LedgerObservationProducer::Whisper
+        } else if state.cloud_commit_tx.is_some() {
+            LedgerObservationProducer::CloudLive
+        } else {
+            LedgerObservationProducer::Apple
+        };
+    }
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
@@ -8796,7 +9089,9 @@ fn apple_stream_worker(
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
     // Voice Lab witness: the immutable snapshot verdict replaces the
     // construction-time env read; the return lane belongs to this worker.
-    state.dictation_witness_armed = runtime_settings.dictation_witness_armed();
+    state.dictation_witness_armed = seal_ledger_enabled
+        && apple_live_enabled
+        && runtime_settings.dictation_witness_armed();
     state.dictation_witness_language = language.map(str::to_owned);
     let (witness_done_tx, witness_done_rx) = std_mpsc::channel::<DictationWitnessReturn>();
     state.dictation_witness_return = Some(witness_done_tx);
@@ -8822,7 +9117,9 @@ fn apple_stream_worker(
     // and every epoch closes on the product silence threshold.
     let mut epoch =
         EpochGate::for_session(sample_rate, utterance_silence_sec, state.fusion.is_some());
-    let mut stream = if epoch.is_armed() {
+    let mut stream = if !apple_live_enabled {
+        None
+    } else if epoch.is_armed() {
         info!(
             utterance_silence_sec = utterance_silence_sec.unwrap_or_default(),
             preroll_secs = EPOCH_PREROLL_SECS,
@@ -8928,6 +9225,7 @@ fn apple_stream_worker(
                             emit_stream_events(events, &ev_tx, &mut state, audio_secs);
                         }
                     }
+                    EpochDecision::Wake { .. } if !state.apple_live_enabled => {}
                     EpochDecision::Wake { preroll_from } => {
                         let mut session = LiveStreamSession::open(language, sample_rate)
                             .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
@@ -9025,7 +9323,7 @@ fn apple_stream_worker(
     // no Apple text waits for finish and residue admission before its ack.
     // Later refusals and K5 visibility receipts are NOT document revisions;
     // only an accepted mutation can revise the stop document.
-    let ack_before_finish = if state.fusion_seal_armed {
+    let ack_before_finish = if state.seal_ledger_enabled && state.fusion_seal_armed {
         let has_text = state.has_stop_canvas_text();
         seal_sliced_by_silero(&mut state, &ev_tx, &[]);
         seal_open_partial(&mut state, &ev_tx, audio_secs);
@@ -9078,13 +9376,20 @@ fn apple_stream_worker(
     state.pump_capture_windows(&ev_tx);
     state.close_admission_horizon(&ev_tx, u64::MAX);
     state.publish_unadmitted_words(&ev_tx);
-    if live_finals_complete && apple_final_received && state.stop_document_settled() {
-        let _ = live_finals_admitted.send(());
+    let direct_live_finals_admitted = if state.seal_ledger_enabled {
+        if live_finals_complete && apple_final_received && state.stop_document_settled() {
+            let _ = live_finals_admitted.send(());
+        } else {
+            // Ledger-mode terminal refinement retains the existing early
+            // failure receipt so its caller can hand off the archive.
+            drop(live_finals_admitted);
+        }
+        None
     } else {
-        // Release the controller immediately into terminal settlement. Do not
-        // spend its paint timeout before supplying the archive needed to drain.
-        drop(live_finals_admitted);
-    }
+        // Direct-mode callers publish their real PCM before waiting. Keep this
+        // native receipt until its selected decoder has actually drained.
+        Some(live_finals_admitted)
+    };
 
     if let Some(receiver) = terminal_audio {
         let archive = receiver
@@ -9247,6 +9552,39 @@ fn apple_stream_worker(
 
     // Formatting is not awaited here: it consumes sealed text on the async
     // side and cannot extend Stop, hold a seal or keep the microphone open.
+
+    if !state.seal_ledger_enabled {
+        let complete = live_finals_complete
+            && (state.direct_producer != LedgerObservationProducer::Apple
+                || apple_final_received)
+            && state.direct_end.is_some()
+            && tail_patch_timeout_residue == 0
+            && state.tail_patch_jobs_skipped == 0
+            && state.unresolved_windows == 0
+            && !state.refinement_lane_lost;
+        // Queue the typed end before the native acknowledgement. Its forwarding
+        // arm drains these events through the reducer before releasing Stop.
+        drop(state.direct_end.take());
+        if let Some(sender) = direct_live_finals_admitted
+            && complete
+        {
+            let _ = sender.send(());
+        }
+        return Ok(AppleStreamOutcome {
+            sealed: 0,
+            filtered_empty_drops: state.filtered_empty_drops,
+            lexicon_rewrites: 0,
+            lexicon_entries_custom: 0,
+            unresolved_windows: state.unresolved_windows,
+            under_commit_escalations: 0,
+            tail_patch_replacements: 0,
+            tail_patch_refusals: state.tail_patch_refusals,
+            tail_patch_jobs_applied: state.tail_patch_jobs_applied,
+            tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
+            tail_patch_timeout_residue,
+            conservation: state.session_conservation(),
+        });
+    }
 
     // Capture is over: no later Apple callback can revise a span and no further
     // Whisper window can arrive, so both double-close gates are satisfied by
@@ -9451,7 +9789,9 @@ fn publish_apple_phrase_at_valley(
     audio_secs: f32,
     consultation: Option<&mut LiveConsultationCapture>,
 ) {
-    if !state.fusion_seal_armed
+    if !state.seal_ledger_enabled
+        || !state.apple_live_enabled
+        || !state.fusion_seal_armed
         || state.open_partial.is_empty()
         || state.open_partial_segments.is_empty()
         || state.open_partial_segments.iter().any(|word| {
@@ -9576,6 +9916,13 @@ fn emit_stream_events(
     state: &mut AppleSealState,
     audio_secs: f32,
 ) {
+    if !state.apple_live_enabled {
+        return;
+    }
+    if !state.seal_ledger_enabled {
+        emit_direct_apple_events(events, ev_tx, state);
+        return;
+    }
     for event in events {
         match event {
             LiveStreamEvent::Ready => {
@@ -9758,6 +10105,140 @@ fn emit_stream_events(
         }
     }
     state.publish_unadmitted_words(ev_tx);
+}
+
+/// Raw Apple output is a producer only when the explicit Layer 1 choice left
+/// Apple primary. Otherwise it is preview-only until that primary publishes;
+/// it can never replace a Whisper translation or a consent-owned Cloud result.
+fn emit_direct_apple_events(
+    events: impl IntoIterator<Item = LiveStreamEvent>,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    state: &mut AppleSealState,
+) {
+    for event in events {
+        if state.direct_end.is_none() {
+            break;
+        }
+        match event {
+            LiveStreamEvent::Ready => state.direct_apple_epoch_has_final = false,
+            LiveStreamEvent::End => {}
+            LiveStreamEvent::Partial { text, segments } => {
+                if state.direct_producer != LedgerObservationProducer::Apple
+                    && state.direct_sample_end > 0
+                {
+                    continue;
+                }
+                state.preview_rev = state.preview_rev.saturating_add(1);
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    // Retain one raw fallback for a transport that ends without
+                    // a phrase final. No spelling, lexicon or label admission.
+                    state.open_partial.clone_from(&text);
+                    state.open_partial_segments = segments;
+                    let observation = LedgerObservationIdentity::new(
+                        LedgerObservationProducer::Apple,
+                        state.phrase_id,
+                        state.preview_rev,
+                        OccurrenceIdentity::new(
+                            &state.session_id,
+                            state.capture_epoch,
+                            state.direct_sample_end,
+                            state.audio.session_sample_end(),
+                        ),
+                    );
+                    state.publish_direct_transcript(ev_tx, observation, text, false);
+                } else if state.direct_sample_end == 0 {
+                    let _ = ev_tx.send(EngineEvent::Preview {
+                        rev: state.preview_rev,
+                        text,
+                        pin: PreviewPin::open_occurrence(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start: 0,
+                            sample_end: state.audio.session_sample_end(),
+                        }),
+                    });
+                }
+            }
+            LiveStreamEvent::Summary {
+                ok: true, ..
+            } if state.direct_apple_epoch_has_final => {
+                // This is the whole recognizer epoch, not another physical
+                // phrase. Any outstanding partial closes at the finish seam.
+            }
+            LiveStreamEvent::PhraseFinal { text, segments }
+            | LiveStreamEvent::Summary {
+                text,
+                segments,
+                ok: true,
+                ..
+            } => {
+                state.direct_apple_epoch_has_final = true;
+                state.open_partial.clear();
+                state.open_partial_segments.clear();
+                if state.direct_producer != LedgerObservationProducer::Apple {
+                    continue;
+                }
+                let captured_end = state.audio.session_sample_end();
+                let sample_end = segments
+                    .iter()
+                    .filter(|segment| {
+                        segment.end_ts.is_finite()
+                            && segment.start_ts.is_finite()
+                            && segment.start_ts >= 0.0
+                            && segment.end_ts > segment.start_ts
+                    })
+                    .map(|segment| {
+                        seconds_to_captured_sample(
+                            segment.end_ts,
+                            state.sample_rate,
+                            captured_end,
+                        )
+                    })
+                    .max()
+                    .unwrap_or(captured_end);
+                state.preview_rev = state.preview_rev.saturating_add(1);
+                let observation = LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    state.phrase_id,
+                    state.preview_rev,
+                    OccurrenceIdentity::new(
+                        &state.session_id,
+                        state.capture_epoch,
+                        state.direct_sample_end,
+                        sample_end,
+                    ),
+                );
+                if state.publish_direct_transcript(ev_tx, observation, text, true) {
+                    state.phrase_id = state.phrase_id.saturating_add(1);
+                }
+            }
+            LiveStreamEvent::Summary {
+                ok: false, error, ..
+            } => {
+                let message = error.unwrap_or_else(|| "Apple returned no final summary.".into());
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    let _ = ev_tx.send(EngineEvent::NoSpeech { reason: message });
+                    drop(state.direct_end.take());
+                } else {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "direct_apple_summary_failed".into(),
+                        message,
+                    });
+                }
+            }
+            LiveStreamEvent::Error { message } => {
+                if state.direct_producer == LedgerObservationProducer::Apple {
+                    let _ = ev_tx.send(EngineEvent::NoSpeech { reason: message });
+                    drop(state.direct_end.take());
+                } else {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "direct_apple_stream_failed".into(),
+                        message,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy

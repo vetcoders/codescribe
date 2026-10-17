@@ -379,6 +379,8 @@ pub struct StreamingRecorder {
     /// The existing capture owner's archive result, frozen before a closed
     /// take can leave the controller slot. Consumed by its ordinary stop tail.
     prepared_capture_archive: Option<Result<Option<std::path::PathBuf>>>,
+    /// The actual close result, retained for inline direct-mode stop callers.
+    closed_capture_was_active: Option<bool>,
     /// Retained stop owner for callers that cancel and retry inline settlement.
     terminal_take: Option<ClosedTake>,
     terminal_audio_sender: Option<
@@ -577,6 +579,7 @@ impl StreamingRecorder {
             take_archive: None,
             prepared_capture_archive: None,
             terminal_take: None,
+            closed_capture_was_active: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -616,6 +619,7 @@ impl StreamingRecorder {
             take_archive: None,
             prepared_capture_archive: None,
             terminal_take: None,
+            closed_capture_was_active: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -884,6 +888,7 @@ impl StreamingRecorder {
             .as_ref()
             .map(Arc::clone)
             .ok_or_else(|| anyhow!("start_event_session requires RuntimeSettingsSnapshot"))?;
+        self.closed_capture_was_active = None;
         let acoustic_ledger = self
             .acoustic_ledger
             .as_ref()
@@ -1237,19 +1242,35 @@ impl StreamingRecorder {
     /// belongs to this stop and must be passed to finalization; `false` covers
     /// both "no stream was active" and "the capture stays open for others".
     pub async fn close_capture(&mut self) -> bool {
-        match self.release_take_pcm_feed() {
+        let was_active = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.close_capture().await
             }
             TakeFeedRelease::CaptureShared => false,
-        }
+        };
+        self.closed_capture_was_active = Some(was_active);
+        was_active
     }
 
-    /// The live session sends this only after Apple and any armed CloudLive
-    /// end finals have passed the normal event sink. No archive, Whisper or
-    /// formatter completion is part of this signal. The controller owns the
-    /// single stop-instant deadline; lane loss closes the channel without an ack.
+    /// Ledger mode acknowledges painted Apple/Cloud end finals as before.
+    /// Direct mode first hands off real terminal PCM, then waits for its selected
+    /// recognizer's drain. Neither mode waits for formatting. The controller
+    /// owns its stop deadline; failure closes the channel without a success ack.
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        if self
+            .runtime_settings
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.seal_ledger_enabled())
+        {
+            if self.terminal_take.is_none()
+                && let Some(was_active) = self.closed_capture_was_active
+            {
+                self.terminal_take = Some(self.detach_closed_take(was_active));
+            }
+            if let Some(take) = self.terminal_take.as_mut() {
+                return take.wait_live_finals_admitted().await;
+            }
+        }
         let Some(receiver) = self.last_window_closed.as_mut() else {
             return false;
         };
@@ -1270,6 +1291,7 @@ impl StreamingRecorder {
         let result = take.finish().await;
         if take.is_settled() {
             self.terminal_take = None;
+            self.closed_capture_was_active = None;
         }
         result
     }
@@ -1278,6 +1300,7 @@ impl StreamingRecorder {
     /// The physical recorder and all channel interests stay here. The caller
     /// must first close_capture; releasing its feed fences archive PCM/count.
     pub fn detach_closed_take(&mut self, was_active: bool) -> ClosedTake {
+        self.closed_capture_was_active = None;
         if let Some(take) = self.terminal_take.take() {
             return take;
         }
@@ -1318,6 +1341,11 @@ impl StreamingRecorder {
             capture_epoch: self.capture_epoch,
             sample_rate: self.sample_rate,
             seal_lane_armed: self.seal_lane_armed(),
+            direct_transcript: self
+                .runtime_settings
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.seal_ledger_enabled()),
+            direct_decoder_complete: None,
             captured_samples: Arc::clone(&self.captured_samples),
             terminal_audio_sender: self.terminal_audio_sender.take(),
             lifecycle_handle: self.lifecycle_handle.take(),
@@ -1486,6 +1514,10 @@ pub struct ClosedTake {
     capture_epoch: u64,
     sample_rate: u32,
     seal_lane_armed: bool,
+    /// Projected once from this take's original immutable settings snapshot.
+    direct_transcript: bool,
+    /// Actual native completion receipt, retained across canceled stop waiters.
+    direct_decoder_complete: Option<bool>,
     captured_samples: Arc<AtomicU64>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
@@ -1523,17 +1555,28 @@ impl ClosedTake {
     }
 
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        if self.direct_transcript
+            && let Some(complete) = self.direct_decoder_complete
+        {
+            return complete;
+        }
+        if self.direct_transcript {
+            self.prepare_terminal_audio().await;
+        }
         let Some(receiver) = self.last_window_closed.as_mut() else {
             return false;
         };
         let admitted = receiver.await.is_ok();
         self.last_window_closed = None;
+        if self.direct_transcript {
+            self.direct_decoder_complete = Some(admitted);
+        }
         admitted
     }
 
-    /// Save the exact take PCM before terminal refinement and wait for the
-    /// original task/reducer. Blocking disk work never holds capture's mutex.
-    pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+    /// Publish the real archive before direct decoder acknowledgement without
+    /// joining its producer. Retained disk work makes cancellation retry-safe.
+    async fn prepare_terminal_audio(&mut self) {
         if self.archive_worker.is_none()
             && (self.archive.is_some() || self.physical_archive.is_some())
         {
@@ -1625,6 +1668,12 @@ impl ClosedTake {
             };
             let _ = sender.send(receipt);
         }
+    }
+
+    /// Save the exact take PCM before terminal refinement and wait for the
+    /// original task/reducer. Blocking disk work never holds capture's mutex.
+    pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+        self.prepare_terminal_audio().await;
         self.lifecycle_handle = None;
 
         // 2. Wait for worker to finish processing remaining chunks
@@ -1638,6 +1687,8 @@ impl ClosedTake {
                 .err();
             self.transcription_handle = None;
         }
+        let direct_decoder_complete =
+            self.direct_transcript && self.wait_live_finals_admitted().await;
 
         // 3. Fence the existing FIFO after the producer has joined. Neither
         // unchanged bytes nor an expired bound proves that publication ended.
@@ -1732,6 +1783,23 @@ impl ClosedTake {
                 cause,
                 task_failure,
             }));
+        }
+
+        // Direct output owes a real producer completion and the publication
+        // fence above, never an acoustic word/seal receipt. Do not turn source
+        // loss, canceled work or a missing native receipt into a successful take.
+        if self.direct_transcript {
+            return if direct_decoder_complete {
+                Ok((transcript, audio_path))
+            } else {
+                Err(anyhow::Error::new(CaptureStopFailure {
+                    session_id: self.authority_session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    audio_path,
+                    cause: anyhow!("direct recognizer completion unavailable or failed"),
+                    task_failure: None,
+                }))
+            };
         }
 
         // A gesture shorter than one complete speech window can contain PCM
