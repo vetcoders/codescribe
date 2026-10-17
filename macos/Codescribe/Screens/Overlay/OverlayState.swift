@@ -1087,6 +1087,10 @@ final class OverlayState {
   private(set) var hasLoadedChannelRoster = false
   private(set) var channelToggleError: String?
   private(set) var pendingChannelToggles: Set<String> = []
+  /// Channels whose microphone was clicked in the open agent list. Their
+  /// opening keeps the list instead of following into the conversation
+  /// (Maciej, 2026-10-17: broadcast to two agents is two clicks in a row).
+  @ObservationIgnored private var agentListHeldOpens: Set<String> = []
   private(set) var conversations: [OverlayConversation] = []
   private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = []
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
@@ -2015,9 +2019,10 @@ final class OverlayState {
     {
       pendingChannelConversation = nil
     }
-    if newlyOpened.count == 1, let row = newlyOpened.first {
+    let followed = newlyOpened.filter { !agentListHeldOpens.contains($0.channel) }
+    if followed.count == 1, let row = followed.first {
       followChannelConversation(row)
-    } else if newlyOpened.count > 1 {
+    } else if followed.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
       let expansion: OverlayPresentationCause? = expandedByDefault ? .automatic : nil
       selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
@@ -2037,13 +2042,19 @@ final class OverlayState {
     onChannelPresentationChanged?()
   }
 
-  func toggleAgentChannel(_ digit: UInt8) async {
+  /// `keepsAgentList`: the click came from the agent list (pills or the
+  /// docked roster); while that list is shown, opening stays in it.
+  func toggleAgentChannel(_ digit: UInt8, keepsAgentList: Bool = false) async {
     let channel = String(digit)
     guard (0...9).contains(digit), let engine,
       !pendingChannelToggles.contains(channel)
     else { return }
     pendingChannelToggles.insert(channel)
-    defer { pendingChannelToggles.remove(channel) }
+    if keepsAgentList, showsAgentMonitor { agentListHeldOpens.insert(channel) }
+    defer {
+      pendingChannelToggles.remove(channel)
+      agentListHeldOpens.remove(channel)
+    }
     do {
       try await engine.toggleAgentChannel(digit: digit)
       channelToggleError = nil
