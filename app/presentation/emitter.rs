@@ -22,8 +22,9 @@ use codescribe_core::pipeline::acoustic_ledger::{
     TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
-    ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
-    TranscriptDelta, UnadmittedAppleWord, UnadmittedAppleWordSource,
+    ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SidebandEvidence, SidebandEvidenceKind,
+    SpeechIntegrity, SpeechIntegrityPhase, TranscriptDelta, UnadmittedAppleWord,
+    UnadmittedAppleWordSource,
 };
 use codescribe_core::pipeline::word_confidence::{
     UncertainSpan, WordConfidence, word_confidence_thresholds,
@@ -38,6 +39,8 @@ use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 /// Read-only, ephemeral Apple recognition paint; never a document mutation.
 pub type ApplePreviewObserver = Arc<dyn Fn(&str) + Send + Sync>;
+/// Read-only measured speech edges from this emitter's opened capture.
+pub type SpeechActivityObserver = Arc<dyn Fn(&SidebandEvidence) + Send + Sync>;
 
 /// Passive paint from one opened capture. Sequence 1 binds the display before
 /// any transcription event; later values replace paint, never document truth.
@@ -3795,6 +3798,7 @@ pub struct PresentationEmitter {
     cursor_observer: Option<CursorObserver>,
     /// Apple partial paint only; independent of reducer publication and delivery.
     apple_preview_observer: Option<ApplePreviewObserver>,
+    speech_activity_observer: Option<SpeechActivityObserver>,
     cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
@@ -4102,6 +4106,7 @@ impl PresentationEmitter {
             refinement_warnings: None,
             cursor_observer: None,
             apple_preview_observer: None,
+            speech_activity_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
@@ -4167,6 +4172,12 @@ impl PresentationEmitter {
     /// Observe the existing raw Apple preview without admitting or rewriting words.
     pub fn with_apple_preview_observer(mut self, observer: ApplePreviewObserver) -> Self {
         self.apple_preview_observer = Some(observer);
+        self
+    }
+
+    /// Observe owned VAD edges independently of text, ledger and Apple controls.
+    pub fn with_speech_activity_observer(mut self, observer: SpeechActivityObserver) -> Self {
+        self.speech_activity_observer = Some(observer);
         self
     }
 
@@ -5559,6 +5570,19 @@ impl EventSink for PresentationEmitter {
             EngineEvent::VadStart { .. } => {}
             EngineEvent::VadEnd { .. } => self.paint_apple_preview(""),
             EngineEvent::SidebandEvidence { evidence } => {
+                if let Some(observer) = &self.speech_activity_observer
+                    && self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                        session == &evidence.range.session
+                            && *epoch == evidence.range.capture_epoch
+                    })
+                    && matches!(
+                        &evidence.evidence,
+                        SidebandEvidenceKind::SpeechStart { .. }
+                            | SidebandEvidenceKind::SpeechEnd { .. }
+                    )
+                {
+                    observer(evidence);
+                }
                 debug!(
                     sequence = evidence.sequence,
                     sample_start = evidence.range.sample_start,

@@ -2,8 +2,8 @@
 //!
 //! The channel is not a dictation take and not a `State` variant. It subscribes
 //! to the shared capture, seals on a repeated digit, on its own utterance
-//! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` without new channel
-//! text, and stamps `audience` on Bus rows. A session a previous process left
+//! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` following a measured
+//! speech end, and stamps `audience` on Bus rows. A session a previous process left
 //! open is sealed as an orphan when the controller starts. Paste and the
 //! overlay document stay off. The hold badge is the preview; `ChannelHudState`
 //! is the open-mic fact the overlay paints from.
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, anyhow};
 use codescribe_core::config::Config;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
-use codescribe_core::pipeline::contracts::EventSink;
+use codescribe_core::pipeline::contracts::{EventSink, SidebandEvidence, SidebandEvidenceKind};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
@@ -231,6 +231,99 @@ fn frozen_channel_recipients(
     recipients
 }
 
+#[derive(Debug, Default)]
+enum ChannelSpeechPhase {
+    #[default]
+    Unmeasured,
+    Speaking,
+    Quiet { since: SystemTime },
+}
+
+#[derive(Debug)]
+struct SpeechEdgeCursor {
+    capture_epoch: u64,
+    sequence: u64,
+    sample: u64,
+    sample_rate_hz: u32,
+}
+
+/// Cadence follows measured speech edges, never recognizer output timing.
+#[derive(Debug, Default)]
+pub(crate) struct ChannelSpeechClock {
+    last_edge: Option<SpeechEdgeCursor>,
+    phase: ChannelSpeechPhase,
+}
+
+impl ChannelSpeechClock {
+    /// The emitter has already checked the opened session and capture owner.
+    fn observe(&mut self, evidence: &SidebandEvidence, received_at: SystemTime) {
+        let speaking = match &evidence.evidence {
+            SidebandEvidenceKind::SpeechStart { .. } => true,
+            SidebandEvidenceKind::SpeechEnd { .. } => false,
+            SidebandEvidenceKind::Pause { .. } => return,
+        };
+        let range = &evidence.range;
+        // Speech edges are zero-width boundaries, including at sample zero.
+        if range.capture_epoch == 0
+            || evidence.sample_rate_hz == 0
+            || range.sample_start != range.sample_end
+            || self.last_edge.as_ref().is_some_and(|previous| {
+                previous.capture_epoch != range.capture_epoch
+                    || previous.sample_rate_hz != evidence.sample_rate_hz
+                    || evidence.sequence <= previous.sequence
+                    || range.sample_start < previous.sample
+            })
+        {
+            return;
+        }
+        let same_boundary = self
+            .last_edge
+            .as_ref()
+            .is_some_and(|previous| previous.sample == range.sample_start);
+        self.last_edge = Some(SpeechEdgeCursor {
+            capture_epoch: range.capture_epoch,
+            sequence: evidence.sequence,
+            sample: range.sample_start,
+            sample_rate_hz: evidence.sample_rate_hz,
+        });
+        if speaking {
+            self.phase = ChannelSpeechPhase::Speaking;
+        } else {
+            match &self.phase {
+                ChannelSpeechPhase::Speaking => {
+                    // Receipt time cannot backdate measured silence.
+                    self.phase = ChannelSpeechPhase::Quiet { since: received_at };
+                }
+                ChannelSpeechPhase::Quiet { .. } if !same_boundary => {
+                    // A different end without its start is an incomplete edge
+                    // chain, not proof of continuous silence since the old end.
+                    self.phase = ChannelSpeechPhase::Unmeasured;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn quiet_since(&self) -> Option<SystemTime> {
+        match &self.phase {
+            ChannelSpeechPhase::Quiet { since } => Some(*since),
+            ChannelSpeechPhase::Unmeasured | ChannelSpeechPhase::Speaking => None,
+        }
+    }
+
+    fn silence_due(&self, now: SystemTime, secs: u64) -> bool {
+        self.quiet_since()
+            .is_some_and(|since| silence_is_due(since, now, secs))
+    }
+
+    fn deadline(&self, secs: u64) -> Option<SystemTime> {
+        if secs == 0 {
+            return None;
+        }
+        self.quiet_since()?.checked_add(Duration::from_secs(secs))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAgentChannel {
     pub subscriber: CaptureSubscriberId,
@@ -239,7 +332,7 @@ pub(crate) struct OpenAgentChannel {
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
     pub opened_at: SystemTime,
-    pub last_voice_at: Arc<StdMutex<SystemTime>>,
+    pub speech_clock: Arc<StdMutex<ChannelSpeechClock>>,
     pub session_id: Option<String>,
     /// How this channel was opened; a silence-sealed channel reopens the same way.
     pub mode: ChannelOpenMode,
@@ -933,7 +1026,7 @@ impl RecordingController {
         let silence_sec = runtime_settings.values().toggle_silence_sec;
 
         let opened_at = SystemTime::now();
-        let last_voice_at = Arc::new(StdMutex::new(opened_at));
+        let speech_clock = Arc::new(StdMutex::new(ChannelSpeechClock::default()));
         let last_text = Arc::new(StdMutex::new(String::new()));
         let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
         let mut session_id = None;
@@ -1000,12 +1093,18 @@ impl RecordingController {
                 let cursor_token = hold_badge::take_token();
                 let open_label = channel_open_label(digit);
                 hold_badge::update_transcript(cursor_token, &open_label);
-                let voice_clock = Arc::clone(&last_voice_at);
+                let voice_clock = Arc::clone(&speech_clock);
                 let heard_text = Arc::clone(&last_text);
                 let emitter = Arc::new(
                     channel_presentation_emitter(bus, Arc::clone(&ledger), &runtime_settings)
                         .with_apple_preview_observer(Arc::new(move |text| {
                             hold_badge::update_transcript(cursor_token, text);
+                        }))
+                        .with_speech_activity_observer(Arc::new(move |evidence| {
+                            voice_clock
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .observe(evidence, SystemTime::now());
                         }))
                         .with_cursor_observer(Arc::new(move |projection| {
                             hold_badge::update_voice_state(cursor_token, projection.voice);
@@ -1016,9 +1115,6 @@ impl RecordingController {
                             if projection.text.trim().is_empty() {
                                 return;
                             }
-                            *voice_clock
-                                .lock()
-                                .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
                             projection.text.clone_into(
                                 &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
                             );
@@ -1073,7 +1169,7 @@ impl RecordingController {
                 provider: bound.provider,
                 provider_session_id: bound.provider_session_id,
                 opened_at,
-                last_voice_at,
+                speech_clock,
                 session_id,
                 mode,
                 bus: bound.bus,
@@ -1513,11 +1609,10 @@ impl RecordingController {
             let digits: Vec<u8> = channels
                 .iter()
                 .filter(|(_, open)| {
-                    let last = *open
-                        .last_voice_at
+                    open.speech_clock
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    last > open.opened_at && silence_is_due(last, now, secs)
+                        .unwrap_or_else(|error| error.into_inner())
+                        .silence_due(now, secs)
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
@@ -1560,10 +1655,11 @@ impl RecordingController {
             .into_iter()
             .filter_map(|digit| {
                 let open = channels.get(&digit)?;
-                let last = *open
-                    .last_voice_at
+                let autoseal_deadline = open
+                    .speech_clock
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(|error| error.into_inner())
+                    .deadline(secs);
                 Some(ChannelHudState {
                     open: true,
                     loud: true,
@@ -1571,9 +1667,7 @@ impl RecordingController {
                     audience: open.audience.clone(),
                     label: channel_open_label(digit),
                     autoseal_secs: secs,
-                    autoseal_deadline: (secs > 0)
-                        .then(|| last.checked_add(Duration::from_secs(secs)))
-                        .flatten(),
+                    autoseal_deadline,
                     tts_ducking: ducking,
                     opened_at: open.opened_at,
                     utterance_silence_ms: utterance_silence_ms(open.silence_sec),
