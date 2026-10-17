@@ -2981,7 +2981,7 @@ final class OverlayState {
           self.retranscribeTicket = nil
           self.engineChip = previousChip
           self.presentActionFailure(
-            String(localized: "Retranscription revision receipt was inconsistent"),
+            String(localized: "Couldn't apply the new transcription. Try again."),
             notice: String(localized: "Retranscription failed"))
           self.restartAutoHideCountdown()
           return
