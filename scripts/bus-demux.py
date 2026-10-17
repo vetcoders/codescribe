@@ -6736,7 +6736,7 @@ def watch_command(args: argparse.Namespace) -> int:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 continue  # older logs can contain diagnostics
-            if (lease_id and isinstance(payload, dict) and is_broadcast_delivery(payload)
+            if (lease_id and isinstance(payload, dict)
                     and delivery_broadcast_policy(args.bridge_home, payload) != "on"):
                 continue
             line = watch_line(payload, lease_id)
