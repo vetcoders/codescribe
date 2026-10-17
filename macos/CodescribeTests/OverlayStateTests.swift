@@ -2897,6 +2897,62 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.showsSessionTimer)
   }
 
+  /// Maciej, 2026-10-17 11:20Z: the counter did not run during agent takes,
+  /// because only the dictation lifecycle started the capture clock.
+  func testSessionTimerRunsForAChannelTakeAndFreezesWhenTheLastChannelCloses() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    XCTAssertNil(state.elapsedCaptureSeconds())
+
+    clock.now = 100
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    XCTAssertTrue(state.showsSessionTimer, "An open channel take shows the counter")
+    XCTAssertFalse(state.sessionTimerPaused, "An open channel take must tick")
+    clock.now = 112
+    XCTAssertEqual(state.sessionTimerText, "00:12")
+
+    clock.now = 120
+    state.applyChannelRoster([
+      broadcast, navigationRoster(open: true), navigationRoster(channel: "3", open: true),
+    ])
+    clock.now = 130
+    state.applyChannelRoster([
+      broadcast, navigationRoster(open: false), navigationRoster(channel: "3", open: true),
+    ])
+    XCTAssertEqual(
+      state.elapsedCaptureSeconds(), 30, "A second channel neither restarts nor stops the clock")
+
+    clock.now = 145
+    state.applyChannelRoster([
+      broadcast, navigationRoster(open: false), navigationRoster(channel: "3", open: false),
+    ])
+    XCTAssertTrue(state.sessionTimerPaused, "Closing the last channel freezes the take length")
+    clock.now = 200
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 45)
+
+    clock.now = 300
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 0, "The next channel take starts from zero")
+  }
+
+  func testChannelRosterChangesDoNotRestartAnOpenDictationClock() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 100
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    clock.now = 110
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 120
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 20, "Dictation owns its clock while recording")
+    XCTAssertFalse(state.sessionTimerPaused)
+  }
+
   func testReadinessMarkerPersistsOnIdleAndCompletedCanvas() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
