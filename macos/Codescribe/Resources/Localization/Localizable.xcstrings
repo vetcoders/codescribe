@@ -4200,6 +4200,17 @@
         }
       }
     },
+    "Channel 0" : {
+      "comment" : "Pill context menu: membership in channel-zero broadcasts",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał 0"
+          }
+        }
+      }
+    },
     "Channel status unavailable — last open state retained" : {
       "localizations" : {
         "pl" : {
@@ -8677,16 +8688,6 @@
         }
       }
     },
-    "Leave channel 0" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opuść kanał 0"
-          }
-        }
-      }
-    },
     "Leave empty to keep the stored key" : {
       "localizations" : {
         "pl" : {
@@ -12668,16 +12669,6 @@
         }
       }
     },
-    "Receive silently" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odbieraj po cichu"
-          }
-        }
-      }
-    },
     "Received" : {
       "localizations" : {
         "pl" : {
@@ -15901,6 +15892,17 @@
         }
       }
     },
+    "Steer (otherwise queued)" : {
+      "comment" : "Pill context menu: deliveries wake the agent; unticked, they queue silently",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Steruj (inaczej do kolejki)"
+          }
+        }
+      }
+    },
     "Step %lld of %lld" : {
       "comment" : "Setup wizard progress; first %lld is the current step, second the total",
       "localizations" : {
@@ -18299,16 +18301,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Codescribe Bus czeka tyle czasu od zakończenia mowy, zanim wyśle wiadomość. Ten sam limit ciszy obowiązuje przy dyktowaniu bez trzymania klawisza. Zmiany działają od otwarcia kanału lub rozpoczęcia nagrania."
-          }
-        }
-      }
-    },
-    "Wake on channel 0 broadcasts" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybudzaj po rozgłoszeniach na kanale 0"
           }
         }
       }
