@@ -487,7 +487,7 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(agent(.quiet).menuBarDotColor, CSColor.indicatorAgentQuiet)
     XCTAssertEqual(agent(.quiet).menuBarDotRim, CSColor.modeAgent)
     XCTAssertFalse(agent(.quiet).menuBarDotPulses)
-    XCTAssertEqual(agent(.lagging).menuBarDotColor, CSColor.indicatorLagging)
+    XCTAssertEqual(agent(.lagging).menuBarDotColor, CSColor.modeAgent, "orange means processing")
     XCTAssertTrue(agent(.lagging).menuBarDotPulses)
 
     let dictation = TrayStatusStore.preview(kind: .listening, tone: .active, voice: .lagging)

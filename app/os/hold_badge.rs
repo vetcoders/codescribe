@@ -159,17 +159,20 @@ impl BadgeMode {
         }
     }
 
-    /// The dot's fill for the voice under the cursor. Owed words are amber in
-    /// every mode; Agent mode keeps its purple while the voice speaks and turns
-    /// white between phrases (Maciej, 2026-10-14).
+    /// The dot's fill for the voice under the cursor. Agent mode is purple
+    /// whatever the voice does: speaking, and pulsing while words are owed; it
+    /// turns white only between phrases (Maciej, 2026-10-14, 2026-10-17: orange
+    /// means processing, so owed Agent words must not borrow it). Dictation's
+    /// owed words stay amber.
     pub fn voice_color(
         &self,
         base: (f64, f64, f64, f64),
         voice: CursorVoice,
     ) -> (f64, f64, f64, f64) {
         match (self, voice) {
-            (_, CursorVoice::Lagging) => LAGGING_COLOR,
             (BadgeMode::Assistive, CursorVoice::Quiet) => AGENT_QUIET_COLOR,
+            (BadgeMode::Assistive, _) => base,
+            (_, CursorVoice::Lagging) => LAGGING_COLOR,
             _ => base,
         }
     }
@@ -402,8 +405,9 @@ mod tests {
         assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
     }
 
-    /// Maciej, 2026-10-14: Agent mode's dot is purple while the voice speaks,
-    /// white between phrases and pulsing amber while its words are owed.
+    /// Maciej, 2026-10-14 and 2026-10-17: Agent mode's dot is purple while the
+    /// voice speaks, white between phrases and pulsing purple while its words
+    /// are owed — orange belongs to processing.
     /// Dictation keeps its red at rest and its amber, unpulsed, for owed words.
     #[test]
     fn agent_dot_tells_speaking_from_quiet_and_owed_words() {
@@ -416,7 +420,11 @@ mod tests {
             "no observer keeps the mode"
         );
         assert_eq!(agent(CursorVoice::Quiet), super::AGENT_QUIET_COLOR);
-        assert_eq!(agent(CursorVoice::Lagging), super::LAGGING_COLOR);
+        assert_eq!(
+            agent(CursorVoice::Lagging),
+            purple,
+            "owed Agent words stay purple"
+        );
         assert!(BadgeMode::Assistive.voice_pulses(CursorVoice::Lagging));
         assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Quiet));
         assert!(!BadgeMode::Assistive.voice_pulses(CursorVoice::Speaking));
