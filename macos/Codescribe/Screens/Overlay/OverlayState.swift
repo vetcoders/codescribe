@@ -673,6 +673,14 @@ final class OverlayState {
     applyPresentationMode(mode, cause: .user)
   }
 
+  /// A titled window of this app became key. Only an expanded panel folds to
+  /// midi, through the one presentation write, which also forgets a pending
+  /// automatic return. Mini and midi stay as they are.
+  func yieldToAppWindow() {
+    guard presentationMode == .expanded else { return }
+    applyPresentationMode(.midi, cause: .user)
+  }
+
   /// The one presentation write. An automatic expansion from mini/midi is
   /// remembered once and receives a fresh idle interval, which also invalidates
   /// any wake armed for its predecessor.
