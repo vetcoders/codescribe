@@ -1457,6 +1457,9 @@ def emit_follower(
     descriptor = os.open(events_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
+        # A policy release can append alongside the follower. Keep a complete
+        # NDJSON frame contiguous even when the kernel accepts a short write.
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
         remaining = memoryview(encoded)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -1853,6 +1856,27 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
         session = environ.get(PROVIDER_SESSION_ENV[provider], "").strip() or None
         if session:
             args += ["--session", session]
+    local_root = (root or bridge_home()).expanduser().resolve(strict=False)
+    if provider == "codex" and session:
+        if "--attach" in args:
+            requested = flag_value(args, "--wakeup")
+            if requested is None:
+                args += ["--wakeup", "off"]
+            elif requested == "codex-queue":
+                # The conversation lives on this Mac, so its queue does too:
+                # the mailbox host attaches with wakeup off and the local
+                # --watch relay queues here. Say what ran instead of refusing.
+                args = remote_wakeup_resolved(args, "off")
+                emit({"kind": "wakeup_resolved", "requested": "codex-queue", "effective": "off",
+                      "reason": "remote Codex: the mailbox host never queues; "
+                                f"cs-bus --remote {host} --watch queues on this Mac"})
+        if ("--watch" in args and flag_value(args, "--wakeup") != "off"
+                and not any(flag in args for flag in ("--human", "--until-event"))):
+            return remote_codex_watch(host, args, session, local_root, environ)
+        if any(item == "--ack" or item.startswith("--ack=") for item in args):
+            return remote_codex_ack(host, args, session, local_root, environ)
+        if "--status" in args or flag_value(args, "--retry-wakeup"):
+            return remote_codex_receipt_command(host, args, session, local_root, environ)
     command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args)])
     result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL, env=dict(environ))
     if result.returncode == 0 and provider and session and ("--attach" in args or "--detach" in args):
@@ -1860,6 +1884,210 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
                              lease_identifier(provider, session), host,
                              "--attach" in args)
     return result.returncode
+
+
+def remote_wakeup_resolved(args: list[str], effective: str) -> list[str]:
+    """The same arguments with every --wakeup value replaced by `effective`."""
+    resolved: list[str] = []
+    replace_next = False
+    for item in args:
+        if replace_next:
+            resolved.append(effective)
+            replace_next = False
+        elif item == "--wakeup":
+            resolved.append(item)
+            replace_next = True
+        elif item.startswith("--wakeup="):
+            resolved.append("--wakeup=" + effective)
+        else:
+            resolved.append(item)
+    return resolved
+
+
+def remote_queue_root(root: Path, host: str) -> Path:
+    """Local transport receipts only; the remote mailbox is never copied here."""
+    if not REMOTE_HOST_PATTERN.fullmatch(host):
+        raise ValueError("invalid remote mailbox host")
+    return root / "runtime" / "remote-native" / hashlib.sha256(host.encode()).hexdigest()
+
+
+def remote_codex_receipt_command(host: str, args: list[str], session: str, root: Path, environ: Any) -> int:
+    """Status/retry address the queue beside this client, never the mailbox Mac."""
+    import shlex
+    import subprocess
+
+    retry = flag_value(args, "--retry-wakeup")
+    if retry and not re.fullmatch(r"[0-9a-f]{24}", retry):
+        raise ValueError("invalid remote retry delivery id")
+    forwarded = (["--read-delivery", retry, "--queue-admit", "--provider", "codex", "--session", session] if retry else args)
+    command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in forwarded)])
+    result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, text=True, env=dict(environ))
+    if result.returncode:
+        print(result.stdout, end="", flush=True)
+        return result.returncode
+    value = json.loads(result.stdout)
+    wake = NativeQueueWakeup(root, session, None, mailbox_host=host)
+    if retry:
+        if not owned_queue_envelope(value, session) or value.get("delivery_id") != retry:
+            wake.close()
+            raise ValueError("remote retry does not own this delivery")
+        wake.enqueue(value, retry=True)
+        wake.close(wait=True)
+        receipt = read_json(wake.root / "wakeups" / wake.lease_id / f"{retry}.json") or {}
+        emit(receipt)
+        return 0 if receipt.get("disposition") == "provider_accepted" else 3
+    wake.close()
+    record = read_json(watch_record_path(wake.root, wake.lease_id)) or {}
+    pid = record.get("pid")
+    alive = (process_is_alive(pid) and record.get("process_identity") is not None
+             and process_identity(pid) == record.get("process_identity"))
+    directory = wake.root / "wakeups" / wake.lease_id
+    receipts = [read_json(path) or {} for path in sorted(directory.glob("*.json"))]
+    value["local_native_queue"] = {
+        "mailbox_host": host, "watch_alive": bool(alive), "watch_pid": pid if alive else None,
+        "receipts": str(directory),
+        "unsettled": [{k: r[k] for k in ("delivery_id", "disposition", "queue_disposition", "provider_error") if k in r}
+                      for r in receipts if r.get("queue_disposition") not in ("removed", "not_pending")],
+    }
+    emit(value)
+    return 0
+
+
+def owned_queue_envelope(value: Any, session: str) -> bool:
+    expected = {"provider": "codex", "provider_session_id": session,
+                "lease_id": lease_identifier("codex", session)}
+    if not isinstance(value, dict) or value.get("schema") != EVENT_SCHEMA:
+        return False
+    owner = value.get("delivery_owner")
+    identity = value.get("delivery_id")
+    return (isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{24}", identity) is not None
+            and isinstance(owner, dict) and all(owner.get(k) == v and value.get(k) == v
+                                                for k, v in expected.items()))
+
+
+def mailbox_queue_admitted(root: Path, payload: Any, session: str,
+                           state: dict[str, Any] | None = None) -> bool:
+    """Current source mailbox owns admission; a transport receipt is no lease."""
+    if not owned_queue_envelope(payload, session):
+        return False
+    lease_id = lease_identifier("codex", session)
+    state = state if state is not None else read_json(root / "leases" / f"{lease_id}.json") or {}
+    if (state.get("schema") != LEASE_SCHEMA or state.get("lease_id") != lease_id
+            or state.get("provider") != "codex" or state.get("provider_session_id") != session
+            or not isinstance(state.get("bus"), str) or payload.get("bus") != state["bus"]
+            or payload not in state.get("pending", [])):
+        return False
+    return (not delivery_acknowledged(root, lease_id, payload["delivery_id"], payload)
+            and delivery_broadcast_policy(root, payload) == "on")
+
+
+def remote_codex_ack(host: str, args: list[str], session: str, root: Path, environ: Any) -> int:
+    import shlex
+    import subprocess
+
+    command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args)])
+    result = subprocess.run(ssh_command(host, command, environ), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, text=True, env=dict(environ))
+    requested: set[str] = set()
+    collecting = False
+    for item in args:
+        if item == "--ack":
+            collecting = True
+        elif item.startswith("--ack="):
+            requested.add(item.split("=", 1)[1])
+            collecting = False
+        elif item.startswith("--"):
+            collecting = False
+        elif collecting:
+            requested.add(item)
+    wake = NativeQueueWakeup(root, session, None, mailbox_host=host)
+    try:
+        for raw in result.stdout.splitlines():
+            try:
+                receipt = json.loads(raw)
+            except json.JSONDecodeError:
+                print(raw, flush=True)
+                continue
+            if (result.returncode == 0 and isinstance(receipt, dict)
+                    and receipt.get("kind") == "acknowledged"
+                    and receipt.get("lease_id") == wake.lease_id
+                    and receipt.get("delivery_id") in requested):
+                settled = wake.acknowledge_remote(receipt.get("delivery_id"))
+                receipt["native_queue_settled"] = receipt.get("native_queue_settled") is True and settled
+            emit(receipt)
+    finally:
+        wake.close(wait=True)
+    return result.returncode
+
+
+def remote_codex_watch(host: str, args: list[str], session: str, root: Path, environ: Any) -> int:
+    """One SSH watch delivers bells and queues on the conversation's own Mac."""
+    import shlex
+    import subprocess
+
+    wake = NativeQueueWakeup(root, session, None, mailbox_host=host)
+    wake.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (wake.root / f"{wake.lease_id}.watch.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            wake.close()
+            sys.stderr.write("cs-bus: this remote Codex watch is already running\n")
+            return 3
+        command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args),
+                            "--queue-relay", "--from-start"])
+        record = watch_record_path(wake.root, wake.lease_id)
+        atomic_json(record, {"pid": os.getpid(), "process_identity": process_identity(os.getpid()),
+                             "mailbox_host": host, "started_at": utc_now()})
+        process = subprocess.Popen(ssh_command(host, command, environ), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, env=dict(environ))
+        try:
+            while True:
+                raw = process.stdout.readline(1 << 20)
+                if not raw:
+                    return process.wait()
+                if not raw.endswith(b"\n"):
+                    if len(raw) < 1 << 20:
+                        raise ValueError("remote watch envelope is incomplete")
+                    while raw and not raw.endswith(b"\n"):
+                        raw = process.stdout.readline(1 << 20)
+                    sys.stderr.write("cs-bus: skipped a remote watch line over 1 MiB\n")
+                    continue
+                try:
+                    value = json.loads(raw)
+                except json.JSONDecodeError:
+                    sys.stderr.write("cs-bus: skipped a remote watch line that is not JSON\n")
+                    continue
+                if not isinstance(value, dict):
+                    sys.stderr.write("cs-bus: skipped a remote watch line that is not an envelope\n")
+                    continue
+                if value.get("kind") == "queue_relay_ack":
+                    if (value.get("provider") == "codex" and value.get("provider_session_id") == session
+                            and value.get("lease_id") == wake.lease_id):
+                        wake.acknowledge_remote(value.get("delivery_id"), wait=False)
+                    continue
+                if value.get("kind") in TERMINAL_KINDS:
+                    if not owned_queue_envelope(value, session):
+                        continue
+                    wake.enqueue(value)
+                emit(value)
+        except (ValueError, OSError) as error:
+            sys.stderr.write(f"cs-bus: remote Codex watch stopped: {error}\n")
+            return 3
+        except KeyboardInterrupt:
+            return 130
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            wake.close(wait=True)
+            record.unlink(missing_ok=True)
 
 
 def provider_session_from_env(provider: str) -> str | None:
@@ -2879,7 +3107,8 @@ def receipt_envelope(payload: dict[str, Any], bus: str) -> dict[str, Any]:
 
 
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
-                          expected_payload: dict[str, Any] | None = None) -> bool:
+                          expected_payload: dict[str, Any] | None = None, *,
+                          historical: bool = False) -> bool:
     path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
     try:
         metadata = path.lstat()
@@ -2891,6 +3120,9 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
     if receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != delivery_id:
         return False
     if set(receipt) == {"lease_id", "delivery_id"}:
+        if historical:
+            state = read_json(root / "leases" / f"{lease_id}.json") or {}
+            return expected_payload is not None and expected_payload.get("bus") == state.get("bus")
         return True
     state = read_json(root / "leases" / f"{lease_id}.json")
     if (not state or state.get("schema") != LEASE_SCHEMA
@@ -2900,6 +3132,11 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
             or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id):
         return False
     owner = {key: state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
+    if historical:
+        if (not owned_queue_envelope(expected_payload, state["provider_session_id"])
+                or not isinstance(expected_payload.get("bus"), str)):
+            return False
+        owner["bus"] = expected_payload["bus"]
     matches = lambda value: isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
     envelope = receipt.get("envelope")
     if not matches(receipt) or not matches(envelope) or envelope.get("delivery_id") != delivery_id:
@@ -2914,7 +3151,7 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
     if original is None and isinstance(pending, list):
         original = next((item for item in pending if isinstance(item, dict)
                          and item.get("delivery_id") == delivery_id), None)
-    return original is None or envelope == receipt_envelope(original, state["bus"])
+    return original is None or envelope == receipt_envelope(original, owner["bus"])
 
 
 def native_submission_id(receipt: dict[str, Any]) -> str | None:
@@ -3022,7 +3259,8 @@ def delete_native_queue_submission(root: Path, session: str, submission: str) ->
 
 
 def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
-                               retry: bool = False, locked: bool = False) -> bool:
+                               retry: bool = False, locked: bool = False,
+                               remote_session: str | None = None, mailbox_host: str | None = None) -> bool:
     """Cancel this owned pending submission after ACK; preserve immutable history.
 
     A busy sender owns the same lock and checks ACK after publishing its receipt.
@@ -3044,12 +3282,17 @@ def withdraw_acknowledged_queue(root: Path, lease_id: str, identity: str, *,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return False
-            return withdraw_acknowledged_queue(root, lease_id, identity, retry=retry, locked=True)
+            return withdraw_acknowledged_queue(root, lease_id, identity, retry=retry, locked=True,
+                                               remote_session=remote_session, mailbox_host=mailbox_host)
     path = directory / f"{identity}.json"
     receipt = read_json(path)
     if receipt is None:
         return not path.exists()
     state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if remote_session is not None:
+        if not mailbox_host or receipt.get("mailbox_host") != mailbox_host:
+            return False
+        state = {"provider": "codex", "provider_session_id": remote_session}
     expected = {"lease_id": lease_id, "provider": "codex", "provider_session_id": state.get("provider_session_id"),
                 "delivery_id": identity}
     if (state.get("provider") != "codex" or lease_identifier("codex", str(expected["provider_session_id"])) != lease_id
@@ -3224,7 +3467,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "source", "producer_schema", "source_event_id", "sequence", "session_id",
         "utterance_id", "message_id", "mode", "reducer_revision", "reducer_action",
         "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
-        "bus", "recipients", "broadcast_id", "channel", "routing_match", "routing_candidates",
+        "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
     )
@@ -3337,10 +3580,11 @@ class NativeQueueWakeup:
     Only the conversation can acknowledge reading the original envelope.
     """
 
-    def __init__(self, root: Path, session: str, channel: str | None):
+    def __init__(self, root: Path, session: str, channel: str | None, *, mailbox_host: str | None = None):
         from concurrent.futures import ThreadPoolExecutor
 
-        self.root = root
+        self.root = remote_queue_root(root, mailbox_host) if mailbox_host else root
+        self.mailbox_host = mailbox_host
         self.session = session
         self.channel = channel
         self.lease_id = lease_identifier("codex", session)
@@ -3348,6 +3592,28 @@ class NativeQueueWakeup:
         import threading
         self.withdrawals: set[str] = set()
         self.withdrawal_lock = threading.Lock()
+
+    def _withdraw(self, identity: str, *, locked: bool = False, retry: bool = False) -> bool:
+        return withdraw_acknowledged_queue(
+            self.root, self.lease_id, identity, locked=locked, retry=retry,
+            remote_session=self.session if self.mailbox_host else None, mailbox_host=self.mailbox_host)
+
+    def acknowledge_remote(self, identity: str, *, wait: bool = True) -> bool:
+        """Only called with an authenticated remote ACK receipt/control frame."""
+        if not self.mailbox_host or not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity):
+            return False
+        if not delivery_acknowledged(self.root, self.lease_id, identity):
+            atomic_json(self.root / "acknowledgments" / self.lease_id / f"{identity}.json",
+                        {"lease_id": self.lease_id, "delivery_id": identity})
+        if wait:
+            return self._withdraw(identity, retry=True)
+        path = self.root / "wakeups" / self.lease_id / f"{identity}.json"
+        receipt = read_json(path)
+        if (receipt is None and not path.exists()
+                or receipt and receipt.get("queue_disposition") in ("removed", "not_pending")):
+            return True
+        self.enqueue_withdrawal(identity)
+        return False
 
     def enqueue_withdrawal(self, identity: str) -> None:
         receipt = read_json(self.root / "wakeups" / self.lease_id / f"{identity}.json") or {}
@@ -3363,7 +3629,7 @@ class NativeQueueWakeup:
             with self.withdrawal_lock:
                 self.withdrawals.discard(identity)
             self._report_error(future)
-        self.executor.submit(withdraw_acknowledged_queue, self.root, self.lease_id, identity).add_done_callback(complete)
+        self.executor.submit(self._withdraw, identity).add_done_callback(complete)
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
         if payload.get("kind") not in TERMINAL_KINDS:
@@ -3396,15 +3662,21 @@ class NativeQueueWakeup:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
             if delivery_acknowledged(self.root, self.lease_id, identity, payload):
-                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
+                self._withdraw(identity, locked=True)
                 return
-            state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
-            if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
-                return
-            if payload not in state.get("pending", []):
-                return
-            if delivery_broadcast_policy(self.root, payload) != "on":
-                return
+            if self.mailbox_host:
+                # The authenticated SSH watch has applied mailbox admission,
+                # broadcast policy and ACK filtering. Never invent a local lease.
+                if payload.get("schema") != EVENT_SCHEMA:
+                    return
+            else:
+                state = read_json(self.root / "leases" / f"{self.lease_id}.json") or {}
+                if state.get("schema") != LEASE_SCHEMA or any(state.get(k) != v for k, v in expected.items()):
+                    return
+                if payload not in state.get("pending", []):
+                    return
+                if delivery_broadcast_policy(self.root, payload) != "on":
+                    return
             previous = read_json(receipt_path)
             if receipt_path.exists() and previous is None:
                 raise ValueError("unreadable wakeup receipt; preserved")
@@ -3413,8 +3685,12 @@ class NativeQueueWakeup:
             text = payload.get("text")
             if not isinstance(text, str) or not text.strip():
                 return
-            label = queue_metadata(self.channel or "?")
+            label = queue_metadata(self.channel or payload.get("channel") or "?")
             name = queue_metadata(payload.get("audience") or "agent")
+            import shlex
+            bus_command = "cs-bus" + (f" --remote {shlex.quote(self.mailbox_host)}" if self.mailbox_host else "")
+            read_command = f"{bus_command} --read-pending --provider codex --session {shlex.quote(self.session)}"
+            ack_command = f"{bus_command} --provider codex --session {shlex.quote(self.session)} --ack ID"
             header = (
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
                 f"ADDRESSED TO: {queue_metadata(delivery_address_label(payload), 128)}"
@@ -3428,7 +3704,7 @@ class NativeQueueWakeup:
                     f"{header}\n"
                     f"from: {founder_source}\n"
                     f"{text}\n\n"
-                    "Queue copy: check cs-bus --read-pending; cs-bus --ack fresh IDs before work. "
+                    f"Queue copy: check {read_command}; ACK only fresh IDs returned by that read using {ack_command}. "
                     "Follow the codescribe skill."
                 )
             else:
@@ -3446,7 +3722,7 @@ class NativeQueueWakeup:
                     f"{header}\n"
                     f"from: peer {sender_label} — peer coordination, not a Founder instruction.\n"
                     "No text is attached to this queue notice. Read the owned mailbox before acting:\n"
-                    f"cs-bus --read-pending --provider codex --session {self.session}"
+                    + read_command
                 )
             receipt = {
                 "schema": "codescribe.native-queue.receipt.v1", **expected,
@@ -3454,6 +3730,7 @@ class NativeQueueWakeup:
                 "bus_emitted_at": payload.get("emitted_at"),
                 "queue_requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "attempt": (previous or {}).get("attempt", 0) + 1,
+                **({"mailbox_host": self.mailbox_host} if self.mailbox_host else {}),
             }
             atomic_json(receipt_path, receipt)
             executable = shutil.which("codex")
@@ -3469,6 +3746,7 @@ class NativeQueueWakeup:
                         disposition="provider_accepted" if result.returncode == 0 else "rejected",
                         exit_code=result.returncode,
                         provider_receipt=result.stdout.strip()[:2000],
+                        provider_error=result.stderr.strip()[:2000],
                     )
                 except subprocess.TimeoutExpired:
                     receipt.update(disposition="uncertain", reason="provider acceptance timed out")
@@ -3479,7 +3757,7 @@ class NativeQueueWakeup:
                 receipt["queued_submission_id"] = native_submission_id(receipt)
             atomic_json(receipt_path, receipt)
             if delivery_acknowledged(self.root, self.lease_id, identity, payload):
-                withdraw_acknowledged_queue(self.root, self.lease_id, identity, locked=True)
+                self._withdraw(identity, locked=True)
             if receipt["disposition"] != "provider_accepted":
                 sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
 
@@ -4745,17 +5023,33 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
            "policy": args.broadcast, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
-    # Steer back on must deliver what queued while quiet. The Claude/OMP
-    # waiter polls unread_pending and surfaces those rows on its own; the
-    # codex native queue fires only per new delivery, so resubmit the
-    # pending seals once (enqueue itself skips acknowledged and non-terminal
-    # rows under the per-delivery lock).
-    if args.broadcast == "on" and lease.get("provider") == "codex":
-        native = NativeQueueWakeup(args.bridge_home, args.session, None)
+    # The follower may persist a quiet row after our first snapshot but before
+    # the policy write. Read it after publication; later rows observe the new
+    # policy themselves. A concurrent reattach must not lend us another bus.
+    lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
+            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider_session_id") != args.session or lease.get("bus") != str(bus)):
+        raise ValueError("mailbox changed during broadcast policy transition")
+    # Releasing quiet makes eligible pending rows visible to the existing
+    # watch, including direct rows when channel zero remains off. The source
+    # follower's explicit wakeup=off still forbids queue submission here.
+    if args.broadcast != "quiet" and lease.get("provider") == "codex":
+        native = (NativeQueueWakeup(args.bridge_home, args.session, None)
+                  if (lease.get("wakeup_configuration") or {}).get("wakeup") != "off" else None)
+        _, events = follower_paths(args.bridge_home, lease_id)
         for payload in lease.get("pending", []):
-            if isinstance(payload, dict):
+            if (not isinstance(payload, dict) or payload.get("kind") not in TERMINAL_KINDS
+                    or not mailbox_queue_admitted(args.bridge_home, payload, args.session, lease)):
+                continue
+            # Repeating the explicit policy command also repairs an interrupted
+            # policy-write/event-append pair. Existing delivery IDs deduplicate.
+            events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            emit_follower(payload, events, None, human_output=False)
+            if native:
                 native.enqueue(dict(payload), retry=True)
-        native.close(wait=True)
+        if native:
+            native.close(wait=True)
     emit({**row, "broadcast": broadcast_policy_snapshot(args.bridge_home, args.provider, args.session, bus)})
     return 0
 
@@ -6622,12 +6916,14 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
+def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False) -> dict[str, Any] | None:
     """One complete message for an envelope worth waking the agent for.
 
     Drafts and revisions stay in the mailbox. The watch surfaces seals
     (certified or coverage-refused), anything allowed to change state, and
     routing-ambiguity notices that need the Founder to re-address.
+    `peer_replies` adds agent replies; only the remote queue relay asks for
+    them, so an ordinary watch keeps its wake set.
     """
     if not isinstance(payload, dict) or payload.get("schema") != EVENT_SCHEMA:
         return None
@@ -6636,6 +6932,8 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
     if not (
         payload.get("status") == SEALED
         or payload.get("state_change_allowed") is True
+        or (peer_replies and payload.get("kind") == "message"
+            and payload.get("producer_schema") == AGENT_REPLY_SCHEMA)
         or payload.get("kind") == "routing_ambiguity"
         or payload.get("coverage") == COVERAGE_REFUSED
     ):
@@ -6711,6 +7009,12 @@ def watch_command(args: argparse.Namespace) -> int:
     lease_id = (
         lease_identifier(args.provider, args.session) if args.provider else None
     )
+    relay = getattr(args, "queue_relay", False)
+    if relay:
+        state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
+        if state.get("wakeup_configuration", {}).get("wakeup") != "off":
+            sys.stderr.write("cs-bus: remote queue relay needs reattach with --wakeup off\n")
+            return 3
     if args.from_file is not None:
         source = args.from_file
     else:
@@ -6735,6 +7039,16 @@ def watch_command(args: argparse.Namespace) -> int:
                 channel = str(slot)
                 break
     seen: set[str] = set()
+    relay_ids: dict[str, dict[str, Any]] = {}
+    relay_acks: dict[str, float] = {}
+
+    def emit_relay_ack(identity: str) -> None:
+        now = time.monotonic()
+        if identity in relay_acks and now - relay_acks[identity] < 30:
+            return
+        emit({"kind": "queue_relay_ack", "provider": args.provider,
+              "provider_session_id": args.session, "lease_id": lease_id, "delivery_id": identity})
+        relay_acks[identity] = now
 
     def pump(entries: list[tuple[str, int]]) -> None:
         drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
@@ -6751,10 +7065,25 @@ def watch_command(args: argparse.Namespace) -> int:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 continue  # older logs can contain diagnostics
+            if relay and isinstance(payload, dict):
+                if not owned_queue_envelope(payload, args.session) or payload.get("kind") in DRAFT_KINDS:
+                    continue
+                identity = payload["delivery_id"]
+                terminal = payload.get("kind") in TERMINAL_KINDS
+                if terminal:
+                    causal = receipt_envelope(payload, payload.get("bus"))
+                    if delivery_acknowledged(args.bridge_home, lease_id, identity, causal, historical=True):
+                        relay_ids[identity] = causal
+                        emit_relay_ack(identity)
+                        continue
+                if not mailbox_queue_admitted(args.bridge_home, payload, args.session):
+                    continue
+                if terminal:
+                    relay_ids[identity] = causal
             if (lease_id and isinstance(payload, dict)
                     and delivery_broadcast_policy(args.bridge_home, payload) != "on"):
                 continue
-            line = watch_line(payload, lease_id)
+            line = watch_line(payload, lease_id, peer_replies=relay)
             if args.human:
                 if not isinstance(payload, dict) or payload.get("schema") not in (EVENT_SCHEMA, ATTACH_SCHEMA):
                     continue
@@ -6777,7 +7106,9 @@ def watch_command(args: argparse.Namespace) -> int:
                 flush(key)
                 print(human_line(payload, channel), flush=True)
             else:
-                if getattr(args, "full", False):
+                if relay:
+                    emit({"notice": "Codescribe message", **conversation_envelope(payload)})
+                elif getattr(args, "full", False):
                     emit(line)
                 else:
                     emit({"notice": "Codescribe message", **line})
@@ -6812,6 +7143,10 @@ def watch_command(args: argparse.Namespace) -> int:
         while True:
             entries, offset = iter_new_lines(source, offset)
             pump(entries)
+            if relay:
+                for identity, causal in relay_ids.items():
+                    if delivery_acknowledged(args.bridge_home, lease_id, identity, causal, historical=True):
+                        emit_relay_ack(identity)
             notice = supervisor.check(time.monotonic()) if supervisor else None
             if notice is not None:
                 emit({"notice": "Codescribe listener lifecycle", **notice})
@@ -6859,6 +7194,8 @@ def main() -> int:
                "ACK complete received messages immediately. Codex native queue also wakes the next turn.",
     )
     parser.add_argument("--version", action="store_true", help="installed helper version and source commit slug")
+    parser.add_argument("--queue-relay", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--queue-admit", action="store_true", help=argparse.SUPPRESS)
     native = parser.add_mutually_exclusive_group()
     native.add_argument("--mcp", action="store_true", help="serve the native Codescribe MCP conversation over stdio")
     native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
@@ -7081,6 +7418,8 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
+        parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):
         allowed = {"revise", "withdraw", "release", "provider", "session", "lease", "channel", "bus", "bridge_home", "entrypoint"}
         if (any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)
@@ -7378,6 +7717,8 @@ def main() -> int:
         payload = next((p for p in state.get("pending", []) if p.get("delivery_id") == args.read_delivery), None)
         if payload is None or delivery_acknowledged(args.bridge_home, lease_id, args.read_delivery, payload):
             parser.error("delivery is not pending in this mailbox")
+        if args.queue_admit and not mailbox_queue_admitted(args.bridge_home, payload, args.session, state):
+            parser.error("delivery is not wakeable under the current mailbox policy")
         emit(payload)
         return 0
     if args.wakeup == "codex-queue" and (args.provider != "codex" or args.on_seal):
@@ -7402,6 +7743,8 @@ def main() -> int:
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
         parser.error("--voice needs a voice id")
+    if args.queue_relay and (not args.watch or args.provider != "codex" or args.human or args.until_event):
+        parser.error("--queue-relay requires a Codex machine-readable watch")
     if args.human and not args.watch:
         parser.error("--human travels with --watch")
     if args.full and not args.watch:
