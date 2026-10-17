@@ -30,7 +30,7 @@ class RemoteBusAdmissionTests(unittest.TestCase):
             with mock.patch("subprocess.run", return_value=SimpleNamespace(returncode=0)):
                 with mock.patch.object(demux, "remember_remote_host") as remember:
                     code = demux.run_remote(
-                        ["--remote", "dragon", "--attach", "--channel", "2", "--name", "lena",
+                        ["--remote", "host-a", "--attach", "--channel", "2", "--name", "agent",
                          "--provider", "claude-code", "--session", "first", "--session", "second"],
                         environ={}, root=Path(directory),
                     )
@@ -55,7 +55,7 @@ class RemoteBusAdmissionTests(unittest.TestCase):
         with mock.patch.object(mcp.subprocess, "Popen", side_effect=spawn):
             with mock.patch.object(mcp, "release_remote") as release:
                 result = mcp.remote_wake(
-                    demux, "dragon", "session", {}, [], window=1,
+                    demux, "host-a", "session", {}, [], window=1,
                     alive=lambda: not stopped.is_set(),
                 )
         self.assertEqual(result, (0, ""))
@@ -87,11 +87,11 @@ class RemoteBusAdmissionTests(unittest.TestCase):
                         with contextlib.redirect_stderr(err):
                             code = mcp.wake_here_and_remote(
                                 demux, Path("/unused"), Path("/unused/bus"), "session", {},
-                                ["dragon"], window=1, interval=0.01,
+                                ["host-a"], window=1, interval=0.01,
                             )
                             self.assertTrue(finished.wait(2))
         self.assertEqual(code, mcp.WAKE_EXIT)
-        self.assertIn("Mailbox on dragon", err.getvalue())
+        self.assertIn("Mailbox on host-a", err.getvalue())
 
 
 if __name__ == "__main__":
