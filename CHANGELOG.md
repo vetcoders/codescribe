@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
+
 ### Fixed
 
 - Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.

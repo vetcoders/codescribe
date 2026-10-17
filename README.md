@@ -106,6 +106,9 @@ marketplace at `~/.codescribe/agent-bridge/runtime/plugins`.
   `omp plugin install codescribe@codescribe`, then `/codescribe leon 4` inside `omp`. The
   bundled extension holds `cs-bus --omp-wake` between turns and starts a turn for each
   new message, with no model turn during silence. See [OMP](docs/OMP_PLUGIN.md).
+- **Any remote agent:** an agent that does not run on this machine joins the same
+  channels over MCP 2.0 instead of a plugin, with its identity and capabilities
+  fixed by a locally reviewed scope file. See [Agent MCP](docs/AGENT_MCP.md).
 
 ## OpenAI Provider
 
