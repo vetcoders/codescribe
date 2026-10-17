@@ -223,13 +223,32 @@ class ScopeContractTests(Fixture):
         value = json.loads(result.stdout)
         expected = self.root / "runtime" / "ada-mcp" / self.lease
         self.assertEqual(value, {"schema": "codescribe.agent-mcp.scope-check.v1", "provider": "codex",
-                                 "name": "Ada", "lease_id": self.lease, "state_path": str(expected),
+                                 "name": "Ada", "lease_id": self.lease, "state_dir_exists": True,
+                                 "state_path": str(expected),
                                  "events_path": str(expected / "events.sqlite"),
                                  "key_namespace": EVENTS.key_namespace(PRINCIPAL, SESSION, expected / "events.sqlite")})
         self.assertNotIn(PRINCIPAL, result.stdout)
         self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
         self.assertFalse((self.root / "acknowledgments").exists())
         self.assertFalse(expected.exists())
+
+    def test_validation_and_check_scope_never_create_an_absent_state_directory(self):
+        absent = self.root / "runtime" / "lin-mcp"
+        config = {**self.config, "state_dir": str(absent)}
+        scope = AGENT.Scope(config)
+        self.assertFalse(os.path.lexists(absent))
+        path = self.root / "absent-scope.json"
+        path.write_text(json.dumps(config))
+        result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT), "--scope", str(path), "--check-scope"],
+                                text=True, capture_output=True, check=True, timeout=15)
+        value = json.loads(result.stdout)
+        self.assertFalse(value["state_dir_exists"])
+        self.assertEqual(value["events_path"], str(absent / self.lease / "events.sqlite"))
+        self.assertFalse(os.path.lexists(absent))
+        # Only a starting connection prepares it, privately.
+        self.assertEqual(scope.prepare_state(), absent)
+        self.assertEqual(stat.S_IMODE(absent.stat().st_mode), 0o700)
+        self.assertEqual(scope.prepare_state(), absent)
 
     def test_check_scope_refuses_other_modes_and_an_invalid_scope(self):
         path = self.root / "scope.json"

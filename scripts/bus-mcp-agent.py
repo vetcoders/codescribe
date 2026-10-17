@@ -182,23 +182,39 @@ class Scope:
         Fail closed: no default, no fallback and no directory shared with
         another connection. The resolved location keys the Events signing-key
         namespace, so a deployment keeps its existing keys by naming the
-        directory it already uses.
+        directory it already uses. Validation writes nothing; `prepare_state`
+        creates an absent directory when a connection actually starts.
         """
         runtime = self.root / "runtime"
         if (path.parent.resolve() != runtime.resolve()
                 or not STATE_DIRECTORY_PATTERN.fullmatch(path.name)):
             raise ValueError("A '-mcp' directory directly inside the bridge runtime root is required")
+        self.check_private_directory(path)
+        return path
+
+    @staticmethod
+    def check_private_directory(path):
         try:
             info = os.lstat(path)
         except FileNotFoundError:
-            runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-            os.mkdir(path, 0o700)
-            os.chmod(path, 0o700)
-            return path
+            return False
         if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
                 or info.st_uid != os.getuid() or info.st_mode & 0o022):
             raise ValueError("The state directory must be a private directory owned by this user")
-        return path
+        return True
+
+    def prepare_state(self):
+        """Create the validated state directory with mode 0700 if it is absent."""
+        if not self.check_private_directory(self.state):
+            (self.root / "runtime").mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.mkdir(self.state, 0o700)
+                os.chmod(self.state, 0o700)  # mkdir's mode is narrowed by umask only.
+            except FileExistsError:
+                pass  # A concurrent start created it; the check below decides.
+        if not self.check_private_directory(self.state):
+            raise ValueError("The state directory could not be prepared")
+        return self.state
 
 
 class AgentMailbox:
@@ -210,7 +226,7 @@ class AgentMailbox:
         self.mailbox.provider, self.mailbox.owner = scope.provider, scope.session
         self.mailbox.bus = scope.bus
         self.lease = demux.lease_identifier(scope.provider, scope.session)
-        self.calls = scope.state / self.lease / "calls"
+        self.calls = scope.prepare_state() / self.lease / "calls"
 
     def authorize(self, principal):
         if principal != self.scope.principal:

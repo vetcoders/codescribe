@@ -29,7 +29,9 @@ restrict it to the configured principal. Stdio is not an authentication
 mechanism.** Anything that can start the process, or reach the socket your
 transport exposes, is the agent as far as this surface is concerned. Run it
 behind a transport that proves who is calling, and give that transport no
-broader reach than the agent needs.
+broader reach than the agent needs. Start this process with a minimal
+environment: credentials the transport or its launcher holds must not be
+inherited by it, because it never needs them.
 
 Everything the agent is allowed to be — provider, session, name, bus, paths,
 capabilities — comes from a scope file that the machine's owner writes and
@@ -82,7 +84,8 @@ fallback:
 - it must not be a symlink;
 - if it exists it must be a directory owned by the current user and not
   group- or world-writable;
-- if it does not exist it is created with mode `0700`.
+- if it does not exist, a starting connection creates it with mode `0700`
+  (validation alone and `--check-scope` never create it).
 
 Per-lease state then lives at `<state_dir>/<lease_id>/`, holding `calls/`,
 `send/`, `say/` and `events.sqlite`. Give each connection its own directory;
@@ -148,13 +151,13 @@ python3 scripts/bus-mcp-runtime.py --scope /path/to/scope.json --check-scope
 ```
 
 Validates the scope and prints one JSON object — schema label, provider, name,
-lease id, resolved state path, resolved `events.sqlite` path and the Events key
-namespace — then exits. It starts no server, reads no mailbox, opens no key
-backend and contacts no network. Validating the scope does create `state_dir` if
-it is absent, exactly as a real run would; nothing else is written. The
-namespace is a hash, not a secret. Use it to compare an old and a new
-configuration before switching one over, and to confirm the key namespace is
-unchanged.
+lease id, whether `state_dir` already exists, resolved state path, resolved
+`events.sqlite` path and the Events key namespace — then exits. It writes
+nothing: it starts no server, creates no directory, reads no mailbox, opens no
+key backend and contacts no network. Only a starting connection creates an
+absent `state_dir`. The namespace is a hash, not a secret. Use it to compare an
+old and a new configuration before switching one over, and to confirm that the
+key namespace is unchanged and the existing directory is found.
 
 `--check-scope` is exclusive with the callback modes below and with a native key
 binding.
