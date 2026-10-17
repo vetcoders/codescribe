@@ -5064,8 +5064,66 @@ class UserTextPublicationUncertain(RuntimeError):
     """A journal write was attempted; retry can duplicate a delivered message."""
 
 
+def binding_identity(channel: str, binding: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Shape one audience binding into the owner block a publication carries.
+
+    Returns ``(owner, refusal)``: ``invalid_binding`` for a digit outside 1-9 or
+    an entry that is not an object, ``incomplete_binding`` when an identity
+    field is missing. The owner is never consulted for liveness here.
+    """
+    if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
+        return None, "invalid_binding"
+    provider, session = binding.get("provider"), binding.get("provider_session_id")
+    audience, bus_name = binding.get("audience"), binding.get("bus")
+    if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
+        return None, "incomplete_binding"
+    bus = Path(bus_name).expanduser().resolve(strict=False)
+    return {"provider": provider, "provider_session_id": session,
+            "lease_id": lease_identifier(provider, session), "channel": channel,
+            "audience": audience, "name": audience, "bus": str(bus)}, None
+
+
+def owner_refusal(root: Path, owner: dict[str, Any]) -> str | None:
+    """Why nobody can deliver to this bound owner right now.
+
+    ``stale_lease``: no lease receipt matches the binding (the agent re-attached
+    under another session or detached). ``not_listening``: the lease matches but
+    no follower process is alive, the shape every binding has after that
+    agent's host restarted. ``None`` means the owner can read what we publish.
+    """
+    lease = read_json(root / "leases" / f"{owner['lease_id']}.json") or {}
+    if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != owner["lease_id"]
+            or lease.get("provider") != owner["provider"]
+            or lease.get("provider_session_id") != owner["provider_session_id"]
+            or lease.get("bus") != owner["bus"]):
+        return "stale_lease"
+    if not live_follower_pid(root, owner["lease_id"]):
+        return "not_listening"
+    return None
+
+
+def note_skipped_broadcast_channel(
+    channel: str, owner: dict[str, Any] | None, refusal: str,
+) -> dict[str, Any]:
+    """One receipt entry for a bound channel a channel-zero publication skipped.
+
+    Channel zero means everyone who can hear: the words go to every reachable
+    agent, and the receipt names each bound agent that was not reached with the
+    reason, so a stale entry left behind by a restarted host costs nobody else
+    the message. A single channel never skips: its one recipient is exactly who
+    must receive the draft, so it keeps the hard refusal.
+    """
+    entry = {"channel": channel, "reason": refusal}
+    if owner:
+        entry.update({key: owner[key] for key in
+                      ("audience", "name", "provider", "provider_session_id", "lease_id", "bus")})
+    sys.stderr.write(f"cs-bus: skipped {entry.get('name', '?')} (channel {channel}): "
+                     f"{refusal.replace('_', ' ')}\n")
+    return entry
+
+
 def send_text_command(args: argparse.Namespace) -> int:
-    """Publish user text to one exact owner or the current channel-zero roster."""
+    """Publish user text to every reachable owner of channel zero, or one exact owner."""
     attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
     root = args.bridge_home
     broadcast = str(args.channel) == "0"
@@ -5078,28 +5136,26 @@ def send_text_command(args: argparse.Namespace) -> int:
             raise ValueError("channel bindings unavailable; draft retained")
         selected = sorted(bindings.items()) if broadcast else [(str(args.channel), bindings.get(str(args.channel)))]
         owners = []
+        skipped = []
         for channel, binding in selected:
-            if channel not in tuple(str(n) for n in range(1, 10)) or not isinstance(binding, dict):
-                raise ValueError("invalid channel binding; draft retained")
-            provider, session = binding.get("provider"), binding.get("provider_session_id")
-            audience, bus_name = binding.get("audience"), binding.get("bus")
-            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
-                raise ValueError("incomplete channel binding; draft retained")
-            bus = Path(bus_name).expanduser().resolve(strict=False)
-            lease_id = lease_identifier(provider, session)
-            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
-            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
-                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)):
-                raise ValueError("channel was rebound or its agent is not listening; draft retained")
-            if not broadcast and (args.lease != lease_id or args.provider.casefold() != provider
-                    or args.session != session or args.bus.expanduser().resolve(strict=False) != bus):
+            owner, refusal = binding_identity(channel, binding)
+            refusal = refusal or owner_refusal(root, owner)
+            if refusal is not None:
+                if broadcast:
+                    skipped.append(note_skipped_broadcast_channel(channel, owner, refusal))
+                    continue
+                raise ValueError({
+                    "invalid_binding": "invalid channel binding; draft retained",
+                    "incomplete_binding": "incomplete channel binding; draft retained",
+                }.get(refusal, "channel was rebound or its agent is not listening; draft retained"))
+            if not broadcast and (args.lease != owner["lease_id"] or args.provider.casefold() != owner["provider"]
+                    or args.session != owner["provider_session_id"]
+                    or str(args.bus.expanduser().resolve(strict=False)) != owner["bus"]):
                 raise ValueError("selected conversation owner no longer matches")
-            owners.append({"provider": provider, "provider_session_id": session,
-                           "lease_id": lease_id, "channel": channel, "audience": audience,
-                           "name": audience, "bus": str(bus)})
+            owners.append(owner)
         if not owners:
-            raise ValueError("no agents are bound; draft retained")
+            raise ValueError("no agents are listening; draft retained" if skipped
+                             else "no agents are bound; draft retained")
         text = sys.stdin.buffer.read(65537)
         if len(text) > 65536:
             raise ValueError("message exceeds 64 KiB; draft retained")
@@ -5142,7 +5198,7 @@ def send_text_command(args: argparse.Namespace) -> int:
             recipient_receipts.append({**owner, **hold, "source": receipt,
                 "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], Path(owner["bus"]))})
     emit({"kind": "message_published", **hold, "message_id": identity, "source": receipts[0], "sources": receipts,
-          "recipients": recipient_receipts})
+          "recipients": recipient_receipts, "skipped": skipped})
     return 0
 
 
@@ -5161,31 +5217,33 @@ def delivery_control_command(args: argparse.Namespace) -> int:
         if state.get("schema") != AUDIENCE_BINDING_SCHEMA or not isinstance(bindings, dict):
             raise ValueError("channel bindings unavailable")
         owners = []
+        skipped = []
         for channel, binding in sorted(bindings.items()):
-            if not isinstance(binding, dict) or channel not in tuple(str(n) for n in range(1, 10)):
-                raise ValueError("invalid channel binding")
-            provider, session, audience, bus_name = (binding.get(key) for key in
-                ("provider", "provider_session_id", "audience", "bus"))
-            if not all(isinstance(value, str) and value for value in (provider, session, audience, bus_name)):
-                raise ValueError("incomplete channel binding")
-            bus = Path(bus_name).expanduser().resolve(strict=False)
-            if not broadcast and (provider != args.provider.casefold() or session != args.session
-                    or bus != args.bus.expanduser().resolve(strict=False)
+            bound, refusal = binding_identity(channel, binding)
+            if bound is None:
+                if broadcast:
+                    skipped.append(note_skipped_broadcast_channel(channel, bound, refusal))
+                    continue
+                raise ValueError("invalid channel binding" if refusal == "invalid_binding"
+                                 else "incomplete channel binding")
+            owner = {key: value for key, value in bound.items() if key != "name"}
+            if not broadcast and (owner["provider"] != args.provider.casefold()
+                    or owner["provider_session_id"] != args.session
+                    or owner["bus"] != str(args.bus.expanduser().resolve(strict=False))
                     or args.channel is not None and args.channel != channel):
                 continue
-            lease_id = lease_identifier(provider, session)
-            lease = read_json(root / "leases" / f"{lease_id}.json") or {}
-            if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-                    or lease.get("provider") != provider or lease.get("provider_session_id") != session
-                    or lease.get("bus") != str(bus) or not live_follower_pid(root, lease_id)
-                    or not broadcast and args.lease is not None and args.lease != lease_id):
+            refusal = owner_refusal(root, owner)
+            if refusal is not None:
+                if broadcast:
+                    skipped.append(note_skipped_broadcast_channel(channel, bound, refusal))
+                    continue
                 raise ValueError("selected conversation owner no longer matches")
-            owner = {"provider": provider, "provider_session_id": session, "lease_id": lease_id,
-                     "bus": str(bus), "channel": channel, "audience": audience}
+            if not broadcast and args.lease is not None and args.lease != owner["lease_id"]:
+                raise ValueError("selected conversation owner no longer matches")
             if owner not in owners:
                 owners.append(owner)
         if not owners:
-            raise ValueError("no matching agent conversation")
+            raise ValueError("no agents are listening" if skipped else "no matching agent conversation")
         text = None
         if kind == "revise":
             raw = sys.stdin.buffer.read(65537)
@@ -5227,7 +5285,7 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             source = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
             receipts.append({**owner, "source": source})
     emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
-          "control_id": control_id, "recipients": receipts})
+          "control_id": control_id, "recipients": receipts, "skipped": skipped})
     return 0
 
 
