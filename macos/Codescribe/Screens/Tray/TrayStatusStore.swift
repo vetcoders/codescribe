@@ -245,8 +245,9 @@ final class TrayStatusStore: ObservableObject {
   /// Nil means a monochrome template indicator, never an absent indicator.
   /// Recording keeps its red and processing stays orange. The Agent dot follows
   /// the voice like the pointer dot: purple while speaking, white between
-  /// phrases, amber while words are owed (Maciej, 2026-10-14). Other status
-  /// details live in the tooltip and menu row.
+  /// phrases, pulsing purple while words are owed (Maciej, 2026-10-14; on
+  /// 2026-10-17 the owed-words amber went, because orange means processing).
+  /// Other status details live in the tooltip and menu row.
   var menuBarDotColor: Color? {
     switch status.kind {
     case .starting, .idle, .success, .error, .thermal, .hotkeyConflict:
@@ -254,9 +255,8 @@ final class TrayStatusStore: ObservableObject {
     case .listening:
       guard status.indicatorMode == .assistive else { return CSColor.indicatorRecording }
       switch status.voice {
-      case .lagging: return CSColor.indicatorLagging
       case .quiet: return CSColor.indicatorAgentQuiet
-      case .speaking, .unobserved: return CSColor.modeAgent
+      case .speaking, .unobserved, .lagging: return CSColor.modeAgent
       }
     case .processing:
       return CSColor.modeProcessing
