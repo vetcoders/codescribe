@@ -3162,7 +3162,7 @@ mod tests {
         let outcome = commit_overlay_correction(OverlayCorrectionInput {
             raw_text: "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.".to_string(),
             delivered_text: "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.".to_string(),
-            edited_text: "Apple jest pierwszy, Whisper poprawia w oknie, nie wyjebujemy słów, tylko poprawiamy. Local power, leksykon.".to_string(),
+            edited_text: "Apple jest pierwszy, Whisper poprawia w oknie, nie wyrzucamy słów, tylko poprawiamy. Local power, leksykon.".to_string(),
             mode: "overlay".to_string(),
             model: None,
             action: Some("copy".to_string()),

@@ -124,7 +124,7 @@ fn contains_known_term(haystack: &str, term_norms: &[String]) -> bool {
 
 /// A very short live prefix followed by a materially longer provider token is
 /// an interrupted word, not an ordinary substitution (`pow.` →
-/// `powkurwiać`). Replacing that fragment cannot delete a complete Apple word.
+/// `powtarzać`). Replacing that fragment cannot delete a complete Apple word.
 fn provider_expands_truncated_live(
     live: &super::tokenize::Token,
     provider: &super::tokenize::Token,
@@ -335,10 +335,10 @@ mod layer1_contract_tests {
     fn provider_completes_a_truncated_live_word_without_wholesale_rewrite() {
         let merged = merge_live_layer1(
             "Możesz odczytać i też pow.",
-            "Możesz odczytać i też powkurwiać się razem.",
+            "Możesz odczytać i też powtarzać się razem.",
         );
 
-        assert_eq!(merged.text, "Możesz odczytać i też powkurwiać się razem.");
+        assert_eq!(merged.text, "Możesz odczytać i też powtarzać się razem.");
         assert_eq!(merged.provider_won_substitutes, 1);
         assert_eq!(merged.live_kept_substitutes, 0);
     }

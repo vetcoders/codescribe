@@ -19,10 +19,10 @@
 //!   2026-08-16 backup shows why (`to <- ten`, `kiedy <- jak`, `Zerknij <- tak`).
 //! - rows without a `source` are hand-written. They come back verbatim by
 //!   default — but "hand-written" does not mean "correct". The same backup
-//!   carries the curated row `Monika <- Monia, Moniki, Monikę, Monisia`, whose
-//!   middle two entries are inflections of the term itself, so speaking
-//!   "Moniki" gets rewritten to "Monika" and the grammar of the sentence is
-//!   destroyed. That class is what the operator was clearing. `gate_curated`
+//!   carries a curated name row that lists the name's own inflections as
+//!   mispronunciations (shape: `Kraków <- Krakow, Krakowa, Krakowie`), so
+//!   speaking "Krakowa" gets rewritten to "Kraków" and the grammar of the
+//!   sentence is destroyed. That class is what the operator was clearing. `gate_curated`
 //!   therefore puts the hand-written half through the same admission gate.
 //!
 //! The merge is a union keyed on the casefolded term, so restoring never drops
@@ -316,7 +316,7 @@ pub struct LexiconRemovalReport {
 /// WHY THIS EXISTS. On 2026-08-22 the operator had to fight a rule out of the
 /// dictionary by hand, because nothing in the product could remove one. A
 /// lexicon that can only grow is a lexicon whose mistakes are permanent — and a
-/// rule keyed on a name ("Klaudiusz") is precisely the kind that must be
+/// rule keyed on a person's name is precisely the kind that must be
 /// removable in one command rather than by editing JSONL.
 ///
 /// With `variant`, only that spelling goes; a row left with no variants is

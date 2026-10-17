@@ -834,8 +834,8 @@
               "required_code": [
                 "session,",
                 "capture_epoch,",
-                "window_samples: u64::from(sample_rate) * 9,",
-                "step_samples: u64::from(sample_rate) * 3,",
+                "window_samples: u64::from(sample_rate) * u64::from(LIVE_WINDOW_SECS),",
+                "step_samples: u64::from(sample_rate) * u64::from(LIVE_STEP_SECS),",
                 "next_start: 0,",
                 "offered: None,",
                 "finished: sample_rate == 0,"

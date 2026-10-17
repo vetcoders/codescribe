@@ -20,6 +20,8 @@
 pub mod corpus;
 /// Self-improving quality loop: report, regression analysis, tuning.
 pub mod daemon;
+/// Recorded take replay: the overlay's document again, with a parity receipt.
+pub mod replay;
 /// Batch quality report and the corrections replay.
 pub mod report;
 /// Learning triangle: Apple-live × Whisper × human reference.
