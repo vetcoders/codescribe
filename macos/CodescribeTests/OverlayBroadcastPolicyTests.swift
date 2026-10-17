@@ -123,11 +123,15 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
   private func drawer(_ channels: [OverlayChannelDelivery]) -> OverlayChannelStatusView {
     OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: .dark, animates: false,
-      hudStates: Dictionary(uniqueKeysWithValues: channels.map { channel in
-        (channel.channel, OverlayChannelHudProjection(
-          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-          provider: "junie", providerSessionID: "session-\(channel.channel)"))
-      }))
+      hudStates: Dictionary(
+        uniqueKeysWithValues: channels.map { channel in
+          (
+            channel.channel,
+            OverlayChannelHudProjection(
+              open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+              provider: "junie", providerSessionID: "session-\(channel.channel)")
+          )
+        }))
   }
 
   private struct Fixture {
@@ -166,7 +170,8 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
       let command = installer.commandURL("cs-bus")
       try FileManager.default.createDirectory(
         at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
-      let managed = String(source[...firstNewline])
+      let managed =
+        String(source[...firstNewline])
         + "# codescribe-managed-command: {\"managed_id\":\"broadcast-fixture\"}\n"
         + String(source[source.index(after: firstNewline)...])
       try managed.write(to: command, atomically: true, encoding: .utf8)

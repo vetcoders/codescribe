@@ -316,7 +316,8 @@ extension RealAgentBridgeInstaller {
       var result: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
       for identity in identities {
         result[identity] = .on
-        let path = root.appendingPathComponent("runtime/broadcast-policy/\(identity.storageKey).json")
+        let path = root.appendingPathComponent(
+          "runtime/broadcast-policy/\(identity.storageKey).json")
         // Unlike playback mute's fail-closed silence, policy fails open to on:
         // a broken receipt must never silently disconnect an agent.
         guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
@@ -506,7 +507,8 @@ extension RealAgentBridgeInstaller {
               "Some agents may have received this message. Check read receipts before sending again."
           )
           : String(localized: "Message could not be sent. Your draft is retained.")
-        let refusal = String(data: refusalData.suffix(4096), encoding: .utf8)?
+        let refusal =
+          String(data: refusalData.suffix(4096), encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
           .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""

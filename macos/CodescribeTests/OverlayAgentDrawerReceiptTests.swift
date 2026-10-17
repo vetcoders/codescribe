@@ -202,7 +202,8 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       let row = try XCTUnwrap(reception.elements.first)
       XCTAssertTrue(row.value.contains("Read"), "ACK remains historical read evidence")
       XCTAssertTrue(row.value.contains("Disconnected"), "liveness is separate from read evidence")
-      XCTAssertTrue(row.value.contains("8 unread replies"), "the count names Founder-unread replies")
+      XCTAssertTrue(
+        row.value.contains("8 unread replies"), "the count names Founder-unread replies")
       XCTAssertGreaterThan(row.height, 0)
       XCTAssertLessThanOrEqual(row.width, width)
     }
