@@ -260,6 +260,10 @@ struct OverlayHeaderControlFrames: Equatable {
   var stop: CGRect? = nil
   var preview: CGRect? = nil
   var waveform: CGRect? = nil
+  /// The bottom chrome's actions handle, in the `overlay-canvas` space (the
+  /// window's content), not the header's: the morph falsifier checks that a
+  /// wide sibling never pushes the bottom chrome left of the window either.
+  var actions: CGRect? = nil
 }
 
 struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
@@ -273,6 +277,7 @@ struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
     value.stop = next.stop ?? value.stop
     value.preview = next.preview ?? value.preview
     value.waveform = next.waveform ?? value.waveform
+    value.actions = next.actions ?? value.actions
   }
 }
 
@@ -622,6 +627,17 @@ struct DictationOverlayView: View {
                       : "Show or hide transcript tools"
                   )
                   .accessibilityIdentifier("overlay-tools-handle")
+                  .background {
+                    GeometryReader { geometry in
+                      Color.clear.preference(
+                        key: OverlayHeaderControlFramesPreferenceKey.self,
+                        value: OverlayHeaderControlFrames(
+                          actions: geometry.frame(in: .named("overlay-canvas")))
+                      )
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                  }
                   .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
                   if actions.phase == .open {
                     intentRail
