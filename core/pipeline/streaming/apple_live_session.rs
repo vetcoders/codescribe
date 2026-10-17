@@ -94,6 +94,9 @@ use crate::pipeline::contracts::{
     SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use crate::pipeline::speech_islands::{
+    SpeechIslandEvidence, SpeechIslandInput, measure_speech_islands,
+};
 use crate::pipeline::whisper_word_speech::{
     SileroSpeechDistance, WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech,
     WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words, repeat_key,
@@ -7652,6 +7655,7 @@ fn publish_terminal_coverage(
     );
 
     let no_voiced_hop = energy_lookup_without_voiced_hop(state);
+    let islands = measure_islands(state);
     let mut ledger = state
         .acoustic_ledger
         .lock()
@@ -7666,11 +7670,42 @@ fn publish_terminal_coverage(
         u64::from(state.sample_rate) * SEAL_COVERAGE_INCOMPLETE_MS / 1_000,
     );
     ledger.record_seal_coverage(receipt.clone());
+    if let Some(islands) = islands {
+        ledger.record_speech_islands(islands);
+    }
     let _ = ev_tx.send(EngineEvent::SealCoverage {
         receipt: receipt.clone(),
         comparison: None,
     });
     receipt
+}
+
+/// Silero speech of this capture joined into islands, with syllable nuclei
+/// counted from the capture energy. `None` while Silero has not observed this
+/// epoch: energy alone would turn noise into islands.
+fn measure_islands(state: &AppleSealState) -> Option<SpeechIslandEvidence> {
+    let silero = observed_silero(state)?;
+    let observed_samples = silero
+        .availability()
+        .observed_samples()?
+        .min(state.audio.session_sample_end());
+    let speech: Vec<(u64, u64)> = silero
+        .ranges()
+        .iter()
+        .map(|range| (range.sample_start, range.sample_end))
+        .collect();
+    let hops = state
+        .capture_energy
+        .session_hop_levels(&state.session_id, state.capture_epoch);
+    Some(measure_speech_islands(SpeechIslandInput {
+        session_id: &state.session_id,
+        capture_epoch: state.capture_epoch,
+        sample_rate: state.sample_rate,
+        observed_samples,
+        speech: &speech,
+        hops: hops.as_deref(),
+        existence_floor_rms: state.existence_floor_rms,
+    }))
 }
 
 /// Total samples described by a set of ranges, without merging overlaps.
