@@ -37,6 +37,27 @@ use super::RecordingController;
 pub const BINDING_SCHEMA: &str = "vc.agent-audience-binding.v1";
 pub const BINDING_FILENAME: &str = "vc.agent-audience-binding.v1.json";
 
+/// Construct the live channel reducer from the exact generation also sent to
+/// its decoder. Channels and dictation share the same track choices.
+fn channel_presentation_emitter(
+    bus: Arc<TranscriptBus>,
+    ledger: Arc<StdMutex<AcousticLedger>>,
+    settings: &codescribe_core::config::RuntimeSettingsSnapshot,
+) -> PresentationEmitter {
+    PresentationEmitter::new_with_authority(
+        Arc::new(TokioMutex::new(String::new())),
+        None,
+        None,
+        Some(bus),
+        Some(ledger),
+        None,
+    )
+    .with_transcription_controls(
+        settings.seal_ledger_enabled(),
+        settings.apple_live_enabled(),
+    )
+}
+
 /// Broadcast marker for Fn+0. Followers treat it as addressed to them.
 pub const BROADCAST_AUDIENCE: &str = "*";
 
@@ -982,35 +1003,28 @@ impl RecordingController {
                 let voice_clock = Arc::clone(&last_voice_at);
                 let heard_text = Arc::clone(&last_text);
                 let emitter = Arc::new(
-                    PresentationEmitter::new_with_authority(
-                        Arc::new(TokioMutex::new(String::new())),
-                        None,
-                        None,
-                        Some(bus),
-                        Some(Arc::clone(&ledger)),
-                        None,
-                    )
-                    .with_apple_preview_observer(Arc::new(move |text| {
-                        hold_badge::update_transcript(cursor_token, text);
-                    }))
-                    .with_cursor_observer(Arc::new(move |projection| {
-                        hold_badge::update_voice_state(cursor_token, projection.voice);
-                        crate::os::tray_status::set_tray_voice_for_take(
-                            cursor_token,
-                            projection.voice,
-                        );
-                        if projection.text.trim().is_empty() {
-                            return;
-                        }
-                        *voice_clock
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
-                        projection.text.clone_into(
-                            &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
-                        );
-                    }))
-                    .with_sentence_pause_sec(sentence_pause)
-                    .with_refinement_warnings(Arc::clone(&refinement_warnings)),
+                    channel_presentation_emitter(bus, Arc::clone(&ledger), &runtime_settings)
+                        .with_apple_preview_observer(Arc::new(move |text| {
+                            hold_badge::update_transcript(cursor_token, text);
+                        }))
+                        .with_cursor_observer(Arc::new(move |projection| {
+                            hold_badge::update_voice_state(cursor_token, projection.voice);
+                            crate::os::tray_status::set_tray_voice_for_take(
+                                cursor_token,
+                                projection.voice,
+                            );
+                            if projection.text.trim().is_empty() {
+                                return;
+                            }
+                            *voice_clock
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
+                            projection.text.clone_into(
+                                &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
+                            );
+                        }))
+                        .with_sentence_pause_sec(sentence_pause)
+                        .with_refinement_warnings(Arc::clone(&refinement_warnings)),
                 );
                 let sink: Arc<dyn EventSink> = emitter;
                 // The first channel may own the physical microphone without a
@@ -3936,5 +3950,95 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
         );
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert!(load_binding(&fixture.binding).unwrap().bindings.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod channel_transcription_controls_tests {
+    use super::*;
+    use codescribe_core::pipeline::acoustic_ledger::{
+        ObservationIdentity, ObservationProducer, OccurrenceIdentity,
+    };
+    use codescribe_core::pipeline::contracts::EngineEvent;
+
+    #[tokio::test]
+    async fn channel_factory_uses_all_four_frozen_track_choices() {
+        for ledger_on in [false, true] {
+            for apple_on in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let session = "agent-channel-2-controls";
+                let path = dir.path().join("channel.jsonl");
+                let bus = Arc::new(
+                    TranscriptBus::open_at(
+                        TranscriptSession {
+                            session_id: session.into(),
+                            mode: TranscriptMode::Agent,
+                            has_latched_target: false,
+                            latched_target_is_self: false,
+                            audience: Some("lena".into()),
+                            badge_only: true,
+                        },
+                        path.clone(),
+                        None,
+                    )
+                    .unwrap(),
+                );
+                bus.publish_started();
+                let mut inputs = codescribe_core::config::CapturedRuntimeInputs::defaults_at(
+                    dir.path().to_owned(),
+                    1,
+                );
+                inputs.user_settings.seal_ledger_enabled = Some(ledger_on);
+                inputs.user_settings.apple_live_enabled = Some(apple_on);
+                let settings = Config::runtime_snapshot_from_captured(inputs);
+                let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+                let mut emitter =
+                    channel_presentation_emitter(bus.clone(), ledger.clone(), &settings);
+                emitter.on_capture_opened(session, 7);
+                let event = |producer, request, text: &str| EngineEvent::DirectTranscript {
+                    observation: ObservationIdentity::new(
+                        producer,
+                        request,
+                        0,
+                        OccurrenceIdentity::new(session, 7, 0, 16000),
+                    ),
+                    text: text.into(),
+                    final_chunk: true,
+                };
+                emitter.on_event(&event(ObservationProducer::Apple, 1, "Polski podgląd."));
+                let seeded = emitter.visible_canvas_snapshot().unwrap().text;
+                assert_eq!(
+                    seeded,
+                    if !ledger_on && apple_on {
+                        "Polski podgląd."
+                    } else {
+                        ""
+                    }
+                );
+                emitter.on_event(&event(ObservationProducer::Whisper, 2, "English survives."));
+                emitter.on_event(&event(
+                    ObservationProducer::Apple,
+                    3,
+                    "Spóźniony polski tekst.",
+                ));
+                emitter.on_event(&EngineEvent::DirectTranscriptEnd {
+                    session_id: session.into(),
+                    capture_epoch: 7,
+                });
+                emitter.finish().await;
+                assert_eq!(
+                    emitter.visible_canvas_snapshot().unwrap().text,
+                    if ledger_on { "" } else { "English survives." },
+                    "ledger={ledger_on} apple={apple_on}"
+                );
+                if !ledger_on {
+                    bus.publish_channel_closed(10).unwrap();
+                    let rows = std::fs::read_to_string(path).unwrap();
+                    assert!(rows.contains("English survives."));
+                    assert!(rows.contains("\"coverage\":\"direct\""));
+                }
+                assert_eq!(ledger.lock().unwrap().qualified_occurrences().count(), 0);
+            }
+        }
     }
 }
