@@ -22,6 +22,7 @@ use crate::pipeline::acoustic_ledger::AcousticLedger;
 #[cfg(test)]
 use crate::pipeline::acoustic_ledger::SealCoverageReceipt;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
+use crate::pipeline::replay_card::{ReplayBuild, ReplayCard};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
     stream_log_path, transcription_session,
@@ -320,6 +321,297 @@ pub async fn replay_production_session(
         streaming_engine_label,
         tail_patch_receipt,
     })
+}
+
+/// One session input a recorded replay resolved: what the take recorded,
+/// what the replay used, and why they differ when they do.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReplayInputReceipt {
+    pub input: &'static str,
+    /// The take's value from its card; `None` when the take has no card.
+    pub recorded: Option<String>,
+    pub effective: Option<String>,
+    /// Set whenever `effective` is not the take's own value.
+    pub reason: Option<String>,
+}
+
+/// A recorded session rebuilt for [`crate::pipeline::streaming::replay_buffered_engine_session`].
+pub struct RecordedSessionReplay {
+    /// The archive's PCM on the recorder's own i16 scale.
+    pub samples: Vec<f32>,
+    pub config: SessionConfig,
+    pub inputs: Vec<ReplayInputReceipt>,
+    /// The build that ran the take, from its card.
+    pub recorded_build: Option<ReplayBuild>,
+}
+
+impl RecordedSessionReplay {
+    /// Inputs whose replay value is not the take's own.
+    pub fn divergences(&self) -> impl Iterator<Item = &ReplayInputReceipt> {
+        self.inputs.iter().filter(|input| input.reason.is_some())
+    }
+}
+
+/// Rebuild one recorded session from its replay card and WAV archive.
+///
+/// With a card every input is the take's own: the settings record reseals the
+/// take's digest, the capture device selects the same calibration, and the WAV
+/// reaches the session as its terminal archive the way a recorder stop hands
+/// it over. Without a card (sessions recorded before cards) each input
+/// resolves to the nearest honest value and names where it came from.
+///
+/// Two lanes are never replayed: cloud Layer 1, because the card keeps no
+/// credentials, and the live formatter, whose LLM output is not reproducible.
+/// Replay parity is the reducer's Raw document.
+pub fn prepare_recorded_replay(
+    recorded_session: Option<&str>,
+    card: Option<&ReplayCard>,
+    wav: &std::path::Path,
+    run: u32,
+) -> Result<RecordedSessionReplay> {
+    let (samples, sample_rate, recorder_native) = load_replay_pcm(wav)?;
+    if samples.is_empty() {
+        return Err(anyhow!("replay audio contains no samples"));
+    }
+    let no_card = |what: &str| Some(format!("no replay card: {what}"));
+    let mut inputs = Vec::new();
+
+    let runtime_settings = match card {
+        Some(card) => {
+            let snapshot = crate::config::Config::runtime_snapshot_from_captured(
+                card.settings.clone().into_captured(),
+            );
+            let effective = snapshot.digest().as_str().to_string();
+            inputs.push(ReplayInputReceipt {
+                input: "settings_digest",
+                recorded: Some(card.settings_digest.clone()),
+                reason: (effective != card.settings_digest).then(|| {
+                    "this build resolves the recorded settings to another snapshot".to_string()
+                }),
+                effective: Some(effective),
+            });
+            snapshot
+        }
+        None => {
+            let snapshot = crate::config::Config::load_runtime_snapshot_without_keychain()
+                .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?;
+            inputs.push(ReplayInputReceipt {
+                input: "settings_digest",
+                recorded: None,
+                effective: Some(snapshot.digest().as_str().to_string()),
+                reason: no_card("host settings at replay time"),
+            });
+            snapshot
+        }
+    };
+    let runtime_settings = Arc::new(runtime_settings);
+    let values = runtime_settings.values();
+
+    let recorded_rate = card.map(|card| card.sample_rate);
+    inputs.push(ReplayInputReceipt {
+        input: "sample_rate",
+        recorded: recorded_rate.map(|rate| rate.to_string()),
+        effective: Some(sample_rate.to_string()),
+        reason: match recorded_rate {
+            Some(rate) if rate == sample_rate => None,
+            Some(_) => Some("the audio file is not at the take's capture rate".into()),
+            None => no_card("rate from the audio file"),
+        },
+    });
+
+    let capture_device_name = match card {
+        Some(card) => card.capture_device_name.clone(),
+        None => runtime_settings
+            .energy_calibration()
+            .artifact()
+            .map(|artifact| artifact.device_names())
+            .filter(|devices| devices.len() == 1)
+            .and_then(|mut devices| devices.pop()),
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "capture_device",
+        recorded: card.and_then(|card| card.capture_device_name.clone()),
+        effective: capture_device_name.clone(),
+        reason: match (card, &capture_device_name) {
+            (Some(_), _) => None,
+            (None, Some(_)) => no_card("the only calibrated device"),
+            (None, None) => no_card("device unknown, so no occurrence can qualify"),
+        },
+    });
+
+    let language = match card {
+        Some(card) => card.language.clone(),
+        None => values.whisper_language.whisper_hint().map(str::to_string),
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "language",
+        recorded: card.and_then(|card| card.language.clone()),
+        effective: language.clone(),
+        reason: card
+            .is_none()
+            .then(|| "no replay card: language from settings".into()),
+    });
+
+    let capture_turn = match card {
+        Some(card) => card.capture_turn,
+        None if recorded_session.is_some_and(|session| session.starts_with("agent-channel-")) => {
+            CaptureTurnIntent::AgentChannel
+        }
+        None => CaptureTurnIntent::HandsFree,
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "capture_turn",
+        recorded: card.map(|card| format!("{:?}", card.capture_turn)),
+        effective: Some(format!("{capture_turn:?}")),
+        reason: card.is_none().then(|| {
+            "no replay card: capture turn from the session id; a composer take reads as hands-free"
+                .into()
+        }),
+    });
+
+    let utterance_silence_sec = match card {
+        Some(card) => card.utterance_silence_sec,
+        None => capture_turn.utterance_silence_sec(values.toggle_silence_sec),
+    };
+    inputs.push(ReplayInputReceipt {
+        input: "utterance_silence_sec",
+        recorded: card.and_then(|card| card.utterance_silence_sec.map(|sec| sec.to_string())),
+        effective: utterance_silence_sec.map(|sec| sec.to_string()),
+        reason: card
+            .is_none()
+            .then(|| "no replay card: threshold from settings".into()),
+    });
+
+    let (rebuilt, _receipt) = crate::asr_session::layer1_decision(&runtime_settings);
+    let rebuilt_token = rebuilt.receipt_token();
+    let cloud = matches!(
+        rebuilt,
+        crate::asr_session::recorder::Layer1Decision::Armed(_)
+            | crate::asr_session::recorder::Layer1Decision::Cloud { .. }
+    );
+    let layer1 = if cloud {
+        crate::asr_session::recorder::Layer1Decision::Disarmed
+    } else {
+        rebuilt
+    };
+    let recorded_layer1 = card.map(|card| card.layer1.clone());
+    inputs.push(ReplayInputReceipt {
+        input: "layer1",
+        effective: Some(layer1.receipt_token()),
+        reason: if cloud {
+            Some(format!(
+                "{rebuilt_token} is not replayed: the card keeps no credentials"
+            ))
+        } else if card.is_none() {
+            no_card("decision rebuilt from host settings")
+        } else {
+            (recorded_layer1.as_deref() != Some(rebuilt_token.as_str()))
+                .then(|| "the rebuilt decision differs from the take's".into())
+        },
+        recorded: recorded_layer1,
+    });
+
+    let recorded_formatter = card.map(|card| card.live_formatter);
+    inputs.push(ReplayInputReceipt {
+        input: "live_formatter",
+        recorded: recorded_formatter.map(|bound| bound.to_string()),
+        effective: Some(false.to_string()),
+        reason: (recorded_formatter != Some(false))
+            .then(|| "the formatter is not replayed: its LLM output is outside parity".into()),
+    });
+
+    let recorded_archive = card.map(|card| card.terminal_archive);
+    let terminal_archive = recorder_native && recorded_archive != Some(false);
+    inputs.push(ReplayInputReceipt {
+        input: "terminal_archive",
+        recorded: recorded_archive.map(|handed| handed.to_string()),
+        effective: Some(terminal_archive.to_string()),
+        reason: if !recorder_native && recorded_archive != Some(false) {
+            Some("the audio file is not a recorder archive (mono 16-bit PCM)".into())
+        } else {
+            card.is_none()
+                .then(|| "no replay card: the archive is handed over like a stop".into())
+        },
+    });
+
+    // Some engine modules read env during the take instead of the settings
+    // snapshot. The card cannot carry those values until they move into it.
+    inputs.push(ReplayInputReceipt {
+        input: "engine_env",
+        recorded: None,
+        effective: None,
+        reason: Some(
+            "env read by the engine outside the settings snapshot is this process's, not the take's"
+                .into(),
+        ),
+    });
+
+    let session_id = recorded_session
+        .map(|session| format!("replay-{session}-r{run}"))
+        .filter(|id| crate::pipeline::trail::trail_path(std::path::Path::new("/"), id).is_ok())
+        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4()));
+    let capture_epoch = card.map_or(1, |card| card.capture_epoch);
+    let terminal_audio = terminal_archive.then(|| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(Ok(
+            crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
+                session_id: session_id.clone(),
+                capture_epoch,
+                sample_rate,
+                sample_count: samples.len() as u64,
+                path: wav.to_path_buf(),
+            },
+        ));
+        receiver
+    });
+
+    Ok(RecordedSessionReplay {
+        config: SessionConfig {
+            session_id,
+            capture_epoch,
+            runtime_settings,
+            live_formatting_agent: None,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+            sample_rate,
+            capture_device_name,
+            language,
+            stream_log_path: None,
+            utterance_silence_sec,
+            capture_turn,
+            layer1,
+            // A live take's lifecycle channel carries host events (sleep,
+            // route loss) that a replay has none of; absent equals idle.
+            lifecycle_events: None,
+            terminal_audio,
+            last_window_closed: None,
+        },
+        samples,
+        inputs,
+        recorded_build: card.map(|card| card.build.clone()),
+    })
+}
+
+/// A take archive decodes on the recorder's own i16 scale, as the terminal
+/// witness reads it (`FinalizedPcmArchive::load`), so the fed PCM and the
+/// handed-over archive are the same samples. Other audio uses the shared loader.
+fn load_replay_pcm(wav: &std::path::Path) -> Result<(Vec<f32>, u32, bool)> {
+    if let Ok(reader) = hound::WavReader::open(wav) {
+        let spec = reader.spec();
+        if spec.channels == 1
+            && spec.bits_per_sample == 16
+            && spec.sample_format == hound::SampleFormat::Int
+        {
+            let samples = reader
+                .into_samples::<i16>()
+                .map(|sample| sample.map(|sample| f32::from(sample) / f32::from(i16::MAX)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| anyhow!("decode replay archive failed"))?;
+            return Ok((samples, spec.sample_rate, true));
+        }
+    }
+    let (samples, sample_rate) =
+        crate::audio::load_audio_file(wav).map_err(|_| anyhow!("load replay audio failed"))?;
+    Ok((samples, sample_rate, false))
 }
 
 /// A recording session that transcribes while it captures.
@@ -4494,5 +4786,109 @@ mod capture_stop_failure_tests {
                 .is_some_and(|take| take.event_sink.is_some())
         );
         assert_eq!(std::fs::read(path).unwrap(), wav);
+    }
+}
+
+#[cfg(test)]
+mod recorded_replay_tests {
+    use super::*;
+    use crate::config::{CapturedRuntimeInputs, Config};
+
+    const SESSION: &str = "agent-channel-3-0123456789";
+
+    fn write_mono_archive(path: &std::path::Path, rate: u32, frames: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for index in 0..frames {
+            writer
+                .write_sample(((index % 200) as i16 - 100) * 50)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    /// A channel take's card, round-tripped through its JSON form.
+    fn channel_card(root: &std::path::Path) -> ReplayCard {
+        let snapshot = Arc::new(Config::runtime_snapshot_from_captured(
+            CapturedRuntimeInputs::defaults_at(root.to_path_buf(), 7),
+        ));
+        let (layer1, _) = crate::asr_session::layer1_decision(&snapshot);
+        let (_archive_sender, archive) = std::sync::mpsc::channel();
+        let config = SessionConfig {
+            session_id: SESSION.into(),
+            capture_epoch: 1,
+            runtime_settings: snapshot,
+            live_formatting_agent: None,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+            sample_rate: 16_000,
+            capture_device_name: Some("MacBook Pro Microphone".into()),
+            language: Some("pl".into()),
+            stream_log_path: None,
+            utterance_silence_sec: Some(2.0),
+            capture_turn: CaptureTurnIntent::AgentChannel,
+            layer1,
+            lifecycle_events: None,
+            terminal_audio: Some(archive),
+            last_window_closed: None,
+        };
+        let json = serde_json::to_vec(&ReplayCard::of_session(&config)).unwrap();
+        serde_json::from_slice(&json).unwrap()
+    }
+
+    #[test]
+    fn a_carded_take_replays_with_its_own_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = channel_card(dir.path());
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+
+        let replay = prepare_recorded_replay(Some(SESSION), Some(&card), &wav, 2).unwrap();
+
+        let config = &replay.config;
+        assert_eq!(config.session_id, format!("replay-{SESSION}-r2"));
+        assert_eq!(
+            config.capture_device_name.as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(config.capture_turn, CaptureTurnIntent::AgentChannel);
+        assert_eq!(config.language.as_deref(), Some("pl"));
+        assert_eq!(config.utterance_silence_sec, Some(2.0));
+        assert_eq!(
+            config.runtime_settings.digest().as_str(),
+            card.settings_digest
+        );
+        assert_eq!(replay.samples.len(), 1_600);
+        let archive = config
+            .terminal_audio
+            .as_ref()
+            .expect("the archive is handed over like a stop")
+            .try_recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.session_id, config.session_id);
+        assert_eq!(archive.sample_count, 1_600);
+        let diverged: Vec<_> = replay.divergences().map(|input| input.input).collect();
+        assert_eq!(diverged, ["engine_env"]);
+    }
+
+    #[test]
+    fn a_take_without_a_card_names_where_every_input_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("take.wav");
+        write_mono_archive(&wav, 16_000, 1_600);
+
+        let replay = prepare_recorded_replay(Some(SESSION), None, &wav, 1).unwrap();
+
+        assert_eq!(replay.config.capture_turn, CaptureTurnIntent::AgentChannel);
+        assert!(replay.config.terminal_audio.is_some());
+        for input in &replay.inputs {
+            assert!(input.recorded.is_none(), "{}", input.input);
+            assert!(input.reason.is_some(), "{} names no source", input.input);
+        }
     }
 }
