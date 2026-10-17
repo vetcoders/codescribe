@@ -623,7 +623,19 @@ async fn direct_operation_formatter_keeps_five_occurrences_and_history_without_l
     for line in rows.lines() {
         let row: serde_json::Value = serde_json::from_str(line).unwrap();
         if row["schema"] == "codescribe.transcript-evidence.v1" {
-            assert!(row["document_revision_receipt"].is_null());
+            if row["reducer_action"] == "apply_direct_document_revision" {
+                let receipt = &row["document_revision_receipt"];
+                assert!(receipt.is_object());
+                assert!(receipt["source_occurrences"].as_array().unwrap().is_empty());
+                assert!(
+                    receipt["source_seal_receipts"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                assert!(row["document_revision_receipt"].is_null());
+            }
             assert!(
                 row["acoustic_receipts"]
                     .as_array()
@@ -686,6 +698,163 @@ async fn direct_operation_edit_retranscribe_and_navigation_work_after_completed_
             .manual_document_revisions()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn direct_document_actions_wait_for_lifecycle_end_and_survive_later_edits() {
+    let mut take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48000,
+        "Iwo Iwo Iwo Iwo Iwo",
+    ));
+    take.emitter.on_event(&terminal());
+    let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+    let closing: serde_json::Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        closing["can_format"], false,
+        "decoder completion is not capture lifecycle completion"
+    );
+    assert_eq!(closing["can_retranscribe"], false);
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    let ended = take
+        .bus
+        .publish_ended(
+            TranscriptSessionEndReason::TranscriptionFailed,
+            true,
+            TranscriptDelivery::Unattempted,
+        )
+        .unwrap();
+    assert!(ended.can_format && ended.can_retranscribe);
+    for provenance in [
+        DocumentRevisionProvenance::UserEdit,
+        DocumentRevisionProvenance::Retranscribe,
+    ] {
+        let source = take.emitter.document_timeline("translation").0;
+        take.emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "translation".into(),
+                source_revision: source,
+                rendered_text: format!("Pięć Iwo pozostaje po {}.", provenance.as_str()),
+                provenance,
+            })
+            .unwrap();
+        let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+        let revised: serde_json::Value =
+            serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            revised["can_format"], true,
+            "an accepted edit cannot disable the next format"
+        );
+        assert_eq!(
+            revised["can_retranscribe"], true,
+            "the same retained audio remains available"
+        );
+        assert_eq!(revised["lifecycle_terminal"], false);
+    }
+    take.emitter.finish().await;
+}
+
+#[tokio::test]
+async fn direct_document_edit_projects_its_typed_receipt_without_acoustic_receipts() {
+    let mut take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48_000 * 360,
+        &"Długi tekst — pięć Iwo, Iwo, Iwo, Iwo, Iwo.\n".repeat(80),
+    ));
+    take.emitter.on_event(&terminal());
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    take.bus.publish_ended(
+        TranscriptSessionEndReason::Completed,
+        true,
+        TranscriptDelivery::Unattempted,
+    );
+    for provenance in [
+        DocumentRevisionProvenance::UserEdit,
+        DocumentRevisionProvenance::Retranscribe,
+    ] {
+        let source = take.emitter.document_timeline("translation").0;
+        let proposed = format!("Poprawiony tekst {}.\n", provenance.as_str());
+        let committed = take
+            .emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "translation".into(),
+                source_revision: source,
+                rendered_text: proposed.clone(),
+                provenance,
+            })
+            .unwrap();
+        let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+        let event: serde_json::Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+        let receipt = &event["document_revision_receipt"];
+        assert!(
+            receipt.is_object(),
+            "a successful explicit edit needs its typed document receipt on the projection; an ACK alone cannot settle the overlay"
+        );
+        assert_eq!(event["reducer_action"], "apply_direct_document_revision");
+        assert_eq!(receipt["receipt_id"], committed.provenance_receipt);
+        assert_eq!(receipt["provenance"], provenance.as_str());
+        assert_eq!(receipt["source_revision"], source);
+        assert_eq!(receipt["revision"], committed.revision);
+        assert_eq!(receipt["session_id"], "translation");
+        assert_eq!(receipt["capture_epoch"], 7);
+        assert_eq!(receipt["rendered_text"], proposed);
+        assert!(
+            receipt["capture_receipt_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("direct-publication-")
+        );
+        assert!(receipt["source_occurrences"].as_array().unwrap().is_empty());
+        assert!(
+            receipt["source_seal_receipts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(event["acoustic_receipts"].as_array().unwrap().is_empty());
+        assert_eq!(event["lifecycle_terminal"], false);
+        assert!(
+            committed
+                .provenance_receipt
+                .starts_with(&format!("{}-", provenance.as_str()))
+        );
+    }
+    let source = take.emitter.document_timeline("translation").0;
+    let restored = take
+        .emitter
+        .navigate_document("translation".into(), source, 0)
+        .unwrap();
+    let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+    let event: serde_json::Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        event["document_revision_receipt"]["provenance"],
+        "navigation"
+    );
+    assert_eq!(
+        event["document_revision_receipt"]["receipt_id"],
+        restored.provenance_receipt
+    );
+    assert!(restored.provenance_receipt.starts_with("navigation-"));
+    assert!(
+        take.ledger
+            .lock()
+            .unwrap()
+            .manual_document_revisions()
+            .is_empty()
+    );
+    take.emitter.finish().await;
 }
 
 #[tokio::test]

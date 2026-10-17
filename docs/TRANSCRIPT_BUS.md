@@ -557,6 +557,18 @@ paste policy. The controller snapshots the target before overlay focus can
 replace it, and checks the session-owned WAV only after the stop path has had a
 chance to retain it.
 
+An explicit edit, retranscription or version move carries its typed
+`document_revision_receipt` on the resulting projection. A direct document
+operation uses the reducer's authenticated publication capability: its
+`capture_receipt_id` starts with `direct-publication-`, and its acoustic source
+occurrence and seal lists remain empty. This is document provenance, never
+an acoustic seal. Operation identifiers keep the provenance first, for example
+`user-edit-direct-…`. The command acknowledgement and the projected receipt
+name the same operation. Receivers finish a pending edit or version move only
+after the matching document projection arrives; a command acknowledgement
+alone does not repaint or complete it. Such a revision has
+`lifecycle_terminal=false` and cannot release capture a second time.
+
 The Bus refuses the **whole revision** before any row or sequence mutation if
 the reducer's publication validator rejects it. Validation binds the exact ordered
 entries, action, rendered bytes and other snapshot fields to the private reducer
@@ -869,11 +881,12 @@ The rail projects the producer's capability bits on `coverage_refused` and on
 `error` instead of a fixed `[close]`. A delivery failure keeps its words and its
 retained audio, so Copy, Insert and Retranscribe are exactly the recovery the
 user needs at that moment, and the previous fixed list hid them behind the word
-"error". Format is the one command withheld on both phases: its production relay
-refuses outside `formatted`, so projecting it would paint a dead button whose
-only working form would relabel a refused take as a sealed one. A false bit is
-honoured everywhere; on these two phases a true `can_format` is declined by the
-receiver, and that decision is stated here rather than inferred.
+"error". Format also follows the producer's `can_format` on a terminal document
+in `formatted`, `coverage_refused` or `error`. The request creates an explicit
+document revision; it does not certify an acoustic seal or erase diagnostics.
+A false capability stays disabled, and an active capture, dirty draft or pending
+document operation still prevents the request. Direct decoder completion alone
+does not enable actions: the capture lifecycle must have ended first.
 
 Delivery is unchanged and deliberately not phase-aware. Refused documents take
 the same `ComposerPending` route, and only the receiver's typed receipt is

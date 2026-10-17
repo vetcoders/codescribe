@@ -678,6 +678,9 @@ fn document_history_at_counted(
         if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&line)
             && row["schema"] == "codescribe.derived-transcript.v1"
             && row["session_id"] == session_id
+            && row["source_state"] != "admitted_occurrence"
+            && row["source_observation"].is_null()
+            && row["status"] == "applied"
             && let (Some(revision), Some(text), Some(mode), Some(time)) = (
                 row["revision"].as_u64(),
                 row["rendered_text"].as_str(),
@@ -1697,8 +1700,21 @@ impl TranscriptBus {
         } else {
             TranscriptProjectionPhase::Listening
         };
-        let availability =
-            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false);
+        // Decoder completion does not end capture. Only the lifecycle end
+        // releases document actions; later revisions retain its audio proof,
+        // exactly like post-stop revisions in the ledger lane.
+        let availability = if writer.ended {
+            self.projection_availability(
+                !revision.rendered_text.trim().is_empty(),
+                false,
+                writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|last| last.can_retranscribe),
+            )
+        } else {
+            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
+        };
         // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
         // for the direct lane — one start row per document, the terminal row,
         // intermediate revisions in-process only.
@@ -1744,7 +1760,7 @@ impl TranscriptBus {
                 // No ledger, no acoustic receipts: the capability above is the
                 // whole authority behind this row.
                 acoustic_receipts: Vec::new(),
-                document_revision_receipt: None,
+                document_revision_receipt: capability.document_revision_receipt(),
                 seal_coverage: None,
                 comparison: None,
                 consultation_presentations: Vec::new(),
