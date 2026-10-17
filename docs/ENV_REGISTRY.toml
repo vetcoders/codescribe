@@ -718,14 +718,14 @@ category = "stt"
 description = "Arm the DictationTranscriber lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Power-user override for the Voice Lab witness key audio.dictation_witness_armed: present env wins over Settings in either direction and is recorded by name in the snapshot provenance. The witness re-checks unresolved recovery debt in the background after each committed utterance seal and once more at Stop (docs/STT_CONTRACT.md, 2026-10-15). The Rust side sets this key explicitly on the spawned bridge child for a DT request, so the armed decision crosses the process boundary without depending on the app process environment. Not a shipped default — flipping it is an operator decision"
 
 [vars.CODESCRIBE_SEAL_LEDGER_ENABLED]
-default = "1"
+default = "0"
 type = "bool"
 reload = "hot"
 category = "stt"
 description = "Promoted Settings write token for audio.seal_ledger_enabled. The next take reads this choice from its immutable settings snapshot. Disabling selects direct decoder publication without word-admission or acoustic-seal certification. This token is a settings router key, not a process-environment override."
 
 [vars.CODESCRIBE_APPLE_LIVE_ENABLED]
-default = "1"
+default = "0"
 type = "bool"
 reload = "hot"
 category = "stt"
