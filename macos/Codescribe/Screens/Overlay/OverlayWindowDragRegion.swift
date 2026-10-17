@@ -104,3 +104,31 @@ final class OverlayMenuCursorRegionView: NSView {
     owner?.menuCursorRegions.add(self)
   }
 }
+
+/// Geometry and mounted identity only; this background never intercepts clicks.
+/// A click inside opens the panel keyboard gate for selectable SwiftUI text.
+struct OverlaySelectableTextRegion: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlaySelectableTextRegionView {
+    OverlaySelectableTextRegionView()
+  }
+
+  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {}
+}
+
+final class OverlaySelectableTextRegionView: NSView {
+  private weak var owner: FloatingOverlayPanel?
+
+  func contains(windowPoint: NSPoint) -> Bool {
+    window != nil && !isHiddenOrHasHiddenAncestor
+      && bounds.intersection(visibleRect).contains(convert(windowPoint, from: nil))
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    owner?.selectableTextRegions.remove(self)
+    owner = window as? FloatingOverlayPanel
+    owner?.selectableTextRegions.add(self)
+  }
+}
