@@ -464,27 +464,40 @@ extension RealAgentBridgeInstaller {
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
+      // The helper names its refusal on stderr ("channel was rebound or its
+      // agent is not listening…"); swallowing it left the Founder with a
+      // bare "could not be sent" and no culprit (P0, 2026-10-17).
+      let diagnostics = Pipe()
       process.executableURL = executable
       process.arguments = arguments
       process.standardInput = input
       process.standardOutput = FileHandle.nullDevice
-      process.standardError = FileHandle.nullDevice
+      process.standardError = diagnostics
       // Bound text fits in the pipe; writing happens off the UI thread.
       guard message.text.utf8.count <= 65536 else { throw CocoaError(.fileWriteOutOfSpace) }
       try process.run()
       try input.fileHandleForWriting.write(contentsOf: Data(message.text.utf8))
       try input.fileHandleForWriting.close()
+      // Reading to EOF first keeps a chatty helper from filling the pipe
+      // and deadlocking against waitUntilExit.
+      let refusalData = diagnostics.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        let headline =
+          process.terminationStatus == 4
+          ? String(
+            localized:
+              "Some agents may have received this message. Check read receipts before sending again."
+          )
+          : String(localized: "Message could not be sent. Your draft is retained.")
+        let refusal = String(data: refusalData.suffix(4096), encoding: .utf8)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+          .components(separatedBy: "\n").last?
+          .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
         throw NSError(
           domain: "Codescribe.BusText", code: Int(process.terminationStatus),
           userInfo: [
-            NSLocalizedDescriptionKey: process.terminationStatus == 4
-              ? String(
-                localized:
-                  "Some agents may have received this message. Check read receipts before sending again."
-              )
-              : String(localized: "Message could not be sent. Your draft is retained.")
+            NSLocalizedDescriptionKey: refusal.isEmpty ? headline : headline + "\n" + refusal
           ])
       }
     }.value
