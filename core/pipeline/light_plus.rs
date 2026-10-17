@@ -43,12 +43,13 @@ static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
 
 /// Byte ranges that hold data rather than speech: fenced code, inline code
 /// and straight-quoted literals, split the way CommonMark 0.31.2 splits them.
-/// A fence is a run of three or more backticks opening a line (at most three
-/// spaces before it); it closes at the first later line holding at most three
-/// spaces, a run at least as long and nothing else, and an unclosed fence
-/// protects the rest. Any other run of n backticks, even three mid-line, is
-/// an inline span that closes at the next run of exactly n, so ``a `b` c``
-/// is one span; an unclosed inline run protects nothing. A quote closes only when an even number of backslashes
+/// A fence is a run of three or more backticks or tildes opening a line (at
+/// most three spaces before it); it closes at the first later line holding at
+/// most three spaces, a run of the same character at least as long and
+/// nothing else, and an unclosed fence protects the rest. Any other run of n
+/// backticks, even three mid-line, is an inline span that closes at the next
+/// run of exactly n, so ``a `b` c`` is one span; an unclosed inline run
+/// protects nothing. Tildes outside a fence are text. A quote closes only when an even number of backslashes
 /// precedes it, so JSON escapes stay inside their string. An apostrophe
 /// inside a word (`Codescribe'a`, `don't`) does not open a literal.
 fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -56,12 +57,15 @@ fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut index = 0;
     while let Some(ch) = text[index..].chars().next() {
         let (end, skip) = match ch {
-            '`' => {
-                let run = backtick_run(&text[index..]);
+            '`' | '~' => {
+                let marker = ch as u8;
+                let run = marker_run(&text[index..], marker);
                 let end = if run >= 3 && opens_line(text, index) {
-                    Some(closing_fence(text, index, run).unwrap_or(text.len()))
-                } else {
+                    Some(closing_fence(text, index, marker, run).unwrap_or(text.len()))
+                } else if marker == b'`' {
                     closing_backtick_run(text, index + run, run)
+                } else {
+                    None
                 };
                 (end, run)
             }
@@ -87,9 +91,9 @@ fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
     regions
 }
 
-/// Length of the backtick run that starts `text`.
-fn backtick_run(text: &str) -> usize {
-    text.bytes().take_while(|&byte| byte == b'`').count()
+/// Length of the run of `marker` bytes that starts `text`.
+fn marker_run(text: &str, marker: u8) -> usize {
+    text.bytes().take_while(|&byte| byte == marker).count()
 }
 
 /// True when only up to three spaces separate `at` from the line start.
@@ -99,9 +103,10 @@ fn opens_line(text: &str, at: usize) -> bool {
     indent.len() <= 3 && indent.bytes().all(|byte| byte == b' ')
 }
 
-/// End of the line that closes the fence opened by `run` backticks at `at`:
-/// at most three spaces, at least `run` backticks, then only whitespace.
-fn closing_fence(text: &str, at: usize, run: usize) -> Option<usize> {
+/// End of the line that closes the fence opened by `run` `marker` bytes at
+/// `at`: at most three spaces, at least `run` of the same marker, then only
+/// whitespace.
+fn closing_fence(text: &str, at: usize, marker: u8, run: usize) -> Option<usize> {
     let mut line_start = at + text[at..].find('\n')? + 1;
     loop {
         let line_end = text[line_start..]
@@ -109,7 +114,7 @@ fn closing_fence(text: &str, at: usize, run: usize) -> Option<usize> {
             .map_or(text.len(), |newline| line_start + newline);
         let line = &text[line_start..line_end];
         let fence = line.trim_start_matches(' ');
-        let length = backtick_run(fence);
+        let length = marker_run(fence, marker);
         if line.len() - fence.len() <= 3 && length >= run && fence[length..].trim().is_empty() {
             return Some(line_end);
         }
@@ -125,7 +130,7 @@ fn closing_backtick_run(text: &str, from: usize, run: usize) -> Option<usize> {
     let mut at = from;
     while let Some(offset) = text[at..].find('`') {
         let start = at + offset;
-        let length = backtick_run(&text[start..]);
+        let length = marker_run(&text[start..], b'`');
         if length == run {
             return Some(start + run);
         }
@@ -598,6 +603,16 @@ mod tests {
             brand_spelling("```\nCodeScript\n   ```\npo CodeScript"),
             "```\nCodeScript\n   ```\npo Codescribe"
         );
+        assert_eq!(
+            brand_spelling("~~~sh\nCodeScript --help\n~~~\npo CodeScript"),
+            "~~~sh\nCodeScript --help\n~~~\npo Codescribe"
+        );
+        // A backtick run never closes a tilde fence, and tildes mid-line are text.
+        assert_eq!(
+            brand_spelling("~~~\nCodeScript\n```\nCodeScript"),
+            "~~~\nCodeScript\n```\nCodeScript"
+        );
+        assert_eq!(brand_spelling("a ~~~ CodeScript"), "a ~~~ Codescribe");
         assert_eq!(
             brand_spelling(r#""a\\" CodeScript "b""#),
             r#""a\\" Codescribe "b""#
