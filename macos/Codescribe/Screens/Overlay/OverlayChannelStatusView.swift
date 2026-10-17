@@ -247,6 +247,37 @@ struct OverlayRowHoverHighlight: ViewModifier {
   }
 }
 
+/// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): an accent
+/// ring on the focused row, and the pointer entering a row moves the focus
+/// there. Hover rides the same tracking region as the row wash, so it answers
+/// while Codescribe is not the active app.
+struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
+  let focused: Bool
+  let shape: RingShape
+  let palette: OverlayAppearancePalette
+  let targetID: String?
+  let onHover: ((String) -> Void)?
+
+  func body(content: Content) -> some View {
+    content
+      .overlay {
+        if focused {
+          shape
+            .strokeBorder(palette.agentAccent.color, lineWidth: 2)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .background {
+        if let targetID, let onHover {
+          OverlayMenuCursorRegion { inside in
+            if inside { onHover(targetID) }
+          }
+        }
+      }
+  }
+}
+
 /// The system owns button material, contrast and pointer feedback alongside the composer.
 struct OverlayAgentControlStyle: ViewModifier {
   @ViewBuilder
@@ -506,6 +537,9 @@ struct OverlayChannelStatusView: View {
   var archivedOwners: Set<OverlayConversationOwner> = []
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
+  /// The row the middle-click chooser has focused, and the hover that moves it.
+  var gestureFocusID: String?
+  var onGestureHover: ((String) -> Void)?
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -682,6 +716,12 @@ struct OverlayChannelStatusView: View {
             }
           )
           .modifier(
+            OverlayGestureFocusRing(
+              focused: broadcast.id == gestureFocusID,
+              shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+              targetID: broadcast.id, onHover: onGestureHover)
+          )
+          .modifier(
             OverlayBroadcastPolicyMenu(
               members: broadcastMembers, palette: palette, enabled: !unavailable))
         }
@@ -696,6 +736,15 @@ struct OverlayChannelStatusView: View {
   }
 
   var currentConversations: [OverlayConversation] {
+    Self.currentConversations(
+      conversations: conversations, archivedOwners: archivedOwners, hudStates: hudStates)
+  }
+
+  /// Static so the overlay state's middle-click chooser walks the same rows.
+  static func currentConversations(
+    conversations: [OverlayConversation], archivedOwners: Set<OverlayConversationOwner>,
+    hudStates: [String: OverlayChannelHudProjection]
+  ) -> [OverlayConversation] {
     conversations.filter { conversation in
       if conversation.channel == "0" { return true }
       if let owner = conversation.owner,
@@ -827,6 +876,12 @@ struct OverlayChannelStatusView: View {
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
         enabled: conversation != nil && onSelectConversation != nil)
+    )
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: conversation != nil && conversation?.id == gestureFocusID,
+        shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+        targetID: conversation?.id, onHover: onGestureHover)
     )
     .help(tooltip)
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
@@ -1287,16 +1342,22 @@ struct OverlayChannelStatusView: View {
   /// Channel 0 first, then the bound channels in roster order, then any
   /// passive current conversation the roster snapshot has not caught up with.
   var rosterOrderedConversations: [OverlayConversation] {
+    Self.rosterOrder(current: currentConversations, channels: channels)
+  }
+
+  static func rosterOrder(
+    current: [OverlayConversation], channels: [OverlayChannelDelivery]
+  ) -> [OverlayConversation] {
     var ordered: [OverlayConversation] = []
-    if let zero = currentConversations.first(where: { $0.channel == "0" }) {
+    if let zero = current.first(where: { $0.channel == "0" }) {
       ordered.append(zero)
     }
     for channel in channels where channel.channel != "0" {
-      if let conversation = conversation(for: channel) {
+      if let conversation = current.first(where: { $0.channel == channel.channel }) {
         ordered.append(conversation)
       }
     }
-    for conversation in currentConversations
+    for conversation in current
     where conversation.channel != "0" && !ordered.contains(where: { $0.id == conversation.id }) {
       ordered.append(conversation)
     }
@@ -1372,7 +1433,8 @@ struct OverlayChannelStatusView: View {
     OverlayAgentPillStack(
       palette: palette, entries: pillEntries,
       broadcastMembers: broadcastMembers, broadcastEnabled: !unavailable,
-      onSelect: onSelect, onDismiss: onDismiss)
+      onSelect: onSelect, onDismiss: onDismiss,
+      focusedConversationID: gestureFocusID, onHoverConversation: onGestureHover)
   }
 }
 
@@ -1491,9 +1553,24 @@ struct OverlayAgentPillStack: View {
   let broadcastEnabled: Bool
   let onSelect: (String?) -> Void
   let onDismiss: () -> Void
+  /// The middle-click chooser's focus; the stack scrolls to keep it in view.
+  var focusedConversationID: String?
+  var onHoverConversation: ((String) -> Void)?
   @State private var revealed = false
 
   var body: some View {
+    ScrollViewReader { proxy in
+      stack
+        .onChange(of: focusedConversationID) { _, focused in
+          guard let focused else { return }
+          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+            proxy.scrollTo(focused, anchor: .center)
+          }
+        }
+    }
+  }
+
+  private var stack: some View {
     ScrollView(.vertical) {
       overlayGlassGroup(
         VStack(alignment: .trailing, spacing: 6) {
@@ -1586,6 +1663,11 @@ struct OverlayAgentPillStack: View {
       entry.isBroadcast ? palette.agentAccent.color.opacity(0.14) : .clear, in: Capsule()
     )
     .modifier(OverlayNamePillGlass(interactive: true))
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: entry.conversationID == focusedConversationID, shape: Capsule(),
+        palette: palette, targetID: entry.conversationID, onHover: onHoverConversation)
+    )
     .help(
       entry.disconnected
         ? String(localized: "Disconnected")

@@ -1090,6 +1090,8 @@ struct DictationOverlayView: View {
     view.archivedOwners = state.archivedAgentOwners
     view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
     view.archiveError = state.agentArchiveError
+    view.gestureFocusID = state.agentGestureFocusID
+    view.onGestureHover = { state.hoverAgentGestureTarget($0) }
     return view
   }
 
