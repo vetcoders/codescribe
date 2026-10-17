@@ -45,7 +45,7 @@ static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
 /// `codescribe` and any form glued to a path, identifier or address stay as
 /// written: `~/.codescribe/takes` and `codescribe.transcript.v1` are names,
 /// not speech. Lone "code", "script" or "scribe" never match.
-fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
+pub fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
     let mut rewritten = String::new();
     let mut copied = 0;
     for found in BRAND_HEARINGS.find_iter(text) {
