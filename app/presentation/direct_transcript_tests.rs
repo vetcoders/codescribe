@@ -1,10 +1,13 @@
 //! Integrator-authored event-sequence falsifiers. These exercise real reducer,
 //! Bus persistence and Stop; they do not claim microphone/model acceptance.
-use super::emitter::PresentationEmitter;
+use super::emitter::{PresentationEmitter, UserRevisionIntent, UserRevisionRefusal};
 use super::transcript_bus::{
     TranscriptBus, TranscriptDelivery, TranscriptMode, TranscriptSession,
     TranscriptSessionEndReason,
 };
+use codescribe_core::config::FormattingPolicy;
+use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
+use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
 };
@@ -486,4 +489,264 @@ async fn direct_translation_retires_apple_preview_for_the_same_audio() {
         "English translation."
     );
     assert_eq!(*take.delivery.lock().await, "English translation.");
+}
+
+fn formatted(text: &str) -> AiFormatResult {
+    AiFormatResult {
+        text: text.into(),
+        reasoning_text: None,
+        status: AiFormatStatus::Applied,
+    }
+}
+
+#[tokio::test]
+async fn direct_operation_formatter_source_is_the_terminal_committed_document() {
+    let take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48000,
+        "English document.",
+    ));
+    let revision = take.emitter.document_timeline("translation").0;
+    assert_eq!(
+        take.emitter
+            .terminal_revision_source("translation", revision),
+        Err(UserRevisionRefusal::NotTerminal)
+    );
+    take.emitter.on_event(&terminal());
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    let revision = take.emitter.document_timeline("translation").0;
+    assert_eq!(
+        take.emitter
+            .terminal_revision_source("translation", revision)
+            .unwrap(),
+        "English document."
+    );
+    let request = take
+        .emitter
+        .terminal_formatter_request()
+        .expect("direct take owes the same formatter corridor");
+    assert_eq!(request.source_revision, revision);
+    assert_eq!(request.source_text, "English document.");
+    assert_eq!(
+        take.emitter.terminal_revision_source("foreign", revision),
+        Err(UserRevisionRefusal::SessionMismatch)
+    );
+    assert!(matches!(
+        take.emitter
+            .terminal_revision_source("translation", revision - 1),
+        Err(UserRevisionRefusal::StaleRevision { .. })
+    ));
+}
+
+#[tokio::test]
+async fn direct_operation_formatter_keeps_five_occurrences_and_history_without_ledger_receipts() {
+    let mut take = take(false);
+    for i in 0..5 {
+        take.emitter.on_event(&direct(
+            ObservationProducer::Whisper,
+            i + 1,
+            i * 48000,
+            (i + 1) * 48000,
+            "Iwo",
+        ));
+    }
+    take.emitter.on_event(&terminal());
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    let source = take.emitter.document_timeline("translation").0;
+    let accepted = take
+        .emitter
+        .apply_formatter_revision(
+            "translation".into(),
+            source,
+            FormattingPolicy::Smart,
+            formatted("Iwo, Iwo, Iwo, Iwo, Iwo."),
+        )
+        .unwrap();
+    assert_eq!(accepted.rendered_text, "Iwo, Iwo, Iwo, Iwo, Iwo.");
+    assert!(accepted.provenance_receipt.starts_with("formatter-"));
+    let (revision, timeline) = take.emitter.document_timeline("translation");
+    assert_eq!(revision, source + 1);
+    assert_eq!(timeline.steps().len(), 2);
+    assert_eq!(timeline.steps()[0].rendered_text, "Iwo Iwo Iwo Iwo Iwo");
+    assert_eq!(timeline.steps()[1].rendered_text, accepted.rendered_text);
+    assert!(matches!(
+        take.emitter.apply_formatter_revision(
+            "translation".into(),
+            source,
+            FormattingPolicy::Smart,
+            formatted("stale")
+        ),
+        Err(UserRevisionRefusal::StaleRevision { .. })
+    ));
+    let undo = take
+        .emitter
+        .navigate_document("translation".into(), revision, 0)
+        .unwrap();
+    assert_eq!(undo.rendered_text, "Iwo Iwo Iwo Iwo Iwo");
+    let redo = take
+        .emitter
+        .navigate_document("translation".into(), undo.revision, 1)
+        .unwrap();
+    assert_eq!(
+        take.emitter
+            .terminal_revision_source("translation", redo.revision)
+            .unwrap(),
+        accepted.rendered_text
+    );
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        99,
+        0,
+        240000,
+        "late overwrite",
+    ));
+    assert_eq!(
+        take.emitter.document_timeline("translation").0,
+        redo.revision
+    );
+    take.emitter.finish().await;
+    assert_eq!(*take.delivery.lock().await, "Iwo Iwo Iwo Iwo Iwo");
+    let ledger = take.ledger.lock().unwrap();
+    assert_eq!(ledger.qualified_occurrences().count(), 0);
+    assert!(ledger.manual_document_revisions().is_empty());
+    let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+    assert!(rows.contains("formatter-derived-"));
+    for line in rows.lines() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        if row["schema"] == "codescribe.transcript-evidence.v1" {
+            assert!(row["document_revision_receipt"].is_null());
+            assert!(
+                row["acoustic_receipts"]
+                    .as_array()
+                    .is_none_or(|a| a.is_empty())
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn direct_operation_edit_retranscribe_and_navigation_work_after_completed_stop() {
+    let mut take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48000,
+        "Original.",
+    ));
+    take.emitter.on_event(&terminal());
+    take.emitter.on_event(&EngineEvent::SessionFinalised {
+        session_id: "translation".into(),
+        layer_summary: Default::default(),
+    });
+    take.bus.publish_ended(
+        TranscriptSessionEndReason::Completed,
+        true,
+        TranscriptDelivery::Unattempted,
+    );
+    let source = take.emitter.document_timeline("translation").0;
+    for (i, provenance) in [
+        DocumentRevisionProvenance::UserEdit,
+        DocumentRevisionProvenance::Retranscribe,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        take.emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "translation".into(),
+                source_revision: source + i as u64,
+                rendered_text: format!("Accepted {i}."),
+                provenance,
+            })
+            .unwrap();
+    }
+    let (revision, history) = take.emitter.document_timeline("translation");
+    assert_eq!(history.steps().len(), 3);
+    let original = take
+        .emitter
+        .navigate_document("translation".into(), revision, 0)
+        .unwrap();
+    assert_eq!(original.rendered_text, "Original.");
+    take.emitter.finish().await;
+    assert_eq!(*take.delivery.lock().await, "Original.");
+    assert!(
+        take.ledger
+            .lock()
+            .unwrap()
+            .manual_document_revisions()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn direct_operation_refusals_leave_document_history_and_bus_unchanged() {
+    let take = take(false);
+    take.emitter.on_event(&direct(
+        ObservationProducer::Whisper,
+        1,
+        0,
+        48000,
+        "Raw document.",
+    ));
+    let source = take.emitter.document_timeline("translation").0;
+    let intent = |session: &str, revision: u64| UserRevisionIntent {
+        session_id: session.into(),
+        source_revision: revision,
+        rendered_text: "human edit".into(),
+        provenance: DocumentRevisionProvenance::UserEdit,
+    };
+    assert_eq!(
+        take.emitter
+            .apply_user_revision(intent("translation", source)),
+        Err(UserRevisionRefusal::NotTerminal)
+    );
+    assert!(take.emitter.terminal_formatter_request().is_none());
+    take.emitter.on_event(&terminal());
+    let source = take.emitter.document_timeline("translation").0;
+    let before = std::fs::read(&take.bus_path).unwrap();
+    assert_eq!(
+        take.emitter.apply_user_revision(intent("foreign", source)),
+        Err(UserRevisionRefusal::SessionMismatch)
+    );
+    assert!(matches!(
+        take.emitter
+            .apply_user_revision(intent("translation", source - 1)),
+        Err(UserRevisionRefusal::StaleRevision { .. })
+    ));
+    let mut failed = formatted("must not be accepted");
+    failed.status = AiFormatStatus::Failed;
+    assert_eq!(
+        take.emitter.apply_formatter_revision(
+            "translation".into(),
+            source,
+            FormattingPolicy::Smart,
+            failed
+        ),
+        Err(UserRevisionRefusal::FormatterFailed)
+    );
+    assert_eq!(take.emitter.document_timeline("translation").0, source);
+    assert!(
+        take.emitter
+            .document_timeline("translation")
+            .1
+            .steps()
+            .is_empty()
+    );
+    assert_eq!(std::fs::read(&take.bus_path).unwrap(), before);
+    assert_eq!(
+        take.emitter
+            .terminal_revision_source("translation", source)
+            .unwrap(),
+        "Raw document."
+    );
 }

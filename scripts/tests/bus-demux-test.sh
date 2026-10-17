@@ -603,7 +603,7 @@ PY
 
 # Coverage-refused safety net: a channel session whose ledger never issued a
 # terminal seal (incomplete acoustic coverage / pending recovery) must still
-# deliver its words when the channel moves on — as a seal envelope with
+# deliver its words on its named closing receipt — as a seal envelope with
 # coverage="refused" and state_change_allowed=false. A session that DID seal
 # terminally must not be re-delivered by the net.
 : >"$BUS"
@@ -674,7 +674,7 @@ rows = [
         "rendered_text": "James, jesteś tam?",
         "emitted_at": "2026-09-29T15:56:55Z",
     },
-    # The channel reopens: the flush boundary for both earlier sessions.
+    # Reopen is a capture boundary only; named closes own delivery.
     {
         "schema": "codescribe.channel-session.v1",
         "kind": "channel_session",
@@ -696,8 +696,14 @@ opening = lambda capture, time: {
     "state": "open", "channel": "2", "agent": "james", "session_id": capture,
     "opened_at": time, "emitted_at": time}
 rows.insert(0, opening("agent-channel-2-lost", "2026-09-29T15:55:00Z"))
-rows.insert(4, opening("agent-channel-2-good", "2026-09-29T15:56:00Z"))
+rows.insert(4, {"schema": "codescribe.channel-session.v1", "kind": "channel_session",
+                "state": "sealed", "reason": "silence", "channel": "2", "agent": "james",
+                "session_id": "agent-channel-2-lost", "emitted_at": "2026-09-29T15:55:59Z"})
+rows.insert(5, opening("agent-channel-2-good", "2026-09-29T15:56:00Z"))
 rows[-1]["opened_at"] = rows[-1]["emitted_at"]
+rows.insert(len(rows) - 1, {"schema": "codescribe.channel-session.v1", "kind": "channel_session",
+                            "state": "sealed", "reason": "silence", "channel": "2", "agent": "james",
+                            "session_id": "agent-channel-2-good", "emitted_at": "2026-09-29T15:57:27Z"})
 with open(sys.argv[1], "a", encoding="utf-8") as handle:
     for row in rows:
         row["recipients"] = [owner]
@@ -712,7 +718,7 @@ python3 - "$refused" "$DEMUX" <<'PY'
 import importlib.util, json, sys
 rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 kinds = [row["kind"] for row in rows]
-# The newer opening closes the earlier unsealed document before the next
+# The named close releases the earlier unsealed document before the next
 # draft. Reobserving the same document does not create another occurrence.
 assert kinds == ["attach", "revised", "revised", "seal", "revised", "revised", "seal"], kinds
 healthy = rows[6]
