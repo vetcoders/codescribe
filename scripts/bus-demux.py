@@ -3143,7 +3143,9 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
                 or not isinstance(expected_payload.get("bus"), str)):
             return False
         owner["bus"] = expected_payload["bus"]
-    matches = lambda value: isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+    def matches(value: Any) -> bool:
+        return isinstance(value, dict) and all(value.get(k) == v for k, v in owner.items())
+
     envelope = receipt.get("envelope")
     if not matches(receipt) or not matches(envelope) or envelope.get("delivery_id") != delivery_id:
         return False
@@ -5153,15 +5155,26 @@ def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
 
+def broadcast_skip_path(root: Path, lease_id: str, delivery_id: str) -> Path:
+    return root / "broadcast-skipped" / lease_id / f"{delivery_id}.json"
+
+
 def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
     # This is receipt history, never an acknowledgment marker: the agent did
-    # not read these words. Keep it in the follower's existing event stream.
+    # not read these words. The follower's event stream keeps the history; one
+    # file per delivery beside wakeups/ and acknowledgments/ is the receipt the
+    # overlay reads for that exact delivery and owner, since a follower stream
+    # runs to megabytes and the overlay polls twice a second.
+    marker = broadcast_skip_path(root, payload["lease_id"], payload["delivery_id"])
+    if marker.exists():
+        return
     _, path = follower_paths(root, payload["lease_id"])
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as stream:
         os.chmod(path, 0o600)
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.seek(0)
+        recorded = None
         for line in stream:
             try:
                 row = json.loads(line)
@@ -5169,13 +5182,17 @@ def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
                 continue
             if (isinstance(row, dict) and row.get("kind") == "broadcast_skipped"
                     and row.get("delivery_id") == payload["delivery_id"]):
-                return
-        row = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
-               **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
-               "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
-        stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+                recorded = row
+                break
+        if recorded is None:
+            recorded = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
+                        **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
+                        "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
+            stream.write(json.dumps(recorded, ensure_ascii=False, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    # A row the stream held before this marker existed is copied as recorded.
+    atomic_json(marker, recorded)
 
 
 def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
