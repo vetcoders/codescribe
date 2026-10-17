@@ -127,29 +127,67 @@ final class OverlayHeaderMorphTests: XCTestCase {
     return !i.isNull && i.width > 0.5 && i.height > 0.5
   }
 
-  /// (a) no overlap, (b) containment, per sample.
-  private func geometryViolations(_ sample: MorphSample) -> [String] {
+  private func fmt(_ r: CGRect) -> String {
+    String(format: "x %.1f..%.1f y %.1f w %.1f", r.minX, r.maxX, r.minY, r.width)
+  }
+
+  /// Hover areas carry no identifier, so they are named by left-to-right order
+  /// (`hover area #1` is the leftmost mounted control) and the probe producers
+  /// by their role (record/stop, preview, waveform).
+  private func overlapViolations(_ sample: MorphSample) -> [String] {
     var out: [String] = []
     let probe = sample.probe
     for i in probe.indices {
       for j in probe.indices where j > i && overlaps(probe[i].rect, probe[j].rect) {
-        out.append("\(probe[i].name) \(probe[i].rect) overlaps \(probe[j].name) \(probe[j].rect)")
-      }
-      let rect = probe[i].rect
-      if rect.minX < -0.5 || rect.maxX > sample.width + 0.5 {
-        out.append("\(probe[i].name) \(rect) leaves the \(sample.width) pt window")
+        out.append("\(probe[i].name) [\(fmt(probe[i].rect))] overlaps \(probe[j].name) [\(fmt(probe[j].rect))]")
       }
     }
-    for i in sample.regions.indices {
-      for j in sample.regions.indices where j > i && overlaps(sample.regions[i], sample.regions[j]) {
-        out.append("control hit area \(sample.regions[i]) overlaps \(sample.regions[j])")
-      }
-      let rect = sample.regions[i]
-      if rect.minX < -0.5 || rect.maxX > sample.width + 0.5 {
-        out.append("control hit area \(rect) leaves the \(sample.width) pt window")
+    let areas = sample.regions.sorted { $0.minX < $1.minX }
+    for i in areas.indices {
+      for j in areas.indices where j > i && overlaps(areas[i], areas[j]) {
+        out.append(
+          "hover area #\(i + 1) [\(fmt(areas[i]))] overlaps hover area #\(j + 1) [\(fmt(areas[j]))]")
       }
     }
     return out
+  }
+
+  /// Everything inside the window: the settled-form contract.
+  private func containmentViolations(_ sample: MorphSample) -> [String] {
+    var out: [String] = []
+    for item in sample.probe {
+      if item.rect.minX < -0.5 || item.rect.maxX > sample.width + 0.5 {
+        out.append("\(item.name) [\(fmt(item.rect))] leaves the \(sample.width) pt window")
+      }
+    }
+    let areas = sample.regions.sorted { $0.minX < $1.minX }
+    for (i, rect) in areas.enumerated()
+    where rect.minX < -0.5 || rect.maxX > sample.width + 0.5 {
+      out.append("hover area #\(i + 1) [\(fmt(rect))] leaves the \(sample.width) pt window")
+    }
+    return out
+  }
+
+  /// Mid-morph contract: overflow is allowed past the RIGHT edge only. The
+  /// leading group (close dot and whatever else rests on the left) stays inside.
+  private func leadingGroupViolations(_ sample: MorphSample) -> [String] {
+    let areas = sample.regions.sorted { $0.minX < $1.minX }
+    var out: [String] = []
+    for (i, rect) in areas.enumerated() where rect.minX < 40 || rect.minX < 0 {
+      if rect.minX < -0.5 || rect.maxX > sample.width + 0.5 {
+        out.append(
+          "leading hover area #\(i + 1) [\(fmt(rect))] is pushed outside the \(sample.width) pt window")
+      }
+    }
+    return out
+  }
+
+  private func settledViolations(_ sample: MorphSample) -> [String] {
+    overlapViolations(sample) + containmentViolations(sample)
+  }
+
+  private func morphViolations(_ sample: MorphSample) -> [String] {
+    overlapViolations(sample) + leadingGroupViolations(sample)
   }
 
   /// (c) one header on screen. Both cross-faded headers mount their own close
@@ -169,7 +207,7 @@ final class OverlayHeaderMorphTests: XCTestCase {
 
   private func runMorph(
     from start: OverlayPresentationMode, to end: OverlayPresentationMode, name: String
-  ) -> (samples: [MorphSample], restRegions: Int) {
+  ) -> (samples: [MorphSample], before: MorphSample, after: MorphSample) {
     let (rig, _) = makeRig(start: start)
     defer {
       rig.panel.orderOut(nil)
@@ -193,11 +231,7 @@ final class OverlayHeaderMorphTests: XCTestCase {
     }
     settle(rig.host)
     let after = observe(endRig, label: "\(name) rest after")
-    XCTAssertTrue(
-      geometryViolations(before).isEmpty && geometryViolations(after).isEmpty,
-      "\(name): the probe itself reports a violation at rest, the falsifier is unsound: "
-        + "\(geometryViolations(before) + geometryViolations(after))")
-    return (samples, max(before.regions.count, after.regions.count))
+    return (samples, before, after)
   }
 
   private func assertMorph(
@@ -205,16 +239,24 @@ final class OverlayHeaderMorphTests: XCTestCase {
     file: StaticString = #filePath, line: UInt = #line
   ) {
     let run = runMorph(from: start, to: end, name: name)
+    let restRegions = max(run.before.regions.count, run.after.regions.count)
     for sample in run.samples {
-      let geometry = geometryViolations(sample)
+      let geometry = morphViolations(sample)
       XCTAssertTrue(
         geometry.isEmpty,
-        "\(sample.label), window \(sample.width) pt: header controls collide: \(geometry)",
+        "\(sample.label), window \(sample.width) pt: header controls collide or the leading group is pushed out: \(geometry)",
         file: file, line: line)
-      let duplicates = duplicateViolations(sample, expectedRegions: run.restRegions)
+      let duplicates = duplicateViolations(sample, expectedRegions: restRegions)
       XCTAssertTrue(
         duplicates.isEmpty,
         "\(sample.label), window \(sample.width) pt: header drawn twice: \(duplicates)",
+        file: file, line: line)
+    }
+    for sample in [run.before, run.after] {
+      let settled = settledViolations(sample)
+      XCTAssertTrue(
+        settled.isEmpty,
+        "\(sample.label), window \(sample.width) pt: a settled header must fit and not overlap: \(settled)",
         file: file, line: line)
     }
   }
@@ -237,38 +279,41 @@ final class OverlayHeaderMorphTests: XCTestCase {
 
   // MARK: Deterministic intermediate widths
 
-  /// The window animator hands the hosting view every width between the two
-  /// forms. Walk those widths by hand, no clock involved: whatever form the
-  /// state is in must lay its controls out without overlap inside the width.
-  func testHeaderControlsFitEveryIntermediateWindowWidth() {
-    let cases: [(OverlayPresentationMode, ClosedRange<CGFloat>)] = [
-      (.midi, 200...410), (.expanded, 320...470), (.midi, 320...470),
+  /// Every settled form must hold its controls at every width it can be
+  /// resized to: from `minimumSize(for:)` up to the form's target width, laid
+  /// out in that form's own density. No clock involved.
+  func testHeaderControlsFitEverySettledWindowWidth() {
+    let modes: [(OverlayPresentationMode, CGFloat)] = [
+      (.mini, DictationOverlayWindow.collapsedSize.width),
+      (.midi, DictationOverlayWindow.midiSize.width),
+      (.expanded, DictationOverlayWindow.defaultSize.width),
     ]
-    for (mode, widths) in cases {
+    for (mode, target) in modes {
+      let minimum = DictationOverlayWindow.minimumSize(for: mode).width
       let (rig, flag) = makeRig(start: mode)
       flag.value = false
       defer {
         rig.panel.orderOut(nil)
         rig.panel.invalidatePresence()
       }
-      let height = rig.panel.frame.height
       var bad: [String] = []
-      var width = widths.lowerBound
-      while width <= widths.upperBound {
-        // The animator resizes the window; the container pins the hosting view.
+      var width = minimum
+      while width <= max(target, minimum) {
         var frame = rig.panel.frame
         frame.origin.x = frame.maxX - width
-        frame.size = NSSize(width: width, height: height)
+        frame.size.width = width
         rig.panel.setFrame(frame, display: true)
         settle(rig.host, seconds: 0.03)
-        let sample = observe(rig, label: "\(mode) at \(width) pt")
-        let violations = geometryViolations(sample)
-        if !violations.isEmpty { bad.append("\(sample.label): \(violations)") }
+        let violations = settledViolations(observe(rig, label: "\(mode) at \(width) pt"))
+        if !violations.isEmpty {
+          let note = width == minimum ? " (its minimum width: the form overflows as soon as it is shown)" : ""
+          bad.append("\(mode) at \(width) pt\(note): \(violations)")
+        }
         width += 15
       }
       XCTAssertTrue(
         bad.isEmpty,
-        "\(mode) header cannot lay out at the widths the morph passes through: \(bad)")
+        "\(mode) header does not fit a width the user can reach: \(bad)")
     }
   }
 }
