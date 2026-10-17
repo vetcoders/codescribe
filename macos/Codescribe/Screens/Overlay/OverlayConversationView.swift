@@ -85,8 +85,7 @@ struct OverlayConversationView: View {
   @State private var scrollFollow = StreamScrollFollowState()
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
-  @State private var editingMessageID: String?
-  @State private var revisionDraft = ""
+  /// Bumps the composer's focus after a held message returns to the draft.
   @State private var revisionFocus: UInt64 = 0
   @State private var pendingDeliveryControls: Set<String> = []
   @State private var deliveryControlErrors: [String: String] = [:]
@@ -196,7 +195,6 @@ struct OverlayConversationView: View {
         }
         .onAppear { scrollToLatest(proxy) }
         .onChange(of: conversation.id) { _, _ in
-          cancelRevision()
           scrollToLatest(proxy)
         }
         .onChange(of: focusRevision) { _, _ in scrollToLatest(proxy) }
@@ -227,14 +225,12 @@ struct OverlayConversationView: View {
   private var composer: some View {
     VStack(spacing: 8) {
       if conversation.owner != nil || conversation.channel == "0" {
-        if editingMessageID != nil { revisionModeHeader }
         OverlayConversationComposer(
-          palette: palette, draft: composerDraft,
+          palette: palette, draft: $draft,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          onCancel: composerCancel, focusRevision: revisionFocus,
+          focusRevision: revisionFocus,
           placeholder: composerPlaceholder)
-        if let revisionError { composerError(revisionError) }
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -248,38 +244,9 @@ struct OverlayConversationView: View {
     .frame(maxWidth: .infinity)
   }
 
-  // The composer's inputs are typed here so its call site stays a plain
-  // argument list: a `nil : function` ternary inside a result builder is
-  // enough for the type checker to give up on the whole VStack.
-  private var composerDraft: Binding<String> {
-    if editingMessageID == nil { return $draft }
-    return $revisionDraft
-  }
-
-  private var composerCancel: (() -> Void)? {
-    if editingMessageID == nil { return nil }
-    return { cancelRevision() }
-  }
-
   private var composerPlaceholder: String {
     conversation.channel == "0"
       ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
-  }
-
-  private var revisionError: String? {
-    editingMessageID.flatMap { deliveryControlErrors[$0] }
-  }
-
-  private var revisionModeHeader: some View {
-    HStack {
-      Text("Edit")
-      Spacer()
-      Button("Cancel", action: cancelRevision)
-        .buttonStyle(.borderless)
-    }
-    .font(.system(size: 11 * textScale))
-    .foregroundStyle(palette.mutedText.color)
-    .accessibilityIdentifier("overlay-message-revision-mode")
   }
 
   private func composerError(_ text: String) -> some View {
@@ -435,27 +402,35 @@ struct OverlayConversationView: View {
 
   private func submit() {
     _ = scrollFollow.handle(.jumpToCurrent)
-    if let editingMessageID {
-      guard let message = orderedMessages.first(where: { $0.id == editingMessageID }),
-        !revisionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      else { return }
-      performDeliveryControl(.revise, message: message, text: revisionDraft)
-    } else {
-      onSend()
-    }
+    onSend()
   }
 
-  private func cancelRevision() {
-    editingMessageID = nil
-    revisionDraft = ""
-  }
-
+  /// Pulls a held message off the clock, then returns its text to the ordinary
+  /// composer. The draft changes only after withdraw returns; a failure leaves
+  /// the typing where it was and names the error on the bubble.
   private func edit(_ message: OverlayConversationMessage) {
     guard message.holdSecondsRemaining != nil else { return }
-    editingMessageID = message.id
-    revisionDraft = message.text
-    revisionFocus &+= 1
-    onComposerTypingActivity()
+    guard !pendingDeliveryControls.contains(message.id) else { return }
+    let owner = message.sourceChannel == "0" ? nil : conversation.owner
+    guard owner != nil || message.sourceChannel == "0" else { return }
+    let returning = message.text
+    pendingDeliveryControls.insert(message.id)
+    deliveryControlErrors.removeValue(forKey: message.id)
+    Task { @MainActor in
+      defer { pendingDeliveryControls.remove(message.id) }
+      do {
+        try await onDeliveryControl(.withdraw, message, owner, nil)
+        if draft.isEmpty {
+          draft = returning
+        } else {
+          draft += "\n\n" + returning
+        }
+        revisionFocus &+= 1
+        onComposerTypingActivity()
+      } catch {
+        deliveryControlErrors[message.id] = error.userFacingMessage
+      }
+    }
   }
 
   private func performDeliveryControl(
@@ -471,11 +446,6 @@ struct OverlayConversationView: View {
       defer { pendingDeliveryControls.remove(message.id) }
       do {
         try await onDeliveryControl(control, message, owner, text)
-        if editingMessageID == message.id,
-          control == .withdraw || (control == .revise && revisionDraft == text)
-        {
-          cancelRevision()
-        }
       } catch {
         deliveryControlErrors[message.id] = error.userFacingMessage
       }
@@ -639,7 +609,9 @@ struct OverlayConversationView: View {
       .background { OverlayMenuCursorRegion() }
       .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
       if let error = deliveryControlErrors[message.id] {
-        Text(verbatim: error).foregroundStyle(palette.errorStatus.color)
+        Text(verbatim: error)
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-message-delivery-error-\(message.id)")
       }
     }
     .font(.system(size: 11 * textScale))
