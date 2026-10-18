@@ -42,7 +42,7 @@ struct CSWindowHeaderChrome: ViewModifier {
 /// the title bar only above the messages, never over the sidebar; the same in
 /// Settings). Glass here painted a lighter band with a hard lower edge across
 /// the dark sheet, so rows met a cut line instead of the page they sit on
-/// (Maciej, 2026-10-18: that line, the transition between the colours, looks
+/// (Monika, 2026-10-18: that line, the transition between the colours, looks
 /// poor).
 ///
 /// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a

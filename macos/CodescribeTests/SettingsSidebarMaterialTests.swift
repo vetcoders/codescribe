@@ -8,7 +8,7 @@ import XCTest
 /// `CSColor.sidebar`, a single step away from the detail sheet. A `.sidebar`
 /// visual effect blending behind the window took its colour from the desktop,
 /// so the seam beside the content was a wallpaper tone rather than one of ours
-/// (Maciej, 2026-10-18). These tests pin the tone, its step from the sheet in
+/// (Monika, 2026-10-18). These tests pin the tone, its step from the sheet in
 /// both appearances, and the window adoption that lets the column run up
 /// through the titlebar.
 @MainActor

@@ -81,7 +81,7 @@ enum CSPalette {
   /// The sidebar column beside that sheet: one flat step away from it, lighter
   /// on ink and deeper on paper. A `.sidebar` visual effect took its colour
   /// from the desktop behind the window, so the seam next to the near-black
-  /// content was a wallpaper tone rather than one of ours (Maciej, 2026-10-18:
+  /// content was a wallpaper tone rather than one of ours (Monika, 2026-10-18:
   /// the windows read as one visual language).
   static let sidebar = adaptive(light: NSColor(hex: 0xEEEBE5), dark: NSColor(hex: 0x1E1E25))
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
