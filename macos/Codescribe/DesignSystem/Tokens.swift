@@ -78,6 +78,12 @@ enum CSPalette {
   static let sheetLightHex: UInt32 = 0xF6F3EE
   static let sheetDarkHex: UInt32 = 0x16161C
   static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
+  /// The sidebar column beside that sheet: one flat step away from it, lighter
+  /// on ink and deeper on paper. A `.sidebar` visual effect took its colour
+  /// from the desktop behind the window, so the seam next to the near-black
+  /// content was a wallpaper tone rather than one of ours (Maciej, 2026-10-18:
+  /// the windows read as one visual language).
+  static let sidebar = adaptive(light: NSColor(hex: 0xEEEBE5), dark: NSColor(hex: 0x1E1E25))
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
@@ -123,6 +129,8 @@ enum CSColor {
   static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
   static let sheet = Color(nsColor: CSPalette.sheet)
+  /// Sidebar column of every window; see `CSPalette.sidebar`.
+  static let sidebar = Color(nsColor: CSPalette.sidebar)
 
   /// Lifted surface wash. Dark mode lifts with a white veil; on paper the same
   /// lift is a white card over the warm base, so the veil maps to a stronger

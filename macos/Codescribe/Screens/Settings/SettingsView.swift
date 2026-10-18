@@ -36,7 +36,7 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        .modifier(CSDetailHeaderGlass())
+        .modifier(CSDetailHeaderFade())
         .background(CSColor.sheet)
     }
     .toolbar {
