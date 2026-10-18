@@ -271,13 +271,20 @@ the provider rejected. Vendor endpoints are factory-defined and sit under each c
 **Advanced** disclosure together with the Keychain account name and the OAuth
 client-id override; custom hosts show their endpoint on the card and edit it
 through **Edit**. Custom cards use a compact header for the full name,
-protocol and Edit / Remove actions. The next row keeps the complete API
+protocol and Edit / Remove actions. The protocol is named once per card: the
+pill carries it, so a vendor name that ends in its own wire
+(**OpenAI (Responses)**, **Anthropic (Messages)**) drops that suffix from the
+title. A parenthesis that is not the wire — **xAI (Grok)** — is left alone. The next row keeps the complete API
 address visible beside the key-presence summary and Change / Add; at narrow
 widths these groups stack instead of overlapping. Names and addresses wrap.
 Advanced remains available below the configuration, and a stored key still
 describes presence rather than a successful connection.
-**Cloud transcription** holds the File and Live lanes
-(endpoint, key, and for Live the optional gateway session URL); a rejected
+**Cloud transcription** holds the File and Live lanes. Two short lines
+introduce them: **You choose the mode under Dictation.** and **We send
+recordings only in Cloud mode or during a manual cloud re-transcription.** Each
+lane card shows its key at the first level; the lane endpoint, the Live lane's
+optional gateway session URL and the lane's settings keys sit under the card's
+**Advanced** disclosure — an address is not an everyday choice. A rejected
 address reads as one sentence under the field, e.g. **This address needs
 ws:// or wss://.** Secrets are stored separately from account sign-in.
 
@@ -294,11 +301,20 @@ says **Provider default model** or **Set manually**. **Reset model** clears only
 the override and never touches the provider. The settings keys
 (`LLM_ASSISTIVE_PROVIDER`, `LLM_ASSISTIVE_MODEL`, …) and the resolved endpoints
 sit under **Active configuration details**, collapsed by default. **Agent →
-Prompts** edits their prompts.
+Prompts** edits their prompts. The model-list line (where the list came from,
+with **Refresh** and **Error details**) sits above the model field, because that
+is the line that tells you to type an identifier when there is no list.
 
-**Auto-send to the Agent** is one labelled switch (no separate section heading
-repeating it): in Agent mode the untouched transcript is sent 5 seconds after
-the take ends unless you start editing it.
+**Codescribe Bus** groups the two timers that act on channel messages:
+**Pause before sending to Codescribe Bus** (the silence that ends a spoken
+message, and the silence limit for hands-free dictation, applied from the next
+channel or recording) and **Hold before sending to Codescribe Bus** (0–30 s;
+the window in which you can revise or withdraw the message, 0 sends at once).
+
+**Auto-send to the built-in Agent** is a separate, labelled switch and has
+nothing to do with the bus: in Agent mode the untouched transcript is sent to
+the Agent in the overlay 5 seconds after the take ends unless you start editing
+it.
 
 ### Agent → Prompts
 
@@ -347,8 +363,11 @@ other paths under its own permissions. The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
-projects. A green dot marks an existing directory, amber one that does not
-resolve. **Add folder…** opens a folder picker and adds the choice as an
+projects. One line above the list says so: **The Agent looks for projects
+here, skipping hidden and build folders.** — what the list does not cover (the
+separate permissions of a process or an MCP server) is the tab's own
+introduction and is not repeated. A green dot marks an existing directory,
+amber one that does not resolve. **Add folder…** opens a folder picker and adds the choice as an
 editable row; the minus button (**Remove folder**) drops a row, and **Undo
 remove** puts the last removed row back where it was. Nothing is written until
 **Save changes**; **Discard changes** returns to the saved list.
@@ -507,10 +526,16 @@ still reachable, at worst one disclosure away.
 
 - **Agent status** — the header carries the shared Refresh chip. The card below
   shows the verdict ("Configuration ready", or the concrete reason it is not),
-  one quiet line of key facts (model provider · built-in tools · Agent
-  folders), and one line per thing needing attention (integrations awaiting
-  their first run, failed integrations, failed MCP checks, capabilities with no
-  provider, an unreadable `mcp.json`). The verdict follows the core gate: a
+  one quiet line of key facts (**Provider:** … · built-in tools · Agent
+  folders — the readiness probe reports a provider, not a model; the resolved
+  model per lane is on **AI models**), and one line per thing needing attention
+  (integrations awaiting their first run, failed integrations, failed MCP
+  checks, an unreadable `mcp.json`, and capabilities with no provider — named,
+  e.g. **No provider for fs.list · repo.status**). A caption above that list
+  says how to read it: **Needs attention** when one of the lines is an error,
+  **Does not block the Agent** when they are warnings only, so a warning under
+  "Configuration ready" is not taken for a contradiction. The verdict follows
+  the core gate: a
   blocking failure can never render as "ready", and a warning or an unchecked
   state never renders as an error. Before the first probe the card says "Not
   checked yet" rather than guessing.
@@ -544,6 +569,11 @@ still reachable, at worst one disclosure away.
   then the optional operator tooling). Every row of that table ends with a
   status mark: a dot and a word (Good, Warning, Error, Not checked) that is also
   the tooltip and the VoiceOver label.
+
+Every list on this page uses the compact row as its pattern: one bordered card,
+the same insets, the same type rungs and one divider between rows. The two
+wider tables (the capability matrix and the readiness table) add a column to
+that row rather than a second row shape.
 
 The card's "built-in tools" count and the "Agent tools" capability counts
 measure different sets and are labelled accordingly: the first counts the tool
