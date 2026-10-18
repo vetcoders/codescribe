@@ -753,16 +753,40 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
     XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
     XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
-    XCTAssertTrue(conversation.contains(".overlayAutohidingScroller()"), "one scroller owner")
-    let canvas = try source("Overlay/OverlayCanvasSurface.swift")
-    XCTAssertTrue(canvas.contains("scrollView.scrollerStyle = .overlay"))
-    XCTAssertTrue(canvas.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
+    let scroller = try source("../DesignSystem/CSScroller.swift")
+    XCTAssertTrue(scroller.contains("scrollView.scrollerStyle = .overlay"))
+    XCTAssertTrue(scroller.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertFalse(
+      try source("Overlay/OverlayCanvasSurface.swift").contains("scrollerStyle"),
+      "the overlay keeps no scroller policy of its own")
     XCTAssertTrue(
       conversation.contains(".menuStyle(.borderlessButton)"), "the receipt stays a native menu")
     XCTAssertTrue(
       conversation.contains(".padding(.leading, -Self.receiptMenuLabelInset)"),
       "receipt keeps the edge")
     XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
+  }
+
+  /// Founder, 2026-10-18: "te scrolle muszą zniknąć". SwiftUI's indicator
+  /// visibility cannot keep that promise with a mouse attached, so no screen
+  /// rests on it; every surface goes through `CSScrollerPin`.
+  func testNoScreenRestsOnSwiftUIScrollIndicatorsAlone() throws {
+    let screens = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens")
+    let files = try XCTUnwrap(FileManager.default.enumerator(at: screens, includingPropertiesForKeys: nil))
+      .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    XCTAssertFalse(files.isEmpty)
+    for file in files {
+      // Comments may still name what stood there; code may not.
+      let code = try String(contentsOf: file, encoding: .utf8)
+        .split(separator: "\n")
+        .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        .joined(separator: "\n")
+      XCTAssertFalse(
+        code.contains(".scrollIndicators(.hidden)"), "\(file.lastPathComponent) hides by hope")
+      XCTAssertFalse(code.contains("overlayAutohidingScroller"), file.lastPathComponent)
+    }
   }
 
   /// Store-minted attachment names never reach a chip.
