@@ -1353,7 +1353,7 @@
         }
       }
     },
-    "%lld recordings from %lld days, %lld threads (%@ MB)" : {
+    "%lld recordings from %lld days, %lld conversations (%@ MB)" : {
       "comment" : "Reset impact; each count needs its own plural variation",
       "localizations" : {
         "en" : {
@@ -1410,13 +1410,13 @@
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg thread"
+                      "value" : "%arg conversation"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg threads"
+                      "value" : "%arg conversations"
                     }
                   }
                 }
@@ -1502,25 +1502,25 @@
                   "few" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątki"
+                      "value" : "%arg rozmowy"
                     }
                   },
                   "many" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątków"
+                      "value" : "%arg rozmów"
                     }
                   },
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątek"
+                      "value" : "%arg rozmowa"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątku"
+                      "value" : "%arg rozmowy"
                     }
                   }
                 }
@@ -5600,6 +5600,27 @@
         }
       }
     },
+    "Conversation" : {
+      "comment" : "Menu section header above the current conversation's actions",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa"
+          }
+        }
+      }
+    },
+    "Conversation title" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tytuł rozmowy"
+          }
+        }
+      }
+    },
     "Conversation width" : {
       "comment" : "Submenu of the Agent header menu",
       "localizations" : {
@@ -5859,12 +5880,12 @@
         }
       }
     },
-    "Could not load threads. Try refreshing the list." : {
+    "Could not load conversations. Try refreshing the list." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się wczytać wątków. Spróbuj odświeżyć listę."
+            "value" : "Nie udało się wczytać rozmów. Spróbuj odświeżyć listę."
           }
         }
       }
@@ -5895,22 +5916,22 @@
         }
       }
     },
-    "Could not refresh threads. The previous list is still shown." : {
+    "Could not refresh conversations. The previous list is still shown." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się odświeżyć wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się odświeżyć rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
     },
-    "Could not reload threads. The previous list was restored." : {
+    "Could not reload conversations. The previous list was restored." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się ponownie wczytać wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się ponownie wczytać rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
@@ -5936,12 +5957,12 @@
         }
       }
     },
-    "Could not search threads. The previous list is still shown." : {
+    "Could not search conversations. The previous list is still shown." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się przeszukać wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się przeszukać rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
@@ -6517,22 +6538,22 @@
         }
       }
     },
-    "Delete Thread" : {
+    "Delete Conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń wątek"
+            "value" : "Usuń rozmowę"
           }
         }
       }
     },
-    "Delete this thread?" : {
+    "Delete this conversation?" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usunąć ten wątek?"
+            "value" : "Usunąć tę rozmowę?"
           }
         }
       }
@@ -7460,12 +7481,12 @@
         }
       }
     },
-    "Favorite thread" : {
+    "Favorite conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj wątek do ulubionych"
+            "value" : "Dodaj rozmowę do ulubionych"
           }
         }
       }
@@ -7565,7 +7586,7 @@
         }
       }
     },
-    "Finish the current turn before changing the thread search." : {
+    "Finish the current turn before changing the conversation search." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9870,7 +9891,7 @@
         }
       }
     },
-    "Moves %lld Agent threads and %lld Agent files to Trash." : {
+    "Moves %lld Agent conversations and %lld Agent files to Trash." : {
       "comment" : "Agent reset impact; each count needs its own plural variation",
       "localizations" : {
         "en" : {
@@ -9907,13 +9928,13 @@
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg Agent thread"
+                      "value" : "%arg Agent conversation"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg Agent threads"
+                      "value" : "%arg Agent conversations"
                     }
                   }
                 }
@@ -9967,25 +9988,25 @@
                   "few" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątki Agenta"
+                      "value" : "%arg rozmowy Agenta"
                     }
                   },
                   "many" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątków Agenta"
+                      "value" : "%arg rozmów Agenta"
                     }
                   },
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątek Agenta"
+                      "value" : "%arg rozmowa Agenta"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątku Agenta"
+                      "value" : "%arg rozmowy Agenta"
                     }
                   }
                 }
@@ -10016,12 +10037,12 @@
         }
       }
     },
-    "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched." : {
+    "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, conversations, preferences, and API keys stay untouched." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Do Kosza trafi tylko ~/.codescribe/mcp.json. Nagrania, transkrypcje, wątki, ustawienia i klucze API pozostaną nietknięte."
+            "value" : "Do Kosza trafi tylko ~/.codescribe/mcp.json. Nagrania, transkrypcje, rozmowy, ustawienia i klucze API pozostaną nietknięte."
           }
         }
       }
@@ -10219,23 +10240,23 @@
         }
       }
     },
+    "New conversation" : {
+      "comment" : "Default title of an unnamed conversation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowa rozmowa"
+          }
+        }
+      }
+    },
     "New recordings open with the transcript. Turn off to show only the recording bar." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nowe nagrania otwierają się z transkrypcją. Wyłącz, aby pokazywać tylko pasek nagrywania."
-          }
-        }
-      }
-    },
-    "New thread" : {
-      "comment" : "Default title of an unnamed conversation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nowy wątek"
           }
         }
       }
@@ -11492,13 +11513,13 @@
         }
       }
     },
-    "Opens this thread" : {
+    "Opens this conversation" : {
       "comment" : "Accessibility hint on a history row",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Otwiera ten wątek"
+            "value" : "Otwiera tę rozmowę"
           }
         }
       }
@@ -11694,12 +11715,12 @@
         }
       }
     },
-    "Overridden for this thread" : {
+    "Overridden for this conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmienione w tym wątku"
+            "value" : "Zmienione w tej rozmowie"
           }
         }
       }
@@ -13420,12 +13441,12 @@
         }
       }
     },
-    "Rename thread" : {
+    "Rename conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmień nazwę wątku"
+            "value" : "Zmień nazwę rozmowy"
           }
         }
       }
@@ -14228,19 +14249,19 @@
         }
       }
     },
-    "Saved the whole thread as %@ in %@." : {
+    "Saved the whole conversation as %@ in %@." : {
       "comment" : "Placeholders: file name, then folder path",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Saved the whole thread as %1$@ in %2$@."
+            "value" : "Saved the whole conversation as %1$@ in %2$@."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Cały wątek zapisano w folderze %2$@ jako plik %1$@."
+            "value" : "Całą rozmowę zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -14466,6 +14487,16 @@
         }
       }
     },
+    "Search conversations" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znajdź rozmowę"
+          }
+        }
+      }
+    },
     "Search conversations…" : {
       "comment" : "Prompt inside the saved conversations search field",
       "localizations" : {
@@ -14506,16 +14537,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szukaj w ustawieniach"
-          }
-        }
-      }
-    },
-    "Search threads" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Znajdź wątek"
           }
         }
       }
@@ -17386,27 +17407,6 @@
         }
       }
     },
-    "Thread" : {
-      "comment" : "Menu section header above the current thread's actions",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wątek"
-          }
-        }
-      }
-    },
-    "Thread title" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tytuł wątku"
-          }
-        }
-      }
-    },
     "To Agent in %lld s · edit to hold" : {
       "comment" : "Overlay footer countdown while an armed Agent take waits to send itself",
       "localizations" : {
@@ -17903,12 +17903,12 @@
         }
       }
     },
-    "Unfavorite thread" : {
+    "Unfavorite conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń wątek z ulubionych"
+            "value" : "Usuń rozmowę z ulubionych"
           }
         }
       }
@@ -18058,13 +18058,13 @@
         }
       }
     },
-    "Untitled thread" : {
-      "comment" : "Thread with no title",
+    "Untitled conversation" : {
+      "comment" : "Conversation with no title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wątek bez tytułu"
+            "value" : "Rozmowa bez tytułu"
           }
         }
       }
@@ -22994,19 +22994,19 @@
       }
     },
     "tools.native.search_threads" : {
-      "comment" : "Native tool name: search the Agent's own threads",
+      "comment" : "Native tool name: search the Agent's own conversations",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Search in threads"
+            "value" : "Search in conversations"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Szukaj w wątkach"
+            "value" : "Szukaj w rozmowach"
           }
         }
       }
