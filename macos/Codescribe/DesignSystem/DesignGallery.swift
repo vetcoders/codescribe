@@ -30,8 +30,8 @@ struct DesignGallery: View {
 
         // Type ramp
         VStack(alignment: .leading, spacing: CSSpace.xs) {
-          Text("Space Grotesk — body 18").font(CSFont.bodyLg).foregroundStyle(CSColor.textBody)
-          Text("Space Grotesk — body 14").font(CSFont.body).foregroundStyle(CSColor.textBodyAlt)
+          Text("System — body 18").font(CSFont.bodyLg).foregroundStyle(CSColor.textBody)
+          Text("System — body 14").font(CSFont.body).foregroundStyle(CSColor.textBodyAlt)
           Text("JetBrains Mono — meta 11").font(CSFont.metaMono).foregroundStyle(CSColor.textFaint)
         }
 

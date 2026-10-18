@@ -131,7 +131,7 @@ struct ToolPermissionsSection: View {
       ProgressView()
         .controlSize(.small)
       Text("Discovering tools from the MCP servers…")
-        .font(CSFont.mono(11, .medium))
+        .font(CSFont.ui(11, .medium))
         .foregroundStyle(Color.secondary)
     }
     .padding(.vertical, 10)
@@ -140,7 +140,7 @@ struct ToolPermissionsSection: View {
 
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the Agent once or add an MCP server.")
-      .font(CSFont.mono(11, .medium))
+      .font(CSFont.ui(11, .medium))
       .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)
   }

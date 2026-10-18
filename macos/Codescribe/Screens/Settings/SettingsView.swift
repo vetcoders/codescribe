@@ -212,6 +212,11 @@ struct SettingsView: View {
               .frame(maxWidth: .infinity, alignment: .leading)
           }
           .scrollContentBackground(.hidden)
+          // Overlay-style indicators only, independent of the system "Show
+          // scroll bars: Always" preference — same intent as the AppKit
+          // composer's `scroll.scrollerStyle = .overlay`
+          // (OverlayConversationComposer.swift).
+          .scrollIndicators(.hidden)
         }
       }
       .onChange(of: pendingScrollAnchor) { _, anchor in
@@ -282,7 +287,7 @@ struct SettingsHealthFooter: View {
     HStack(spacing: 8) {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
       Text(message)
-        .font(CSFont.mono(10, .medium))
+        .font(CSFont.ui(10, .medium))
         .foregroundStyle(health.level.color)
         .lineLimit(2)
       Spacer(minLength: 0)
@@ -442,7 +447,7 @@ struct RuntimeRow: View {
       Circle().fill(color).frame(width: 7, height: 7)
     case .text(let label, let color):
       Text(label)
-        .font(CSFont.mono(10, .semibold))
+        .font(CSFont.ui(10, .semibold))
         .foregroundStyle(color)
     }
   }

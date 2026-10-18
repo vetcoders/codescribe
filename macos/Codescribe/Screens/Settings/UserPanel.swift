@@ -516,7 +516,7 @@ struct UserPanel: View {
           .font(.body)
           .foregroundStyle(Color.primary)
         Text(display)
-          .font(CSFont.mono(11, .regular))
+          .font(loaded ? CSFont.mono(11, .regular) : CSFont.ui(11))
           .foregroundStyle(Color.secondary)
           .textSelection(.enabled)
           .lineLimit(2)
