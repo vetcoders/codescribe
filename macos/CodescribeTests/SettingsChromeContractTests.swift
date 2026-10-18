@@ -38,8 +38,13 @@ final class SettingsChromeContractTests: XCTestCase {
     let joined = sources.values.joined(separator: "\n")
     let view = try XCTUnwrap(sources["SettingsView.swift"])
     XCTAssertTrue(view.contains("NavigationSplitView(columnVisibility:"))
-    XCTAssertTrue(view.contains(".listStyle(.sidebar)"))
-    XCTAssertTrue(view.contains(".searchable("))
+    // The sidebar list style and search field come from the column both
+    // windows share (Monika, 2026-10-18: the Settings sidebar is the reference).
+    XCTAssertTrue(view.contains("CSSidebarColumn("))
+    XCTAssertTrue(view.contains(".csSidebarToggle(expanded: $sidebarExpanded)"))
+    let column = try sidebarColumnSource()
+    XCTAssertTrue(column.contains(".listStyle(.sidebar)"))
+    XCTAssertTrue(column.contains(".searchable(text: $search, placement: .sidebar, prompt: prompt)"))
     XCTAssertTrue(view.contains(".csFocusPolicy()"))
     XCTAssertTrue(view.contains(".controlSize(.regular)"))
     XCTAssertTrue(view.contains("func settingsGroupedInset("))
@@ -90,7 +95,8 @@ final class SettingsChromeContractTests: XCTestCase {
   func testTabBarsFitTheMinimumWindowInEnglishAndPolish() throws {
     let sources = try settingsSources()
     let view = try XCTUnwrap(sources["SettingsView.swift"])
-    XCTAssertTrue(view.contains(".navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)"))
+    XCTAssertTrue(view.contains("width: .navigation,"))
+    XCTAssertEqual(CSSidebarWidth.navigation, CSSidebarWidth(minimum: 196, ideal: 216, maximum: 300))
     // An 880 pt window with the sidebar at its ideal width.
     XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
@@ -243,13 +249,16 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(view.contains("Circle().fill(health.level.color).frame(width: 6, height: 6)"))
     XCTAssertTrue(view.contains("if let message = health.message {"))
     // A status sentence speaks in the system face; mono is for time, versions,
-    // shortcuts, code and eyebrows (Founder, 2026-10-18).
-    XCTAssertTrue(view.contains("Text(message)\n        .font(CSFont.ui(10, .medium))"))
+    // shortcuts, code and eyebrows (Founder, 2026-10-18). The dot carries the
+    // level, the sentence is quiet secondary text (Monika, 2026-10-18).
+    XCTAssertTrue(
+      view.contains(
+        "Text(message)\n        .font(.caption)\n        .foregroundStyle(Color.secondary)"))
     // Narrowest sidebar minus the footer padding, the status dot and its gap.
     let slot: CGFloat = 196 - 2 * 16 - 6 - 8
     XCTAssertEqual(states.first?.level, .healthy)
     let healthy = try XCTUnwrap(messages.first)
-    let face = NSFont.systemFont(ofSize: 10, weight: .medium)
+    let face = NSFont.preferredFont(forTextStyle: .caption1)
     for line in [healthy, try XCTUnwrap(polish[healthy])] {
       let width = (line as NSString).size(withAttributes: [.font: face]).width
       XCTAssertLessThanOrEqual(width, slot, line)
@@ -1285,6 +1294,14 @@ final class SettingsChromeContractTests: XCTestCase {
       sources[file.lastPathComponent] = try String(contentsOf: file, encoding: .utf8)
     }
     return sources
+  }
+
+  private func sidebarColumnSource() throws -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/DesignSystem/CSSidebarColumn.swift")
+    return try String(contentsOf: url, encoding: .utf8)
   }
 
   /// English key to Polish value, straight from the source catalog.

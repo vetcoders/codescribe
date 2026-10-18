@@ -45,7 +45,7 @@ final class AgentWindowChromeTests: XCTestCase {
         let sidebar = controller?.splitViewItems.first { $0.behavior == .sidebar }
         XCTAssertEqual(sidebar?.behavior, .sidebar, "width \(width) expanded \(expanded)")
         XCTAssertEqual(
-          sidebar?.minimumThickness, AgentSidebarMetrics.minimumWidth,
+          sidebar?.minimumThickness, CSSidebarWidth.navigation.minimum,
           "width \(width) expanded \(expanded)")
         XCTAssertEqual(sidebar?.isCollapsed, !expanded, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.contentMinSize.width, 640)
@@ -75,7 +75,7 @@ final class AgentWindowChromeTests: XCTestCase {
         // XCTest. Measure the public NSToolbarItem views instead of treating
         // absent AX children as absent production controls.
         let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-        XCTAssertGreaterThanOrEqual(controls.count, 3, "system toggle joins the native clusters")
+        XCTAssertGreaterThanOrEqual(controls.count, 3, "the sidebar toggle joins the native clusters")
         XCTAssertGreaterThanOrEqual(
           controls.filter { frame($0).height >= 51 }.count, 3,
           "brand, title and actions share the three-line native header rhythm")
@@ -101,7 +101,7 @@ final class AgentWindowChromeTests: XCTestCase {
   func testSidebarMaterialFollowsReduceTransparencyAndIncreaseContrast() throws {
     for (reduced, contrast) in [(false, false), (true, false), (false, true)] {
       let host = NSHostingView(
-        rootView: SettingsSidebarMaterial(
+        rootView: CSSidebarMaterial(
           reduceTransparency: reduced, contrast: contrast ? .increased : .standard))
       let window = NSWindow(
         contentRect: NSRect(x: 80, y: 80, width: 300, height: 400),
@@ -240,7 +240,7 @@ final class AgentWindowChromeTests: XCTestCase {
   private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { view in
-      view is SettingsSidebarVisualEffectNSView
+      view is CSSidebarVisualEffectNSView
     } as? NSVisualEffectView
   }
 
