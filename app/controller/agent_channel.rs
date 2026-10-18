@@ -171,6 +171,41 @@ impl BindingEntry {
     }
 }
 
+/// An owner who unticked channel 0 (`policy: "off"`) never receives a
+/// broadcast, as the helper's peer send already decides (`bus-demux.py`
+/// `agent_broadcast_policy`). Like the helper, a missing or invalid receipt
+/// keeps the owner: a broken file must never cut an agent off.
+fn broadcast_policy_off(
+    root: &Path,
+    provider: &str,
+    session: &str,
+    lease_id: &str,
+    bus: &Path,
+) -> bool {
+    let bus = bus.to_string_lossy();
+    let identity = format!("{provider}\0{session}\0{bus}");
+    let key = &hex::encode(Sha256::digest(identity.as_bytes()))[..24];
+    let path = root
+        .join("runtime")
+        .join("broadcast-policy")
+        .join(format!("{key}.json"));
+    let row: serde_json::Value = (|| {
+        use std::io::{BufReader, Read};
+        let file = std::fs::File::open(&path).ok()?;
+        if file.metadata().ok()?.len() > 65536 {
+            return None;
+        }
+        serde_json::from_reader(BufReader::new(file.take(65536))).ok()
+    })()
+    .unwrap_or(serde_json::Value::Null);
+    row["schema"] == "codescribe.broadcast-policy.v1"
+        && row["provider"] == provider
+        && row["provider_session_id"] == session
+        && row["lease_id"] == lease_id
+        && row["bus"].as_str() == Some(bus.as_ref())
+        && row["policy"] == "off"
+}
+
 /// Freeze only concrete bridge owners admitted before this capture starts.
 /// Reading this snapshot never acknowledges a delivery or starts a follower.
 fn frozen_channel_recipients(
@@ -229,6 +264,7 @@ fn frozen_channel_recipients(
             || lease["lease_id"] != lease_id
             || lease["bus"].as_str() != bus.to_str()
             || !seen.insert(lease_id.clone())
+            || (digit == 0 && broadcast_policy_off(root, &provider, session, &lease_id, &bus))
         {
             continue;
         }
@@ -3274,6 +3310,85 @@ mod tests {
             std::fs::write(&path, bytes).expect("invalid lease");
             assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
         }
+    }
+
+    /// Maciej unticked channel 0 for John at 08:06:58Z on 2026-10-18; his
+    /// next channel-0 take was still written to John's bus and overwrote his
+    /// row preview. An owner with `policy: "off"` leaves the broadcast only.
+    #[test]
+    fn frozen_broadcast_skips_owner_who_unticked_channel_zero() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let session = "unticked-channel-zero";
+        let lease =
+            hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32].to_string();
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        std::fs::write(
+            dir.path().join("leases").join(format!("{lease}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                "provider": "codex", "provider_session_id": session, "active": true,
+                "heartbeat_unix": heartbeat, "bus": bus
+            }))
+            .expect("json"),
+        )
+        .expect("lease");
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": {
+                    "6": {"audience": "john", "provider": "codex", "provider_session_id": session}
+                }
+            })
+            .to_string(),
+        );
+        let key = hex::encode(Sha256::digest(
+            format!("codex\0{session}\0{}", bus.display()).as_bytes(),
+        ))[..24]
+            .to_string();
+        let policies = dir.path().join("runtime").join("broadcast-policy");
+        std::fs::create_dir_all(&policies).expect("policies");
+        let receipt = serde_json::json!({
+            "schema": "codescribe.broadcast-policy.v1", "provider": "codex",
+            "provider_session_id": session, "lease_id": lease, "bus": bus,
+            "origin_channel": "0", "policy": "off"
+        });
+        let path = policies.join(format!("{key}.json"));
+        std::fs::write(&path, serde_json::to_vec(&receipt).expect("json")).expect("policy");
+        assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
+        assert_eq!(
+            frozen_channel_recipients(6, &binding, &bus).len(),
+            1,
+            "leaving channel 0 never blocks words addressed to the agent"
+        );
+        for (field, value) in [
+            ("policy", serde_json::json!("quiet")),
+            ("policy", serde_json::json!("on")),
+            ("schema", serde_json::json!("wrong-schema")),
+            ("lease_id", serde_json::json!("another-lease")),
+            ("bus", serde_json::json!("/tmp/not-owned.jsonl")),
+        ] {
+            let mut kept = receipt.clone();
+            kept[field] = value.clone();
+            std::fs::write(&path, serde_json::to_vec(&kept).expect("json")).expect("policy");
+            assert_eq!(
+                frozen_channel_recipients(0, &binding, &bus).len(),
+                1,
+                "{field}={value}"
+            );
+        }
+        std::fs::write(&path, b"{").expect("broken policy");
+        assert_eq!(
+            frozen_channel_recipients(0, &binding, &bus).len(),
+            1,
+            "a broken receipt fails open, as the helper does"
+        );
     }
 
     #[test]
