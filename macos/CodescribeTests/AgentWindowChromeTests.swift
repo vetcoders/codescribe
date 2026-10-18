@@ -6,7 +6,7 @@ import XCTest
 
 /// Mounts the real Agent window composition. Symbols here exist on the
 /// baseline, so root can run this file there: hidden title, unified toolbar,
-/// full-height sidebar and clear titlebar are measured on the live
+/// full-height sidebar material and clear titlebar are measured on the live
 /// window, with toolbar controls still clear of the traffic lights.
 @MainActor
 final class AgentWindowChromeTests: XCTestCase {
@@ -29,7 +29,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
         pump(window) {
           (window.toolbar?.items.compactMap(\.view).count ?? 0) >= 3
-            && (!expanded || self.splitView(in: window) != nil)
+            && (!expanded || self.sidebarMaterial(in: window) != nil)
             && window.title == "Agent"
             && window.titleVisibility == .hidden
             && window.toolbarStyle == .unified
@@ -59,7 +59,16 @@ final class AgentWindowChromeTests: XCTestCase {
           let search = try XCTUnwrap(first(in: try XCTUnwrap(theme)) { $0 is NSSearchField })
           XCTAssertLessThanOrEqual(
             frame(search).maxY, window.contentLayoutRect.maxY + 1,
-            "the full-height sidebar must not move search under the toolbar")
+            "full-height material must not move search under the toolbar")
+        }
+
+        if expanded {
+          let material = try XCTUnwrap(sidebarMaterial(in: window))
+          XCTAssertEqual(material.material, .sidebar, "width \(width) expanded \(expanded)")
+          XCTAssertEqual(
+            material.blendingMode, .behindWindow, "width \(width) expanded \(expanded)")
+          XCTAssertEqual(frame(material).maxY, window.frame.height, accuracy: 1)
+          XCTAssertEqual(frame(material).minY, 0, accuracy: 1)
         }
 
         // SwiftUI toolbar children are not projected through AppKit AX in
@@ -85,6 +94,30 @@ final class AgentWindowChromeTests: XCTestCase {
           XCTAssertNotNil(control.hitTest(point), "cluster must retain native hit testing")
         }
 
+      }
+    }
+  }
+
+  func testSidebarMaterialFollowsReduceTransparencyAndIncreaseContrast() throws {
+    for (reduced, contrast) in [(false, false), (true, false), (false, true)] {
+      let host = NSHostingView(
+        rootView: SettingsSidebarMaterial(
+          reduceTransparency: reduced, contrast: contrast ? .increased : .standard))
+      let window = NSWindow(
+        contentRect: NSRect(x: 80, y: 80, width: 300, height: 400),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFrontRegardless()
+      defer { window.close() }
+      pump(window) { host.fittingSize.height > 0 }
+      if reduced || contrast {
+        XCTAssertNil(sidebarMaterial(in: window), "shared policy uses an opaque system canvas")
+      } else {
+        let effect = try XCTUnwrap(sidebarMaterial(in: window))
+        XCTAssertEqual(effect.material, .sidebar)
+        XCTAssertEqual(effect.blendingMode, .behindWindow)
+        XCTAssertNil(effect.hitTest(NSPoint(x: 10, y: 10)))
       }
     }
   }
@@ -202,6 +235,13 @@ final class AgentWindowChromeTests: XCTestCase {
   private func splitView(in window: NSWindow) -> NSSplitView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { $0 is NSSplitView } as? NSSplitView
+  }
+
+  private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
+    guard let content = window.contentView else { return nil }
+    return first(in: content) { view in
+      view is SettingsSidebarVisualEffectNSView
+    } as? NSVisualEffectView
   }
 
   private func trafficLights(in window: NSWindow) -> [NSView] {

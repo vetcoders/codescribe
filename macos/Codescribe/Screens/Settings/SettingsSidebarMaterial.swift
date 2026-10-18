@@ -1,22 +1,84 @@
+import AppKit
 import SwiftUI
 
-/// Sidebar canvas for the Settings and Agent windows.
+/// Native macOS sidebar material surface for the Settings and Agent windows.
 ///
-/// One flat palette tone, `CSColor.sidebar`, a single step away from the
-/// detail sheet. A `.sidebar` `NSVisualEffectView` blending `.behindWindow`
-/// took its colour from the desktop instead, so the column read grey-blue over
-/// one wallpaper and grey over another, and the vertical seam beside the
-/// near-black content belonged to neither window (Monika, 2026-10-18). The
-/// flat tone is adaptive, so it steps the same way in light and in dark, and
-/// it needs no `reduceTransparency` or `increaseContrast` fallback: there is
-/// no translucency left to reduce.
+/// The column keeps the system's glass so it follows the transparency the
+/// user chose in macOS. A flat palette tone replaced it for one candidate and
+/// lost that effect; its tint and the seam beside the content are separate
+/// questions from whether the glass is there (Monika, 2026-10-18).
 ///
-/// Passively backs navigation: it ignores hit tests so all pointer and
-/// keyboard events reach sidebar list rows, search fields and footer controls.
+/// Follows the native navigation material model:
+/// - In standard mode: an `NSVisualEffectView` with `.sidebar` material,
+///   `.behindWindow` blending mode and `.followsWindowActiveState` state.
+/// - Under `reduceTransparency` accessibility preference: renders an opaque
+///   system-consistent sidebar canvas (`NSColor.windowBackgroundColor`).
+/// - Under `increaseContrast` (`colorSchemeContrast == .increased`): renders an
+///   opaque high-contrast canvas.
+/// - Passively backs navigation: ignores hit tests so all pointer and keyboard
+///   events reach sidebar list rows, search fields, and footer controls.
 struct SettingsSidebarMaterial: View {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
+
+  var overrideReduceTransparency: Bool?
+  var overrideContrast: ColorSchemeContrast?
+
+  init(
+    reduceTransparency: Bool? = nil,
+    contrast: ColorSchemeContrast? = nil
+  ) {
+    self.overrideReduceTransparency = reduceTransparency
+    self.overrideContrast = contrast
+  }
+
+  static func shouldReduceTransparency(
+    reduceTransparency: Bool,
+    contrast: ColorSchemeContrast
+  ) -> Bool {
+    reduceTransparency || contrast == .increased
+  }
+
+  var isReducedTransparency: Bool {
+    overrideReduceTransparency ?? reduceTransparency
+  }
+
+  var isIncreasedContrast: Bool {
+    (overrideContrast ?? contrast) == .increased
+  }
+
   var body: some View {
-    CSColor.sidebar
-      .allowsHitTesting(false)
-      .accessibilityHidden(true)
+    if isReducedTransparency || isIncreasedContrast {
+      Color(nsColor: .windowBackgroundColor)
+        .accessibilityHidden(true)
+    } else {
+      SettingsSidebarVisualEffectView()
+        .accessibilityHidden(true)
+    }
+  }
+}
+
+/// AppKit hosting for the semantic sidebar visual effect view.
+struct SettingsSidebarVisualEffectView: NSViewRepresentable {
+  func makeNSView(context: Context) -> SettingsSidebarVisualEffectNSView {
+    let view = SettingsSidebarVisualEffectNSView()
+    view.material = .sidebar
+    view.blendingMode = .behindWindow
+    view.state = .followsWindowActiveState
+    return view
+  }
+
+  func updateNSView(_ view: SettingsSidebarVisualEffectNSView, context: Context) {
+    view.material = .sidebar
+    view.blendingMode = .behindWindow
+    view.state = .followsWindowActiveState
+  }
+}
+
+/// Backing `NSVisualEffectView` subclass that drops mouse hits to preserve
+/// full hit-testing reachability for the SwiftUI list and footer controls.
+final class SettingsSidebarVisualEffectNSView: NSVisualEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
   }
 }

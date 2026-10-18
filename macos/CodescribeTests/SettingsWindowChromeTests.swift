@@ -5,8 +5,8 @@ import XCTest
 @testable import Codescribe
 
 /// The Settings window carries the same native chrome contract as the Agent
-/// window: the sidebar column and its flat tone run through the titlebar from
-/// the bottom edge to the top of the window, the search field stays below the header,
+/// window: the sidebar material runs through the titlebar from the bottom
+/// edge to the top of the window, the search field stays below the header,
 /// and the split view keeps a sidebar column with the system toggle.
 /// `SettingsChromeContractTests` reads source text; this one measures the
 /// mounted window, as `AgentWindowChromeTests` does for Agent.
@@ -20,7 +20,7 @@ import XCTest
 /// asserted. The scene-side evidence is the probe in the 2026-10-14 report.
 @MainActor
 final class SettingsWindowChromeTests: XCTestCase {
-  func testSidebarRunsThroughTheTitlebar() throws {
+  func testSidebarMaterialRunsThroughTheTitlebar() throws {
     let window = mount(contentWidth: 1120)
     defer {
       window.orderOut(nil)
@@ -29,7 +29,7 @@ final class SettingsWindowChromeTests: XCTestCase {
     let theme = try XCTUnwrap(window.contentView?.superview)
 
     pump(window) {
-      self.splitView(in: window) != nil
+      self.sidebarMaterial(in: window) != nil
         && (window.toolbar?.items.count ?? 0) >= 1
     }
 
@@ -43,6 +43,14 @@ final class SettingsWindowChromeTests: XCTestCase {
     XCTAssertEqual(
       frame(sidebar.viewController.view).minY, 0, accuracy: 1,
       "sidebar column must reach the bottom edge")
+
+    let material = try XCTUnwrap(sidebarMaterial(in: window))
+    XCTAssertEqual(material.material, .sidebar)
+    XCTAssertEqual(material.blendingMode, .behindWindow)
+    XCTAssertEqual(
+      frame(material).maxY, window.frame.height, accuracy: 1,
+      "sidebar material must run from the bottom to the top of the window")
+    XCTAssertEqual(frame(material).minY, 0, accuracy: 1)
 
     let search = try XCTUnwrap(first(in: theme) { $0 is NSSearchField })
     XCTAssertLessThanOrEqual(
@@ -84,6 +92,11 @@ final class SettingsWindowChromeTests: XCTestCase {
   private func splitView(in window: NSWindow) -> NSSplitView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { $0 is NSSplitView } as? NSSplitView
+  }
+
+  private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
+    guard let content = window.contentView else { return nil }
+    return first(in: content) { $0 is SettingsSidebarVisualEffectNSView } as? NSVisualEffectView
   }
 
   private func frame(_ view: NSView) -> NSRect {
