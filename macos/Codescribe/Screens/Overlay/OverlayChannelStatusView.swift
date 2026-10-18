@@ -313,6 +313,10 @@ struct OverlayAgentAudioControls: View {
 
   private var speakingNow: Bool { speaking && muted == false }
 
+  /// Maciej, 2026-10-18: the channel-0 microphone "dwa razy większa w
+  /// średnicy". Only the broadcast microphone grows; its speaker stays.
+  private var microphoneScale: CGFloat { broadcast ? 2 : 1 }
+
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
   /// wyraziste". A lit control washes its glass with a pastel of the colour
@@ -358,10 +362,10 @@ struct OverlayAgentAudioControls: View {
     HStack(spacing: 6) {
       Button(action: onMicrophone) {
         Image(systemName: open ? "mic.fill" : "mic")
-          .font(.system(size: 12, weight: .semibold))
+          .font(.system(size: 12 * microphoneScale, weight: .semibold))
           .foregroundStyle(open ? Color.red : palette.primaryText.color)
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
-          .frame(width: 16, height: 16)
+          .frame(width: 16 * microphoneScale, height: 16 * microphoneScale)
       }
       .tint(Self.litGlass(open ? Color.red : nil))
       .csFocusOutline()
