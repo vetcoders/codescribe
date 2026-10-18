@@ -284,13 +284,20 @@ struct CapabilitySummary: Equatable {
   var native = 0
   var enhanced = 0
   var unavailable = 0
+  /// Which operations ended up unavailable, in matrix order. A bare count
+  /// ("3 capabilities have no provider") left the reader no way to judge
+  /// whether it matters, so the summary carries the names
+  /// (Founder review, 2026-10-18).
+  var unavailableOps: [String] = []
 
   init(rows: [CsCapabilityRow]) {
     for row in rows {
       switch row.tier.lowercased() {
       case "native": native += 1
       case "enhanced": enhanced += 1
-      default: unavailable += 1
+      default:
+        unavailable += 1
+        unavailableOps.append(row.op)
       }
     }
   }
@@ -394,6 +401,10 @@ struct AgentStatusSummary: Equatable {
   let facts: String
   /// Errors first, then warnings. Empty when there is nothing to act on.
   let notes: [Note]
+  /// How to read `notes`. "Configuration ready" above a warning read as a
+  /// contradiction, so the list says plainly whether its items block the Agent
+  /// (Founder review, 2026-10-18). Empty when there are no notes.
+  let notesCaption: String
 
   init(
     readiness: CsAgenticReadiness, capabilities: [CsCapabilityRow], servers: [McpServerLine],
@@ -429,10 +440,14 @@ struct AgentStatusSummary: Equatable {
 
     // ---- Key facts. A missing probe drops its fragment instead of showing 0. ----
     var facts: [String] = []
+    // "Provider", not "Model": `CsMcpStatusFacet` has no model facet, and the
+    // subject here is the provider display name — wire suffix and all. The
+    // resolved model per lane lives on Agent › AI models
+    // (Founder review, 2026-10-18).
     if let provider = row(.provider)?.subject, !provider.isEmpty {
       facts.append(
         String(
-          localized: "Model: \(provider)",
+          localized: "Provider: \(provider)",
           comment: "Diagnostics key fact; placeholder is a provider display name"))
     }
     if let tools = row(.nativeTools)?.count {
@@ -454,7 +469,8 @@ struct AgentStatusSummary: Equatable {
     let failedIntegrations = integrations.filter { $0.state == .failed }.count
     let awaiting = integrations.filter { $0.state == .configured }.count
     let serverSummary = McpServerSummary(lines: servers)
-    let unavailable = CapabilitySummary(rows: capabilities).unavailable
+    let capabilitySummary = CapabilitySummary(rows: capabilities)
+    let unavailable = capabilitySummary.unavailable
     let configRow =
       (mcpStatus.rows.first { $0.facet == .mcpConfig }) ?? row(.mcpConfig)
 
@@ -488,17 +504,33 @@ struct AgentStatusSummary: Equatable {
             comment: "Plural: optional integrations configured but not yet discovered")))
     }
     if unavailable > 0 {
+      // The op ids are data, joined outside the sentence.
+      let ops = capabilitySummary.unavailableOps.joined(separator: " · ")
       warnings.append(
         Note(
           tone: .warn,
           text: String(
-            localized: "\(unavailable) capabilities have no provider",
-            comment: "Plural: capability operations no native tool or MCP server can serve")))
+            localized: "No provider for \(ops)",
+            comment:
+              "Diagnostics note; placeholder is a list of capability operation ids such as fs.list"
+          )))
     }
     if let configRow, configRow.state == .note {
       warnings.append(Note(tone: configRow.tone, text: configRow.localizedValue))
     }
     notes = errors + warnings
+    if errors.isEmpty && warnings.isEmpty {
+      notesCaption = ""
+    } else if errors.isEmpty {
+      // The gate passed: these are optional pieces, not failures.
+      notesCaption = String(
+        localized: "Does not block the Agent",
+        comment: "Caption above diagnostics notes that are warnings only")
+    } else {
+      notesCaption = String(
+        localized: "Needs attention",
+        comment: "Caption above diagnostics notes that include an error")
+    }
   }
 }
 
