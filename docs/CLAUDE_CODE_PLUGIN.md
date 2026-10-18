@@ -72,8 +72,10 @@ hooks:
   API error; before this, such a turn left the conversation without a waiter until
   someone typed. With a waiter already armed the extra hook returns at once.
 - A `cs-bus --watch --until-event` background task of the same lease takes
-  precedence while it lives: the task holds `runtime/native-wake/LEASE.watch.lock`
-  shared and records what it reported in the announced ledger before it exits.
+  precedence while it lives: the task holds `runtime/until-event/LEASE.lock`
+  shared (every provider's task does; `cs-bus --status` reports it as
+  `listener.until_event_alive`) and records what it reported in the announced
+  ledger before it exits.
   The waiter stays armed but announces no delivery while that mark is held, and
   an idle waiter ends silently instead of spending a turn on its six-hour re-arm.
   One message wakes the conversation once; when the task is gone the waiter takes
