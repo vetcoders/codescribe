@@ -334,6 +334,12 @@ final class SettingsChromeContractTests: XCTestCase {
         "} else {\n        SettingsChipButton(\n          enabled: provider.accountLoginEnabled"))
     XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
 
+    // Red only for a real failure: an absent key and Sign out stay neutral.
+    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : Color.secondary"))
+    XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
+    XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
+    XCTAssertTrue(panel.contains("optional: !provider.keyRequired || provider.accountSignedIn"))
+
     let polish = try polishCatalog()
     for key in [
       "Providers",
