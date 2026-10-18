@@ -340,11 +340,13 @@ Increase Contrast), the column bounds and the two slots a window may fill.
   one of the two windows used to have one. Each window persists its own flag
   (`Settings.sidebarExpanded.v1`, `AgentChat.sidebarExpanded.v1`); the button,
   a divider drag and the shortcut all write it.
-- **The slots** carry what belongs to a window's function and nothing else:
-  a header above the search field and a footer under the list, either of
-  which a window may leave out. Agent fills the footer with **New thread**;
-  Settings fills it with the health line — a coloured status dot and
-  secondary system text that deep-links to the section owning the problem.
+- **The slots** carry what belongs to a window's function and nothing else.
+  Agent fills the header slot, above the search field, with **New thread** —
+  the agent's first action, a create glyph and its label on a plain row —
+  and has no footer: the reference sidebar ends with its last row, not with
+  a pill. Settings fills the footer slot with the health line — a coloured
+  status dot and secondary system text that deep-links to the section owning
+  the problem — and has no header.
 
 Window floors stayed where they were when the rail narrowed: Agent is
 640 × 440 with a 444 pt conversation column beside the 196 pt rail minimum,
