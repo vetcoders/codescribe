@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Action availability stays projected; chrome visibility is local presentation only.
 struct OverlayDockLayout: Equatable {
-  static let minimumCanvasWidth: CGFloat = 320
+  /// The overlay window floor, `DictationOverlayWindow.minSize.width`.
+  static let minimumCanvasWidth: CGFloat = 360
   let projectedIntents: [OverlayIntent]
   var visibleIntents: [OverlayIntent] { projectedIntents.filter { $0 != .close } }
 }
