@@ -2873,17 +2873,6 @@
         }
       }
     },
-    "Agentic — dictation + AI agent" : {
-      "comment" : "Operating lane choice; Agentic is the lane name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent — głos + AI"
-          }
-        }
-      }
-    },
     "Agents" : {
       "localizations" : {
         "pl" : {
@@ -3483,18 +3472,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatycznie"
-          }
-        }
-      }
-    },
-    "Auto-detect when you speak several languages." : {
-      "comment" : "Detail under the Auto-detect dictation language choice",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Automatyczne wykrywanie mowy, gdy mówisz w kilku językach."
+            "value" : "Automatyczne wykrywanie języka"
           }
         }
       }
@@ -3626,17 +3604,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb podstawowy pozostaje bezpłatny. Licencja odblokowuje tryb agentowy."
-          }
-        }
-      }
-    },
-    "Basic — dictation only" : {
-      "comment" : "Operating lane choice; Basic is the lane name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy — praca z tekstem"
           }
         }
       }
@@ -6714,7 +6681,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz po prostu dyktować albo pracować głosem razem z agentem AI."
+            "value" : "Możesz dyktować albo pracować głosem razem z agentem AI."
           }
         }
       }
@@ -6726,6 +6693,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie"
+          }
+        }
+      }
+    },
+    "Dictation + AI agent" : {
+      "comment" : "Operating lane choice: dictation plus the AI agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głos + AI"
           }
         }
       }
@@ -6747,6 +6725,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Sterowanie dyktowaniem"
+          }
+        }
+      }
+    },
+    "Dictation only" : {
+      "comment" : "Operating lane choice: dictation without the AI agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Praca z tekstem"
           }
         }
       }
@@ -7339,17 +7328,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły błędu"
-          }
-        }
-      }
-    },
-    "Everything is ready for transcription (%@)." : {
-      "comment" : "Setup summary when ready; the placeholder is the dictation engine name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wszystko gotowe do transkrypcji (%@)."
           }
         }
       }
@@ -11296,6 +11274,17 @@
         }
       }
     },
+    "One is enough: sign in with a provider account or add an API key. You can also do this later." : {
+      "comment" : "Setup step description; the account and the key are alternatives",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API. Możesz to zrobić także później."
+          }
+        }
+      }
+    },
     "Only %@ s of speech was heard; at least %@ s is needed. Speak normally for the whole measurement." : {
       "comment" : "Calibration refusal. Both placeholders are pre-formatted numbers of seconds: measured, then required",
       "localizations" : {
@@ -11595,28 +11584,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalne · nieskonfigurowane"
-          }
-        }
-      }
-    },
-    "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works." : {
-      "comment" : "Consequence of a missing Full Disk Access scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opcjonalne — bez tego uprawnienia chronione pliki pozostają niedostępne dla Agenta jako kontekst; dyktowanie nadal działa."
-          }
-        }
-      }
-    },
-    "Optional — without it, the Agent cannot use your screen as context; dictation still works." : {
-      "comment" : "Consequence of a missing Screen Recording scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opcjonalne — bez tego uprawnienia Agent nie może korzystać z ekranu jako kontekstu; dyktowanie nadal działa."
           }
         }
       }
@@ -13663,17 +13630,6 @@
         }
       }
     },
-    "Required for transcription" : {
-      "comment" : "Setup Done group: what Finish waits for",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do transkrypcji"
-          }
-        }
-      }
-    },
     "Required local FP16 model (%@). Missing or invalid weights keep Local power not ready." : {
       "localizations" : {
         "pl" : {
@@ -14880,17 +14836,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skonfiguruj"
-          }
-        }
-      }
-    },
-    "Set up an Agent account or an API key. You can also do this later." : {
-      "comment" : "Setup step description",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skonfiguruj konto Agenta lub klucz API. Możesz zrobić to także później."
           }
         }
       }
@@ -18708,6 +18653,17 @@
         }
       }
     },
+    "When you speak more than one language." : {
+      "comment" : "Detail under the Auto-detect dictation language choice",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy mówisz w różnych językach."
+          }
+        }
+      }
+    },
     "While holding Fn, press the chosen key to attach the selection." : {
       "localizations" : {
         "pl" : {
@@ -18795,13 +18751,13 @@
         }
       }
     },
-    "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
+    "Without it, Apple dictation is unavailable. Local transcription still works." : {
       "comment" : "Consequence of a missing Speech Recognition scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez tego uprawnienia dyktowanie Apple jest niedostępne; pobrany Whisper nadal może transkrybować lokalnie."
+            "value" : "Bez tego uprawnienia dyktowanie Apple jest niedostępne. Transkrypcja lokalna nadal działa."
           }
         }
       }
@@ -18824,6 +18780,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
+          }
+        }
+      }
+    },
+    "Without it, protected files stay unavailable to the Agent as context. Dictation still works." : {
+      "comment" : "Consequence of a missing Full Disk Access scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia chronione pliki pozostają niedostępne dla Agenta jako kontekst. Dyktowanie działa."
+          }
+        }
+      }
+    },
+    "Without it, the Agent can't use your screen as context. Dictation still works." : {
+      "comment" : "Consequence of a missing Screen Recording scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia Agent nie może korzystać z ekranu jako kontekstu. Dyktowanie działa."
           }
         }
       }
@@ -18984,13 +18962,13 @@
         }
       }
     },
-    "You can change them later in System Settings." : {
+    "You can change these permissions later in System Settings." : {
       "comment" : "Setup permissions footnote; System Settings is the macOS application",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmienisz je później w Ustawieniach systemowych."
+            "value" : "Te uprawnienia zmienisz później w Ustawieniach systemowych."
           }
         }
       }
