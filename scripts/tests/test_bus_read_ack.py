@@ -421,6 +421,16 @@ class ReadAckTests(unittest.TestCase):
             self.assertTrue(DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{identity}.json")["read_at"])
         self.assertEqual(json.loads(self.cli().stdout)["deliveries"], [])
 
+    def test_repeated_ack_flags_acknowledge_every_listed_delivery(self):
+        read = json.loads(self.cli().stdout)
+        repeated = [item for identity in read["read_delivery_ids"] for item in ("--ack", identity)]
+        ack = subprocess.run([sys.executable, str(SOURCE), "--provider", "codex", "--session", self.session,
+                              "--bridge-home", str(self.root), "--bus", str(self.bus), *repeated],
+                             capture_output=True, text=True)
+        self.assertEqual(ack.returncode, 0, ack.stderr)
+        self.assertEqual([json.loads(line)["delivery_id"] for line in ack.stdout.splitlines()], self.ids)
+        self.assertEqual(json.loads(self.cli().stdout)["deliveries"], [])
+
     def test_read_never_combines_with_mutation(self):
         for option in ("--detach", "--attach", "--ack", "--version", "--status", "--send"):
             extra = [option, self.ids[0]] if option in ("--ack", "--send") else [option]

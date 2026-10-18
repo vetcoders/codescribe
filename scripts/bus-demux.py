@@ -7570,9 +7570,10 @@ def main() -> int:
     parser.add_argument(
         "--ack",
         nargs="+",
+        action="extend",
         metavar="DELIVERY_ID",
         help="acknowledge one or more deliveries for --provider/--session "
-        "(all or nothing)",
+        "(all or nothing); a repeated --ack adds its ids",
     )
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
