@@ -387,7 +387,9 @@ A panel reads the role, never a bare number.
 - **Card.** 12 pt padding inside a `CSRadius.card` corner, 8 pt between two
   stacked settings. The radius stays shared on purpose: it is the product's
   shape language, not a density knob. `settingsGroupedInset(padding:)` in
-  `SettingsView.swift` draws the card.
+  `SettingsView.swift` draws the card, and a dense list — the per-tool
+  permission rows — passes a tighter inset to that same owner instead of
+  drawing a box of its own.
 - **Control family.** Every flat Settings action is a `SettingsChipButton`
   (`KeyRows.swift`): one label rung, 10 / 5 insets and `CSRadius.chip` for
   both the chip and the focus ring it wears, so the keyboard outline follows
