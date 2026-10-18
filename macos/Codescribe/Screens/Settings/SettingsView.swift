@@ -330,6 +330,7 @@ extension SettingsHealthLevel {
 
 // MARK: - Shared Settings chrome (consumed by every panel)
 
+/// The one headline of a page, above everything that page contains.
 struct SettingsPageHeader: View {
   let title: String
   var blurb: String?
@@ -340,14 +341,14 @@ struct SettingsPageHeader: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.sm) {
+    VStack(alignment: .leading, spacing: SettingsScale.titleGap) {
       Text(title)
-        .font(.title2.weight(.semibold))
+        .font(SettingsScale.pageTitle)
         .foregroundStyle(.primary)
         .accessibilityAddTraits(.isHeader)
       if let blurb, !blurb.isEmpty {
         Text(blurb)
-          .font(.callout)
+          .font(SettingsScale.pageBlurb)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -356,33 +357,55 @@ struct SettingsPageHeader: View {
   }
 }
 
+/// The one title of a peer section, above the cards it introduces. It reads at
+/// primary strength and one rung above a setting's own name, because a header
+/// that is quieter than the rows beneath it stops being a header.
+/// `emphasized` is the single rung above it, for a section that groups other
+/// sections.
 struct SettingsSectionLabel: View {
   let text: String
-  init(_ text: String) { self.text = text }
+  let emphasized: Bool
+  init(_ text: String, emphasized: Bool = false) {
+    self.text = text
+    self.emphasized = emphasized
+  }
   var body: some View {
     Text(text)
-      .font(.subheadline.weight(.semibold))
-      .foregroundStyle(.secondary)
+      .font(emphasized ? SettingsScale.sectionTitleStrong : SettingsScale.sectionTitle)
+      .foregroundStyle(.primary)
       .accessibilityAddTraits(.isHeader)
   }
 }
 
 /// Section label with one trailing action on the same line, so a helper such
-/// as refresh or a System Settings link does not take a row of its own.
+/// as refresh or a System Settings link does not take a row of its own. This
+/// is the one header owner of the central pane; a panel that needs a title
+/// without an action uses the `EmptyView` init below or `SettingsSectionLabel`.
 struct SettingsSectionHeaderRow<Action: View>: View {
   let text: String
+  let emphasized: Bool
   @ViewBuilder var action: () -> Action
-  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
+  init(
+    _ text: String, emphasized: Bool = false,
+    @ViewBuilder action: @escaping () -> Action
+  ) {
     self.text = text
+    self.emphasized = emphasized
     self.action = action
   }
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
-      SettingsSectionLabel(text)
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
+      SettingsSectionLabel(text, emphasized: emphasized)
         .frame(maxWidth: .infinity, alignment: .leading)
       action()
         .controlSize(.small)
     }
+  }
+}
+
+extension SettingsSectionHeaderRow where Action == EmptyView {
+  init(_ text: String, emphasized: Bool = false) {
+    self.init(text, emphasized: emphasized) { EmptyView() }
   }
 }
 
@@ -393,7 +416,7 @@ struct SettingsMenuLabel: View {
   var body: some View {
     HStack(spacing: CSSpace.xs) {
       Text(text)
-        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .font(mono ? SettingsScale.monoValue : SettingsScale.settingName)
         .foregroundStyle(.primary)
         .lineLimit(1)
       CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
@@ -403,17 +426,18 @@ struct SettingsMenuLabel: View {
 }
 
 extension View {
-  /// Grouped settings inset that follows the system appearance.
-  /// `csSettingsCard` stays on surfaces that still paint a fixed dark canvas.
-  func settingsGroupedInset(padding: CGFloat = CSSpace.card) -> some View {
+  /// The one card of the central pane: a grouped inset that follows the
+  /// system appearance. Setting names live inside it; the section title that
+  /// introduces it sits above it.
+  func settingsGroupedInset(padding: CGFloat = SettingsScale.cardPadding) -> some View {
     self
       .padding(padding)
       .background(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
           .fill(Color.primary.opacity(0.05))
       )
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
   }
@@ -433,24 +457,24 @@ struct RuntimeRow: View {
   var mono: Bool = false
   var trailing: Trailing = .none
   /// Key column; a table whose Polish keys run long widens it once for all rows.
-  var keyWidth: CGFloat = 160
+  var keyWidth: CGFloat = SettingsScale.rowKeyWidth
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: CSSpace.md) {
       Text(key)
-        .font(CSFont.mono(12, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.secondary)
         .frame(width: keyWidth, alignment: .leading)
       Text(value)
-        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .font(mono ? SettingsScale.monoValue : SettingsScale.settingValue)
         .foregroundStyle(.primary)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
       trailingView
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 13)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .background(tint ? Color.primary.opacity(0.04) : Color.clear)
   }
 
@@ -463,7 +487,7 @@ struct RuntimeRow: View {
       Circle().fill(color).frame(width: 7, height: 7)
     case .text(let label, let color):
       Text(label)
-        .font(CSFont.ui(10, .semibold))
+        .font(SettingsScale.statusBadge)
         .foregroundStyle(color)
     }
   }
