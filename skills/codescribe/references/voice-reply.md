@@ -121,6 +121,8 @@ with, normally xAI, whose login lasts about six hours:
 cs-say auth --provider xai --login-type device-code
 ```
 
+One agent refreshes at a time, so the Founder confirms a single code: say so
+on channel 0 before starting, and others wait for its `Signed in` notice.
 Run it as a background task. It prints a URL and a short code, then waits;
 give both to the Founder in chat, word for word. After `Signed in as …`, send
 the reply once more and check `spoken`. Refreshing the same login is not a
