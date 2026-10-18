@@ -16,7 +16,9 @@ struct SettingsView: View {
   // Native selection reconciliation writes only view state. Navigation and
   // its refresh effects are committed by onChange, outside the List setter.
   @State private var sidebarSelection: SettingsSection?
-  @State private var columnVisibility: NavigationSplitViewVisibility = .all
+  /// Persist only the user's expanded/collapsed choice; the split view owns
+  /// column geometry inside the bounds `CSSidebarColumn` carries.
+  @AppStorage("Settings.sidebarExpanded.v1") private var sidebarExpanded = true
   @State private var search: String = ""
   @State private var pendingScrollAnchor: SettingsAnchor?
   @State private var hostWindow: NSWindow?
@@ -27,18 +29,23 @@ struct SettingsView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      sidebar
-        .scrollContentBackground(.hidden)
-        .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
-        .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
-        .background { SettingsSidebarMaterial().ignoresSafeArea() }
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
+      CSSidebarColumn(
+        width: .navigation,
+        search: $search,
+        prompt: Text("Search settings")
+      ) {
+        sidebar
+      } footer: {
+        SettingsHealthFooter(model: model)
+      }
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
         .modifier(CSDetailHeaderFade())
         .background(CSColor.sheet)
     }
+    .csSidebarToggle(expanded: $sidebarExpanded)
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
@@ -88,6 +95,12 @@ struct SettingsView: View {
       guard hostWindow?.isVisible == true else { return }
       consumePendingDeepLink()
     }
+  }
+
+  /// The toolbar toggle, a divider drag to collapse and ⌃⌘S all write the
+  /// one persisted flag, so every path keeps the same choice.
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    CSSidebarVisibility.binding(expanded: $sidebarExpanded)
   }
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
@@ -142,9 +155,12 @@ struct SettingsView: View {
     }
   }
 
-  /// Native sidebar: grouped sections, SF Symbol rows, system selection, and a
-  /// search field that matches panel names AND what each panel does. One flat
-  /// row per section — a pane's parts are tabs inside the pane, not child rows.
+  /// The window's own rows inside the shared sidebar column: grouped
+  /// sections, SF Symbol rows and system selection. One flat row per
+  /// section — a pane's parts are tabs inside the pane, not child rows.
+  /// The list style, the search field that matches panel names AND what each
+  /// panel does, the material and the column bounds belong to
+  /// `CSSidebarColumn`.
   private var sidebar: some View {
     List(selection: $sidebarSelection) {
       ForEach(SettingsSectionGroup.allCases) { group in
@@ -163,12 +179,6 @@ struct SettingsView: View {
         }
       }
     }
-    .listStyle(.sidebar)
-    .searchable(
-      text: $search,
-      placement: .sidebar,
-      prompt: "Search settings"
-    )
     .onChange(of: sidebarSelection) { _, selection in
       // Clearing/filtering the native selection does not clear the detail.
       guard let selection, selection != model.section else { return }
@@ -286,12 +296,15 @@ struct SettingsHealthFooter: View {
     }
   }
 
+  /// The coloured dot is the whole status signal. The line beside it is
+  /// ordinary secondary text in the system face, so the column ends quietly
+  /// instead of shouting a second time in colour (Monika, 2026-10-18).
   private func content(_ health: SettingsHealthState, message: String) -> some View {
     HStack(spacing: 8) {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
       Text(message)
-        .font(CSFont.ui(10, .medium))
-        .foregroundStyle(health.level.color)
+        .font(.caption)
+        .foregroundStyle(Color.secondary)
         .lineLimit(2)
       Spacer(minLength: 0)
     }

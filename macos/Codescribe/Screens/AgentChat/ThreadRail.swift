@@ -1,11 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Thread list content hosted in the native split sidebar column.
+/// Thread list content hosted in the shared sidebar column.
 ///
-/// The same composition as the Settings sidebar: a system sidebar List with
-/// sidebar search, the shared sidebar material behind the whole column, and
-/// system row selection, hover and focus.
+/// `CSSidebarColumn` owns the column itself — list style, search field,
+/// material, width and the toggle; the Settings sidebar is its reference
+/// (Monika, 2026-10-18). What stays here is what belongs to the Agent
+/// window's function: the thread rows and the New thread action.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   @State private var search: String = ""
@@ -15,42 +16,43 @@ struct ThreadRail: View {
   @State private var renameDraft: String = ""
 
   var body: some View {
-    threadList
-      .searchable(text: $search, placement: .sidebar, prompt: "Search threads")
-      .onSubmit(of: .search) {
-        handleSearchCommit()
+    CSSidebarColumn(
+      width: .navigation,
+      search: $search,
+      prompt: Text("Search threads"),
+      onSearchSubmit: { handleSearchCommit() }
+    ) {
+      threadList
+    } footer: {
+      newThreadFooter
+    }
+    .background {
+      ThreadSearchKeyRouter(
+        onMoveDown: { handleSearchMoveDown() },
+        onExit: { handleSearchCancel() }
+      )
+    }
+    .onAppear {
+      selectedThreadID = store.selectedThreadID
+    }
+    .onChange(of: store.selectedThreadID) { _, newID in
+      if selectedThreadID != newID {
+        selectedThreadID = newID
       }
-      .modifier(AgentScrollBottomBar { newThreadFooter })
-      // On the List, not a stack around it: the list runs through the
-      // titlebar, so the material does too.
-      .background { SettingsSidebarMaterial().ignoresSafeArea() }
-      .background {
-        ThreadSearchKeyRouter(
-          onMoveDown: { handleSearchMoveDown() },
-          onExit: { handleSearchCancel() }
-        )
+    }
+    .onChange(of: selectedThreadID) { _, newID in
+      guard let newID, newID != store.selectedThreadID else { return }
+      select(newID)
+    }
+    .onChange(of: search) { _, newValue in
+      store.searchThreads(newValue)
+    }
+    .onChange(of: store.threadSearchQuery) { _, newValue in
+      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+        search = newValue
       }
-      .onAppear {
-        selectedThreadID = store.selectedThreadID
-      }
-      .onChange(of: store.selectedThreadID) { _, newID in
-        if selectedThreadID != newID {
-          selectedThreadID = newID
-        }
-      }
-      .onChange(of: selectedThreadID) { _, newID in
-        guard let newID, newID != store.selectedThreadID else { return }
-        select(newID)
-      }
-      .onChange(of: search) { _, newValue in
-        store.searchThreads(newValue)
-      }
-      .onChange(of: store.threadSearchQuery) { _, newValue in
-        if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
-          search = newValue
-        }
-      }
-      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+    }
+    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
   }
 
   private var threadList: some View {
@@ -89,15 +91,12 @@ struct ThreadRail: View {
         }
       }
     }
-    .listStyle(.sidebar)
-    .scrollContentBackground(.hidden)
     .accessibilityIdentifier("thread-rail-list")
   }
 
   /// The system glass button, the same regular glass as the composer field,
-  /// floats over the list. Rows scroll beneath it under the bar's edge
-  /// effect; hover, focus, Reduce Transparency and Increase Contrast come
-  /// from the system style.
+  /// sits in the column's footer slot; hover, focus, Reduce Transparency and
+  /// Increase Contrast come from the system style.
   private var newThreadFooter: some View {
     Button(action: { store.newThread() }) {
       Label("New thread", systemImage: "plus")
@@ -250,8 +249,11 @@ private struct NewThreadButtonStyle: ViewModifier {
 
 /// One history row presented in the native sidebar List.
 ///
-/// System selection, hover, and focus are owned by the enclosing List.
-/// Two-line readable row with normal system UI typography and secondary metadata.
+/// System selection, hover and focus are owned by the enclosing List, and so
+/// is the row's ink: the title takes the list's own text style, so it dims
+/// with the window like every other sidebar row instead of staying bright in
+/// a background window (Monika, 2026-10-18). A single-line title over its
+/// quieter time and model line.
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
@@ -333,7 +335,6 @@ private struct ThreadRow: View {
         if isEditing {
           TextField("", text: $renameDraft)
             .textFieldStyle(.plain)
-            .font(.system(size: 13, weight: .semibold))
             .focused($renameFieldFocused)
             .onSubmit { onCommitRename() }
             .onExitCommand { onCancelRename() }
@@ -375,10 +376,10 @@ private struct ThreadRow: View {
     }
   }
 
+  /// No font, weight or ink of its own: the enclosing sidebar List styles
+  /// the row, including how it dims when its window is not the active one.
   private var titleLabel: some View {
     Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
-      .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-      .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.85))
       .lineLimit(1)
       .truncationMode(.tail)
   }
