@@ -7109,6 +7109,7 @@ def status_command(args: argparse.Namespace) -> int:
                 "last_loss": (lifecycle.get("losses") or [None])[-1],
                 "watch_alive": watch_alive if watch else None,
                 "watch_pid": watch_pid if watch_alive else None,
+                "until_event_alive": lock_held(until_event_lock_path(root, lease_id)),
             },
             "wakeup": (state or {}).get("wakeup_configuration", {}).get("wakeup", "unrecorded"),
             "wakeup_receipts": str(root / "wakeups" / lease_id),
@@ -7209,21 +7210,49 @@ def native_wake_module() -> Any:
     return module
 
 
+def until_event_lock_path(root: Path, lease_id: str) -> Path:
+    """Held shared for the whole life of each `--watch --until-event` task of
+    this lease, whatever its provider: --status reports it, and a native waiter
+    leaves the wake to the task while it is held."""
+    return root / "runtime" / "until-event" / f"{lease_id}.lock"
+
+
+def lock_held(path: Path) -> bool:
+    """True while another process holds `path`; observing never takes it."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
 @contextlib.contextmanager
 def until_event_mark(root: Path, provider: str, lease_id: str) -> Iterator[Any]:
-    """Tell this lease's native waiter (the Claude Code hooks, the OMP extension)
-    that this `--watch --until-event` task reports its deliveries, so a message
-    wakes the conversation once. Yields `announce(ids)`; without a native waiter
-    it does nothing."""
+    """Mark this live `--watch --until-event` task for --status and for this
+    lease's native waiter (the Claude Code hooks, the OMP extension), so a
+    message wakes the conversation once. Yields `announce(ids)`, which records
+    reported deliveries in that waiter's ledger; without one it does nothing."""
+    path = until_event_lock_path(root, lease_id)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        module = native_wake_module()
-    except OSError:
-        module = None  # a helper installed without bus-mcp.py still waits
-    if module is None or provider not in module.NATIVE_WAKE_PROVIDERS:
-        yield lambda _ids: None
-        return
-    with module.until_event_watch(sys.modules[__name__], root, lease_id) as announce:
-        yield announce
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        try:
+            module = native_wake_module()
+        except OSError:
+            module = None  # a helper installed without bus-mcp.py still waits
+        if module is None or provider not in module.NATIVE_WAKE_PROVIDERS:
+            yield lambda _ids: None
+        else:
+            yield module.announcer(sys.modules[__name__], root, lease_id)
+    finally:
+        os.close(descriptor)
 
 
 def wait_for_pending_command(args: argparse.Namespace) -> int:

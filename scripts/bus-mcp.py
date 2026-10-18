@@ -163,13 +163,6 @@ def ledger_guard(path, *, wait_seconds=None):
         os.close(descriptor)
 
 
-def watch_lock_path(root, lease_id):
-    """Held shared for the whole life of this lease's `--watch --until-event`
-    task. While it is held the native waiter leaves deliveries to that task,
-    so one message wakes the conversation once."""
-    return root / "runtime" / "native-wake" / f"{lease_id}.watch.lock"
-
-
 def lock_held(path):
     """True while another process holds `path`; observing never takes it."""
     try:
@@ -190,33 +183,22 @@ def wake_armed(root, lease_id):
     return lock_held(wake_paths(root, lease_id)[0])
 
 
-@contextlib.contextmanager
-def until_event_watch(demux, root, lease_id):
-    """Mark a live `--watch --until-event` task of this lease for its waiter.
-
-    Yields `announce(ids)`. The task calls it after reporting deliveries and
-    before it exits, so the ledger already holds them when the waiter takes
-    over: the waiter wakes neither alongside the task nor after it for the
-    same message. A task stopped before it reported anything leaves no entry,
-    and the waiter announces those deliveries itself."""
-    path = watch_lock_path(root, lease_id)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_SH)
-
-        def announce(ids):
-            _lock, record = wake_paths(root, lease_id)
-            with ledger_guard(ledger_lock_path(root, lease_id)):
-                announced, reminded = read_ledger(demux, record)
-                now = time.time()
-                for identity in ids:
-                    announced.setdefault(identity, now)
-                write_ledger(demux, record, lease_id, announced, reminded)
-
-        yield announce
-    finally:
-        os.close(descriptor)
+def announcer(demux, root, lease_id):
+    """`announce(ids)` for a live `--watch --until-event` task of this lease
+    (`demux.until_event_mark` holds its lock). The task calls it after reporting
+    deliveries and before it exits, so the ledger already holds them when the
+    waiter takes over: the waiter wakes neither alongside the task nor after it
+    for the same message. A task stopped before it reported anything leaves no
+    entry, and the waiter announces those deliveries itself."""
+    def announce(ids):
+        _lock, record = wake_paths(root, lease_id)
+        with ledger_guard(ledger_lock_path(root, lease_id)):
+            announced, reminded = read_ledger(demux, record)
+            now = time.time()
+            for identity in ids:
+                announced.setdefault(identity, now)
+            write_ledger(demux, record, lease_id, announced, reminded)
+    return announce
 
 
 def bound_channel(demux, root, provider, session):
@@ -599,7 +581,7 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                     # deliveries itself and records them before it exits; waking
                     # here as well would wake the conversation twice. The waiter
                     # stays armed and takes over once the task is gone.
-                    watched = lock_held(watch_lock_path(root, lease_id))
+                    watched = lock_held(demux.until_event_lock_path(root, lease_id))
                     fresh = [] if watched else [identity for identity in unread if identity not in seen]
                     # Announced long ago and still unread: the first notice may
                     # never have reached the conversation. Each is reminded once.

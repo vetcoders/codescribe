@@ -996,7 +996,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
     def test_reminder_is_left_to_a_live_until_event_task(self):
         self.wake()
         with patch.object(MCP, "REMIND_SECONDS", 0.1), \
-             MCP.until_event_watch(DEMUX, self.root, self.lease):
+             DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
             self.assertEqual(self.wake(window=0.5), (0, None))
         self.assert_not_acknowledged()
 
@@ -1060,7 +1060,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.assertEqual(json.loads(result.stdout)["kind"], "mailbox_ready")
         record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
         self.assertEqual(record["announced"], sorted(self.ids))
-        self.assertFalse(MCP.lock_held(MCP.watch_lock_path(self.root, self.lease)))
+        self.assertFalse(DEMUX.lock_held(DEMUX.until_event_lock_path(self.root, self.lease)))
         code, notice = self.wake()
         self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
         self.assert_not_acknowledged()
@@ -1069,7 +1069,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.pending = []
         self.save()
         outcome = queue.Queue()
-        with MCP.until_event_watch(DEMUX, self.root, self.lease) as announce:
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease) as announce:
             threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
             time.sleep(0.3)
             self.assertTrue(MCP.wake_armed(self.root, self.lease))
@@ -1087,7 +1087,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
     def test_idle_waiter_steps_down_silently_beside_a_live_until_event_task(self):
         self.pending = []
         self.save()
-        with MCP.until_event_watch(DEMUX, self.root, self.lease):
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
             self.assertEqual(self.wake(window=0.3), (0, None))
         code, notice = self.wake(window=0.3)
         self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
@@ -1096,7 +1096,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
         """The task waits only for unread messages; a dead follower stays the waiter's to report."""
         self.pending = []
         super().save()  # no live follower pid
-        with MCP.until_event_watch(DEMUX, self.root, self.lease):
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
             code, notice = self.wake()
         self.assertEqual((code, notice["kind"], notice["problem"]),
                          (MCP.WAKE_EXIT, "codescribe_listener_problem", "follower_lost"))
