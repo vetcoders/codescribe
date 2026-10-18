@@ -313,6 +313,19 @@ including buttons, settings, history, messages, help and accessibility copy.
 | Converting audio to text                                | transcription             | transkrypcja              |
 | The resulting text                                      | transcript                | transkrypt                |
 | Command to convert audio to text                        | Transcribe                | Transkrybuj               |
+| Agent window's stored chat object                       | conversation              | rozmowa                   |
+
+Founder decision 2026-10-18: the Agent window's stored chat object — what code
+calls a thread — is named "conversation" / "rozmowa" everywhere a user reads
+it: buttons, search, menus, errors and accessibility copy (New thread → New
+conversation, Delete Thread → Delete Conversation, Nowy wątek → Nowa rozmowa,
+and so on). Mind the grammar: "wątek" is masculine and "rozmowa" is feminine,
+so every adjective and pronoun takes the new gender
+("Usunąć ten wątek?" → "Usunąć tę rozmowę?"). "chat" stays the name of the mode
+("Voice chat", "Continue in chat"); "session" / "sesja" stays reserved for
+dictation, the app session and bus agent sessions — neither is renamed by this
+decision. Code identifiers (`threadID`, `ThreadRail`, `ChatThread`,
+`search_threads`) are unaffected (R6).
 
 Mode names and license status describe different things. Do not call Basic
 mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
