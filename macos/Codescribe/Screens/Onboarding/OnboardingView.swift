@@ -166,7 +166,7 @@ struct OnboardingView: View {
           .frame(width: 34, height: 34)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
-          Text(chapter.title).font(CSFont.title).foregroundStyle(CSColor.textHigh)
+          Text(chapter.title).font(CSFont.ui(13, .bold)).foregroundStyle(CSColor.textHigh)
           if let purpose = chapter.purpose {
             Text(purpose).font(CSFont.ui(11, .regular)).foregroundStyle(CSColor.textMuted)
           }
