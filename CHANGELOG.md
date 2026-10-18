@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
 - An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
+- An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
+- `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
 
 ## [0.17.1] - 2026-10-17
