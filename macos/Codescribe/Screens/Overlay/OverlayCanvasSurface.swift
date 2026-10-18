@@ -63,8 +63,12 @@ struct OverlayCanvasBackdrop: View {
   /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
   /// sheet constant in both states; only the 16 % of desktop hint still follows
   /// the window.
+  ///
+  /// A nightly build's dark veil lets less of the desktop through, so its
+  /// lower black point is not lifted back by the glass.
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
-    palette.desktopBackground.nsColor.withAlphaComponent(0.84)
+    let alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+    return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
   }
 }
 

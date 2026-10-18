@@ -202,6 +202,14 @@ if [[ "$PROFILE" != "release" && "${CODESCRIBE_DEVELOPER_SURFACE:-0}" == "1" ]];
 fi
 export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
 
+# Every build that is not the release DMG is a nightly; nightlies wear a
+# darker dark mode (Maciej, 2026-10-18). CODESCRIBE_BUILD_CHANNEL overrides.
+if [[ "$PROFILE" == "release" ]]; then
+  CS_BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-stable}"
+else
+  CS_BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-nightly}"
+fi
+
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
 # pipeline with a cryptic "command not found". Fail early, actionably.
 require() {
@@ -406,6 +414,7 @@ run_app_xcodebuild() {
     CS_BUILT_AT="$STAMP_BUILT_AT" \
     SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
     CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
+    CS_BUILD_CHANNEL="$CS_BUILD_CHANNEL" \
     build
 }
 

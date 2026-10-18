@@ -75,8 +75,12 @@ enum CSPalette {
   /// dark sheet keeps the hue of the Vibecrafted terminal's navy (#0B0B12,
   /// `~/.config/vibecrafted/terminal-theme.toml`) lifted one step above the
   /// 6 % bubble lift.
+  ///
+  /// Nightly builds sit the dark sheet's black point lower, at the ink step
+  /// (Maciej, 2026-10-18: "Buildy nightly … mają mieć dużo ciemniejszy look
+  /// w trybie ciemnym").
   static let sheetLightHex: UInt32 = 0xF6F3EE
-  static let sheetDarkHex: UInt32 = 0x16161C
+  static let sheetDarkHex: UInt32 = BuildChannel.isNightly() ? 0x08080C : 0x16161C
   static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))

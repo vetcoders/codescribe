@@ -30,6 +30,15 @@ enum DeveloperSurface {
   }
 }
 
+/// The build's release channel, baked as `CSBuildChannel` by
+/// scripts/build-app.sh: "nightly" for every non-release profile.
+enum BuildChannel {
+  static func isNightly(in bundle: Bundle = .main) -> Bool {
+    (bundle.object(forInfoDictionaryKey: "CSBuildChannel") as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nightly"
+  }
+}
+
 /// Daily overlay visibility. The tray "Transcription Overlay" toggle is the
 /// product switch. Lab mode never writes that toggle and is unavailable on
 /// a production bundle, even if UserDefaults still holds
