@@ -79,8 +79,12 @@ and there is no watcher to remember. A `cs-bus --watch --until-event` background
 task of this session may run beside it: the waiter then leaves the wake to that
 task and takes over when it is gone. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
 means nothing was read: inspect `codescribe_status` and connect again with the same
-name and channel. A `codescribe_wait_idle` notice after six silent hours only
-re-arms: end the turn. `codescribe_status` reports `native_wake_armed`.
+name and channel. A `codescribe_mailbox_reminder` notice names deliveries
+announced ten minutes ago and still unacknowledged (their first notice may have
+been lost): read and ACK them as above; each is reminded once. A
+`codescribe_wait_idle` notice after six silent hours only re-arms: end the turn,
+after reading any deliveries it lists as unacknowledged. `codescribe_status`
+reports `native_wake_armed`.
 
 A message can also reach you **inside a running turn**: the plugin's
 `PostToolUse` hook probes the mailbox after every tool call and, when a delivery

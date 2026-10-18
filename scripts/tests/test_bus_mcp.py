@@ -38,6 +38,13 @@ def parse_wake_notice(line):
         notice.update(kind="codescribe_listener_problem", problem=text.split(" ")[2])
     elif text.startswith("no message "):
         notice["kind"] = "codescribe_wait_idle"
+        still = re.search(r"still unacknowledged: ([0-9a-f, ]+)\.", text)
+        if still:
+            notice["unacked_delivery_ids"] = still[1].split(", ")
+    elif "unacknowledged delivery ids: " in text:
+        listed = re.findall(r"([0-9a-f]{24})", re.search(r"unacknowledged delivery ids: ([^.]*)\.", text)[1])
+        notice.update(kind="codescribe_mailbox_reminder", unacked_delivery_ids=listed,
+                      pending_count=int(re.search(r"pending (\d+)", text)[1]))
     else:
         listed = re.findall(r"([0-9a-f]{24})(?: \[([^\]]*)\])?", re.search(r"new delivery ids: ([^.]*)\.", text)[1])
         notice.update(kind="codescribe_mailbox_ready", pending_count=int(re.search(r"pending (\d+)", text)[1]),
@@ -951,6 +958,47 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.wake()
         record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
         self.assertEqual(record["announced"], self.ids[1:])
+
+    def test_unacknowledged_delivery_is_reminded_once(self):
+        """Olek, 2026-10-18: the ledger is written before the notice, so a lost
+        notice left the delivery announced and silent until a new one came."""
+        with patch.object(MCP, "REMIND_SECONDS", 0.2):
+            code, notice = self.wake()
+            self.assertEqual(notice["new_delivery_ids"], self.ids)
+            self.call("read")
+            self.call("ack", {"delivery_ids": self.ids[:1]})
+            code, notice = self.wake(window=3)
+            self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_mailbox_reminder"))
+            self.assertEqual((notice["unacked_delivery_ids"], notice["pending_count"]), (self.ids[1:], 4))
+            # Reminded once: the six-hour receipt then names them without a new wake.
+            code, notice = self.wake(window=0.6)
+            self.assertEqual(notice["kind"], "codescribe_wait_idle")
+            self.assertEqual(notice["unacked_delivery_ids"], self.ids[1:])
+            record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
+            self.assertEqual(record["reminded"], self.ids[1:])
+            # Read and ACK end it: no reminder, no list.
+            for _ in self.ids[1:]:  # codescribe_read returns one delivery at a time
+                self.call("ack", {"delivery_ids": self.call("read")["read_delivery_ids"]})
+            code, notice = self.wake(window=0.6)
+            self.assertEqual(notice["kind"], "codescribe_wait_idle")
+            self.assertNotIn("unacked_delivery_ids", notice)
+        self.assertEqual(DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])["announced"], [])
+
+    def test_ledger_written_before_reminders_reminds_nobody_at_once(self):
+        record = MCP.wake_paths(self.root, self.lease)[1]
+        record.parent.mkdir(parents=True, exist_ok=True)
+        DEMUX.atomic_json(record, {"lease_id": self.lease, "announced": self.ids})
+        code, notice = self.wake(window=0.4)
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.assertEqual(sorted(DEMUX.read_json(record)["announced_at"]), self.ids)
+        self.assert_not_acknowledged()
+
+    def test_reminder_is_left_to_a_live_until_event_task(self):
+        self.wake()
+        with patch.object(MCP, "REMIND_SECONDS", 0.1), \
+             MCP.until_event_watch(DEMUX, self.root, self.lease):
+            self.assertEqual(self.wake(window=0.5), (0, None))
+        self.assert_not_acknowledged()
 
     def test_only_claude_code_owner_of_an_attached_channel_waits(self):
         for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "another-claude-session"}):
