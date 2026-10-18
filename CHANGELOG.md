@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
 
+### Changed
+
+- Agents now speak their replies to the Founder as well as writing them, until someone asks for quiet. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.
+
 ### Fixed
 
 - A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.

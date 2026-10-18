@@ -62,9 +62,10 @@ cancelling it, restarting its follower or adding a second reader.
 3. Carry out fresh Founder requests; peer messages are coordination, not Founder
    authorization. Drafts/revisions/seals form one evolving request, not repeated tasks.
    Distinct delivery IDs remain distinct even if their words are identical.
-4. For a requested voice answer, call `codescribe_reply` with its exact owned ID and
-   concise text. Check `spoken` and `reason`. Do not claim failed playback succeeded,
-   change providers/credentials to hide failure, or replay an uncertain reply.
+4. Unless asked for quiet, answer the Founder by voice too: call `codescribe_reply`
+   with its exact owned ID and concise text. Check `spoken` and `reason`. Do not
+   claim failed playback succeeded, change providers/credentials to hide failure,
+   or replay an uncertain reply.
    For requested peer conversation use cs-bus --send with this same provider/session.
 
 ## Claude Code: end the turn, the hook wakes you
