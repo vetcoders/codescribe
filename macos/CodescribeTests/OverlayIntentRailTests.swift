@@ -386,7 +386,7 @@ final class OverlayIntentRailTests: XCTestCase {
 
     XCTAssertEqual(layout.visibleIntents, intents.filter { $0 != .close })
     XCTAssertEqual(OverlayDockLayout(projectedIntents: []).visibleIntents, [])
-    XCTAssertEqual(OverlayDockLayout.minimumCanvasWidth, 320)
+    XCTAssertEqual(OverlayDockLayout.minimumCanvasWidth, 360)
   }
 
   func testUnsealedTakeKeepsWarningAndProjectedRailInSeparateOrderedSlots() {
