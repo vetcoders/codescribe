@@ -3,8 +3,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::Path;
-use std::sync::LazyLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError};
+use std::time::SystemTime;
 
 use regex::RegexBuilder;
 use serde::Deserialize;
@@ -62,6 +63,10 @@ struct Rule {
     canonical: String,
     case_sensitive: bool,
     protected: bool,
+    /// Built on first use and kept. Every Whisper window relabels its words,
+    /// and rebuilding the same regexes there held a full core while
+    /// recording (sample of 18 Oct 2026).
+    pattern: OnceLock<Option<regex::Regex>>,
 }
 
 impl Rule {
@@ -82,26 +87,58 @@ impl Rule {
             canonical,
             case_sensitive,
             protected,
+            pattern: OnceLock::new(),
         })
     }
 
-    fn pattern(&self) -> Option<regex::Regex> {
-        let words = self
-            .variant
-            .split_whitespace()
-            .map(regex::escape)
-            .collect::<Vec<_>>();
-        let pattern = words.join(r"\s+");
-        RegexBuilder::new(&pattern)
-            .case_insensitive(!self.case_sensitive)
-            .build()
-            .ok()
+    fn pattern(&self) -> Option<&regex::Regex> {
+        self.pattern
+            .get_or_init(|| {
+                let words = self
+                    .variant
+                    .split_whitespace()
+                    .map(regex::escape)
+                    .collect::<Vec<_>>();
+                let pattern = words.join(r"\s+");
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!self.case_sensitive)
+                    .build()
+                    .ok()
+            })
+            .as_ref()
+    }
+}
+
+struct ProtectedTerm {
+    canonical: String,
+    lower: String,
+    pattern: OnceLock<Option<regex::Regex>>,
+}
+
+impl ProtectedTerm {
+    fn new(canonical: String) -> Self {
+        Self {
+            lower: canonical.to_lowercase(),
+            canonical,
+            pattern: OnceLock::new(),
+        }
+    }
+
+    fn pattern(&self) -> Option<&regex::Regex> {
+        self.pattern
+            .get_or_init(|| {
+                RegexBuilder::new(&regex::escape(&self.canonical))
+                    .case_insensitive(true)
+                    .build()
+                    .ok()
+            })
+            .as_ref()
     }
 }
 
 struct Bundled {
     rules: Vec<Rule>,
-    protected_canonicals: Vec<String>,
+    protected_canonicals: Vec<ProtectedTerm>,
 }
 
 static BUNDLED: LazyLock<Bundled> =
@@ -132,8 +169,12 @@ static BUNDLED: LazyLock<Bundled> =
             let content = std::str::from_utf8(source).expect("embedded lexicon UTF-8");
             for line in content.lines() {
                 if let Ok(mut row) = serde_json::from_str::<TermRow>(line) {
-                    if protected && !protected_canonicals.contains(&row.term) {
-                        protected_canonicals.push(row.term.clone());
+                    if protected
+                        && !protected_canonicals
+                            .iter()
+                            .any(|term: &ProtectedTerm| term.canonical == row.term)
+                    {
+                        protected_canonicals.push(ProtectedTerm::new(row.term.clone()));
                     }
                     row.mispronunciations
                         .extend(row.extras.unwrap_or_default().mispronunciations);
@@ -278,8 +319,8 @@ pub(super) struct FuzzyLexicon {
 
 impl FuzzyLexicon {
     pub(super) fn load(custom_path: &Path) -> Self {
-        let custom = RetrievalIndex::new(custom_rules(custom_path).into_iter().flat_map(|rule| {
-            [rule.variant, rule.canonical.clone()]
+        let custom = RetrievalIndex::new(custom_rules(custom_path).iter().flat_map(|rule| {
+            [rule.variant.clone(), rule.canonical.clone()]
                 .into_iter()
                 .filter_map(move |label| RetrievalTerm::new(label, rule.canonical.clone()))
         }));
@@ -377,7 +418,37 @@ impl FuzzyLexicon {
     }
 }
 
-fn custom_rules(path: &Path) -> Vec<Rule> {
+struct CustomRules {
+    path: PathBuf,
+    stamp: Option<(SystemTime, u64)>,
+    rules: Arc<Vec<Rule>>,
+}
+
+static CUSTOM: Mutex<Option<CustomRules>> = Mutex::new(None);
+
+/// The user's dictionary, parsed again only when the file's modification
+/// time or length changes, so an edit still applies to the next label.
+fn custom_rules(path: &Path) -> Arc<Vec<Rule>> {
+    let stamp = fs::metadata(path)
+        .ok()
+        .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+    let mut cache = CUSTOM.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cached) = cache.as_ref()
+        && cached.path == path
+        && cached.stamp == stamp
+    {
+        return Arc::clone(&cached.rules);
+    }
+    let rules = Arc::new(read_custom_rules(path));
+    *cache = Some(CustomRules {
+        path: path.to_path_buf(),
+        stamp,
+        rules: Arc::clone(&rules),
+    });
+    rules
+}
+
+fn read_custom_rules(path: &Path) -> Vec<Rule> {
     let Ok(content) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -417,17 +488,16 @@ fn whole_word_match(text: &str, start: usize, end: usize) -> bool {
 fn rewrite_once(text: &str, custom: &[Rule], bundled: &Bundled) -> String {
     let lower = text.to_lowercase();
     let mut protected_spans = Vec::new();
-    for canonical in &bundled.protected_canonicals {
-        if !lower.contains(&canonical.to_lowercase()) {
+    for protected in &bundled.protected_canonicals {
+        if !lower.contains(&protected.lower) {
             continue;
         }
-        let pattern = regex::escape(canonical);
-        if let Ok(pattern) = RegexBuilder::new(&pattern).case_insensitive(true).build() {
+        if let Some(pattern) = protected.pattern() {
             protected_spans.extend(
                 pattern
                     .find_iter(text)
                     .filter(|found| whole_word_match(text, found.start(), found.end()))
-                    .map(|found| (found.start(), found.end(), canonical)),
+                    .map(|found| (found.start(), found.end(), &protected.canonical)),
             );
         }
     }
@@ -592,14 +662,11 @@ pub(super) fn registered_merges(
                 continue;
             }
             let input = &words[start..=last];
-            if bundled.protected_canonicals.iter().any(|canonical| {
-                if canonical == &rule.canonical {
+            if bundled.protected_canonicals.iter().any(|protected| {
+                if protected.canonical == rule.canonical {
                     return false;
                 }
-                let Ok(pattern) = RegexBuilder::new(&regex::escape(canonical))
-                    .case_insensitive(true)
-                    .build()
-                else {
+                let Some(pattern) = protected.pattern() else {
                     return false;
                 };
                 pattern.find_iter(&text).any(|protected| {
@@ -888,5 +955,32 @@ mod tests {
             rewrite_once("C++ C++code xC++", &rules, &bundled),
             "Cpp C++code xC++"
         );
+    }
+
+    #[test]
+    fn rule_pattern_is_built_once_and_reused() {
+        let rule = Rule::new("lux tree".into(), "Loctree".into(), false, false).unwrap();
+        let first = rule.pattern().unwrap();
+        assert!(std::ptr::eq(first, rule.pattern().unwrap()));
+    }
+
+    #[test]
+    fn custom_dictionary_edit_applies_to_the_next_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        fs::write(
+            &path,
+            "{\"term\":\"Short\",\"mispronunciations\":[\"lux\"]}\n",
+        )
+        .unwrap();
+        assert_eq!(rewrite("The lux works", &path).0, "The Short works");
+        fs::write(
+            &path,
+            "{\"term\":\"Longer\",\"mispronunciations\":[\"lux\"]}\n",
+        )
+        .unwrap();
+        assert_eq!(rewrite("The lux works", &path).0, "The Longer works");
+        fs::remove_file(&path).unwrap();
+        assert_eq!(rewrite("The lux works", &path).0, "The lux works");
     }
 }
