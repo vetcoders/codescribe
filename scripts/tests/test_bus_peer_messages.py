@@ -129,6 +129,31 @@ class PeerSendTests(unittest.TestCase):
                                                   provider="codex", session="anonymous"))
         self.assertEqual(publish.call_count, 0)
 
+    def test_direct_message_to_founder_channel_10_writes_to_channel_10_bus(self):
+        for target in ("10", "founder", "FOUNDER"):
+            with patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+                 patch.object(DEMUX, "emit") as emit_mock:
+                self.assertEqual(DEMUX.send_peer_command(send_args(self.root, "raport dla Foundera", target)), 0)
+            self.assertEqual(publish.call_count, 1)
+            bus, event = publish.call_args.args
+            self.assertEqual(bus, (self.root / "buses" / "channel-10.jsonl").resolve(strict=False))
+            self.assertEqual(event["schema"], DEMUX.AGENT_REPLY_SCHEMA)
+            self.assertEqual(event["peer_to"], "founder")
+            self.assertEqual(event["channel"], "10")
+            self.assertEqual(event["recipients"], [])
+            self.assertEqual(event["sender"]["name"], "vagabond")
+            self.assertEqual(event["sender"]["channel"], "1")
+            self.assertEqual(event["target"], {
+                "mode": "direct", "to": "10", "channel": "10",
+                "recipients": [{"name": "founder", "channel": "10"}],
+            })
+            published = emit_mock.call_args.args[0]
+            self.assertEqual(published["origin_channel"], "10")
+
+    def test_founder_name_is_reserved_for_channel_10(self):
+        with self.assertRaises(ValueError):
+            DEMUX.write_channel_binding(self.root, "5", "Founder", "codex", "s5")
+
 
 class PeerAdmissionTests(unittest.TestCase):
     def peer_event(self, **overrides):

@@ -1507,9 +1507,9 @@ struct OverlayChannelStatusView: View {
         comment: "Drawer preview of the user's direct message: the agent names, then the text")
     }
     guard let sender = message.owner?.name, !sender.isEmpty else { return body }
-    // A peer message records its destination channel; a reply without one
-    // answered the Founder.
-    guard let destination = message.sourceChannel else {
+    // A peer message records its destination channel; a reply without one or
+    // addressed to channel 10 answered the Founder.
+    guard let destination = message.sourceChannel, destination != "10" else {
       return String(
         localized: "\(sender) → You: \(body)",
         comment: "Drawer preview of an agent's reply to the user: the agent, then the text")

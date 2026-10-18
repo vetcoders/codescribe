@@ -5840,11 +5840,12 @@ def send_peer_command(args: argparse.Namespace) -> int:
         state = read_json(path) or {}
         bindings = (state.get("bindings")
                     if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None)
-        if not isinstance(bindings, dict) or not bindings:
+        is_founder_target = target.casefold() in ("10", "founder")
+        if not is_founder_target and (not isinstance(bindings, dict) or not bindings):
             raise ValueError("no channel bindings exist")
         rows: list[tuple[str, dict[str, Any], str]] = []
         sender_channel = None
-        for channel, binding in sorted(bindings.items()):
+        for channel, binding in sorted((bindings or {}).items()):
             if not isinstance(binding, dict):
                 continue
             owner_lease = lease_identifier(str(binding.get("provider") or ""),
@@ -5852,6 +5853,37 @@ def send_peer_command(args: argparse.Namespace) -> int:
             if owner_lease == lease_id:
                 sender_channel = str(channel)
             rows.append((str(channel), binding, owner_lease))
+        identity = os.urandom(12).hex()
+        sender = {"name": sender_name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session, "lease_id": lease_id,
+                  "channel": sender_channel}
+        if is_founder_target:
+            bus = (root / "buses" / "channel-10.jsonl").resolve(strict=False)
+            addressed = {"mode": "direct", "to": "10", "channel": "10",
+                         "recipients": [{"name": "founder", "channel": "10"}]}
+            event = {"schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply",
+                     "emitted_at": utc_now(), "reply_id": identity,
+                     "message_id": identity, "source_event_id": identity,
+                     "name": sender_name,
+                     "provider": args.provider.casefold(),
+                     "provider_session_id": args.session, "lease_id": lease_id,
+                     "text": text, "spoken": False, "association": "unsolicited",
+                     "delivery_id": None, "peer_to": "founder",
+                     "channel": "10", "sender": sender, "recipients": [],
+                     "target": addressed}
+            receipt = publish_reply_event(bus, event, bridge_root=root)
+            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                    for key in ("stream_dev", "stream_inode", "offset", "length"))
+                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                raise ValueError("publication has no durable receipt; do not automatically resend")
+            deliveries = [{"peer": "founder", "channel": "10",
+                           "follower_live": False, "broadcast": "off",
+                           "source": receipt}]
+            emit({"kind": "peer_message_published", "message_id": identity,
+                  "origin_channel": "10", "sender": sender_name,
+                  "target": addressed, "recipients": deliveries})
+            return 0
         if target == "0":
             selected = [(channel, binding) for channel, binding, owner_lease in rows
                         if owner_lease != lease_id]
@@ -5871,10 +5903,6 @@ def send_peer_command(args: argparse.Namespace) -> int:
                         and owner_lease != lease_id]
             if not selected:
                 raise ValueError(f"no other channel is bound to the name {target!r}")
-        identity = os.urandom(12).hex()
-        sender = {"name": sender_name, "provider": args.provider.casefold(),
-                  "provider_session_id": args.session, "lease_id": lease_id,
-                  "channel": sender_channel}
         # Every copy carries the original address and the audience frozen at
         # sending, so a recipient tells a channel-0 broadcast from a message to
         # it alone. `peer_to` stays the routing key of one copy and
@@ -6482,6 +6510,8 @@ def write_channel_binding(
     bus: str | None = None,
 ) -> Path:
     """Claim a channel without replacing another session's routing."""
+    if name.casefold() == "founder":
+        raise ValueError("founder is reserved for channel 10")
     path = root / AUDIENCE_BINDING_FILENAME
     with channel_bindings(root) as bindings:
         requested = {
@@ -6884,6 +6914,8 @@ def attach_command(args: argparse.Namespace) -> int:
 
     root: Path = args.bridge_home
     name = args.name.casefold()
+    if name == "founder":
+        raise ValueError("founder is reserved for channel 10")
     persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
     voice_source = voice_profile_with_source(root, name)[1]
     if persist_voice:
