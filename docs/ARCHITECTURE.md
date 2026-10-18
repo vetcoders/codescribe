@@ -333,15 +333,14 @@ Increase Contrast), the column bounds and the two slots a window may fill.
   `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;
   `.content` (267 / 267 / 360) is the wider column the Agent rail used while
   it carried two-line rows, kept as the other half of the choice.
-- **The toggle** is `csSidebarToggle(expanded:)`: it removes the split view's
-  default item, places one leading toolbar button and binds `⌃⌘S` to the same
-  action. The system's own toggle reaches a SwiftUI `Window` scene (Settings)
-  but not a split view hosted in an AppKit window (Agent), which is why only
-  one of the two windows used to have one. Each window persists its own flag
-  (`Settings.sidebarExpanded.v1`, `AgentChat.sidebarExpanded.v1`); the button,
-  a divider drag and the shortcut all write it.
+- **The toggle** is the split view's own, beside the traffic lights in both
+  windows; `csSidebarToggle(expanded:)` only binds `⌃⌘S` to the same action.
+  Each window persists its own flag (`Settings.sidebarExpanded.v1`,
+  `AgentChat.sidebarExpanded.v1`); the button, a divider drag and the
+  shortcut all write it. A second, hand-placed toolbar button would sit
+  beside the system one, not replace it.
 - **The slots** carry what belongs to a window's function and nothing else.
-  Agent fills the header slot, above the search field, with **New conversation** —
+  Agent fills the header slot, under the search field and above the rows, with **New conversation** —
   the agent's first action, a create glyph and its label on a plain row —
   and has no footer: the reference sidebar ends with its last row, not with
   a pill. Settings fills the footer slot with the health line — a coloured

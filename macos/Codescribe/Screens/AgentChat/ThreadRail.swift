@@ -6,8 +6,8 @@ import SwiftUI
 /// `CSSidebarColumn` owns the column itself — list style, search field,
 /// material, width and the toggle; the Settings sidebar is its reference
 /// (Monika, 2026-10-18). What stays here is what belongs to the Agent
-/// window's function: the thread rows and the New thread action above the
-/// search field.
+/// window's function: the thread rows and the New conversation action
+/// above them.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   @State private var search: String = ""
@@ -95,8 +95,9 @@ struct ThreadRail: View {
     .accessibilityIdentifier("thread-rail-list")
   }
 
-  /// The agent's first action, in the column's top slot directly under the
-  /// traffic lights and above the search field. Quiet by design: a create
+  /// The agent's first action, in the column's top slot: under the system
+  /// search field, which always sits first under the toolbar, and above the
+  /// conversations. Quiet by design: a create
   /// glyph and its label on a plain row, no capsule and nothing to hover
   /// for — it is visible the moment the window opens, and the reference
   /// sidebar has no bottom pill to put it in (Monika, 2026-10-18). Same

@@ -17446,16 +17446,6 @@
         }
       }
     },
-    "Toggle sidebar" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż lub ukryj pasek boczny"
-          }
-        }
-      }
-    },
     "Toggle the full comparison for this correction" : {
       "localizations" : {
         "pl" : {

@@ -40,12 +40,12 @@ extension View {
     )
   }
 
-  /// The window's one sidebar toggle, and ⌃⌘S for the same action.
+  /// ⌃⌘S for the split view's own sidebar toggle.
   ///
-  /// The system's own toggle reaches a SwiftUI `Window` scene (Settings) but
-  /// not a split view hosted in an AppKit window (Agent), which is why only
-  /// one of the two windows had one. Removing the default item and placing
-  /// this one leaves both windows with the same single control.
+  /// Both windows keep the system toggle beside the traffic lights: it
+  /// reaches the AppKit-hosted Agent window as well as the Settings scene. A
+  /// second, hand-placed toolbar button beside it was a duplicate on
+  /// 2026-10-18 and is gone; this modifier only lends the shortcut.
   func csSidebarToggle(expanded: Binding<Bool>) -> some View {
     modifier(CSSidebarToggle(expanded: expanded))
   }
@@ -60,7 +60,8 @@ extension View {
 /// from the bottom edge up through the titlebar; and the column's bounds.
 ///
 /// The two slots are where a window keeps what belongs to its own function
-/// and nothing else: `header` above the search field (Agent's New thread),
+/// and nothing else: `header` under the search field, above the rows
+/// (Agent's New conversation),
 /// `footer` pinned under the list (Settings' health line). Either may be
 /// left out, and the column then has no such area at all.
 struct CSSidebarColumn<Content: View, Header: View, Footer: View>: View {
@@ -96,11 +97,10 @@ struct CSSidebarColumn<Content: View, Header: View, Footer: View>: View {
       .scrollContentBackground(.hidden)
       .searchable(text: $search, placement: .sidebar, prompt: prompt)
       .onSubmit(of: .search) { onSearchSubmit() }
-      .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-      // Outside `searchable`, so the slot sits above the system search field
-      // rather than between it and the rows: the window's own first action
-      // is the first thing under the traffic lights (Monika, 2026-10-18).
-      .safeAreaInset(edge: .top, spacing: 0) { header }
+      .csSidebarSlot(.bottom) { footer }
+      // The system search field stays first under the toolbar, so the header
+      // lands between it and the rows.
+      .csSidebarSlot(.top) { header }
       // On the List, not a stack around it: the list runs through the
       // titlebar, so the material does too.
       .background { CSSidebarMaterial().ignoresSafeArea() }
@@ -109,7 +109,7 @@ struct CSSidebarColumn<Content: View, Header: View, Footer: View>: View {
 }
 
 extension CSSidebarColumn where Header == EmptyView {
-  /// A column with no action of its own above the search field.
+  /// A column with no action of its own above its rows.
   init(
     width: CSSidebarWidth,
     search: Binding<String>,
@@ -152,6 +152,23 @@ extension CSSidebarColumn where Footer == EmptyView {
   }
 }
 
+extension View {
+  /// A slot the window left empty adds no inset at all. A `safeAreaInset`
+  /// around an `EmptyView` claims the whole remaining height of the column:
+  /// on 2026-10-18 it pushed every Settings row under the health footer
+  /// (683 pt of top inset) and gave the Agent list 593 pt of bottom inset.
+  @ViewBuilder
+  fileprivate func csSidebarSlot<Slot: View>(
+    _ edge: VerticalEdge, @ViewBuilder _ slot: () -> Slot
+  ) -> some View {
+    if Slot.self == EmptyView.self {
+      self
+    } else {
+      safeAreaInset(edge: edge, spacing: 0, content: slot)
+    }
+  }
+}
+
 /// Sidebar visibility for a window's `NavigationSplitView`. The toggle, a
 /// divider drag and ⌃⌘S all write this one flag, so every path persists the
 /// same choice and both windows behave alike.
@@ -164,24 +181,14 @@ enum CSSidebarVisibility {
   }
 }
 
-/// The leading toolbar toggle plus its key equivalent. The split view's own
-/// item carries no key equivalent and the accessory app has no View menu to
-/// lend one, so the zero-size button behind the content holds ⌃⌘S.
+/// The key equivalent for the split view's own toggle. That item carries
+/// none and the accessory app has no View menu to lend one, so the zero-size
+/// button behind the content holds ⌃⌘S.
 private struct CSSidebarToggle: ViewModifier {
   @Binding var expanded: Bool
 
   func body(content: Content) -> some View {
     content
-      .toolbar(removing: .sidebarToggle)
-      .toolbar {
-        ToolbarItem(placement: .navigation) {
-          Button(action: toggle) {
-            Label("Toggle sidebar", systemImage: "sidebar.leading")
-          }
-          .help("Toggle sidebar")
-          .accessibilityIdentifier("sidebar-toggle")
-        }
-      }
       .background {
         Button(action: toggle) {
           EmptyView()
