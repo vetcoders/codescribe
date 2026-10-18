@@ -174,7 +174,7 @@ struct OnboardingView: View {
         }
         Spacer(minLength: 0)
       }
-      ProgressView(value: Double(model.stepIndex), total: Double(max(1, model.totalSteps - 1)))
+      ProgressView(value: model.progressFraction)
         .controlSize(.small)
         .accessibilityLabel("Setup progress")
     }
