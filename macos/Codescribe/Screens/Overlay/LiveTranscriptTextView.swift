@@ -158,6 +158,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.hasVerticalScroller = true
     scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
     scrollView.autohidesScrollers = true
+    // `autohidesScrollers` alone only hides a scroller with nothing to scroll:
+    // with a mouse attached the system hands this view the legacy style and a
+    // thick grey bar stood down the transcript's edge for the whole take
+    // (Founder, 2026-10-18). The overlay style fades in while scrolling and out
+    // after it; the coordinator re-pins it when the preference changes.
+    scrollView.scrollerStyle = .overlay
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView
     context.coordinator.attach(to: scrollView)
@@ -426,6 +432,18 @@ struct LiveTranscriptTextView: NSViewRepresentable {
             self?.reportScrollEnd()
           }
         },
+        // AppKit re-reads the system "Show scroll bars" preference whenever it
+        // changes and would hand the transcript its legacy scroller straight
+        // back. The notification carries no object, so this one is global.
+        center.addObserver(
+          forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+          object: nil,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.pinOverlayScrollers()
+          }
+        },
       ]
     }
 
@@ -433,6 +451,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
       scrollObservers.removeAll()
       observedScrollView = nil
+    }
+
+    private func pinOverlayScrollers() {
+      guard let observedScrollView else { return }
+      observedScrollView.scrollerStyle = .overlay
+      observedScrollView.autohidesScrollers = true
     }
 
     func userScrollBegan() {

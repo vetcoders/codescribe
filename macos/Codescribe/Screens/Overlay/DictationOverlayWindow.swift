@@ -152,9 +152,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// height when the controller still owns automatic sizing.
   private func expandedPresentationSize() -> NSSize {
     let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
+    // Both axes meet the floor: a size remembered before the floor was raised
+    // would otherwise unfold narrower than the header's ideal width.
+    let restingWidth = max(expanded.width, DictationOverlayWindow.minSize.width)
     let restingHeight = max(expanded.height, DictationOverlayWindow.minSize.height)
-    let qualified = qualifiedExpandedHeight?(expanded.width) ?? restingHeight
-    return NSSize(width: expanded.width, height: max(restingHeight, qualified))
+    let qualified = qualifiedExpandedHeight?(restingWidth) ?? restingHeight
+    return NSSize(width: restingWidth, height: max(restingHeight, qualified))
   }
 
   private func completeFrameTransition(generation: UInt64) {
@@ -817,8 +820,21 @@ enum DictationOverlayWindow {
   /// this floor, but paints the current form at its floor until release.
   /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
   /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
-  /// lines) without the old action-layer mass. Width floor (320) is unchanged.
-  static let minSize = NSSize(width: 320, height: 260)
+  /// lines) without the old action-layer mass.
+  ///
+  /// Width 320 → 360 (Founder, 2026-10-18: at 320 the session counter broke
+  /// into one glyph per line and the agent pills swallowed the messages). The
+  /// floor is the header's own ideal width at text scale 1.0, expanded density:
+  /// 32 outer padding (`16 - clipInset` + `clipInset` per side) + 3 × 10 row
+  /// spacing + 89 leading (9 pt close dot + 5 + ~75 pt `codescribe` wordmark at
+  /// `CSFont.ui(15, .bold)` with −0.3 tracking) + 12 waveform minimum
+  /// (`OverlayHeaderDensity.waveformMinWidth`) + 47 session counter (`h:mm:ss`
+  /// at `CSFont.mono(11)`, a 0.6 em advance) + 141 trailing (three 22 pt glyph
+  /// buttons + the 51 pt recording pair + 3 × 8 spacing) = 351, rounded up to
+  /// 360 for the close dot's hover growth. The pill stack's own footprint —
+  /// `OverlayAgentDrawerLayout.pillWidth` 224 + its 20 pt trailing inset + the
+  /// body's 20 pt gutter = 264 — clears the same floor.
+  static let minSize = NSSize(width: 360, height: 260)
   /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
   /// Founder spec: the resting state is a horizontal bar (waveform + a few
   /// transcript lines), never a portrait column. Resizing persists, so users

@@ -577,7 +577,7 @@ struct DictationOverlayView: View {
             mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
         {
           Text(label)
-            .csMono(10, .medium)
+            .csFont(10, .medium)
             .foregroundStyle(palette.processingStatus.color)
             .accessibilityIdentifier("overlay-finishing")
             .allowsHitTesting(false)
@@ -682,7 +682,7 @@ struct DictationOverlayView: View {
                 state.continueMaxConsultationInChat()
               }
               .buttonStyle(.plain)
-              .csMono(10, .medium)
+              .csFont(10, .medium)
               .foregroundStyle(palette.primaryText.color)
               .padding(.vertical, 2)
               .accessibilityIdentifier("overlay-continue-max-chat")
@@ -701,7 +701,7 @@ struct DictationOverlayView: View {
           // The folded bar keeps its height; the passive wait label uses its
           // bottom center without touching the header timer or capture state.
           Text(label)
-            .csMono(10, .medium)
+            .csFont(10, .medium)
             .foregroundStyle(palette.processingStatus.color)
             .padding(.horizontal, 4)
             .background(palette.desktopBackground.color, in: Capsule())
@@ -1138,6 +1138,13 @@ struct DictationOverlayView: View {
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(palette.mutedText.color)
           .monospacedDigit()
+          // A clock is read in one line or not at all. Without this the HStack
+          // squeezed the counter before the waveform and broke `00:20` into one
+          // glyph per line at the window's floor (Founder screenshot,
+          // 2026-10-18 11:10). The waveform's negative layout priority makes it
+          // the item that yields instead.
+          .lineLimit(1)
+          .fixedSize()
       }
       .accessibilityIdentifier("overlay-session-timer")
       .accessibilityLabel("Recording time")
@@ -1200,7 +1207,7 @@ struct DictationOverlayView: View {
           ? { openMaxSettings(.creator, anchor: .maxConsultation) } : nil
       ) {
         Text(message)
-          .csMono(10, .medium)
+          .csFont(10, .medium)
           .lineLimit(1)
           .truncationMode(.tail)
           .foregroundStyle(palette.primaryText.color)
@@ -1220,6 +1227,7 @@ struct DictationOverlayView: View {
               Text(message).fixedSize(horizontal: false, vertical: true)
             }
           }
+          .overlayAutohidingScroller()
         }
         .frame(maxHeight: 320)
       }
@@ -1332,7 +1340,7 @@ struct DictationOverlayView: View {
           Text("Ledger projection")
         }
       }
-      .csMono(10, .semibold)
+      .csFont(10, .semibold)
       .foregroundStyle(
         state.isRevisionDraftDirty ? CSColor.terracotta : palette.mutedText.color
       )
@@ -1347,7 +1355,7 @@ struct DictationOverlayView: View {
         ?? state.recoveryFailure
       {
         Label(error, systemImage: "exclamationmark.triangle")
-          .csMono(10, .medium)
+          .csFont(10, .medium)
           .foregroundStyle(CSColor.terracotta)
           .lineLimit(2)
           .accessibilityIdentifier("overlay-revision-error")
@@ -1370,11 +1378,11 @@ struct DictationOverlayView: View {
           .foregroundStyle(palette.bodyText.color)
           .fixedSize(horizontal: false, vertical: true)
         Text("No transcript was produced for this take.")
-          .csMono(11, .medium)
+          .csFont(11, .medium)
           .foregroundStyle(palette.mutedText.color)
           .fixedSize(horizontal: false, vertical: true)
         Text(state.currentTakeRecoveryDetail)
-          .csMono(11, .medium)
+          .csFont(11, .medium)
           .foregroundStyle(palette.mutedText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1408,7 +1416,7 @@ struct DictationOverlayView: View {
           .foregroundStyle(palette.bodyText.color)
           .fixedSize(horizontal: false, vertical: true)
           Text(state.errorLifecycleDetail)
-            .csMono(11, .medium)
+            .csFont(11, .medium)
             .foregroundStyle(palette.mutedText.color)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -1416,7 +1424,7 @@ struct DictationOverlayView: View {
       }
       if state.errorDiagnosticDetail != nil {
         Text(state.currentTakeRecoveryDetail)
-          .csMono(11, .medium)
+          .csFont(11, .medium)
           .foregroundStyle(palette.mutedText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1445,7 +1453,7 @@ struct DictationOverlayView: View {
           .foregroundStyle(CSColor.textBody)
           .fixedSize(horizontal: false, vertical: true)
         Text(status.message)
-          .csMono(11, .medium)
+          .csFont(11, .medium)
           .foregroundStyle(CSColor.textFaint)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1558,17 +1566,17 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
   ) -> some View {
     Text(title)
       .font(.headline)
-    overlayPreviewCanvas(width: 320, height: 260) {
+    overlayPreviewCanvas(width: 360, height: 260) {
       DictationOverlayView(state: light)
     }
     .preferredColorScheme(.light)
-    overlayPreviewCanvas(width: 320, height: 260) {
+    overlayPreviewCanvas(width: 360, height: 260) {
       DictationOverlayView(state: dark)
     }
     .preferredColorScheme(.dark)
   }
 
-  #Preview("Dock matrix · 320 pt") {
+  #Preview("Dock matrix · 360 pt") {
     ScrollView {
       VStack(spacing: CSSpace.section) {
         dockPreviewRow("Listening", light: .previewListening(), dark: .previewListening())
@@ -1611,7 +1619,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     // Pinned to the window's min content size so this preview doubles as the
     // min-size regression check: "transcribing…" fills the main status slot and
     // the transcript reserves ~2–3 lines instead of collapsing at the floor.
-    overlayPreviewCanvas(width: 320, height: 260) {
+    overlayPreviewCanvas(width: 360, height: 260) {
       DictationOverlayView(state: .previewTranscribing())
     }
   }
@@ -1620,7 +1628,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     // Session ended without usable text: dedicated notice body, no
     // Copy/Format/Send, only Close. Pinned to the min content size so it also
     // guards the floor layout for this outcome.
-    overlayPreviewCanvas(width: 320, height: 260) {
+    overlayPreviewCanvas(width: 360, height: 260) {
       DictationOverlayView(state: .previewNoSpeech())
     }
   }
