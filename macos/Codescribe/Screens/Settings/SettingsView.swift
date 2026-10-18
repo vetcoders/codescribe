@@ -147,6 +147,9 @@ struct SettingsView: View {
   /// row per section — a pane's parts are tabs inside the pane, not child rows.
   private var sidebar: some View {
     List(selection: $sidebarSelection) {
+      // Untagged and zero-height: it carries the shared scroller policy into
+      // the list's own scroll view (Founder, 2026-10-18).
+      CSScrollerPinRow()
       ForEach(SettingsSectionGroup.allCases) { group in
         let items = matchedSections.filter { $0.group == group }
         if !items.isEmpty {
@@ -210,13 +213,13 @@ struct SettingsView: View {
           ScrollView {
             untabbedDetail
               .frame(maxWidth: .infinity, alignment: .leading)
+              // `.scrollIndicators(.hidden)` stood here and could not keep its
+              // promise: with a mouse attached the system still handed this
+              // pane the legacy bar (Founder, 2026-10-18). `CSScrollerPin` is
+              // the one owner of the policy.
+              .csAutohidingScrollers()
           }
           .scrollContentBackground(.hidden)
-          // Overlay-style indicators only, independent of the system "Show
-          // scroll bars: Always" preference — same intent as the AppKit
-          // composer's `scroll.scrollerStyle = .overlay`
-          // (OverlayConversationComposer.swift).
-          .scrollIndicators(.hidden)
         }
       }
       .onChange(of: pendingScrollAnchor) { _, anchor in

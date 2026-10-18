@@ -189,6 +189,7 @@ struct Composer: View {
               .foregroundStyle(CSColor.textTertiary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
+              .csAutohidingScrollers()
           }
           .frame(maxHeight: 160)
           .accessibilityIdentifier("composer.recovery.text." + document.id)
@@ -318,6 +319,7 @@ struct Composer: View {
         .fixedSize(horizontal: false, vertical: true)
       ScrollView {
         VStack(alignment: .leading, spacing: 0) { content() }
+          .csAutohidingScrollers()
       }
     }
     .frame(maxHeight: 190)
@@ -543,6 +545,9 @@ struct Composer: View {
         }
       }
       .padding(.horizontal, 2)
+      // The chips keep their own sideways scrolling; the pin only makes sure
+      // a scroller the system forces back is the overlay one.
+      .csAutohidingScrollers(.includesHorizontal)
     }
     .frame(maxHeight: 30)
     .sheet(item: $previewAttachment) { attachment in

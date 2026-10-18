@@ -72,6 +72,7 @@ struct DictionaryWordPins: View {
                   Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer)"))
               }
             }
+            .csAutohidingScrollers()
           }
           .frame(maxHeight: 280)
           if let pin = snapshot.pins.first(where: { $0.id == selected }) {

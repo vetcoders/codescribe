@@ -30,12 +30,11 @@ struct SettingsTabbedPane<Content: View>: View {
         .padding(.horizontal, CSSpace.xl)
         .padding(.vertical, CSSpace.section)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // `.scrollIndicators(.hidden)` stood on the scroll view and could not
+        // keep its promise with a mouse attached (Founder, 2026-10-18).
+        .csAutohidingScrollers()
       }
       .scrollContentBackground(.hidden)
-      // Overlay-style indicators only, independent of the system "Show scroll
-      // bars: Always" preference — same intent as the AppKit composer's
-      // `scroll.scrollerStyle = .overlay` (OverlayConversationComposer.swift).
-      .scrollIndicators(.hidden)
       // A new identity per tab resets the scroll offset, but it also makes the
       // switch an insert-and-remove, which SwiftUI crossfades by default and
       // paints both tabs over each other for a frame or two. Swap outright.

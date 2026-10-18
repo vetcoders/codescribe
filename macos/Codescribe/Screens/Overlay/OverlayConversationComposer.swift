@@ -69,6 +69,9 @@ struct OverlayConversationComposer: View {
               OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
             }
           }
+          // The chips keep their own sideways scrolling; the pin only makes
+          // sure a scroller the system forces back is the overlay one.
+          .csAutohidingScrollers(.includesHorizontal)
         }
         .frame(maxHeight: 30)
         .accessibilityIdentifier("overlay-conversation-attachments")
@@ -276,8 +279,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     let scroll = MessageScrollView()
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
-    scroll.scrollerStyle = .overlay
-    scroll.autohidesScrollers = true
+    // The scroller policy lives in `CSScrollerPin` (Founder, 2026-10-18); the
+    // coordinator keeps it pinned across "Show scroll bars" changes.
+    context.coordinator.scrollerPin.attach(to: scroll)
     scroll.borderType = .noBorder
     let editor = MessageTextView()
     editor.isRichText = false
@@ -304,6 +308,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
+  }
+
+  static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    coordinator.scrollerPin.detach()
   }
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -360,6 +368,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     var parent: ConversationMessageField
     var applyingExternalText = false
     var focusRevision: UInt64 = 0
+    let scrollerPin = CSScrollerPin()
     private var pendingHeight: CGFloat?
     private var heightUpdateScheduled = false
     init(_ parent: ConversationMessageField) { self.parent = parent }

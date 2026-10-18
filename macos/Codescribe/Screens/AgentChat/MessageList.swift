@@ -308,6 +308,7 @@ struct MessageList: View {
               _ = followState.handle(event)
             }
           )
+          .csAutohidingScrollers()
         }
         .scrollContentBackground(.hidden)
         // The document height is exact (see `emptyStateHeight`), so this only
@@ -962,6 +963,9 @@ struct AttachmentPreviewSheet: View {
               )
               .padding(Self.imageInset)
               .frame(maxWidth: .infinity, maxHeight: .infinity)
+              // A zoomed picture scrolls on both axes; only the style is
+              // pinned (Founder, 2026-10-18).
+              .csAutohidingScrollers(.includesHorizontal)
           }
           .frame(minHeight: 280, maxHeight: 480)
           .background(Color.primary.opacity(0.04))

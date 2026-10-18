@@ -1719,8 +1719,10 @@ struct OverlayAgentPillStack: View {
         .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
       )
       .padding(.vertical, 2)
+      // `.scrollIndicators(.hidden)` stood on the scroll view and still let
+      // the legacy bar through with a mouse attached (Founder, 2026-10-18).
+      .csAutohidingScrollers()
     }
-    .scrollIndicators(.hidden)
     .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-stack")
@@ -1945,7 +1947,7 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
               } action: {
                 contentHeight = $0
               }
-              .overlayAutohidingScroller()
+              .csAutohidingScrollers()
           }
           .frame(height: viewportHeight)
           .clipped()
