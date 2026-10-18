@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
 - An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
+- `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
 
 ## [0.17.1] - 2026-10-17
 
