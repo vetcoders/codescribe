@@ -382,9 +382,11 @@ Setup, its completion summary and the provider cards distinguish these states:
 | Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                    |
 
 An account and an API key are alternatives: one of them is enough, and setup
-says so. Whichever is missing shows as a neutral grey **Optional** once the
-other is configured, and stays neutral when neither is — the provider step is
-skippable and a key can be added later.
+says so. In setup, whichever is missing reads a neutral grey **Optional** once
+the other is configured. On the provider card the key reads **Optional** once
+the account is connected, and the account line reads **Not connected** in the
+same grey when only the key is set. A missing credential stays neutral even when
+neither is set: the provider step is skippable and a key can be added later.
 
 A connected ChatGPT account supplies account credentials for supported Responses
 requests in both Agent and Formatting. It does not supply a provider API key for
