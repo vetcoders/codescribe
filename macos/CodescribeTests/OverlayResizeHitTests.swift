@@ -671,7 +671,7 @@ final class OverlayResizeHitTests: XCTestCase {
     // Narrow windows: the roster is the pill stack under the name pill, fixed
     // to the pill width at scale 1 (mockup, Founder 2026-10-16).
     for size in [
-      CGSize(width: 320, height: 260), CGSize(width: 470, height: 280),
+      DictationOverlayWindow.minSize, CGSize(width: 470, height: 280),
       CGSize(width: 700, height: 400),
     ] {
       let state = OverlayState.previewFormatted()
@@ -799,7 +799,7 @@ final class OverlayResizeHitTests: XCTestCase {
       ]))
     let conversation = OverlayConversation(
       id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
-    for width: CGFloat in [320, 532] {
+    for width: CGFloat in [DictationOverlayWindow.minSize.width, 532] {
       let state = OverlayState()
       state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
       state.selectConversation(conversation.id)
@@ -837,7 +837,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testMicrophoneHitRegionSurvivesBothHeaderWidths() throws {
-    for width: CGFloat in [470, 320] {
+    for width: CGFloat in [470, DictationOverlayWindow.minSize.width] {
       let state = OverlayState()
       let panel = try XCTUnwrap(
         DictationOverlayWindow.make(
