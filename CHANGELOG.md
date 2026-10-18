@@ -466,6 +466,7 @@ configuration loading remain under investigation.
 
 ### Fixed
 
+- A Codescribe plugin wake whose notice was lost no longer leaves its message silent: a delivery still unacknowledged ten minutes after its announcement wakes the agent once more (`codescribe_mailbox_reminder`), and the six-hour idle receipt lists deliveries still unacknowledged instead of saying no message arrived.
 - **Latched paste target never yields to a foreign frontmost app.** `execute_clipboard_paste` follows the throne law `clipboard_paste_may_post`: a latched target must confirm focus or be observed frontmost; the external-frontmost fallback (2fb2bd8ec) now applies only to an Insert with no latch. Canary finding P1-01 (2026-08-24) closed.
 
 - **Repeated speech is no longer deleted by string equality.** Light+ stopped
