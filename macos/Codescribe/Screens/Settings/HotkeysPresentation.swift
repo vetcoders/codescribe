@@ -217,7 +217,8 @@ extension CsHotkeyConflict {
     if !blocking {
       return String(
         localized: "settings.shortcuts.note.fnTapOwnedByMacos",
-        defaultValue: "Fn is also configured in macOS. Codescribe may capture its short presses.",
+        defaultValue:
+          "A short Fn press opens the macOS emoji picker or its dictation. Codescribe takes that press first, so the macOS one may not open.",
         comment: "Shortcuts screen: informational note about macOS, never an error")
     }
     switch message {
