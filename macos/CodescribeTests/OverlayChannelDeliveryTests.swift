@@ -727,6 +727,72 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       initial.conversations.first?.messages.map(\.text))
   }
 
+  /// Sample 2026-10-18 on div0: a channel-0 take is projected on every
+  /// recipient's bus, while each ACK names its owner's bus. More of those
+  /// foreign receipts than the 256-entry parse cache were reopened and
+  /// reparsed on every 500 ms poll.
+  func testForeignAcknowledgmentsAreNotReparsedUntilTheyChange() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var peer = fixture.recipient()
+    peer["lease_id"] = String(repeating: "e", count: 32)
+    peer["provider_session_id"] = "peer-session"
+    peer["bus"] = fixture.root.appendingPathComponent("buses/channel-2.jsonl").path
+    peer["channel"] = "2"
+    peer["name"] = "jamie"
+    var rows: [[String: Any]] = []
+    for sequence in 1...200 {
+      var row = fixture.seal(sequence)
+      row["recipients"] = [fixture.recipient(), peer]
+      rows.append(row)
+      try fixture.append(row)
+    }
+    var projection = OverlayChannelDelivery.Bus()
+    for row in rows { projection.consume(row) }
+    var coordinates: [String: OverlayConversationOwner] = [:]
+    for _ in 0..<4 {
+      for coordinate in projection.receiptCoordinates() {
+        coordinates[coordinate.owner.leaseID + "/" + coordinate.delivery] = coordinate.owner
+      }
+    }
+    XCTAssertEqual(coordinates.count, 400)
+    let foreign = fixture.root.appendingPathComponent("foreign.jsonl").path
+    for (file, owner) in coordinates {
+      let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try fixture.write(
+        [
+          "lease_id": owner.leaseID, "delivery_id": url.deletingPathExtension().lastPathComponent,
+          "bus": foreign,
+        ], to: url)
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    // 128 coordinates per tick: four polls read every receipt once.
+    for _ in 0..<4 { _ = try await reader.readSnapshot() }
+    let opens = await reader.metadataFileOpens
+    for _ in 0..<8 { _ = try await reader.readSnapshot() }
+    let steadyOpens = await reader.metadataFileOpens
+    XCTAssertEqual(steadyOpens, opens, "An unchanged foreign ACK is not reopened every poll")
+    // Positive control: the same receipt rewritten for this bus settles it.
+    let (file, owner) = try XCTUnwrap(
+      coordinates.first { $0.value.leaseID == Fixture.leaseID })
+    let delivery = String(file.split(separator: "/").last ?? "")
+    var envelope = fixture.recipient()
+    envelope.merge(["kind": "seal", "delivery_id": delivery]) { _, new in new }
+    try fixture.write(
+      [
+        "lease_id": owner.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ], to: fixture.root.appendingPathComponent("acknowledgments/\(file).json"))
+    var settled: OverlayConversationRecipient?
+    for _ in 0..<4 {
+      settled = try await reader.readSnapshot().conversations.flatMap(\.messages)
+        .flatMap(\.recipients).first { $0.owner.id == owner.id && $0.deliveryID == delivery }
+    }
+    XCTAssertEqual(settled?.acknowledged, true, "A changed receipt is read again")
+  }
+
   /// Screen recording 2026-10-13 09:46: a test host reading the live agent
   /// bridge drew a second overlay with the real conversations during a take.
   func testTestHostNeverResolvesTheLiveRuntime() throws {

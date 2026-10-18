@@ -56,6 +56,14 @@ actor OverlayChannelDeliveryReader {
   private var pinnedCacheBytes = 0
   private static let pinnedCacheBudget = 8 << 20
   private static let pinnedCacheEntries = 24
+  /// Receipt files a bus already read without any projection change, keyed by
+  /// bus and receipt path, valued by file stamp. A channel-0 take is projected
+  /// on every recipient's bus, but each acknowledgment names its owner's bus,
+  /// so the other buses can never settle it. On div0 about 1,500 such files
+  /// outgrew the receipt cache and were reopened and reparsed every 500 ms, a
+  /// quarter of the app's busy samples (sample 2026-10-18).
+  private var unchangedReceipts: [String: MetadataObjectStamp] = [:]
+  private static let unchangedReceiptEntries = 1 << 14
   /// Conversation lists actually built. An idle poll reuses the previous list:
   /// rebuilding and re-sorting unchanged history every 500 ms held two reader
   /// threads at ~55 % of a core (sample of build 1004, 2026-10-14).
@@ -312,32 +320,28 @@ actor OverlayChannelDeliveryReader {
       let wakeups = root.path + "/wakeups/"
       let acknowledgments = root.path + "/acknowledgments/"
       let skips = root.path + "/broadcast-skipped/"
+      let busPath = bus.path
       for (owner, delivery, accepted, broadcast) in cursor.projection.receiptCoordinates() {
         guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
           continue
         }
+        let file = owner.leaseID + "/" + delivery + ".json"
         if !accepted {
-          let wakeup = URL(
-            fileURLWithPath: wakeups + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
-          if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+          observeReceipt(atPath: wakeups + file, busPath: busPath, in: &cursor.projection) {
+            $0.observeAcceptance($1)
+          }
         }
         // Only an unaccepted channel-0 delivery can have been skipped; a
         // recorded skip drops the coordinate from the next poll. The
         // acknowledgment is still read below: a skip file naming another
         // owner marks nothing and must not hide a real ACK (Lena, 2026-10-17).
         if broadcast && !accepted {
-          let skip = URL(
-            fileURLWithPath: skips + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
-          if let receipt = try? object(at: skip) {
-            cursor.projection.observeBroadcastSkip(receipt, owner: owner, delivery: delivery)
+          observeReceipt(atPath: skips + file, busPath: busPath, in: &cursor.projection) {
+            $0.observeBroadcastSkip($1, owner: owner, delivery: delivery)
           }
         }
-        let acknowledgment = URL(
-          fileURLWithPath: acknowledgments + owner.leaseID + "/" + delivery + ".json",
-          isDirectory: false)
-        if let receipt = try? object(at: acknowledgment) {
-          cursor.projection.observeAcknowledgment(
-            receipt, owner: owner, delivery: delivery, busPath: bus.path)
+        observeReceipt(atPath: acknowledgments + file, busPath: busPath, in: &cursor.projection) {
+          $0.observeAcknowledgment($1, owner: owner, delivery: delivery, busPath: busPath)
         }
       }
       buses[bus] = cursor
@@ -495,6 +499,32 @@ actor OverlayChannelDeliveryReader {
       result.playback = playback
     }
     return result
+  }
+
+  /// Applies one receipt file to a bus projection. An absent file costs one
+  /// `fstatat`. A file this bus already read without any projection change is
+  /// skipped until its stamp changes: every observer bumps the projection
+  /// revision when it changes state, and its outcome depends only on the
+  /// receipt, the coordinate encoded in the path, and the bus.
+  private func observeReceipt(
+    atPath path: String, busPath: String, in projection: inout OverlayChannelDelivery.Bus,
+    _ observe: (inout OverlayChannelDelivery.Bus, [String: Any]) -> Void
+  ) {
+    var metadata = stat()
+    guard fstatat(AT_FDCWD, path, &metadata, 0) == 0 else { return }
+    let stamp = MetadataObjectStamp(metadata)
+    let key = busPath + "\0" + path
+    guard unchangedReceipts[key] != stamp,
+      let receipt = try? object(at: URL(fileURLWithPath: path, isDirectory: false))
+    else { return }
+    let revision = projection.revision
+    observe(&projection, receipt)
+    if projection.revision != revision {
+      unchangedReceipts.removeValue(forKey: key)
+    } else {
+      if unchangedReceipts.count >= Self.unchangedReceiptEntries { unchangedReceipts.removeAll() }
+      unchangedReceipts[key] = stamp
+    }
   }
 
   private func pinsMetadata(_ url: URL) -> Bool {
