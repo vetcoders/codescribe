@@ -1212,7 +1212,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // carries the close button.
     XCTAssertTrue(header.contains("Wordmark("))
     XCTAssertTrue(
-      try source(at: "Codescribe/DesignSystem/Components.swift")
+      try self.source(at: "Codescribe/DesignSystem/Components.swift")
         .contains("Text(verbatim: \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
