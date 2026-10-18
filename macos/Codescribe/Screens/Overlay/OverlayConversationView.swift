@@ -107,8 +107,13 @@ struct OverlayConversationView: View {
   private var followsLatest: Bool { scrollFollow.followingLive }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
+  /// The window bound keeps a margin on the far side so leading and trailing
+  /// bubbles stay told apart; at 0.82 that margin was a sixth of the column
+  /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
+  /// 0.92 of the text column is the same cue at a tenth of the width. The
+  /// absolute 660 pt is a reading measure, not a margin, and does not move.
   static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
-    max(0, min(660 * textScale, (contentWidth - 40) * 0.82))
+    max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
   }
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.

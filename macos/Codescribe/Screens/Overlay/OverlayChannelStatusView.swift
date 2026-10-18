@@ -742,7 +742,7 @@ struct OverlayChannelStatusView: View {
           .accessibilityHidden(true)
       }
     } content: { rowFocus in
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 6) {
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
           onSelectConversation != nil
         {
@@ -764,8 +764,8 @@ struct OverlayChannelStatusView: View {
           )
           // The shared channel is a roster row: the same padding, the same
           // selection mark and the same hover as the agents under it.
-          .padding(.vertical, 4)
-          .padding(.horizontal, 6)
+          .padding(.vertical, 3)
+          .padding(.horizontal, 5)
           .modifier(
             OverlayRosterRowSelection(
               palette: palette, selected: selectedConversationID == broadcast.id)
@@ -928,8 +928,8 @@ struct OverlayChannelStatusView: View {
         }
       }
     )
-    .padding(.vertical, 4)
-    .padding(.horizontal, 6)
+    .padding(.vertical, 3)
+    .padding(.horizontal, 5)
     .modifier(
       OverlayRosterRowSelection(
         palette: palette,
@@ -962,14 +962,16 @@ struct OverlayChannelStatusView: View {
   /// time; the provider descriptor; a two-line preview that names who
   /// addressed whom; one state line. The badge counts replies the Founder has
   /// not opened, the state line carries the agent's receipts, so the two
-  /// never mix.
+  /// never mix. The five lines are a budget, not a shape: they sit on one
+  /// leading, so the card stays dense beside the conversation it steals
+  /// width from (Founder, 2026-10-18, on the drawer's padding).
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
     conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind,
     receiptText: String? = nil
   ) -> some View {
-    HStack(alignment: .top, spacing: 7) {
+    HStack(alignment: .top, spacing: 6) {
       OverlayAgentStatusDot(kind: dot, palette: palette)
         .padding(.top, 5 * textScale)
         .accessibilityLabel(
@@ -982,7 +984,7 @@ struct OverlayChannelStatusView: View {
           statusChannel.map { "overlay-channel-delivery-\($0.channel)" }
             ?? "overlay-channel-delivery"
         )
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 1) {
         HStack(spacing: 6) {
           // Maciej 2026-10-17: names were cut to "6…r" in the sidebar because
           // the fixed-size time won the squeeze. The name is offered room
