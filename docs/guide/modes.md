@@ -74,7 +74,7 @@ Notes:
 - Auto‑paste: **OFF** (agent answers in the overlay)
 - AI: **always on** (assistive model)
 - Selection: best‑effort capture; if selection is present, the agent is instructed to operate **only** on the selected text
-- Threads: use **New thread** in the overlay to reset context
+- Conversations: use **New conversation** in the overlay to reset context
 
 ---
 

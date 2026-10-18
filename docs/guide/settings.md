@@ -882,7 +882,7 @@ word. Only the two buttons are red.
   API keys from Keychain_ (not recoverable from Trash) and _Also reset my base
   prompts_ — `assistive.txt`, `formatting.txt`, `formatting-smart.txt` and
   `formatting-max.txt`, all four named on the checkbox and in the confirmation.
-- **New agent context**: Chat Overlay → **New thread**
+- **New agent context**: Chat Overlay → **New conversation**
 - **Reset prompts**: Settings → **Agent → Prompts** → **File details** →
   **Restore default**
 
