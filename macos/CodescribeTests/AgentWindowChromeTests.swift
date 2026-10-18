@@ -130,7 +130,7 @@ final class AgentWindowChromeTests: XCTestCase {
   /// SwiftUI scroll edge effect under its toolbar (probe 2026-10-14), so the
   /// header is the `CSDetailHeaderFade` plane on each detail column: the
   /// sheet's own tone fading into the rows below, not a glass band with a hard
-  /// lower edge (Maciej, 2026-10-18). Window chrome does not render in an
+  /// lower edge (Monika, 2026-10-18). Window chrome does not render in an
   /// XCTest mount, so the structure is pinned at the source.
   func testHeaderFadeCoversOnlyTheDetailColumns() throws {
     let codescribe = URL(fileURLWithPath: #filePath)
