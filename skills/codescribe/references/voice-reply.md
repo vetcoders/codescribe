@@ -97,8 +97,8 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 
 | `reason`              | Meaning                                                |
 | --------------------- | ------------------------------------------------------ |
-| `credential_missing`  | No credential found; `grok login` or the Keychain item |
-| `credential_rejected` | Token or key refused; the Founder re-authenticates     |
+| `credential_missing`  | No credential found; the agent refreshes the login     |
+| `credential_rejected` | Token or key refused; the agent refreshes the login    |
 | `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
 | `http_<code>`         | Other refusal; report the code                         |
 | `network`             | The request did not complete; one retry is reasonable  |
@@ -109,6 +109,23 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 
 Report a failed reply in chat with its `reason`; do not retry a
 `credential_*` or `quota_exhausted` refusal in a loop.
+
+### Refreshing the login
+
+When the Founder asked to be spoken to, keeping the voice login fresh is the
+agent's job (Maciej, 2026-10-18). On `credential_missing` or
+`credential_rejected`, refresh the login of the vendor this lease last spoke
+with, normally xAI, whose login lasts about six hours:
+
+```bash
+cs-say auth --provider xai --login-type device-code
+```
+
+Run it as a background task. It prints a URL and a short code, then waits;
+give both to the Founder in chat, word for word. After `Signed in as …`, send
+the reply once more and check `spoken`. Refreshing the same login is not a
+change of credentials: do not switch vendor or voice, and leave key logins
+(`--login-type key`, a Keychain prompt) to the Founder.
 
 ## What to say
 
