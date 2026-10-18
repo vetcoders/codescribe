@@ -85,6 +85,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 1312, textScale: 1.6))
     XCTAssertFalse(OverlayAgentDrawerLayout.isDocked(windowWidth: 819.9, textScale: 1.0))
     XCTAssertEqual(OverlayAgentDrawerLayout.drawerWidth(textScale: 1.4), 420, accuracy: 0.001)
+    // Maciej 2026-10-18: no cap; dragged fully left the roster is the window.
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.drawerWidth(
+        textScale: 1.0, preferredWidth: 700, windowWidth: 1200), 700, accuracy: 0.001)
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.drawerWidth(
+        textScale: 1.0, preferredWidth: 900, windowWidth: 1200), 1200, accuracy: 0.001,
+      "less than 320 of conversation snaps to the agents view")
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.rememberedWidth(
+        textScale: 1.0, preferredWidth: 900, windowWidth: 1200),
+      OverlayAgentDrawerLayout.fillsWindowPreference,
+      "the agents view survives the window growing")
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.drawerWidth(
+        textScale: 1.0, preferredWidth: OverlayAgentDrawerLayout.fillsWindowPreference,
+        windowWidth: 2400), 2400, accuracy: 0.001)
     XCTAssertEqual(OverlayAgentDrawerLayout.pillWidth(textScale: 1.0), 224, accuracy: 0.001)
   }
 
@@ -383,7 +400,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.selectConversation(lena.id)
     state.conversationDrafts[lena.id] = "unfinished message"
     for (width, scale, expected) in [
-      (1200.0, 1.0, 480.0), (900.0, 1.0, 380.0),
+      (1200.0, 1.0, 480.0), (900.0, 1.0, 480.0),
       (1400.0, 1.4, 672.0),
     ] as [(CGFloat, CGFloat, CGFloat)] {
       let recorder = OverlayDrawerFrameRecorder()
@@ -404,7 +421,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       host.layoutSubtreeIfNeeded()
       XCTAssertEqual(recorder.frame.width, expected, accuracy: 1)
       XCTAssertEqual(recorder.frame.minX, width - expected, accuracy: 1)
-      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 520 * scale - 1)
+      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 320 * scale - 1)
       XCTAssertEqual(state.selectedConversationID, lena.id)
       XCTAssertEqual(state.conversationDrafts[lena.id], "unfinished message")
       panel.orderOut(nil)

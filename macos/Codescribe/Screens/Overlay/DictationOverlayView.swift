@@ -456,6 +456,8 @@ struct DictationOverlayView: View {
           0,
           geometry.size.width
             - (columnShown ? drawerWidth : 0))
+        // The roster dragged across the whole window: agents view only.
+        let canvasHidden = canvasWidth < 1
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -524,6 +526,9 @@ struct DictationOverlayView: View {
           // AppKit transcript would otherwise be sized to its text's intrinsic
           // width and centred (OverlayChromeV3Tests, 900 wide).
           .frame(width: canvasWidth, height: geometry.size.height)
+          .opacity(canvasHidden ? 0 : 1)
+          .allowsHitTesting(!canvasHidden)
+          .accessibilityHidden(canvasHidden)
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -789,6 +794,27 @@ struct DictationOverlayView: View {
     .overlay(alignment: .leading) {
       agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
     }
+    .overlay(alignment: .bottomLeading) {
+      // Agents view only: the conversation slides back out from here
+      // (or by dragging the edge), at the default roster width.
+      if OverlayAgentDrawerLayout.fillsWindow(drawerWidth: width, windowWidth: windowWidth) {
+        Button {
+          preferredAgentDrawerWidth = 300
+        } label: {
+          Image(systemName: "sidebar.left")
+            .font(.system(size: 13 * textScale, weight: .semibold))
+            .frame(width: 26 * textScale, height: 26 * textScale)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(palette.primaryText.color)
+        .help(String(localized: "Show conversation"))
+        .accessibilityLabel(String(localized: "Show conversation"))
+        .accessibilityIdentifier("overlay-agent-sidebar-show-conversation")
+        .padding(.bottom, 12)
+        .padding(.leading, 12)
+      }
+    }
     .accessibilityIdentifier("overlay-agent-sidebar")
     .background {
       GeometryReader { drawer in
@@ -815,11 +841,10 @@ struct DictationOverlayView: View {
           }
           .onEnded { value in
             let start = agentDrawerResize?.start ?? width / textScale
-            preferredAgentDrawerWidth =
-              OverlayAgentDrawerLayout.drawerWidth(
-                textScale: textScale,
-                preferredWidth: start - value.translation.width / textScale,
-                windowWidth: windowWidth) / textScale
+            preferredAgentDrawerWidth = OverlayAgentDrawerLayout.rememberedWidth(
+              textScale: textScale,
+              preferredWidth: start - value.translation.width / textScale,
+              windowWidth: windowWidth)
             agentDrawerResize = nil
           }
       )
@@ -833,10 +858,17 @@ struct DictationOverlayView: View {
         case .decrement: step = -20
         @unknown default: return
         }
-        preferredAgentDrawerWidth =
-          OverlayAgentDrawerLayout.drawerWidth(
-            textScale: textScale, preferredWidth: width / textScale + step,
-            windowWidth: windowWidth) / textScale
+        // Narrowing a roster that covers the window leaves the snap zone at
+        // once; a 20-point step would stay inside it.
+        let fills = OverlayAgentDrawerLayout.fillsWindow(
+          drawerWidth: width, windowWidth: windowWidth)
+        let conversationMinimum = OverlayAgentDrawerLayout.minimumConversationWidth(
+          textScale: textScale)
+        let next =
+          fills && step < 0
+          ? (windowWidth - conversationMinimum) / textScale : width / textScale + step
+        preferredAgentDrawerWidth = OverlayAgentDrawerLayout.rememberedWidth(
+          textScale: textScale, preferredWidth: next, windowWidth: windowWidth)
       }
       .accessibilityIdentifier("overlay-agent-sidebar-resize")
       .padding(.top, headerHeight)

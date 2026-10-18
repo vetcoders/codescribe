@@ -11,15 +11,40 @@ enum OverlayAgentDrawerLayout {
     windowWidth >= (300 + 520) * textScale
   }
 
-  /// The preference is in unscaled points. Shrinking the window clamps the
-  /// displayed width without changing that preference or squeezing the chat.
+  /// The preference is in unscaled points and has no upper bound (Maciej,
+  /// 2026-10-18: "Jeśli przesunę sobie resizing całkiem do lewej, to okno
+  /// stanowi tylko i wyłącznie widok agentów"). A conversation narrower than
+  /// `minimumConversationWidth` is unusable, so the roster then takes the
+  /// whole window; dragging the edge back out of that zone slides it out.
   static func drawerWidth(
     textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity
   ) -> CGFloat {
     let preferred = preferredWidth.isFinite ? preferredWidth : 300
-    let maximum = min(560 * textScale, max(0, windowWidth - 520 * textScale))
-    let minimum = min(240 * textScale, maximum)
-    return min(maximum, max(minimum, preferred * textScale))
+    let width = max(min(240 * textScale, max(0, windowWidth)), preferred * textScale)
+    guard windowWidth.isFinite else { return width }
+    return windowWidth - width < minimumConversationWidth(textScale: textScale)
+      ? max(0, windowWidth) : width
+  }
+
+  static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
+
+  /// The roster covers the window: the conversation beside it is hidden.
+  static func fillsWindow(drawerWidth: CGFloat, windowWidth: CGFloat) -> Bool {
+    windowWidth.isFinite && drawerWidth >= windowWidth - 0.5
+  }
+
+  /// Remembered for a roster that covered the window, so a window grown
+  /// later stays the agents view instead of showing a sliver of chat.
+  static let fillsWindowPreference: CGFloat = 100_000
+
+  /// The preference to store for a width the user drew.
+  static func rememberedWidth(
+    textScale: CGFloat, preferredWidth: CGFloat, windowWidth: CGFloat
+  ) -> CGFloat {
+    let shown = drawerWidth(
+      textScale: textScale, preferredWidth: preferredWidth, windowWidth: windowWidth)
+    return fillsWindow(drawerWidth: shown, windowWidth: windowWidth)
+      ? fillsWindowPreference : shown / textScale
   }
 
   /// The name pill and every pill in the stack share this width: 224 at 1.0.
