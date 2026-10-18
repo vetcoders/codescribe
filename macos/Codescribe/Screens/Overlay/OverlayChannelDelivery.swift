@@ -43,6 +43,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
     private var sessionOpenedAt: [String: String] = [:]
+    private(set) var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
     private struct DeliveryOrigin: Codable {
       let captureSession: String
       let channel: String
@@ -83,6 +84,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       consumeConversation(row)
       pruneHistory()
       let schema = row["schema"] as? String
+      if let focusResult = OverlayPanelFocusResult(row: row) {
+        panelFocusResults[focusResult.requestID] = focusResult
+        if panelFocusResults.count > 64,
+          let oldestKey = panelFocusResults.min(by: { $0.value.emittedAt < $1.value.emittedAt })?
+            .key
+        {
+          panelFocusResults.removeValue(forKey: oldestKey)
+        }
+        return
+      }
       if schema == "codescribe.agent-ack.v1", row["kind"] as? String == "agent_ack",
         let id = row["delivery_id"] as? String,
         let channel = row["channel"] as? String, let agent = row["agent"] as? String
@@ -1287,10 +1298,75 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   }
 }
 
+struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
+  let requestID: String
+  let provider: String
+  let providerSessionID: String
+  let leaseID: String
+  let status: String
+  let exitCode: Int?
+  let elapsedMs: Int?
+  let emittedAt: String
+  let frame: AgentFrameBinding?
+
+  var isSuccess: Bool {
+    status == "focused" || status == "already_focused"
+  }
+
+  init(
+    requestID: String,
+    provider: String,
+    providerSessionID: String,
+    leaseID: String,
+    status: String,
+    exitCode: Int? = nil,
+    elapsedMs: Int? = nil,
+    emittedAt: String,
+    frame: AgentFrameBinding? = nil
+  ) {
+    self.requestID = requestID
+    self.provider = provider
+    self.providerSessionID = providerSessionID
+    self.leaseID = leaseID
+    self.status = status
+    self.exitCode = exitCode
+    self.elapsedMs = elapsedMs
+    self.emittedAt = emittedAt
+    self.frame = frame
+  }
+
+  init?(row: [String: Any]) {
+    guard row["schema"] as? String == "codescribe.agent-panel-focus-result.v1",
+      row["kind"] as? String == "agent_panel_focus_result",
+      let requestID = row["request_id"] as? String,
+      requestID.count == 24,
+      requestID.allSatisfy({ "0123456789abcdef".contains($0) }),
+      let provider = row["provider"] as? String, !provider.isEmpty,
+      let providerSessionID = row["provider_session_id"] as? String, !providerSessionID.isEmpty,
+      let leaseID = row["lease_id"] as? String,
+      leaseID.count == 32,
+      leaseID.allSatisfy({ "0123456789abcdef".contains($0) }),
+      let status = row["status"] as? String,
+      ["focused", "already_focused", "pane_missing", "no_frame", "stale", "error"].contains(status),
+      let emittedAt = row["emitted_at"] as? String, !emittedAt.isEmpty
+    else { return nil }
+    self.requestID = requestID
+    self.provider = provider
+    self.providerSessionID = providerSessionID
+    self.leaseID = leaseID
+    self.status = status
+    self.exitCode = (row["exit_code"] as? NSNumber)?.intValue
+    self.elapsedMs = (row["elapsed_ms"] as? NSNumber)?.intValue
+    self.emittedAt = emittedAt
+    self.frame = (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:))
+  }
+}
+
 struct OverlayChannelDeliverySnapshot: Equatable, Sendable {
   let deliveries: [OverlayChannelDelivery]
   let conversations: [OverlayConversation]
   var archivedOwners: Set<OverlayConversationOwner> = []
   /// First-load archive replies are history, including their broadcast mirrors.
   var historyReplyIDs: Set<String> = []
+  var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
 }

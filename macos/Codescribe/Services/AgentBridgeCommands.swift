@@ -1,6 +1,111 @@
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+
+/// Frame coordinates published by an attached follower in `leases/<lease_id>.json`
+/// and echoed in `codescribe.agent-panel-focus-result.v1`.
+struct AgentFrameBinding: Equatable, Sendable, Codable {
+  let session: String
+  let paneID: Int
+  let hostBundleID: String?
+  let hostPID: Int32?
+
+  var terminalPaneID: String { "terminal_\(paneID)" }
+
+  init(
+    session: String,
+    paneID: Int,
+    hostBundleID: String? = nil,
+    hostPID: Int32? = nil
+  ) {
+    self.session = session
+    self.paneID = paneID
+    self.hostBundleID = hostBundleID
+    self.hostPID = hostPID
+  }
+
+  init?(row: [String: Any]) {
+    guard
+      let session = (row["session"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !session.isEmpty, session.count <= 160
+    else { return nil }
+    let parsedPaneID: Int?
+    if let intValue = row["pane_id"] as? Int {
+      parsedPaneID = intValue
+    } else if let numberValue = row["pane_id"] as? NSNumber {
+      parsedPaneID = numberValue.intValue
+    } else if let textValue = row["pane_id"] as? String {
+      let trimmed = textValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      let digits =
+        trimmed.hasPrefix("terminal_")
+        ? String(trimmed.dropFirst("terminal_".count))
+        : trimmed
+      parsedPaneID = Int(digits)
+    } else {
+      parsedPaneID = nil
+    }
+    guard let paneID = parsedPaneID, paneID >= 0 else { return nil }
+    let hostBundleID = (row["host_bundle_id"] as? String)?.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    let parsedPID: Int32?
+    if let int32Value = row["host_pid"] as? Int32 {
+      parsedPID = int32Value
+    } else if let intValue = row["host_pid"] as? Int, let exact = Int32(exactly: intValue) {
+      parsedPID = exact
+    } else if let numberValue = row["host_pid"] as? NSNumber {
+      parsedPID = numberValue.int32Value
+    } else {
+      parsedPID = nil
+    }
+    self.session = session
+    self.paneID = paneID
+    self.hostBundleID = hostBundleID?.isEmpty == false ? hostBundleID : nil
+    self.hostPID = parsedPID.flatMap { $0 > 0 ? $0 : nil }
+  }
+}
+
+/// Request published on the agent's bus when the user clicks Focus in Frame in the Overlay.
+struct OverlayAgentPanelFocusRequest: Equatable, Sendable {
+  let requestID: String
+  let owner: OverlayConversationOwner
+  let emittedAt: String
+
+  init(
+    requestID: String = Self.makeRequestID(),
+    owner: OverlayConversationOwner,
+    emittedAt: String = Self.makeTimestamp()
+  ) {
+    self.requestID = requestID
+    self.owner = owner
+    self.emittedAt = emittedAt
+  }
+
+  static func makeRequestID() -> String {
+    String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24))
+  }
+
+  static func makeTimestamp(now: Date = Date()) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: now)
+  }
+
+  func eventObject(busPath: String) -> [String: Any] {
+    [
+      "schema": "codescribe.agent-panel-focus.v1",
+      "kind": "focus_agent_panel",
+      "request_id": requestID,
+      "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID,
+      "lease_id": owner.leaseID,
+      "channel": owner.channel,
+      "bus": busPath,
+      "emitted_at": emittedAt,
+      "source": "overlay_click",
+    ]
+  }
+}
 
 /// Session playback control identity; agent names and channel numbers are labels.
 struct AgentPlaybackIdentity: Hashable, Sendable {
@@ -33,6 +138,7 @@ struct AgentPlaybackBinding: Equatable, Sendable {
   let model: String?
   var repositoryName: String? = nil
   var workspace: String? = nil
+  var frame: AgentFrameBinding? = nil
 
   var descriptor: String {
     let provider =
@@ -215,7 +321,8 @@ extension RealAgentBridgeInstaller {
           },
           workspace: (row["workspace"] as? String).flatMap {
             $0.hasPrefix("/") && $0.count <= 4096 ? $0 : nil
-          })
+          },
+          frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)))
       }
       return result
     }.value
@@ -686,4 +793,137 @@ extension RealAgentBridgeInstaller {
   /// the reply's playback record (`speak_published_reply`). The record is
   /// what the conversation shows, so the exit is not a second error.
   nonisolated static let playbackOutcomePublishedStatus: Int32 = 5
+
+  /// Publishes a `codescribe.agent-panel-focus.v1` request on the bound lease's
+  /// bus so the agent's own follower focuses its `vc-frame` pane.
+  @MainActor
+  static func publishAgentPanelFocus(
+    _ request: OverlayAgentPanelFocusRequest,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    let owner = request.owner
+    guard (1...10).contains(Int(owner.channel) ?? -1),
+      owner.leaseID.count == 32,
+      owner.leaseID.allSatisfy({ "0123456789abcdef".contains($0) }),
+      request.requestID.count == 24,
+      request.requestID.allSatisfy({ "0123456789abcdef".contains($0) })
+    else { throw CocoaError(.fileReadCorruptFile) }
+    guard let executable = canonicalBusPublisherURL(installer: installer) else {
+      throw NSError(
+        domain: "Codescribe.PanelFocus", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(
+            localized: "Install the agent bridge to focus agent panels in Frame.")
+        ])
+    }
+    let root = installer.bridgeRoot
+    let executablePath = executable.path
+    try await Task.detached(priority: .userInitiated) {
+      let leaseURL = root.appendingPathComponent("leases/\(owner.leaseID).json")
+      let leaseData = try Data(contentsOf: leaseURL)
+      guard leaseData.count <= 16 << 20,
+        let lease = try JSONSerialization.jsonObject(with: leaseData) as? [String: Any],
+        lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
+        lease["provider"] as? String == owner.provider,
+        lease["provider_session_id"] as? String == owner.providerSessionID,
+        lease["lease_id"] as? String == owner.leaseID,
+        let bus = lease["bus"] as? String, bus.hasPrefix("/")
+      else { throw CocoaError(.fileReadCorruptFile) }
+      guard followerProcessAlive(root: root, leaseID: owner.leaseID, lease: lease) else {
+        throw NSError(
+          domain: "Codescribe.PanelFocus", code: 2,
+          userInfo: [
+            NSLocalizedDescriptionKey: String(
+              localized: "Agent listener is not running in Frame.")
+          ])
+      }
+      let payload = try JSONSerialization.data(
+        withJSONObject: request.eventObject(busPath: bus))
+      let process = Process()
+      let input = Pipe()
+      process.executableURL = URL(fileURLWithPath: executablePath)
+      process.arguments = ["bus", "append-event", "--bus", bus]
+      process.standardInput = input
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      try input.fileHandleForWriting.write(contentsOf: payload)
+      try input.fileHandleForWriting.close()
+      process.waitUntilExit()
+      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        throw NSError(
+          domain: "Codescribe.PanelFocus", code: Int(process.terminationStatus),
+          userInfo: [
+            NSLocalizedDescriptionKey: String(
+              localized: "Could not request panel focus in Frame.")
+          ])
+      }
+    }.value
+  }
+
+  private static func canonicalBusPublisherURL(
+    installer: RealAgentBridgeInstaller
+  ) -> URL? {
+    let candidates: [URL?] = [
+      installer.bridgeRoot.appendingPathComponent("runtime/bin/codescribe"),
+      Bundle.main.resourceURL?.appendingPathComponent("agent-bridge/bin/codescribe"),
+      installer.homeDirectory.appendingPathComponent(".cargo/bin/codescribe"),
+      installer.homeDirectory.appendingPathComponent(".local/bin/codescribe"),
+    ]
+    for candidate in candidates.compactMap({ $0 }) {
+      if installer.fileManager.isExecutableFile(atPath: candidate.path) {
+        return candidate.resolvingSymlinksInPath()
+      }
+    }
+    return nil
+  }
+
+  private nonisolated static func followerProcessAlive(
+    root: URL,
+    leaseID: String,
+    lease: [String: Any]
+  ) -> Bool {
+    let pidfile = root.appendingPathComponent("runtime/followers/\(leaseID).pid")
+    if let data = try? Data(contentsOf: pidfile),
+      data.count <= 65536,
+      let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let pid = (row["pid"] as? NSNumber)?.int32Value,
+      pid > 0,
+      Darwin.kill(pid, 0) == 0 || errno == EPERM
+    {
+      return true
+    }
+    if let leasePID = (lease["pid"] as? NSNumber)?.int32Value,
+      leasePID > 0,
+      Darwin.kill(leasePID, 0) == 0 || errno == EPERM
+    {
+      return true
+    }
+    return false
+  }
+
+  /// Brings the terminal host application that owns the `vc-frame` pane to the front.
+  @MainActor
+  static func activateAgentTerminalHost(
+    hostPID: Int32?,
+    hostBundleID: String?
+  ) -> Bool {
+    if let hostPID, hostPID > 0,
+      let app = NSRunningApplication(processIdentifier: hostPID),
+      !app.isTerminated,
+      app.activate()
+    {
+      return true
+    }
+    if let hostBundleID = hostBundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !hostBundleID.isEmpty
+    {
+      let matches = NSRunningApplication.runningApplications(withBundleIdentifier: hostBundleID)
+        .filter { !$0.isTerminated }
+      if let app = matches.first, app.activate() {
+        return true
+      }
+    }
+    return false
+  }
 }
