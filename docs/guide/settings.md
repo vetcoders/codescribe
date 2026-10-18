@@ -31,6 +31,19 @@ row) — voice and formatting, one **Max consultation** card that also holds
 the pending approval requests, the coding-agent skill rows with **Refresh
 status** on the section header, and the quick-start cards.
 
+**Max permissions** says under its heading whether anything is waiting for you —
+_No requests waiting_, or how many requests do — so an empty section cannot be
+mistaken for one that was never read. While the check runs, the button says so;
+if the journal cannot be read, the error replaces the line.
+
+The coding-agent rows name the client — Codex, Claude Code, Other agents — and
+whether its installed skill is the one this app carries: **Up to date**, or
+**Update available** when the app brings a newer one (the same **Update skill**
+button installs it). A folder the app manages whose receipt no longer describes
+it also reads as **Update available**; updating re-adopts it. The folders each
+client reads moved into **Skill locations**, a disclosure at the bottom of the
+card.
+
 ### Languages
 
 **Interface language** switches the app between
@@ -198,8 +211,9 @@ interface language, not the macOS region.
 **Conflicts** and notes are separate. A conflict blocks the save and sits in a
 coloured card above the Save button; a note does not block and sits under it as
 a quiet grey field with a globe symbol and secondary text. The macOS Fn
-configuration message is a note — Fn is also configured in macOS and Codescribe
-may capture its short presses; it never blocks saving. The technical identifier
+configuration message is a note: a short Fn press opens the macOS emoji picker
+or its dictation, Codescribe takes that press first, so the macOS one may not
+open. It never blocks saving. The technical identifier
 that came across the bridge is not shown; the save receipt and the bridge log
 keep it.
 
@@ -210,6 +224,8 @@ macOS Fn key action to _Do Nothing_, otherwise macOS can claim a double press
 for its own dictation). **Middle mouse acts as Fn**: the middle button follows
 the same press, hold and tap rules as Fn; custom mappings in your mouse
 software can block the standard middle-click signal the app listens for.
+**Middle click picks an agent**: middle click opens the list, scrolling chooses,
+left click opens the conversation, and middle click starts and ends talking.
 
 **During dictation** is a quiet neutral card: while holding Fn, pressing the
 chosen key attaches the selected text to the take. **Arm with** chooses Shift
@@ -227,9 +243,12 @@ paste") keeps **Safe**, **Comfort** and **Off**, with the picker on its own
 full-width row and only the selected mode explained underneath. The terminal,
 command and password-field safeguards are unchanged.
 
-**Recording indicator** names the three dot states in full — Recording, Agent,
-Processing — and sets the size of the indicator next to the cursor
-(Off / 4px / 8px / 12px; the Agent indicator stays proportionally larger).
+**Recording indicator** carries its title above the card, like **Dictation
+control**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
+of the indicator next to the cursor comes first (Off / 4px / 8px / 12px; the
+Agent indicator stays proportionally larger), and the three dot states —
+Recording, Agent, Processing — read as captions below the size they are sized
+by.
 
 `HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
 have no control on this tab; they are settings keys
@@ -649,6 +668,12 @@ winning until it is removed.
 **Recording readiness** — one status line plus two values, instead of four
 numbered steps:
 
+The whole block is one card, not a panel inside a card: the status line, the two
+values and their actions sit directly on the **Recording readiness** card, and
+every action on it — **Start recording**, **Stop recording**, **Recalibrate**,
+**Allow**, **System Settings**, **Calibrate**, **Open Lab** — is the same chip
+button used across Settings.
+
 - The status line is the recorder's own verdict: **Ready to record** with
   **Start recording**, or the live phase while a take is starting, running or
   finishing. **Start recording** names the configured Dictation gesture when
@@ -700,8 +725,9 @@ with: switching to `Off` mid-take does not shorten that take, and a take capture
 under `Off` is still discarded if the choice is changed afterwards.
 
 **Recording start sound** — **Play a signal** plays the recorder's live start
-confirmation, and **Volume** below it shows the level as a percentage. The slider
-is disabled while the signal is off.
+confirmation. **Volume** sits on the next row — a short slider with the level as
+a percentage at the card's right edge, under the switch above it. The slider is
+disabled while the signal is off.
 
 ## Diagnostics
 
