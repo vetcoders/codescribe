@@ -8241,6 +8241,17 @@
         }
       }
     },
+    "Image" : {
+      "comment" : "Attachment chip label for an image pasted into a message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obraz"
+          }
+        }
+      }
+    },
     "In Cloud mode, and when you start a cloud re-transcription of a recording yourself." : {
       "localizations" : {
         "pl" : {
@@ -15396,12 +15407,6 @@
         }
       }
     },
-    "Space Grotesk — body 14" : {
-      "shouldTranslate" : false
-    },
-    "Space Grotesk — body 18" : {
-      "shouldTranslate" : false
-    },
     "Spawn the server and list its tools" : {
       "localizations" : {
         "pl" : {
@@ -16042,17 +16047,6 @@
         }
       }
     },
-    "Steer (otherwise queued)" : {
-      "comment" : "Pill context menu: deliveries wake the agent; unticked, they queue silently",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Steruj (inaczej do kolejki)"
-          }
-        }
-      }
-    },
     "Step %lld of %lld" : {
       "comment" : "Setup wizard progress; first %lld is the current step, second the total",
       "localizations" : {
@@ -16518,6 +16512,12 @@
       }
     },
     "System surfaces own their material and borders." : {
+      "shouldTranslate" : false
+    },
+    "System — body 14" : {
+      "shouldTranslate" : false
+    },
+    "System — body 18" : {
       "shouldTranslate" : false
     },
     "Take not sealed yet" : {
@@ -17026,12 +17026,32 @@
         }
       }
     },
+    "The message is too long (64 KB limit)." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość jest za długa (limit 64 KB)."
+          }
+        }
+      }
+    },
     "The provider returned no models. Enter a model ID below." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostawca nie zwrócił żadnych modeli. Wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
+    "The revised message cannot be empty." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poprawiona wiadomość nie może być pusta."
           }
         }
       }
@@ -18006,22 +18026,6 @@
         }
       }
     },
-    "Unsolicited reply" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Unsolicited reply"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wiadomość bez powiązanej wypowiedzi"
-          }
-        }
-      }
-    },
     "Unsupported" : {
       "comment" : "Whisper model status: quantized (Q8) weights the local engine cannot load",
       "localizations" : {
@@ -18451,6 +18455,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Codescribe Bus czeka tyle czasu od zakończenia mowy, zanim wyśle wiadomość. Ten sam limit ciszy obowiązuje przy dyktowaniu bez trzymania klawisza. Zmiany działają od otwarcia kanału lub rozpoczęcia nagrania."
+          }
+        }
+      }
+    },
+    "Wake the agent" : {
+      "comment" : "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budź agenta"
           }
         }
       }
