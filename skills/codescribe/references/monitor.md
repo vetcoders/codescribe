@@ -209,6 +209,29 @@ This is the integration contract, not a claim of verified live Kimi wakeup.
 Acceptance requires a fresh named utterance received and answered by that same
 Kimi conversation after it yielded, without a typed nudge.
 
+## Antigravity (agy): completion-notifying background task
+
+Antigravity resumes a finished conversation only when a background command
+exits; its streaming output never starts a turn, so an infinite `--watch --bell`
+never wakes it. Run one background command (replace CONVERSATION_ID with this
+conversation's id) with `WaitMsBeforeAsync` set to 1000, then end the turn:
+
+```bash
+cs-bus --watch --until-event --provider agy --session CONVERSATION_ID
+```
+
+Its exit with `mailbox_ready` arrives as a system message and starts a turn. On
+dragon (Andrzej, 2026-10-17) three such tasks waited through 58, 56 and 61 silent
+minutes and woke the conversation 5–7 s after the Founder's seal, without an
+empty wake. Handle the wake as in Kimi above: read, ACK the exact IDs, reply,
+drain, rearm one task.
+
+## OMP: the plugin's waiter
+
+The Codescribe OMP plugin holds `cs-bus --omp-wake` after every turn end and
+starts a turn on a new delivery; add no other waiter. In the Founder's wake
+test on dragon (2026-10-17) Olek answered through it.
+
 ## Claude Code: plugin hook or completion task
 
 Claude Code wakes an idle conversation on process completion or an `asyncRewake`

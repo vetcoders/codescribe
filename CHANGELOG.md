@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Agents now speak their replies to the Founder as well as writing them, until someone asks for quiet. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.
+- Agents now speak their replies to the Founder as well as writing them, unless playback is muted or someone asks for quiet; a muted speaker means text only, and agents never unmute it. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.
+- The skill now tells each provider how it is woken: Codex runs `cs-bus --watch --until-event` in one `tty` exec cell beside its native queue, Antigravity (agy) runs the same command as a background task whose exit starts a turn, and OMP relies on its plugin's waiter. The entrypoint and the Codex command no longer point Codex at an endless `--watch --bell`, which never ends and so never wakes it.
 
 ### Fixed
 

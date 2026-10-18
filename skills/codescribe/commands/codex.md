@@ -14,8 +14,9 @@ Connect this chat now using: $ARGUMENTS
    supplied. The engine owns slot protection and creates or reuses one follower.
    On an occupied slot report its owner; never overwrite it or silently choose
    another slot. Use `--takeover` only for the same name's ended-session handoff.
-4. Reuse or start one output-notifying `cs-bus --watch --bell` monitor and retain its
-   notification window. Native Codex queue is armed by attachment too. A bare
+4. Arm one `tty` exec cell over `cs-bus --watch --until-event` exactly as the
+   monitor reference's **Codex: the one form that works** shows, and retain its
+   cell and terminal IDs. Native Codex queue is armed by attachment too. A bare
    background reader is insufficient. If only active polling is available,
    report that boundary and keep the listening turn open.
 5. Read `--status` for the same session. Return name, channel, stored voice and

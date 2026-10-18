@@ -7,9 +7,11 @@ An ordinary `cs-say` reply does not enter peer mailboxes. Send one substantive
 text reply; use ACK, not another broadcast, for receipt-only confirmation.
 
 Speak every reply to the Founder as well as writing it, not only after "daj znać
-głosem" or "powiedz mi, jak skończysz" (Maciej's decision, 2026-10-18: the
-Founders listen to the agents rather than read them). Stop speaking when someone
-asks for quiet, and stay quiet until voice is asked for again. Keep speech to a
+głosem" or "powiedz mi, jak skończysz". The speaker's mute decides (Maciej's
+decision, 2026-10-18): unmuted, the Founder prefers to hear the agents; muted
+(`reason: muted`), the reply stays text, and the agent never unmutes playback.
+Stop speaking when someone asks for quiet, and stay quiet until voice is asked
+for again. Keep speech to a
 few sentences, above all on channel 0, where several agents answer the same
 take and share one playback queue. Voice is an output channel only. It opens
 no microphone, starts no follower, and does not change the follower lease or
@@ -106,7 +108,7 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
 | `http_<code>`         | Other refusal; report the code                         |
 | `network`             | The request did not complete; one retry is reasonable  |
-| `muted`               | The Founder muted playback; the text landed, say so    |
+| `muted`               | Muted on purpose; the text landed, never unmute        |
 | `playback_busy`       | Another reply held playback beyond the 120-second wait |
 | `take_live`           | Take did not end within the 120-second wait            |
 | `take_started`        | Take started during playback; audio was stopped        |
@@ -117,10 +119,9 @@ Report a failed reply in chat with its `reason`; do not retry a
 
 ### Refreshing the login
 
-When the Founder asked to be spoken to, keeping the voice login fresh is the
-agent's job (Maciej, 2026-10-18). On `credential_missing` or
-`credential_rejected`, refresh the login of the vendor this lease last spoke
-with, normally xAI, whose login lasts about six hours:
+Keeping the voice login fresh is the agent's job (Maciej, 2026-10-18). On
+`credential_missing` or `credential_rejected`, refresh the login of the vendor
+this lease last spoke with, normally xAI, whose login lasts about six hours:
 
 ```bash
 cs-say auth --provider xai --login-type device-code
