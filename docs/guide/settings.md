@@ -32,9 +32,10 @@ the pending approval requests, the coding-agent skill rows with **Refresh
 status** on the section header, and the quick-start cards.
 
 **Max permissions** says under its heading whether anything is waiting for you —
-_No requests waiting_, or how many requests do — so an empty section cannot be
-mistaken for one that was never read. While the check runs, the button says so;
-if the journal cannot be read, the error replaces the line.
+_No requests waiting_ or _Requests waiting_ — so an empty section cannot be
+mistaken for one that was never read; the requests themselves are the cards
+below. While the check runs, the button says so; if the journal cannot be read,
+the error replaces the line.
 
 The coding-agent rows name the client — Codex, Claude Code, Other agents — and
 whether its installed skill is the one this app carries: **Up to date**, or

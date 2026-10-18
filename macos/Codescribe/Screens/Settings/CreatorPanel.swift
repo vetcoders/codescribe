@@ -367,7 +367,10 @@ struct MaxApprovalCards: View {
   /// only when a request exists, so without this line an empty section could
   /// not be told apart from one that was never checked (Founder review,
   /// 2026-10-18). A running check is on the button and an unreadable one on
-  /// `maxApprovalError`, so neither state repeats itself here.
+  /// `maxApprovalError`, so neither state repeats itself here. The line is a
+  /// yes or no and carries no count: the requests themselves are listed
+  /// directly below it, and a counted phrase would owe plural variations in
+  /// both catalogs for information already on screen.
   @ViewBuilder private var pendingLine: some View {
     if model.maxApprovalError == nil, !model.maxApprovalBusy {
       Text(
@@ -376,9 +379,8 @@ struct MaxApprovalCards: View {
             localized: "max.approvals.none", defaultValue: "No requests waiting",
             comment: "Line under the Max permissions heading: nothing needs a decision")
           : String(
-            localized: "max.approvals.waiting",
-            defaultValue: "\(model.maxToolApprovals.count) requests waiting",
-            comment: "Line under the Max permissions heading; the placeholder is a count")
+            localized: "max.approvals.waiting", defaultValue: "Requests waiting",
+            comment: "Line under the Max permissions heading: the cards below need a decision")
       )
       .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
