@@ -642,9 +642,9 @@ struct AccountLoginRow: View {
           .help(loginNotice)
       }
       Spacer(minLength: 0)
+      // Sign out is a neutral chip like every other row action: it is an
+      // ordinary choice, and destructive styling belongs to a confirmation.
       if signedIn {
-        // A neutral chip like every other row action: signing out is an
-        // ordinary choice, and destructive styling belongs to a confirmation.
         SettingsChipButton(
           "Sign out", tint: Color.secondary, enabled: !loginPending, action: onSignOut
         )
