@@ -7,6 +7,52 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testAddressedSpeechBroadcastDoesNotEchoToAuthorAcrossRestore() throws {
+    for destination in ["0", "1"] {
+      let fixture = try Fixture()
+      defer { fixture.remove() }
+      var projection = OverlayChannelDelivery.Bus()
+      projection.consume([
+        "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+        "source": "typed", "message_id": Fixture.firstID, "source_event_id": Fixture.firstID,
+        "text": "A question", "audience": "james", "channel": "1",
+        "origin_channel": destination, "recipients": [fixture.recipient()],
+      ])
+      let initial = projection.conversations(busPath: fixture.bus.path)
+      let question = try XCTUnwrap(initial.first { $0.owner?.channel == "1" }?.messages.first)
+      let delivery = try XCTUnwrap(question.recipients.first?.deliveryID)
+      var reply = fixture.recipient()
+      reply["schema"] = "codescribe.agent-reply.v1"
+      reply["kind"] = "agent_reply"
+      reply["reply_id"] = "fedcba9876543210fedcba98"
+      reply["text"] = "An answer"
+      reply["association"] = "addressed"
+      reply["delivery_id"] = delivery
+      reply["tts_vendor"] = "xai"
+      reply["voice"] = "leo"
+      projection.consume(reply)
+      for bus in [
+        projection,
+        try JSONDecoder().decode(
+          OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(projection)),
+      ] {
+        let views = bus.conversations(busPath: fixture.bus.path)
+        let all = try XCTUnwrap(views.first { $0.id == "0" })
+        let own = try XCTUnwrap(views.first { $0.owner?.channel == "1" })
+        XCTAssertEqual(all.messages.filter { $0.kind == .reply }.count, destination == "0" ? 1 : 0)
+        XCTAssertEqual(own.messages.filter { $0.kind == .reply }.count, destination == "0" ? 0 : 1)
+        XCTAssertEqual(own.messages.filter { $0.kind == .user }.map(\.text), ["A question"])
+        if destination == "0" {
+          let answer = try XCTUnwrap(all.messages.first { $0.kind == .reply })
+          XCTAssertEqual(answer.owner?.name, "james", "All keeps the author's identity")
+          XCTAssertEqual(answer.owner?.leaseID, Fixture.leaseID)
+          XCTAssertEqual(answer.replyTo, delivery)
+          XCTAssertTrue(answer.supportsSpeechPlayback)
+        }
+      }
+    }
+  }
+
   func testPeerReplyKeepsSenderIdentityOnBroadcastDestination() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
