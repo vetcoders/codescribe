@@ -147,15 +147,15 @@ struct SettingsView: View {
   /// row per section — a pane's parts are tabs inside the pane, not child rows.
   private var sidebar: some View {
     List(selection: $sidebarSelection) {
-      // Untagged and zero-height: it carries the shared scroller policy into
-      // the list's own scroll view (Founder, 2026-10-18).
-      CSScrollerPinRow()
       ForEach(SettingsSectionGroup.allCases) { group in
         let items = matchedSections.filter { $0.group == group }
         if !items.isEmpty {
           Section(group.title) {
             ForEach(items) { item in
               Label(item.title, systemImage: item.symbol)
+                // Rows carry the shared scroller policy into the list's own
+                // scroll view (Founder, 2026-10-18).
+                .csAutohidingScrollers()
                 .tag(item)
                 .accessibilityIdentifier("settings-rail-\(item.rawValue)")
             }
