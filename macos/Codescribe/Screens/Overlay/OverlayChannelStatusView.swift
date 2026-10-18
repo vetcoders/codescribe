@@ -247,6 +247,42 @@ struct OverlayRowHoverHighlight: ViewModifier {
   }
 }
 
+/// The settled choice, the conversation the composer writes to, wears the
+/// chooser's accent tint on every docked roster row, and a 3 pt accent bar on
+/// the leading edge, where no other row chrome lives. Maciej, 2026-10-18:
+/// "takie wyróżnienie ma być na settled choice na każdym wybranym agencie",
+/// then "musi jakoś rozróżniać settled agenta (wybranego) od hover". The ring
+/// stays the chooser's alone and hover stays the neutral wash, so while
+/// choosing the candidate and the current choice show side by side. The
+/// dragon line marks its selection with the same bar (1c6457c27).
+struct OverlayRosterRowSelection: ViewModifier {
+  let selected: Bool
+  var cornerRadius: CGFloat = 10
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if selected {
+          RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(Color.accentColor.opacity(0.22))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .overlay(alignment: .leading) {
+        if selected {
+          Capsule()
+            .fill(Color.accentColor)
+            .frame(width: 3)
+            .padding(.vertical, 3)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+}
+
 /// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): the focused
 /// row wears the system accent colour as a tint and a ring, the way a macOS
 /// list marks its selection, and the pointer entering a row moves the focus
@@ -254,8 +290,6 @@ struct OverlayRowHoverHighlight: ViewModifier {
 /// glass (Maciej, 2026-10-18: "nie ma tam w ogóle koloru akcentu… nie
 /// widzisz, że masz cokolwiek wybrane"). Hover rides the same tracking region
 /// as the row wash, so it answers while Codescribe is not the active app.
-/// Outside the chooser the docked column puts the same mark on the settled
-/// choice, so a choice looks the same while made and once made.
 struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
   let focused: Bool
   let shape: RingShape
@@ -549,10 +583,6 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
-  /// The docked row wearing the accent ring: the chooser's candidate while
-  /// choosing, otherwise the settled choice (Maciej, 2026-10-18: "takie
-  /// wyróżnienie ma być na settled choice na każdym wybranym agencie").
-  private var markedConversationID: String? { gestureFocusID ?? selectedConversationID }
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -736,9 +766,10 @@ struct OverlayChannelStatusView: View {
             }
             .padding(.trailing, 6)
           )
+          .modifier(OverlayRosterRowSelection(selected: selectedConversationID == broadcast.id))
           .modifier(
             OverlayGestureFocusRing(
-              focused: broadcast.id == markedConversationID,
+              focused: broadcast.id == gestureFocusID,
               shape: RoundedRectangle(cornerRadius: 10),
               targetID: broadcast.id, onHover: onGestureHover)
           )
@@ -962,6 +993,10 @@ struct OverlayChannelStatusView: View {
     .padding(.vertical, 4)
     .padding(.horizontal, 6)
     .modifier(
+      OverlayRosterRowSelection(
+        selected: conversation != nil && selectedConversationID == conversation?.id)
+    )
+    .modifier(
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
         enabled: (conversation != nil && onSelectConversation != nil)
@@ -971,7 +1006,7 @@ struct OverlayChannelStatusView: View {
     )
     .modifier(
       OverlayGestureFocusRing(
-        focused: conversation != nil && conversation?.id == markedConversationID,
+        focused: conversation != nil && conversation?.id == gestureFocusID,
         shape: RoundedRectangle(cornerRadius: 10),
         targetID: conversation?.id, onHover: onGestureHover)
     )
