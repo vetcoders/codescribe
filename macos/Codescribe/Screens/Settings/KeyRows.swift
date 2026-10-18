@@ -168,12 +168,12 @@ struct SettingsUrlRow: View {
   @State private var loadedInitial = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
-        .font(CSFont.ui(13.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
 
-      HStack(spacing: 8) {
+      HStack(spacing: CSSpace.sm) {
         TextField(placeholder, text: $draft)
           .settingsInputChrome(isFocused: isFocused)
           .focused($isFocused)
@@ -229,7 +229,7 @@ struct SettingsDetailRow: View {
         .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
       Text(value)
-        .font(CSFont.mono(11, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -322,8 +322,8 @@ struct KeyRow: View {
     }
     // Presence-tinted card: green when set, grey when not.
     // Embedded rows keep the tint on the dot and state text only.
-    .padding(.horizontal, embedded ? 0 : 15)
-    .padding(.vertical, embedded ? 2 : 13)
+    .padding(.horizontal, embedded ? 0 : SettingsScale.cardPadding)
+    .padding(.vertical, embedded ? 2 : SettingsScale.cardPadding)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(accent.opacity(embedded ? 0 : 0.06))
@@ -335,7 +335,7 @@ struct KeyRow: View {
   }
 
   private var standardContent: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
       standardSummary
 
       editingAndStatus
@@ -343,16 +343,16 @@ struct KeyRow: View {
   }
 
   private func customProviderContent(endpoint: String) -> some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
       ViewThatFits(in: .horizontal) {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: CSSpace.md) {
           customProviderEndpoint(endpoint)
             .frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
           compactSummary
             .fixedSize(horizontal: true, vertical: false)
         }
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: CSSpace.xs) {
           customProviderEndpoint(endpoint)
           compactSummary
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -364,10 +364,10 @@ struct KeyRow: View {
   }
 
   private var standardSummary: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text(label)
-        .font(CSFont.ui(13.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Spacer(minLength: 0)
       if let probeResult {
@@ -379,10 +379,10 @@ struct KeyRow: View {
   }
 
   private var compactSummary: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text(label)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(Color.primary)
       if let probeResult {
         KeyProbeChip(result: probeResult)
@@ -394,7 +394,7 @@ struct KeyRow: View {
 
   private var presenceState: some View {
     Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-      .font(CSFont.ui(10, .semibold))
+      .font(SettingsScale.statusBadge)
       .foregroundStyle(isSet ? CSColor.oliveLight : accent)
   }
 
@@ -411,10 +411,10 @@ struct KeyRow: View {
   private func customProviderEndpoint(_ endpoint: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
       Text("API address")
-        .font(CSFont.ui(11, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
       Text(verbatim: endpoint)
-        .font(CSFont.mono(11, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -424,7 +424,7 @@ struct KeyRow: View {
 
   @ViewBuilder private var editingAndStatus: some View {
     if editing {
-      HStack(spacing: 8) {
+      HStack(spacing: CSSpace.sm) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
           .settingsInputChrome(isFocused: isFocused)
           .focused($isFocused)
@@ -444,7 +444,7 @@ struct KeyRow: View {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
             } else {
               Text("Test", comment: "Button label: run a connection test")
-                .font(CSFont.ui(12, .semibold))
+                .font(SettingsScale.controlLabel)
             }
           }
           .frame(minWidth: 26, minHeight: 18)
@@ -564,7 +564,7 @@ struct KeyProbeChip: View {
 
   var body: some View {
     Text(label)
-      .font(CSFont.ui(10, .semibold))
+      .font(SettingsScale.statusBadge)
       .lineLimit(1)
       .foregroundStyle(tint)
       .padding(.horizontal, 8)
@@ -623,20 +623,20 @@ struct AccountLoginRow: View {
   }
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
         .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
-        .font(CSFont.ui(10, .semibold))
+        .font(SettingsScale.statusBadge)
         .foregroundStyle(accent)
         .lineLimit(1)
         .truncationMode(.middle)
         .help(provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
-          .font(CSFont.ui(10, .medium))
+          .font(SettingsScale.statusBadge)
           .foregroundStyle(CSColor.terracotta)
           .lineLimit(1)
           .help(loginNotice)
@@ -654,7 +654,7 @@ struct AccountLoginRow: View {
         SettingsChipButton(
           enabled: provider.accountLoginEnabled && !loginPending, action: onStart
         ) {
-          HStack(spacing: 6) {
+          HStack(spacing: CSSpace.xs) {
             if loginPending {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 14, height: 12)
             } else {
@@ -665,7 +665,7 @@ struct AccountLoginRow: View {
                 ? (provider.id == "xai-responses" ? "Approve in browser…" : "Waiting for browser…")
                 : "Sign in with \(accountBrand)"
             )
-            .font(CSFont.ui(12, .semibold))
+            .font(SettingsScale.controlLabel)
           }
           .foregroundStyle(
             provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : Color.secondary
@@ -693,7 +693,7 @@ struct OAuthClientIdButton: View {
   var body: some View {
     Button("OAuth client id…") { editing = true }
       .buttonStyle(.plain)
-      .font(CSFont.ui(10, .medium))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .csFocusRing()
       .popover(isPresented: $editing, arrowEdge: .bottom) {
@@ -758,11 +758,11 @@ struct SettingsSecondsSlider: View {
   @State private var gate = SliderCommitGate()
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
+      HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
-            .font(CSFont.ui(13, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
           Text(detail)
             .font(SettingsScale.helper)
@@ -771,7 +771,7 @@ struct SettingsSecondsSlider: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         Text(valueLabel)
-          .font(CSFont.mono(11, .semibold))
+          .font(SettingsScale.monoValue)
           .foregroundStyle(Color.primary)
       }
       Slider(
