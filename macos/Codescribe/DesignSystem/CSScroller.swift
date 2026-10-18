@@ -69,9 +69,8 @@ final class CSScrollerPin {
   }
 
   /// Writes only what differs. Each scroller property setter re-tiles the
-  /// scroll view, and a re-tile landing right after SwiftUI scrolled a lazy
-  /// list to its newest row threw that position away: switching the overlay
-  /// to an agent with a long history left its latest reply out of view.
+  /// scroll view, and SwiftUI re-runs the attachment on every update of the
+  /// surface; an unchanged pin has no reason to re-tile anything.
   private func pin() {
     guard let scrollView else { return }
     if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
