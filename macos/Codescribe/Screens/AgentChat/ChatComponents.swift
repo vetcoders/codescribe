@@ -738,7 +738,7 @@ private struct CodeBlockView: View {
             ? String(localized: "copied", comment: "Button state after copying")
             : String(localized: "copy", comment: "Button: copy this code block")
         )
-        .font(CSFont.mono(10, .medium))
+        .font(CSFont.ui(10, .medium))
       }
       .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)

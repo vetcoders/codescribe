@@ -150,7 +150,7 @@ struct Composer: View {
       HStack(spacing: 16) {
         ForEach(affordances, id: \.self) { item in
           Text(verbatim: "· \(item)")
-            .font(CSFont.mono(10, .medium))
+            .font(CSFont.ui(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
       }
