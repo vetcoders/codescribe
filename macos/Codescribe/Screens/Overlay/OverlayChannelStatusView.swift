@@ -966,7 +966,8 @@ struct OverlayChannelStatusView: View {
         palette: palette, cornerRadius: 10,
         enabled: (conversation != nil && onSelectConversation != nil)
           || (archiveCandidates[channel.channel] != nil && !hasDeadFollower(channel)
-            && onFocusAgentPanel != nil))
+            && onFocusAgentPanel != nil)
+      )
     )
     .modifier(
       OverlayGestureFocusRing(
