@@ -542,6 +542,8 @@ struct OverlayChannelStatusView: View {
   var archivedOwners: Set<OverlayConversationOwner> = []
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
+  var panelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  var onFocusAgentPanel: ((OverlayConversationOwner) -> Void)?
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
@@ -789,6 +791,14 @@ struct OverlayChannelStatusView: View {
 
   func viewConversation(_ channel: OverlayChannelDelivery) {
     guard let conversation = conversation(for: channel) else { return }
+    if selectedConversationID == conversation.id,
+      let owner = archiveCandidates[channel.channel],
+      !hasDeadFollower(channel),
+      let onFocusAgentPanel
+    {
+      onFocusAgentPanel(owner)
+      return
+    }
     onSelectConversation?(conversation.id)
   }
 
@@ -828,6 +838,16 @@ struct OverlayChannelStatusView: View {
             }
             .buttonStyle(.plain)
             .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
+          } else if let owner = archiveCandidates[channel.channel],
+            !hasDeadFollower(channel),
+            let onFocusAgentPanel
+          {
+            Button {
+              onFocusAgentPanel(owner)
+            } label: {
+              label
+            }
+            .buttonStyle(.plain)
           } else {
             label.accessibilityElement(children: .combine)
           }
@@ -857,6 +877,40 @@ struct OverlayChannelStatusView: View {
         )
         .fixedSize()
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
+        if let owner = archiveCandidates[channel.channel], let onFocusAgentPanel {
+          let focusState = panelFocusStates[channel.channel]
+          let focusHelp = panelFocusHelp(for: channel, state: focusState)
+          Button {
+            onFocusAgentPanel(owner)
+          } label: {
+            Group {
+              if focusState?.isRequesting == true {
+                ProgressView()
+                  .controlSize(.mini)
+              } else {
+                Image(
+                  systemName: focusState?.isSucceeded == true
+                    ? "checkmark" : "macwindow.on.rectangle"
+                )
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(
+                  focusState?.isSucceeded == true
+                    ? palette.successStatus.color
+                    : focusState?.isFailed == true
+                      ? palette.errorStatus.color
+                      : palette.primaryText.color
+                )
+              }
+            }
+            .frame(width: 16, height: 16)
+          }
+          .modifier(OverlayAgentControlStyle())
+          .csFocusOutline()
+          .disabled(focusState?.isRequesting == true || hasDeadFollower(channel))
+          .help(focusHelp)
+          .accessibilityLabel(Text(verbatim: focusHelp))
+          .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
+        }
         // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
         // tam zawsze"); only an open microphone or an archive in flight
         // disables it, and the help says which.
@@ -889,7 +943,9 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
-        enabled: conversation != nil && onSelectConversation != nil)
+        enabled: (conversation != nil && onSelectConversation != nil)
+          || (archiveCandidates[channel.channel] != nil && !hasDeadFollower(channel)
+            && onFocusAgentPanel != nil))
     )
     .modifier(
       OverlayGestureFocusRing(
@@ -980,12 +1036,19 @@ struct OverlayChannelStatusView: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let statusChannel {
-          Text(verbatim: rowStateText(for: statusChannel, receiptText: receiptText))
-            .font(.system(size: 11 * textScale, weight: .medium))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .accessibilityIdentifier("overlay-agent-state-\(statusChannel.channel)")
+          HStack(spacing: 5) {
+            if panelFocusStates[statusChannel.channel]?.isRequesting == true {
+              ProgressView()
+                .controlSize(.mini)
+                .accessibilityIdentifier("overlay-agent-focus-spinner-\(statusChannel.channel)")
+            }
+            Text(verbatim: rowStateText(for: statusChannel, receiptText: receiptText))
+              .font(.system(size: 11 * textScale, weight: .medium))
+              .foregroundStyle(rowStateColor(for: statusChannel))
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .accessibilityIdentifier("overlay-agent-state-\(statusChannel.channel)")
+          }
         }
       }
     }
@@ -995,9 +1058,35 @@ struct OverlayChannelStatusView: View {
   /// The receipt of the newest delivery, then the reader's state when there is
   /// no receipt or the reader is gone or stalled: one line, never two.
   func rowStateText(for channel: OverlayChannelDelivery, receiptText: String?) -> String {
+    if let focusState = panelFocusStates[channel.channel] {
+      return focusState.statusText
+    }
     guard let receiptText else { return shortStatus(for: channel) }
     guard hasDeadFollower(channel) || hasStalledFollower(channel) else { return receiptText }
     return receiptText + " · " + shortStatus(for: channel)
+  }
+
+  private func rowStateColor(for channel: OverlayChannelDelivery) -> Color {
+    guard let focusState = panelFocusStates[channel.channel] else {
+      return palette.mutedText.color
+    }
+    switch focusState.phase {
+    case .requesting: return palette.processingStatus.color
+    case .succeeded: return palette.successStatus.color
+    case .failed: return palette.errorStatus.color
+    }
+  }
+
+  func panelFocusHelp(
+    for channel: OverlayChannelDelivery, state: OverlayAgentPanelFocusState?
+  ) -> String {
+    if hasDeadFollower(channel) {
+      return String(localized: "Agent is disconnected")
+    }
+    if let state {
+      return state.statusText
+    }
+    return String(localized: "Focus agent panel in Frame")
   }
 
   /// Every agent row and pill wears its channel-0 state: the antenna in the
