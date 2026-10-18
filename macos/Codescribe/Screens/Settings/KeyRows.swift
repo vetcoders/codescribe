@@ -250,8 +250,9 @@ enum KeyRowPresentation {
 /// One Keychain account on one line: presence dot, label, state (`Set` /
 /// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
 /// paste-to-replace secure field, Save, Test, Clear. The account name is not
-/// on the row; the card's Advanced disclosure shows it. `optional` marks
-/// key-optional hosts (custom providers): an absent key is neutral there, not red.
+/// on the row; the card's Advanced disclosure shows it. `optional` marks a key
+/// nothing is waiting for — a key-optional host, or a provider already covered
+/// by a connected account — and only chooses the wording of the state.
 struct KeyRow: View {
   let account: String
   let label: String
@@ -279,8 +280,12 @@ struct KeyRow: View {
 
   private var isUpdating: Bool { mutationPending || operationPending }
 
+  /// Presence tints the row green; an absent key stays neutral whether or not
+  /// it is marked optional. A key that is simply missing blocks nothing on its
+  /// own — an account can cover the same provider — so red is reserved for a
+  /// real failure, which `KeyProbeChip` and the operation error report.
   private var accent: Color {
-    isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
+    isSet ? CSColor.olive : Color.secondary
   }
 
   init(
@@ -315,8 +320,8 @@ struct KeyRow: View {
         customProviderContent(endpoint: endpoint)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional)
-    // when not. Embedded rows keep the tint on the dot and state text only.
+    // Presence-tinted card: green when set, grey when not.
+    // Embedded rows keep the tint on the dot and state text only.
     .padding(.horizontal, embedded ? 0 : 15)
     .padding(.vertical, embedded ? 2 : 13)
     .background(
@@ -638,8 +643,10 @@ struct AccountLoginRow: View {
       }
       Spacer(minLength: 0)
       if signedIn {
+        // A neutral chip like every other row action: signing out is an
+        // ordinary choice, and destructive styling belongs to a confirmation.
         SettingsChipButton(
-          "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
+          "Sign out", tint: Color.secondary, enabled: !loginPending, action: onSignOut
         )
         .help("Remove the stored \(accountBrand) account tokens")
         .accessibilityLabel("Sign out of \(accountBrand)")
