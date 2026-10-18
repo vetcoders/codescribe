@@ -20,7 +20,7 @@ struct ThreadRail: View {
     CSSidebarColumn(
       width: .navigation,
       search: $search,
-      prompt: Text("Search threads"),
+      prompt: Text("Search conversations"),
       onSearchSubmit: { handleSearchCommit() }
     ) {
       threadList
@@ -103,7 +103,7 @@ struct ThreadRail: View {
   /// action and same label as the bar it replaces.
   private var newThreadButton: some View {
     Button(action: { store.newThread() }) {
-      Label("New thread", systemImage: "square.and.pencil")
+      Label("New conversation", systemImage: "square.and.pencil")
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
@@ -113,7 +113,7 @@ struct ThreadRail: View {
     .padding(.horizontal, 12)
     .padding(.top, 10)
     .padding(.bottom, 2)
-    .accessibilityLabel("New thread")
+    .accessibilityLabel("New conversation")
     .accessibilityIdentifier("thread-rail-new-thread")
   }
 
@@ -286,7 +286,7 @@ private struct ThreadRow: View {
           }
         }
         Divider()
-        Button("Delete Thread", role: .destructive) {
+        Button("Delete Conversation", role: .destructive) {
           onRequestDelete()
         }
       }
@@ -296,13 +296,14 @@ private struct ThreadRow: View {
       .accessibilityAddTraits(.isButton)
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .accessibilityHint(
-        String(localized: "Opens this thread", comment: "Accessibility hint on a history row")
+        String(
+          localized: "Opens this conversation", comment: "Accessibility hint on a history row")
       )
       .accessibilityAction { onSelect() }
       .accessibilityAction(named: Text("Rename")) { onBeginRename() }
       .accessibilityAction(named: Text(favoriteActionTitle)) { onToggleFavorite() }
       .accessibilityAction(named: Text("Copy")) { onCopyTitle() }
-      .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
+      .accessibilityAction(named: Text("Delete Conversation")) { onRequestDelete() }
       .accessibilityIdentifier("thread-row-\(thread.id.uuidString)")
   }
 
@@ -314,8 +315,8 @@ private struct ThreadRow: View {
 
   private var favoriteHelp: String {
     thread.isFavorite
-      ? String(localized: "Unfavorite thread")
-      : String(localized: "Favorite thread")
+      ? String(localized: "Unfavorite conversation")
+      : String(localized: "Favorite conversation")
   }
 
   private var rowContent: some View {
@@ -517,7 +518,7 @@ struct ThreadDeleteConfirmation: ViewModifier {
 
   func body(content: Content) -> some View {
     content.confirmationDialog(
-      "Delete this thread?",
+      "Delete this conversation?",
       isPresented: Binding(
         get: { candidate != nil },
         set: { if !$0 { candidate = nil } }
@@ -525,7 +526,7 @@ struct ThreadDeleteConfirmation: ViewModifier {
       titleVisibility: .visible,
       presenting: candidate
     ) { thread in
-      Button("Delete Thread", role: .destructive) {
+      Button("Delete Conversation", role: .destructive) {
         onConfirm(thread)
         candidate = nil
       }
@@ -625,7 +626,7 @@ enum ThreadRailMeta {
     calendar: Calendar = .current
   ) -> String {
     guard let updatedAt else {
-      return String(localized: "Untitled thread", comment: "Thread with no title")
+      return String(localized: "Untitled conversation", comment: "Conversation with no title")
     }
     let relative = relativeTime(updatedAt, now: now, calendar: calendar)
     return relative.prefix(1).uppercased() + relative.dropFirst()

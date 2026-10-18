@@ -170,8 +170,8 @@ private struct AgentIntegratedChrome: ViewModifier {
     content
       .toolbar { agentToolbar }
       .modifier(CSWindowHeaderChrome())
-      .alert("Rename thread", isPresented: $isRenaming) {
-        TextField("Thread title", text: $renameText)
+      .alert("Rename conversation", isPresented: $isRenaming) {
+        TextField("Conversation title", text: $renameText)
         Button("Rename") {
           if let thread = store.currentThread { store.rename(thread, to: renameText) }
         }
@@ -321,7 +321,9 @@ private struct AgentIntegratedChrome: ViewModifier {
             store.toggleFavorite(thread)
           }
         } header: {
-          Text("Thread", comment: "Menu section header above the current thread's actions")
+          Text(
+            "Conversation",
+            comment: "Menu section header above the current conversation's actions")
         }
         if thread.backendId != nil {
           Section {
@@ -340,7 +342,7 @@ private struct AgentIntegratedChrome: ViewModifier {
           Button("Open settings") { openWindow.presentSettings() }
         }
         Section {
-          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
+          Button("Delete Conversation", role: .destructive) { deleteCandidate = thread }
         }
       }
     } label: {
@@ -747,7 +749,7 @@ enum ThreadExportOutcome: Equatable {
           "Saved the Agent replies as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
         : Text(
-          "Saved the whole thread as \(file) in \(folder).",
+          "Saved the whole conversation as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
     case .failed(let threadTitle, _):
       return Text(
