@@ -483,31 +483,44 @@ attach listeners.
 Tools is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
+The tab has two bands under two titles of equal weight: **Defaults** and
+**Individual tools**. No rule is drawn between them — the second title is the
+separator.
+
 - **Defaults** — one row per category: Read data, Changes/processes/network,
   Unclassified. These are the stored category defaults and apply to every
   tool without a more specific rule.
 - **Resolution order** — a rule for one tool outranks its server's rule,
   and both outrank these defaults. External destructive tools are
   always refused, and an Allow never silently covers a path that may hold
-  secrets (`.env`, key material): that call asks first.
+  secrets (`.env`, key material): that call asks first. The sentence under the
+  defaults card says only the two facts needed to read a level: what outranks
+  what, and what no setting here can lift.
 - **Individual tools · N tools** — N is the whole tool catalog, not the number
   of individual rules. Opening the tab discovers the catalog by starting every
   configured MCP server and asking it for its tools, so the list appears a few
   seconds after the defaults; a "Discovering tools from the MCP servers…" row
-  stands in until then. One column: a search field over the whole catalog
-  (name, identifier, source), a **Source** popup listing Native plus every MCP
-  server with its tool count ("Native (26)", server names verbatim), then that
-  source's tools at the full width of the pane. Each card carries the tool's
-  full name — it wraps onto a second line instead of ending in an ellipsis —
-  with the rule that produced the current level opposite it ("Individual rule",
-  "Server rule" or "Category default"), then one quiet line for source, server
-  and localized risk class ("MCP · aicx-http · Read data"), the raw identity,
-  and the Allow/Ask/Deny control across the card. Codescribe's own tools are
-  named in the interface language; an MCP server's tools keep the vendor's
-  spelling, except that `aicx` is always written in lower case. The card's
-  tooltip carries the name and the identifier together. "Remove rule" appears
-  only on a card that carries an individual rule and drops it; the card then
-  shows the server rule or the category default again.
+  stands in until then. One column, and one row carries both filters: the
+  search field over the whole catalog (name, identifier, source) and, beside
+  it, the **Source** popup listing Native plus every MCP server with its tool
+  count ("Native (26)", server names verbatim). The row shows no "Source"
+  caption — the popup's own entries name what it selects, and the word stays
+  its tooltip and its VoiceOver label. Under the row sit that source's tools at
+  the full width of the pane, as a compact list.
+- **One tool's card** — the tool's full name, which wraps onto a second line
+  instead of ending in an ellipsis, with the rule that produced the current
+  level opposite it: "Individual rule" when the tool carries one of its own,
+  otherwise "Server rule" or "Category default", which is how a tool says it
+  follows the rule above it. The word "inheritance" appears nowhere. Then one
+  quiet line for source, server and localized risk class
+  ("MCP · aicx-http · Read data"), the raw identity in the quietest mono rung —
+  selectable, so it can be copied into a config or a bug report — and the
+  Allow/Ask/Deny control across the card. Codescribe's own tools are named in
+  the interface language; an MCP server's tools keep the vendor's spelling,
+  except that `aicx` is always written in lower case. The card's tooltip
+  carries the name and the identifier together. "Remove rule" appears only on a
+  card that carries an individual rule and drops it; the card then shows the
+  server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
