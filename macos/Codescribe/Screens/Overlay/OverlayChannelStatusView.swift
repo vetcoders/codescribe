@@ -720,7 +720,13 @@ struct OverlayChannelStatusView: View {
               )
               .fixedSize()
               .accessibilityIdentifier("overlay-channel-toggle-0")
+              // Maciej, 2026-10-18: the big microphone "powinien być w linii z
+              // resztą mikrofonów". Agent rows end with the archive cross and a
+              // 6 pt inset; keeping that empty slot puts the broadcast speaker
+              // in the agents' speaker column and its microphone beside it.
+              if onArchiveAgent != nil, !archiveCandidates.isEmpty { archiveSlot }
             }
+            .padding(.trailing, 6)
           )
           .modifier(
             OverlayGestureFocusRing(
@@ -794,6 +800,20 @@ struct OverlayChannelStatusView: View {
 
   private func rowGlassContainer<Content: View>(_ content: Content) -> some View {
     overlayGlassGroup(content)
+  }
+
+  /// The archive cross's footprint, laid out but never drawn or focused.
+  private var archiveSlot: some View {
+    Button {
+    } label: {
+      Image(systemName: "xmark")
+        .font(.system(size: 12, weight: .semibold))
+        .frame(width: 16, height: 16)
+    }
+    .modifier(OverlayAgentControlStyle())
+    .disabled(true)
+    .hidden()
+    .accessibilityHidden(true)
   }
 
   private func channelRow(
