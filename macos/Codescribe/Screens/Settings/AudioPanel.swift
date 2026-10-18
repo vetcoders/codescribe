@@ -853,7 +853,7 @@ struct AudioPanel: View {
             // verbatim and the value stays selectable.
             GridRow {
               Text(verbatim: detail.label)
-                .font(CSFont.mono(10, .semibold))
+                .font(CSFont.ui(10, .semibold))
                 .foregroundStyle(Color.secondary)
                 .gridColumnAlignment(.leading)
               Text(verbatim: detail.value)
@@ -1090,7 +1090,7 @@ struct AudioPanel: View {
         Task { await calibrateMicrophone(recordingState, tray: tray) }
       }
       .csFocusRing()
-      .font(CSFont.mono(10.5, .semibold))
+      .font(CSFont.ui(10.5, .semibold))
       .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
       .disabled(!enabled)
       .accessibilityLabel("Calibrate microphone")

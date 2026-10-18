@@ -187,7 +187,7 @@ struct SettingsUrlRow: View {
 
       if let error {
         Text(error)
-          .font(CSFont.mono(11, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
@@ -389,7 +389,7 @@ struct KeyRow: View {
 
   private var presenceState: some View {
     Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-      .font(CSFont.mono(10, .semibold))
+      .font(CSFont.ui(10, .semibold))
       .foregroundStyle(isSet ? CSColor.oliveLight : accent)
   }
 
@@ -559,7 +559,7 @@ struct KeyProbeChip: View {
 
   var body: some View {
     Text(label)
-      .font(CSFont.mono(10, .semibold))
+      .font(CSFont.ui(10, .semibold))
       .lineLimit(1)
       .foregroundStyle(tint)
       .padding(.horizontal, 8)
@@ -624,14 +624,14 @@ struct AccountLoginRow: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
-        .font(CSFont.mono(10, .semibold))
+        .font(CSFont.ui(10, .semibold))
         .foregroundStyle(accent)
         .lineLimit(1)
         .truncationMode(.middle)
         .help(provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
-          .font(CSFont.mono(10, .medium))
+          .font(CSFont.ui(10, .medium))
           .foregroundStyle(CSColor.terracotta)
           .lineLimit(1)
           .help(loginNotice)
@@ -686,7 +686,7 @@ struct OAuthClientIdButton: View {
   var body: some View {
     Button("OAuth client id…") { editing = true }
       .buttonStyle(.plain)
-      .font(CSFont.mono(10, .medium))
+      .font(CSFont.ui(10, .medium))
       .foregroundStyle(Color.secondary)
       .csFocusRing()
       .popover(isPresented: $editing, arrowEdge: .bottom) {

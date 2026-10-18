@@ -63,7 +63,7 @@ struct LabPanel: View {
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }
       }
-      .font(CSFont.mono(11, .semibold))
+      .font(CSFont.ui(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
 
       recognitionParameters

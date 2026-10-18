@@ -514,7 +514,7 @@ private struct PermissionChecklistRow: View {
             }
           } label: {
             Text("allow \(kind.displayName)")
-              .font(CSFont.mono(11, .semibold))
+              .font(CSFont.ui(11, .semibold))
               .foregroundStyle(CSColor.terracotta)
           }
           .csFocusRing()
@@ -525,7 +525,7 @@ private struct PermissionChecklistRow: View {
             kind.openSystemSettings()
           } label: {
             Text("open System Settings")
-              .font(CSFont.mono(11, .semibold))
+              .font(CSFont.ui(11, .semibold))
               .foregroundStyle(CSColor.terracotta)
           }
           .csFocusRing()

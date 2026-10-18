@@ -17,7 +17,7 @@ struct ToolSearchField: View {
       TextField("Search tools…", text: $text)
         .textFieldStyle(.plain)
         .focused($searchFocused)
-        .font(CSFont.mono(11.5, .medium))
+        .font(CSFont.ui(11.5, .medium))
         .foregroundStyle(Color.primary)
     }
     .padding(.horizontal, 10)
