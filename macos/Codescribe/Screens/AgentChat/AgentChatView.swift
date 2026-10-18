@@ -473,7 +473,7 @@ private struct ThreadDetail: View {
   var body: some View {
     conversation
       .modifier(AgentScrollBottomBar { composerDock })
-      .modifier(CSDetailHeaderGlass())
+      .modifier(CSDetailHeaderFade())
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(CSColor.sheet)
       .alert(

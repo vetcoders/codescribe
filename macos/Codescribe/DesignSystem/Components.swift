@@ -37,19 +37,25 @@ struct CSWindowHeaderChrome: ViewModifier {
   }
 }
 
-/// The window header is one glass plane over the detail column only, the glass
-/// of the overlay header: rows that scroll up stop at its hard lower edge, the
-/// way Finder's list stops under its toolbar, instead of running through the
-/// title, and the sidebar material runs up through the titlebar beside it
-/// (Maciej, 2026-10-14: the title bar only above the messages, never over the
-/// sidebar; the same in Settings).
+/// The window header is the detail column's own tone over that column only,
+/// and the sidebar runs up through the titlebar beside it (Maciej, 2026-10-14:
+/// the title bar only above the messages, never over the sidebar; the same in
+/// Settings). Glass here painted a lighter band with a hard lower edge across
+/// the dark sheet, so rows met a cut line instead of the page they sit on
+/// (Maciej, 2026-10-18: that line, the transition between the colours, looks
+/// poor).
 ///
 /// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
 /// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
-/// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
-/// tall as the column's top safe-area inset, which is the toolbar, and lifted
-/// into it. Toolbar items stay in the titlebar above it and keep their clicks.
-struct CSDetailHeaderGlass: ViewModifier {
+/// sitting on the title (probe 2026-10-14). The fade is drawn here instead, the
+/// same in both windows: a sheet-coloured plane as tall as the column's top
+/// safe-area inset, which is the toolbar, lifted into it, and a short gradient
+/// below it where content scrolling up dissolves into the header. Toolbar items
+/// stay in the titlebar above it and keep their clicks.
+struct CSDetailHeaderFade: ViewModifier {
+  /// How far the header's tone reaches down into the column.
+  private static let fade: CGFloat = 20
+
   @State private var height: CGFloat = 0
 
   func body(content: Content) -> some View {
@@ -60,8 +66,7 @@ struct CSDetailHeaderGlass: ViewModifier {
         height = top
       }
       .overlay(alignment: .top) {
-        CSHeaderGlassPlane()
-          .frame(height: height)
+        CSHeaderFadePlane(height: height, fade: Self.fade)
           .frame(maxWidth: .infinity)
           .offset(y: -height)
           .allowsHitTesting(false)
@@ -70,12 +75,22 @@ struct CSDetailHeaderGlass: ViewModifier {
   }
 }
 
-private struct CSHeaderGlassPlane: View {
+private struct CSHeaderFadePlane: View {
+  let height: CGFloat
+  let fade: CGFloat
+
   var body: some View {
-    if #available(macOS 26.0, *) {
-      Color.clear.glassEffect(.regular, in: Rectangle())
-    } else {
-      Rectangle().fill(.regularMaterial)
+    VStack(spacing: 0) {
+      CSColor.sheet
+        .frame(height: height)
+      // The gradient runs in the sheet's own colour down to its transparent
+      // end, so it never greys the page the way a fade to `.clear` would.
+      LinearGradient(
+        colors: [CSColor.sheet, CSColor.sheet.opacity(0)],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+      .frame(height: fade)
     }
   }
 }
