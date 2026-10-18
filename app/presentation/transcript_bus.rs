@@ -993,7 +993,25 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
     let identity_key = match event["schema"].as_str() {
         Some("codescribe.agent-user-message.v1") => "message_id",
         Some("codescribe.delivery-control.v1") => "control_id",
+        Some("codescribe.agent-panel-focus.v1" | "codescribe.agent-panel-focus-result.v1") => {
+            "request_id"
+        }
         _ => "reply_id",
+    };
+    // Panel focus rows only point at a vc-frame pane; they must never look like
+    // transcript evidence or carry words.
+    let carries_transcript_claims = || {
+        [
+            "text",
+            "wav",
+            "capture_epoch",
+            "sample_start",
+            "sample_end",
+            "occurrence_session_id",
+            "hold_until",
+        ]
+        .iter()
+        .any(|key| event.get(*key).is_some())
     };
     if !identity_field(identity_key)
         || ["provider", "provider_session_id", "lease_id", "emitted_at"]
@@ -1115,6 +1133,40 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     Some("waiting" | "playing" | "spoken" | "failed" | "refused" | "stopped")
                 )
                 || event["spoken"].as_bool() != Some(event["state"] == "spoken")
+            {
+                return Err(invalid());
+            }
+        }
+        (Some("codescribe.agent-panel-focus.v1"), Some("focus_agent_panel")) => {
+            if event["bus"].as_str() != path.to_str()
+                || !matches!(
+                    event["channel"].as_str(),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                )
+                || chrono::DateTime::parse_from_rfc3339(
+                    text_field("emitted_at").ok_or_else(invalid)?,
+                )
+                .is_err()
+                || event.get("status").is_some()
+                || carries_transcript_claims()
+            {
+                return Err(invalid());
+            }
+        }
+        (Some("codescribe.agent-panel-focus-result.v1"), Some("agent_panel_focus_result")) => {
+            if !matches!(
+                event["status"].as_str(),
+                Some(
+                    "focused" | "already_focused" | "pane_missing" | "no_frame" | "stale" | "error"
+                )
+            ) || !(event["exit_code"].is_null() || event["exit_code"].is_i64())
+                || event["elapsed_ms"].as_u64().is_none()
+                || !(event["frame"].is_null() || event["frame"].is_object())
+                || chrono::DateTime::parse_from_rfc3339(
+                    text_field("emitted_at").ok_or_else(invalid)?,
+                )
+                .is_err()
+                || carries_transcript_claims()
             {
                 return Err(invalid());
             }
@@ -2619,6 +2671,65 @@ mod tests {
             ("hold_until", serde_json::json!("2026-10-15T10:00:10Z")),
         ] {
             let mut event = valid.clone();
+            event[key] = value;
+            let error = super::append_agent_event(&path, &event).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{key}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn panel_focus_request_and_result_publish_without_transcript_claims() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channel-5.jsonl");
+        let lease = hex::encode(Sha256::digest(b"claude-code\0agent-s"));
+        let request = serde_json::json!({
+            "schema": "codescribe.agent-panel-focus.v1", "kind": "focus_agent_panel",
+            "request_id": "333333333333333333333333",
+            "emitted_at": "2026-10-18T08:30:00.123Z",
+            "provider": "claude-code", "provider_session_id": "agent-s",
+            "lease_id": &lease[..32], "bus": path, "channel": "5", "source": "overlay_click",
+        });
+        let result = serde_json::json!({
+            "schema": "codescribe.agent-panel-focus-result.v1", "kind": "agent_panel_focus_result",
+            "request_id": "333333333333333333333333", "emitted_at": "2026-10-18T08:30:00Z",
+            "provider": "claude-code", "provider_session_id": "agent-s",
+            "lease_id": &lease[..32], "status": "focused", "exit_code": 0, "elapsed_ms": 41,
+            "frame": {"session": "vibecrafted", "pane_id": 9,
+                      "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854},
+        });
+        for event in [&request, &result] {
+            assert!(
+                super::append_agent_event(&path, event).unwrap()["length"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            crate::durable_bus_oracle::rows(&raw).unwrap(),
+            vec![request.clone(), result.clone()]
+        );
+        let before = std::fs::read(&path).unwrap();
+        for (base, key, value) in [
+            (&request, "request_id", serde_json::json!("bad-id")),
+            (&request, "lease_id", serde_json::json!("wrong-owner")),
+            (&request, "bus", serde_json::json!("/another/bus.jsonl")),
+            (&request, "channel", serde_json::json!("0")),
+            (&request, "emitted_at", serde_json::json!("not-a-timestamp")),
+            (&request, "status", serde_json::json!("transcript_sealed")),
+            (&request, "text", serde_json::json!("pokaż panel")),
+            (&request, "kind", serde_json::json!("agent_reply")),
+            (&result, "status", serde_json::json!("transcript_sealed")),
+            (&result, "exit_code", serde_json::json!("0")),
+            (&result, "elapsed_ms", serde_json::json!(-1)),
+            (&result, "frame", serde_json::json!("terminal_9")),
+            (&result, "wav", serde_json::json!("/capture.wav")),
+            (&result, "provider_session_id", serde_json::json!("foreign")),
+        ] {
+            let mut event = base.clone();
             event[key] = value;
             let error = super::append_agent_event(&path, &event).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{key}");
