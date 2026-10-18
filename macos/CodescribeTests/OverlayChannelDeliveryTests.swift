@@ -280,7 +280,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "A later lease of the same name inherits neither the row nor a delivery")
     let klaudiusz = try XCTUnwrap(
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
-    XCTAssertTrue(klaudiusz.messages.isEmpty, "The sender is attribution, not a destination")
+    XCTAssertEqual(
+      klaudiusz.messages.map(\.text), ["Spec for james"],
+      "A direct peer message stays visible in both participants' conversations")
     XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
     XCTAssertEqual(
       projection.receiptCoordinates().map { "\($0.0.leaseID) \($0.1)" },
@@ -311,6 +313,32 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       })
     XCTAssertEqual(settled.messages.first?.recipients.map(\.acknowledged), [true])
     XCTAssertTrue(projection.receiptCoordinates().isEmpty, "The marker settles polling")
+  }
+
+  func testFounderChannel10MessageAppearsInAuthorsConversationAndDrawerPreview() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    let sender: [String: Any] = [
+      "provider": "claude-code", "provider_session_id": "peer-session",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "klaudiusz", "channel": "1",
+    ]
+    projection.consume([
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": "101010101010101010101010", "message_id": "101010101010101010101010",
+      "source_event_id": "101010101010101010101010", "association": "unsolicited",
+      "channel": "10", "peer_to": "founder", "text": "Raport na skrzynkę 10",
+      "sender": sender, "recipients": [],
+    ])
+    let conversations = projection.conversations(busPath: fixture.bus.path)
+    let klaudiusz = try XCTUnwrap(
+      conversations.first { $0.owner?.providerSessionID == "peer-session" })
+    XCTAssertEqual(klaudiusz.messages.map(\.text), ["Raport na skrzynkę 10"])
+    let message = try XCTUnwrap(klaudiusz.messages.first)
+    XCTAssertEqual(
+      OverlayChannelStatusView.drawerPreview(message: message),
+      "klaudiusz → You: Raport na skrzynkę 10")
+    XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
   }
 
   func testTypedMessagePointersBecomeChipsAndLeaveTheBubbleBody() throws {

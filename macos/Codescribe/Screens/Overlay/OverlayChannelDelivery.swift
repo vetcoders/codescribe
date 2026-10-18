@@ -393,12 +393,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           // Broadcast replies live only in All; retain private delivery evidence.
           if broadcastReplyIDs.contains(row.id) { return false }
           if row.kind == .reply, let destination = row.sourceChannel {
-            // All is one shared conversation. Private peer messages belong to
-            // their frozen recipient, never implicitly to their author.
+            if destination == "10" {
+              return addressed.authorID == ownerID
+            }
+            // All is one shared conversation. Direct peer messages belong to
+            // their frozen recipient and to their author when a recipient was admitted.
             return destination != "0"
-              && addressed.recipients.contains {
+              && (addressed.recipients.contains {
                 $0.id == ownerID && $0.channel == destination
               }
+                || (!addressed.recipients.isEmpty && addressed.authorID == ownerID))
           }
           return addressed.authorID == ownerID
             || addressed.recipients.contains { $0.id == ownerID }
@@ -641,7 +645,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         guard let owner = OverlayConversationOwner(row: author) else { return }
         let destination = row["origin_channel"] as? String ?? row["channel"] as? String
         if row["sender"] != nil {
-          guard let destination, destination.count == 1, "0123456789".contains(destination)
+          guard
+            let destination,
+            (destination.count == 1 && "0123456789".contains(destination)) || destination == "10"
           else { return }
         }
         let key = "reply:" + replyID

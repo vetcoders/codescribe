@@ -26,7 +26,10 @@
 pub mod admission;
 /// Fn+digit agent channels. Not a take and not a `State` variant.
 mod agent_channel;
-pub use agent_channel::{AgentArchiveRequest, ChannelHudState, ChannelOpenRefusal};
+pub use agent_channel::{
+    AgentArchiveRequest, ChannelHudState, ChannelOpenRefusal, FOUNDER_AUDIENCE, FOUNDER_CHANNEL,
+    founder_bus_path_at,
+};
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
