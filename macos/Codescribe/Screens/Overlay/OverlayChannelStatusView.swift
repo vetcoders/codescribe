@@ -226,11 +226,16 @@ struct OverlayRowHoverHighlight: ViewModifier {
   var enabled = true
   @State private var hovered = false
 
-  /// Tray plain rows use `CSColor.surfaceRaised(0.05)`. The clear branch
-  /// still names the row's canvas so a disabled row stays on its palette.
+  /// A veil, not a surface: `surfaceRaised` lifts dark glass with 5 % white
+  /// but paints paper with 80 % of it, which is the milky blob the Founder
+  /// saw in the drawer (2026-10-18). `hairline` keeps the same white veil on
+  /// ink and shades paper instead of bleaching it. Half the strength of
+  /// `OverlayRosterRowSelection`, so pointing at a row never reads as being
+  /// on it. The clear branch still names the row's canvas so a disabled row
+  /// stays on its palette.
   private var wash: Color {
     guard hovered, enabled else { return palette.desktopBackground.color.opacity(0) }
-    return CSColor.surfaceRaised(0.05)
+    return CSColor.hairline(0.05)
   }
 
   func body(content: Content) -> some View {
@@ -245,6 +250,43 @@ struct OverlayRowHoverHighlight: ViewModifier {
       .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
       .background {
         OverlayMenuCursorRegion { hovered = enabled && $0 }
+      }
+  }
+}
+
+/// One mark for "this is the open conversation", worn by every roster row:
+/// the shared channel and the agents under it, in the drawer. Before the
+/// Founder's 2026-10-18 review the roster carried two — a grey wash on an
+/// agent row, an accent wash on "0 · All" — and both read as milky glass.
+/// The mark is a slim accent bar on the leading edge, where no other row
+/// chrome lives, over a veil only a step deeper than hover: the bar says
+/// which row, the veil says the whole row. `OverlayGestureFocusRing` keeps
+/// the full accent outline, so the middle-click chooser's focus and the open
+/// conversation stay two different marks even on the same row.
+struct OverlayRosterRowSelection: ViewModifier {
+  let palette: OverlayAppearancePalette
+  let selected: Bool
+  var cornerRadius: CGFloat = 10
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if selected {
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(CSColor.hairline(0.09))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .overlay(alignment: .leading) {
+        if selected {
+          Capsule()
+            .fill(palette.agentAccent.color)
+            .frame(width: 3)
+            .padding(.vertical, 3)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
       }
   }
 }
@@ -720,6 +762,15 @@ struct OverlayChannelStatusView: View {
               .accessibilityIdentifier("overlay-channel-toggle-0")
             }
           )
+          // The shared channel is a roster row: the same padding, the same
+          // selection mark and the same hover as the agents under it.
+          .padding(.vertical, 4)
+          .padding(.horizontal, 6)
+          .modifier(
+            OverlayRosterRowSelection(
+              palette: palette, selected: selectedConversationID == broadcast.id)
+          )
+          .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
           .modifier(
             OverlayGestureFocusRing(
               focused: broadcast.id == gestureFocusID,
@@ -879,10 +930,10 @@ struct OverlayChannelStatusView: View {
     )
     .padding(.vertical, 4)
     .padding(.horizontal, 6)
-    .background(
-      selectedConversationID == conversation?.id && conversation != nil
-        ? palette.mutedText.color.opacity(0.10) : .clear,
-      in: RoundedRectangle(cornerRadius: 10)
+    .modifier(
+      OverlayRosterRowSelection(
+        palette: palette,
+        selected: conversation != nil && selectedConversationID == conversation?.id)
     )
     .modifier(
       OverlayRowHoverHighlight(
