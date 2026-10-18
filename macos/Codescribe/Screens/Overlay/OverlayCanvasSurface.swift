@@ -216,13 +216,24 @@ private struct OverlayScrollerStyle: NSViewRepresentable {
 }
 
 /// Header and composer use the same system-owned control surface.
+///
+/// A surface flush with the window's own edges must carry the window's corner,
+/// not the pill's: the header spans the full width at the very top, so its
+/// `CSRadius.pill` circular corner sat inside the canvas's `CSRadius.window`
+/// continuous clip and the two curves read as a cut-off right end (Founder,
+/// 2026-10-18). The composer floats inside the sheet and keeps the pill radius;
+/// the corner style is `.continuous` for both, the way every other shape on
+/// this canvas is drawn.
 struct OverlayControlGlass: ViewModifier {
+  var cornerRadius: CGFloat = CSRadius.pill
+
   @ViewBuilder
   func body(content: Content) -> some View {
+    let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     if #available(macOS 26.0, *) {
-      content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.regular.interactive(), in: shape)
     } else {
-      content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+      content.background(.regularMaterial, in: shape)
     }
   }
 }

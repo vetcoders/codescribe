@@ -880,7 +880,11 @@ struct DictationOverlayView: View {
       // Placement, the take-start preference and the panel routes live behind a
       // secondary click anywhere on the header, drag region included, in every form.
       .contextMenu { OverlayHeaderMenu(state: state) }
-      .modifier(OverlayControlGlass())
+      // The bar is flush with the window's top, leading and trailing edges, so
+      // its glass carries the window's corner. At the pill radius the glass
+      // corner and the canvas clip were two different curves a couple of points
+      // apart, and the trailing end read as cut off (Founder, 2026-10-18).
+      .modifier(OverlayControlGlass(cornerRadius: CSRadius.window))
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
       .background {
