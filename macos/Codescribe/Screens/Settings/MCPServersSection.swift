@@ -84,7 +84,7 @@ struct MCPServersSection: View {
       }
     } message: {
       Text(
-        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched."
+        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, conversations, preferences, and API keys stay untouched."
       )
     }
     // Removing one server is the same class of action as clearing the file:

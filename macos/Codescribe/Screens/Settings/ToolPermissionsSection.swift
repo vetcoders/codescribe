@@ -429,7 +429,7 @@ enum ToolPermissionLabels {
     switch source {
     case "tool": return String(localized: "Individual rule")
     case "server": return String(localized: "Server rule")
-    case "thread": return String(localized: "Overridden for this thread")
+    case "thread": return String(localized: "Overridden for this conversation")
     default: return String(localized: "Category default")
     }
   }
