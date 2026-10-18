@@ -98,6 +98,33 @@ enum AgentWindowChrome {
     String(localized: "Agent", comment: "Agent window title")
   }
 
+  /// The one Agent window, built the same way for the app and its tests.
+  /// The window carries its final style mask before SwiftUI sees the content:
+  /// created from the controller first and given `.fullSizeContentView`
+  /// afterwards, it never gets the split view's sidebar toggle.
+  @MainActor
+  static func makeWindow(content: NSViewController) -> NSWindow {
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
+      styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+      backing: .buffered,
+      defer: false
+    )
+    window.contentViewController = content
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.isReleasedWhenClosed = false
+    // LSUIElement accessory: join the active Space so a passive
+    // `orderFrontRegardless` is actually visible during voice delivery.
+    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    DockPresence.adopt(window)
+    // After adopt: style-mask repair must not leave a second painted "Agent" row.
+    apply(window)
+    return window
+  }
+
   @MainActor
   static func apply(_ window: NSWindow) {
     window.title = title()

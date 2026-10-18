@@ -112,8 +112,9 @@ struct ThreadRail: View {
     // shadow it and leave the row with no visible keyboard focus at all.
     .csFocusRing()
     .padding(.horizontal, 12)
-    .padding(.top, 10)
-    .padding(.bottom, 2)
+    // As much air below as above, so the row reads as its own action and not
+    // as part of the first section.
+    .padding(.vertical, 10)
     .accessibilityLabel("New conversation")
     .accessibilityIdentifier("thread-rail-new-thread")
   }
