@@ -157,7 +157,8 @@ final class ChatLayoutPolicyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 195)
         XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 301)
         XCTAssertGreaterThanOrEqual(
-          split.splitViewItems[1].viewController.view.frame.width, 443)
+          split.splitViewItems[1].viewController.view.frame.width,
+          AgentWindowMetrics.detailMinWidth - 1)
       }
       item.isCollapsed = true
       pumpUntil(ceiling: 0.05) { item.isCollapsed }

@@ -348,9 +348,11 @@ Increase Contrast), the column bounds and the two slots a window may fill.
   status dot and secondary system text that deep-links to the section owning
   the problem — and has no header.
 
-Window floors stayed where they were when the rail narrowed: Agent is
-640 × 440 with a 444 pt conversation column beside the 196 pt rail minimum,
-Settings 880 × 620 with its 664 pt detail column.
+Window floors stayed where they were when the rail narrowed. Both windows
+size their detail floor from the rail's ideal width, because that is the width
+the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
+column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
+column.
 
 ### Agent window header
 
