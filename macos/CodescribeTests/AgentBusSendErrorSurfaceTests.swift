@@ -178,25 +178,27 @@ final class AgentBusSendErrorSurfaceTests: XCTestCase {
     let tooLong = String(localized: "The message is too long (64 KB limit).")
     let atBound = await Self.send(text: String(repeating: "a", count: 65_536), home: home)
     XCTAssertNil(atBound, "exactly 64 KiB is allowed")
-    let over = try XCTUnwrap(
-      await Self.send(text: String(repeating: "a", count: 65_537), home: home))
+    let overResult = await Self.send(text: String(repeating: "a", count: 65_537), home: home)
+    let over = try XCTUnwrap(overResult)
     XCTAssertEqual(over.localizedDescription, tooLong)
     XCTAssertNotEqual(over.domain, NSCocoaErrorDomain, "a long message is not a disk error")
-    let polish = try XCTUnwrap(
-      await Self.send(text: String(repeating: "ą", count: 32_769), home: home))
+    let polishResult = await Self.send(text: String(repeating: "ą", count: 32_769), home: home)
+    let polish = try XCTUnwrap(polishResult)
     XCTAssertEqual(polish.localizedDescription, tooLong, "65 538 bytes in 32 769 letters")
   }
 
   func testRevisionNamesAnEmptyOrOversizedTextInsteadOfADiskError() async throws {
     let home = try installFakeHelper(stderr: "", status: 0)
     defer { try? FileManager.default.removeItem(at: home) }
-    let empty = try XCTUnwrap(await Self.revise(text: " \n ", home: home))
+    let emptyResult = await Self.revise(text: " \n ", home: home)
+    let empty = try XCTUnwrap(emptyResult)
     XCTAssertEqual(
       empty.localizedDescription, String(localized: "The revised message cannot be empty."))
-    let over = try XCTUnwrap(
-      await Self.revise(text: String(repeating: "a", count: 65_537), home: home))
+    let overResult = await Self.revise(text: String(repeating: "a", count: 65_537), home: home)
+    let over = try XCTUnwrap(overResult)
     XCTAssertEqual(
       over.localizedDescription, String(localized: "The message is too long (64 KB limit)."))
-    XCTAssertNil(await Self.revise(text: "poprawka", home: home), "a real revision passes")
+    let revised = await Self.revise(text: "poprawka", home: home)
+    XCTAssertNil(revised, "a real revision passes")
   }
 }
