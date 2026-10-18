@@ -79,18 +79,18 @@ struct SettingsChipButton<Label: View>: View {
   var body: some View {
     Button(action: action) {
       label()
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .fill(Color.primary.opacity(0.06))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
-    .csFocusRing()
+    .csFocusRing(cornerRadius: SettingsScale.controlRadius)
     .disabled(!enabled)
   }
 }
@@ -121,7 +121,7 @@ struct SettingsRefreshButton: View {
         } else {
           CSIconView(icon: .refresh, size: 10, weight: .semibold)
         }
-        Text(title).font(CSFont.ui(11.5, .semibold))
+        Text(title).font(SettingsScale.controlLabel)
       }
       .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
       .frame(height: 14)
@@ -139,7 +139,7 @@ extension SettingsChipButton where Label == Text {
   ) {
     self.init(enabled: enabled, action: action) {
       Text(title)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(enabled ? tint : Color.secondary)
     }
   }
@@ -194,7 +194,7 @@ struct SettingsUrlRow: View {
       }
       if let caption {
         Text(caption)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(Color.secondary)
       }
@@ -226,7 +226,7 @@ struct SettingsDetailRow: View {
   var body: some View {
     HStack(spacing: 8) {
       Text(title)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
       Text(value)
         .font(CSFont.mono(11, .medium))
@@ -469,12 +469,12 @@ struct KeyRow: View {
     if operationPending {
       HStack {
         ProgressView().controlSize(.small)
-        Text("Updating provider access…").font(CSFont.ui(11.5))
+        Text("Updating provider access…").font(SettingsScale.helper)
       }
     }
     if let operationError {
       Text(operationError)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(CSColor.danger)
         .textSelection(.enabled)
     }
@@ -626,7 +626,7 @@ struct AccountLoginRow: View {
     HStack(spacing: 10) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
         .font(CSFont.ui(10, .semibold))
@@ -765,7 +765,7 @@ struct SettingsSecondsSlider: View {
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
           Text(detail)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
