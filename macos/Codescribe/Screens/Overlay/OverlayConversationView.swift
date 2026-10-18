@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Maciej (2026-10-16): no outline on the bubble's agent name — hovering
@@ -430,7 +429,7 @@ struct OverlayConversationView: View {
           _ = scrollFollow.handle(event)
         }
       }
-      .background { OverlayConversationScrollerStyle() }
+      .overlayAutohidingScroller()
     }
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {
@@ -730,92 +729,6 @@ struct OverlayConversationView: View {
       return matches.first { $0.id == occurrenceID }
     }
     return matches.count == 1 ? matches[0] : nil
-  }
-}
-
-/// With a mouse attached, macOS hands every scroll view legacy scrollers that
-/// never fade, and the conversation carried a permanent grey bar down its edge
-/// (Founder, 2026-10-18). The composer already pins `.overlay` on the
-/// `NSScrollView` it owns; the SwiftUI list reaches its backing scroll view the
-/// way the live-scroll observer does and pins the same style, so a long
-/// conversation shows a thin scroller only while it is actually scrolling —
-/// whatever "Show scroll bars" is set to.
-private struct OverlayConversationScrollerStyle: NSViewRepresentable {
-  func makeCoordinator() -> Coordinator { Coordinator() }
-
-  func makeNSView(context: Context) -> AttachmentView {
-    let view = AttachmentView()
-    view.onAttach = { [weak coordinator = context.coordinator] scrollView in
-      coordinator?.attach(to: scrollView)
-    }
-    return view
-  }
-
-  func updateNSView(_ nsView: AttachmentView, context: Context) {
-    nsView.attachWhenReady()
-  }
-
-  static func dismantleNSView(_ nsView: AttachmentView, coordinator: Coordinator) {
-    coordinator.detach()
-  }
-
-  @MainActor
-  final class AttachmentView: NSView {
-    var onAttach: ((NSScrollView) -> Void)?
-
-    /// The view exists to configure the scroll view around it; it spans the
-    /// whole document and must not take a click away from the bubbles.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func viewDidMoveToWindow() {
-      super.viewDidMoveToWindow()
-      attachWhenReady()
-    }
-
-    func attachWhenReady() {
-      Task { @MainActor [weak self] in
-        await Task.yield()
-        guard let self, let scrollView = enclosingScrollView else { return }
-        onAttach?(scrollView)
-      }
-    }
-  }
-
-  @MainActor
-  final class Coordinator {
-    private weak var scrollView: NSScrollView?
-    private var styleObserver: NSObjectProtocol?
-
-    func attach(to scrollView: NSScrollView) {
-      self.scrollView = scrollView
-      pinOverlayScrollers()
-      guard styleObserver == nil else { return }
-      // AppKit re-reads the system preference whenever it changes and would
-      // hand the list its legacy scroller straight back.
-      styleObserver = NotificationCenter.default.addObserver(
-        forName: NSScroller.preferredScrollerStyleDidChangeNotification,
-        object: nil,
-        queue: nil
-      ) { [weak self] _ in
-        MainActor.assumeIsolated {
-          guard let self else { return }
-          self.pinOverlayScrollers()
-        }
-      }
-    }
-
-    func detach() {
-      if let styleObserver { NotificationCenter.default.removeObserver(styleObserver) }
-      styleObserver = nil
-      scrollView = nil
-    }
-
-    private func pinOverlayScrollers() {
-      guard let scrollView else { return }
-      scrollView.scrollerStyle = .overlay
-      scrollView.autohidesScrollers = true
-      scrollView.hasHorizontalScroller = false
-    }
   }
 }
 
