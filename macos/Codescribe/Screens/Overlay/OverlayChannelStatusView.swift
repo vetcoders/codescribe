@@ -1011,6 +1011,14 @@ struct OverlayChannelStatusView: View {
 
   /// The "0 · All" row keeps the roster's model; its title carries the
   /// broadcast wake count and its context menu every member's policy.
+  ///
+  /// The shared channel stands apart from the agent rows through structure,
+  /// not colour: it leads the roster, it wears the antenna where an agent
+  /// wears its status dot, and a divider parts it from the agents under it.
+  /// Both decisions are recorded here — Maciej, 2026-10-17: "wyróżnić bardziej
+  /// kanał ogólny", which arrived as an accent wash behind the row; Founder,
+  /// 2026-10-18: that wash "wygląda tragicznie" and goes. The intent stayed,
+  /// its paint did not.
   private func broadcastRow(
     _ broadcast: OverlayConversation, rowFocus: FocusState<String?>.Binding?
   ) -> some View {
@@ -1024,12 +1032,6 @@ struct OverlayChannelStatusView: View {
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
     .foregroundStyle(palette.primaryText.color)
     .help(String(localized: "View conversation without changing the microphone"))
-    // The shared channel stands apart from the agent rows: an accent wash,
-    // deeper while selected (Maciej, 2026-10-17: "wyróżnić bardziej kanał ogólny").
-    .background(
-      palette.agentAccent.color.opacity(selectedConversationID == broadcast.id ? 0.18 : 0.08),
-      in: RoundedRectangle(cornerRadius: 10)
-    )
     .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
   }
 
@@ -1788,9 +1790,9 @@ struct OverlayAgentPillStack: View {
     }
     .buttonStyle(.plain)
     .csFocusOutline()
-    .background(
-      entry.isBroadcast ? palette.agentAccent.color.opacity(0.14) : .clear, in: Capsule()
-    )
+    // The shared channel is marked the way the docked drawer marks it: first
+    // in the stack, the antenna in place of a status dot, and the hairline
+    // below. No accent fill behind the pill (Founder, 2026-10-18).
     .modifier(OverlayNamePillGlass(interactive: true))
     .modifier(
       OverlayGestureFocusRing(
