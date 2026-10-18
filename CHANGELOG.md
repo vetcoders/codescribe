@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Settings health line under the sidebar is ordinary secondary text beside its coloured dot.
 - The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 - No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
+- Settings is sized for a desktop app rather than a tablet: one scale across the whole central pane, with smaller cards, tighter margins and text and controls a rung down, so pages that overflowed the window by a tile or less now fit. Section titles sit above their cards and are never smaller or lighter than the settings underneath them, and every flat action in Settings is the same chip, with its keyboard outline on the chip's own shape. The sidebar keeps its size, and no wording changed.
 
 ### Fixed
 
