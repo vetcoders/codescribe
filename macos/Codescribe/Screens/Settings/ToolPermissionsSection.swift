@@ -360,8 +360,8 @@ enum ToolPermissionLabels {
         comment: "Native tool name: search the contents of files")
     case "search_threads":
       return String(
-        localized: "tools.native.search_threads", defaultValue: "Search in threads",
-        comment: "Native tool name: search the Agent's own threads")
+        localized: "tools.native.search_threads", defaultValue: "Search in conversations",
+        comment: "Native tool name: search the Agent's own conversations")
     case "stop_process":
       return String(
         localized: "tools.native.stop_process", defaultValue: "Stop a process",

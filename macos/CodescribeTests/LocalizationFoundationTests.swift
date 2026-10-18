@@ -52,10 +52,11 @@ final class LocalizationFoundationTests: XCTestCase {
   func testEachCountInASentenceInflectsOnItsOwn() {
     func moved(_ threads: Int, _ files: Int) -> String {
       String(
-        localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.", bundle: app)
+        localized: "Moves \(threads) Agent conversations and \(files) Agent files to Trash.",
+        bundle: app)
     }
-    XCTAssertEqual(moved(1, 2), "Moves 1 Agent thread and 2 Agent files to Trash.")
-    XCTAssertEqual(moved(3, 1), "Moves 3 Agent threads and 1 Agent file to Trash.")
+    XCTAssertEqual(moved(1, 2), "Moves 1 Agent conversation and 2 Agent files to Trash.")
+    XCTAssertEqual(moved(3, 1), "Moves 3 Agent conversations and 1 Agent file to Trash.")
   }
 
   /// A key written as an identifier resolves to the English given beside it

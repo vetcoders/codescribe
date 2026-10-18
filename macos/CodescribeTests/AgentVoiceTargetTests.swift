@@ -201,7 +201,7 @@ final class AgentVoiceTargetTests: XCTestCase {
   func testOnlyMaxAtSeedCreatesANewThreadShell() {
     let f = fixture([row("t_max", mode: "max")])
     defer { f.store.invalidate() }
-    XCTAssertEqual(f.store.currentThread?.title, "New thread")
+    XCTAssertEqual(f.store.currentThread?.title, "New conversation")
     XCTAssertNil(f.store.currentThread?.backendId)
     XCTAssertEqual(f.engine.targets.count, 1)
     XCTAssertNil(f.engine.targets.last!)
@@ -247,7 +247,7 @@ final class AgentVoiceTargetTests: XCTestCase {
       f.store.refreshThreads()
       XCTAssertFalse(f.store.currentThread?.isMaxConsultation ?? true)
       if remaining.isEmpty {
-        XCTAssertEqual(f.store.currentThread?.title, "New thread")
+        XCTAssertEqual(f.store.currentThread?.title, "New conversation")
         XCTAssertNil(f.engine.targets.last!)
       } else {
         XCTAssertEqual(f.store.currentThread?.backendId, "t_recent")
@@ -260,7 +260,7 @@ final class AgentVoiceTargetTests: XCTestCase {
     let f = fixture([row("t_max", updated: 10, mode: "max"), row("t_agent")])
     defer { f.store.invalidate() }
     f.store.delete(try XCTUnwrap(f.store.currentThread))
-    XCTAssertEqual(f.store.currentThread?.title, "New thread")
+    XCTAssertEqual(f.store.currentThread?.title, "New conversation")
     XCTAssertNil(f.engine.targets.last!)
     XCTAssertEqual(f.store.threads.filter(\.isMaxConsultation).count, 1)
   }

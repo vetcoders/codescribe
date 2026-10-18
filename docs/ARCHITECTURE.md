@@ -341,7 +341,7 @@ Increase Contrast), the column bounds and the two slots a window may fill.
   (`Settings.sidebarExpanded.v1`, `AgentChat.sidebarExpanded.v1`); the button,
   a divider drag and the shortcut all write it.
 - **The slots** carry what belongs to a window's function and nothing else.
-  Agent fills the header slot, above the search field, with **New thread** —
+  Agent fills the header slot, above the search field, with **New conversation** —
   the agent's first action, a create glyph and its label on a plain row —
   and has no footer: the reference sidebar ends with its last row, not with
   a pill. Settings fills the footer slot with the health line — a coloured
