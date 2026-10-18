@@ -86,6 +86,38 @@ path, not proof that the text was loaded or read. An empty unread mailbox is not
 an empty history. Reading history neither ACKs another lease nor makes old
 requests fresh commands.
 
+## Agent panel focus
+
+A click on an agent row asks that agent's own follower to bring its vc-frame
+pane to the Founder's focus. The app never drives the terminal; the follower
+was spawned from the agent's pane and inherits its coordinates.
+
+At start the follower records them in its lease as `frame`: `session`,
+`pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
+`host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`) and `frame_bin`.
+`frame` is `null` for an agent outside vc-frame. A follower that predates this
+contract reports no `frame` until it is restarted.
+
+The request is a row on the agent's bus, schema
+`codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with
+`request_id` (24 lowercase hex), `emitted_at`, the exact `provider`,
+`provider_session_id`, `lease_id`, `bus` and `channel` of the agent, and
+`source` (`overlay_click`). It carries no text, status or capture coordinates.
+The owning follower runs `vc-frame action focus-pane-id terminal_<pane_id>`
+once per `request_id`; vc-frame switches to the pane's tab first. It neither
+wakes the model nor touches the mailbox. A request older than 15 seconds is a
+replayed backlog and is answered `stale` without focusing.
+
+The follower answers on the same bus with
+`codescribe.agent-panel-focus-result.v1`, `kind` `agent_panel_focus_result`:
+the same `request_id`, its own `provider`/`provider_session_id`/`lease_id`,
+`emitted_at`, `status` (`focused`, `already_focused`, `pane_missing`,
+`no_frame`, `stale` or `error`), `exit_code` (integer or `null`),
+`elapsed_ms`, and `frame` (`session`, `pane_id`, `host_bundle_id`,
+`host_pid`, or `null`). Activating the terminal window stays with the app on
+`focused` / `already_focused`: the click is its user action. Both rows pass
+through `codescribe bus append-event`, which refuses any other shape.
+
 ## Conversational read receipt
 
 The complete causal identity, sender, reply association, routing and provenance

@@ -99,6 +99,14 @@ AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
 DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
+#: A click on an agent row asks that agent's follower to bring its own
+#: vc-frame pane to the Founder's focus; the app never drives the terminal.
+AGENT_PANEL_FOCUS_SCHEMA = "codescribe.agent-panel-focus.v1"
+AGENT_PANEL_FOCUS_RESULT_SCHEMA = "codescribe.agent-panel-focus-result.v1"
+#: A request older than this is a backlog replayed after a restart, not a
+#: click: executing it would yank the focus away from whatever is on screen.
+PANEL_FOCUS_FRESH_SECONDS = 15.0
+PANEL_FOCUS_TIMEOUT_SECONDS = 5.0
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
 REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
 PLAYBACK_MUTE_SCHEMA = "codescribe.agent-playback-mute.v1"
@@ -2535,6 +2543,83 @@ def repository_context(workspace: Path) -> dict[str, str]:
     return result
 
 
+def frame_context(environ: Any) -> dict[str, Any] | None:
+    """Name the vc-frame pane that hosts this provider session, or None outside vc-frame.
+
+    The follower is spawned from the agent's own shell, so it inherits the
+    pane, session and terminal-host coordinates of that pane.
+    """
+    import shutil
+
+    pane = str(environ.get("VC_FRAME_PANE_ID") or environ.get("ZELLIJ_PANE_ID") or "")
+    session = str(environ.get("VC_FRAME_SESSION_NAME") or environ.get("ZELLIJ_SESSION_NAME") or "")
+    if not pane.isdigit() or not session:
+        return None
+    binary = environ.get("VIBECRAFTED_VC_FRAME_BIN")
+    if not binary or not os.access(binary, os.X_OK):
+        binary = shutil.which("vc-frame", path=environ.get("PATH"))
+    host_pid = None
+    for key in ("ALACRITTY_SOCKET", "ALACRITTY_LOG"):
+        match = re.search(r"Alacritty-(\d+)\.(?:sock|log)$", str(environ.get(key) or ""))
+        if match:
+            host_pid = int(match.group(1))
+            break
+    return {
+        "session": session,
+        "pane_id": int(pane),
+        "socket_dir": environ.get("VC_FRAME_SOCKET_DIR") or environ.get("ZELLIJ_SOCKET_DIR"),
+        "host_bundle_id": environ.get("__CFBundleIdentifier"),
+        "host_pid": host_pid,
+        "frame_bin": binary,
+    }
+
+
+def panel_focus_request(raw: str) -> dict[str, Any] | None:
+    """Decode one panel-focus request row; every other bus row is None."""
+    if AGENT_PANEL_FOCUS_SCHEMA not in raw:
+        return None
+    try:
+        event = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if (not isinstance(event, dict) or event.get("schema") != AGENT_PANEL_FOCUS_SCHEMA
+            or event.get("kind") != "focus_agent_panel"
+            or not re.fullmatch(r"[0-9a-f]{24}", str(event.get("request_id") or ""))):
+        return None
+    return event
+
+
+def run_panel_focus(frame: dict[str, Any]) -> tuple[str, int | None]:
+    """Focus one pane; vc-frame switches the client to the pane's tab first."""
+    import subprocess
+
+    binary = frame.get("frame_bin")
+    if not binary:
+        return "error", None
+    environ = {**os.environ, "ZELLIJ_SESSION_NAME": frame["session"],
+               "VC_FRAME_SESSION_NAME": frame["session"]}
+    if frame.get("socket_dir"):
+        environ.update(ZELLIJ_SOCKET_DIR=frame["socket_dir"], VC_FRAME_SOCKET_DIR=frame["socket_dir"])
+    try:
+        result = subprocess.run(
+            [binary, "action", "focus-pane-id", f"terminal_{frame['pane_id']}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=PANEL_FOCUS_TIMEOUT_SECONDS, env=environ,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error", None
+    if result.returncode == 0:
+        return "focused", 0
+    # The server answers a focused or a missing pane with a nonzero exit and
+    # a message; neither is a transport failure.
+    message = f"{result.stdout}\n{result.stderr}"
+    if "already focused" in message:
+        return "already_focused", result.returncode
+    if "not found" in message:
+        return "pane_missing", result.returncode
+    return "error", result.returncode
+
+
 class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
 
@@ -2561,6 +2646,8 @@ class SessionLease:
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
         self.process_identity = process_identity(os.getpid())
+        self.frame = frame_context(os.environ)
+        self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
             raise ValueError(
@@ -2778,6 +2865,7 @@ class SessionLease:
                 "process_identity": self.process_identity,
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
+                "frame": self.frame,
                 **self.repository_context,
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
                 **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
@@ -2787,6 +2875,40 @@ class SessionLease:
     def refresh_provider_model(self) -> None:
         if self._provider_model_reader is not None:
             self._provider_model_reader.refresh()
+
+    def focus_panel(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        """Answer one click on this agent's row; None for another lease or a repeat.
+
+        The model is not woken and the mailbox is untouched: the follower
+        owns the pane coordinates and acts on them itself.
+        """
+        if (request.get("lease_id") != self.lease_id
+                or request.get("provider") != self.provider
+                or request.get("provider_session_id") != self.provider_session_id
+                or request.get("bus") != self.bus
+                or request["request_id"] in self.focused_requests):
+            return None
+        self.focused_requests.add(request["request_id"])
+        started = time.monotonic()
+        emitted = hold_timestamp(request.get("emitted_at"))
+        status: str
+        exit_code: int | None = None
+        if emitted is None or time.time() - emitted > PANEL_FOCUS_FRESH_SECONDS:
+            status = "stale"
+        elif self.frame is None:
+            status = "no_frame"
+        else:
+            status, exit_code = run_panel_focus(self.frame)
+        return {
+            "schema": AGENT_PANEL_FOCUS_RESULT_SCHEMA, "kind": "agent_panel_focus_result",
+            "emitted_at": utc_now(), "request_id": request["request_id"],
+            "provider": self.provider, "provider_session_id": self.provider_session_id,
+            "lease_id": self.lease_id, "status": status, "exit_code": exit_code,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "frame": ({key: self.frame.get(key) for key in
+                       ("session", "pane_id", "host_bundle_id", "host_pid")}
+                      if self.frame else None),
+        }
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
@@ -3924,6 +4046,18 @@ def run(args: argparse.Namespace) -> int:
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
+        request = panel_focus_request(raw) if lease and args.follow else None
+        if request is not None:
+            assert lease is not None
+            result = lease.focus_panel(request)
+            if result is not None:
+                try:
+                    publish_reply_event(Path(lease.bus), result, bridge_root=lease.root)
+                except (OSError, ValueError) as error:
+                    sys.stderr.write(f"bus-demux: panel focus receipt not published: {error}\n")
+            if next_cursor is not None and not normalizer.storage.pending:
+                lease.persist(active=True, cursor=next_cursor)
+            return
         # Coverage-refused flushes precede the row that triggered them: they
         # carry utterances older than the channel receipt on this line.
         events = normalized_revision_events(raw, normalizer, lease)
