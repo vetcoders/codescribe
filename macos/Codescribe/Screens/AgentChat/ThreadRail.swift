@@ -6,7 +6,8 @@ import SwiftUI
 /// `CSSidebarColumn` owns the column itself — list style, search field,
 /// material, width and the toggle; the Settings sidebar is its reference
 /// (Monika, 2026-10-18). What stays here is what belongs to the Agent
-/// window's function: the thread rows and the New thread action.
+/// window's function: the thread rows and the New thread action above the
+/// search field.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   @State private var search: String = ""
@@ -23,8 +24,8 @@ struct ThreadRail: View {
       onSearchSubmit: { handleSearchCommit() }
     ) {
       threadList
-    } footer: {
-      newThreadFooter
+    } header: {
+      newThreadButton
     }
     .background {
       ThreadSearchKeyRouter(
@@ -94,19 +95,26 @@ struct ThreadRail: View {
     .accessibilityIdentifier("thread-rail-list")
   }
 
-  /// The system glass button, the same regular glass as the composer field,
-  /// sits in the column's footer slot; hover, focus, Reduce Transparency and
-  /// Increase Contrast come from the system style.
-  private var newThreadFooter: some View {
+  /// The agent's first action, in the column's top slot directly under the
+  /// traffic lights and above the search field. Quiet by design: a create
+  /// glyph and its label on a plain row, no capsule and nothing to hover
+  /// for — it is visible the moment the window opens, and the reference
+  /// sidebar has no bottom pill to put it in (Monika, 2026-10-18). Same
+  /// action and same label as the bar it replaces.
+  private var newThreadButton: some View {
     Button(action: { store.newThread() }) {
-      Label("New thread", systemImage: "plus")
-        .frame(maxWidth: .infinity)
+      Label("New thread", systemImage: "square.and.pencil")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
-    .modifier(NewThreadButtonStyle())
-    .controlSize(.large)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
+    // Plain look, product focus ring: `.buttonStyle(.plain)` here would
+    // shadow it and leave the row with no visible keyboard focus at all.
+    .csFocusRing()
+    .padding(.horizontal, 12)
+    .padding(.top, 10)
+    .padding(.bottom, 2)
     .accessibilityLabel("New thread")
+    .accessibilityIdentifier("thread-rail-new-thread")
   }
 
   private var filteredThreads: [ChatThread] {
@@ -231,19 +239,6 @@ enum ThreadRowTitle {
       now: now,
       calendar: calendar
     )
-  }
-}
-
-/// The rail's New thread action on the system glass button style; macOS 14
-/// and 15 keep the bordered button over the bar material.
-private struct NewThreadButtonStyle: ViewModifier {
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if #available(macOS 26.0, *) {
-      content.buttonStyle(.glass)
-    } else {
-      content.buttonStyle(.bordered)
-    }
   }
 }
 
