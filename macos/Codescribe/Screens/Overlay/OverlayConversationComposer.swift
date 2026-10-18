@@ -128,6 +128,41 @@ struct OverlayConversationComposer: View {
   }
 }
 
+/// The asset store mints its own file names: a pasted image lands as
+/// `inline_<sha256>.png` and a pasted file as `clipboard_<sha256>_<name>`.
+/// Neither is a label — the Founder's chip read `inline_5af8…f0108a4f.png`
+/// (2026-10-18). A pasted picture is named for what it is, and a file the user
+/// chose gives back the name they chose; anything else keeps its own name.
+enum ConversationAttachmentLabel {
+  private static let inlineImagePrefix = "inline_"
+  private static let clipboardPrefix = "clipboard_"
+  private static let hashLength = 64
+
+  /// `bytes` is the pointer's own size, or 0 when the caller has none yet.
+  static func display(fileName: String, bytes: Int = 0) -> String {
+    if fileName.hasPrefix(inlineImagePrefix) {
+      let image = String(
+        localized: "Image", comment: "Attachment chip label for an image pasted into a message")
+      guard bytes > 0 else { return image }
+      let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+      return "\(image) · \(size)"
+    }
+    return chosenName(fileName) ?? fileName
+  }
+
+  /// Peels the content hash the clipboard store prefixes to a chosen name.
+  private static func chosenName(_ fileName: String) -> String? {
+    guard fileName.hasPrefix(clipboardPrefix) else { return nil }
+    let stored = fileName.dropFirst(clipboardPrefix.count)
+    let hash = stored.prefix(hashLength)
+    guard hash.count == hashLength, hash.allSatisfy(\.isHexDigit),
+      stored.dropFirst(hashLength).first == "_"
+    else { return nil }
+    let chosen = stored.dropFirst(hashLength + 1)
+    return chosen.isEmpty ? nil : String(chosen)
+  }
+}
+
 /// A pasted attachment in the composer: the bubble's pill plus a remove cross.
 /// The pill body is the same preview button as a bubble's `AttachmentChip`;
 /// the cross stays a sibling control, so removing never opens the preview.
@@ -136,9 +171,13 @@ struct OverlayComposerAttachmentPill: View {
   let palette: OverlayAppearancePalette
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
+  @State private var bytes = 0
   @State private var showPreview = false
 
-  private var name: String { URL(fileURLWithPath: path).lastPathComponent }
+  private var name: String {
+    ConversationAttachmentLabel.display(
+      fileName: URL(fileURLWithPath: path).lastPathComponent, bytes: bytes)
+  }
 
   private var attachment: MessageAttachment {
     MessageAttachment(name: name, url: URL(fileURLWithPath: path))
@@ -161,8 +200,9 @@ struct OverlayComposerAttachmentPill: View {
               .font(.system(size: 10, weight: .medium))
               .foregroundStyle(palette.mutedText.color)
           }
+          // A label, not code: the system voice, per the mono policy.
           Text(verbatim: name)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.ui(10.5, .medium))
             .foregroundStyle(palette.primaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -195,7 +235,11 @@ struct OverlayComposerAttachmentPill: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Text(verbatim: name))
-    .task(id: path) { thumbnail = NSImage(contentsOf: URL(fileURLWithPath: path)) }
+    .task(id: path) {
+      let url = URL(fileURLWithPath: path)
+      thumbnail = NSImage(contentsOf: url)
+      bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+    }
     .sheet(isPresented: $showPreview) {
       AttachmentPreviewSheet(attachment: attachment) {
         showPreview = false
