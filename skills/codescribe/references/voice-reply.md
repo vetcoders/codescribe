@@ -128,7 +128,14 @@ Report a failed reply in chat with its `reason`; do not retry a
 
 Keeping the voice login fresh is the agent's job (Maciej, 2026-10-18). On
 `credential_missing` or `credential_rejected`, refresh the login of the vendor
-this lease last spoke with, normally xAI, whose login lasts about six hours:
+this lease last spoke with, normally xAI:
+
+After an overnight or other long pause, check the existing login before
+promising voice delivery and refresh it when needed. The Founder observed
+about six hours of xAI login validity; this is an operational reminder, not a
+guaranteed token lifetime. Use the current credential's expiry when the
+provider exposes it. A successful login still needs a real `spoken: true`
+playback receipt before reporting that voice works.
 
 ```bash
 cs-say auth --provider xai --login-type device-code
