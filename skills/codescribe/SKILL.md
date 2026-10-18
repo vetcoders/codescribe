@@ -32,7 +32,7 @@ Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in ref
   retain the lease, cursor, name, voice and existing follower. Reattach the same
   session only if recovery or helper adoption is needed. Recover the relevant
   [conversation history](references/history.md); an empty mailbox is not an empty chat.
-- **Answer by voice:** follow **Reply** after reading and acknowledging.
+- **Answer by voice:** follow **Reply** after read and ACK.
 - **A mailbox on another Mac:** follow [Remote bus](references/remote.md). Use
   `--remote HOST` consistently; local MCP tools do not read the remote mailbox.
 - **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
@@ -170,8 +170,9 @@ truncated result is not proof of complete receipt.
 
 Write concise prose for the Founder: result and next concrete action. Keep raw
 JSON, PCM receipts and command logs in diagnostics; do not narrate every ACK.
-For requested voice, follow [Voice reply](references/voice-reply.md) and use the
-**owned ID just read** (plugin: `codescribe_reply`):
+Unless asked for quiet, also speak it: follow
+[Voice reply](references/voice-reply.md) with the **owned ID just read**
+(plugin: `codescribe_reply`):
 
 ```bash
 cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID

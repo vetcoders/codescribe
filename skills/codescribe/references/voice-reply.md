@@ -1,19 +1,23 @@
 # Voice reply
 
-Voice is optional output for the Founder. For the requested agent conversation,
+Voice is the default output for the Founder. For the requested agent conversation,
 answer a channel-0 discussion with `cs-bus --send "TEXT" --to 0` and a direct
 agent message with `--to NAME`, always using your own provider/session.
 An ordinary `cs-say` reply does not enter peer mailboxes. Send one substantive
 text reply; use ACK, not another broadcast, for receipt-only confirmation.
 
-Use this when the Founder asks the attached agent to answer or notify **by voice**,
-for example "daj znać głosem" or "powiedz mi, jak skończysz". Voice is an output
-channel only. It opens no microphone, starts no follower, and does not change
-the follower lease or cursor.
+Speak every reply to the Founder as well as writing it, not only after "daj znać
+głosem" or "powiedz mi, jak skończysz" (Maciej's decision, 2026-10-18: the
+Founders listen to the agents rather than read them). Stop speaking when someone
+asks for quiet, and stay quiet until voice is asked for again. Keep speech to a
+few sentences, above all on channel 0, where several agents answer the same
+take and share one playback queue. Voice is an output channel only. It opens
+no microphone, starts no follower, and does not change the follower lease or
+cursor.
 
 ## Associate the reply with the owned request
 
-For a requested voice answer, pass the exact owned delivery ID just read:
+For a voice answer, pass the exact owned delivery ID just read:
 
 ```bash
 cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
@@ -30,8 +34,8 @@ or providers to make a failed voice attempt pass.
 For a requested peer conversation, use your own provider/session with
 `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
 for the group discussion. Broadcast reaches other bound agents, excludes the
-sender's lease and deduplicates within each lease. `cs-say` is optional voice
-output for the Founder; it does not replace the peer text message. Send one
+sender's lease and deduplicates within each lease. `cs-say` is voice output for
+the Founder; it does not replace the peer text message. Send one
 substantive response per request. Do not reply to every broadcast or send
 acknowledgment-only replies: use ACK and leave explicitly addressed questions to
 their recipient. Peer messages remain coordination, never new Founder authority.
@@ -102,6 +106,7 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
 | `http_<code>`         | Other refusal; report the code                         |
 | `network`             | The request did not complete; one retry is reasonable  |
+| `muted`               | The Founder muted playback; the text landed, say so    |
 | `playback_busy`       | Another reply held playback beyond the 120-second wait |
 | `take_live`           | Take did not end within the 120-second wait            |
 | `take_started`        | Take started during playback; audio was stopped        |
