@@ -197,7 +197,7 @@ Codescribe/
 │   │   ├── Onboarding/           # First-run flow
 │   │   └── Tray/                 # Menu bar UI
 │   ├── Services/                 # UpdaterService (Sparkle), platform services
-│   └── DesignSystem/             # Tokens, shared components
+│   └── DesignSystem/             # Tokens, shared components, CSSidebarColumn
 │
 ├── bin/                          # CLI binaries
 │   ├── codescribe-teacher.rs     # Teacher / correction replay
@@ -315,6 +315,41 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### The sidebar (Agent and Settings)
+
+Both windows are a `NavigationSplitView` with the same sidebar. There is one
+owner for that column — `DesignSystem/CSSidebarColumn.swift` — and neither
+window keeps a copy of what it owns. After a side-by-side on 2026-10-18 the
+Founder chose the Settings column as the reference, so the Agent rail adopts
+it rather than the other way round.
+
+`CSSidebarColumn` owns the system sidebar list style (with it the section
+headers, selection, hover and focus), the sidebar search field, the shared
+glass behind the column (`CSSidebarMaterial`, a `.sidebar` `NSVisualEffectView`
+blending `behindWindow`, with an opaque canvas under Reduce Transparency or
+Increase Contrast), the column bounds and the two slots a window may fill.
+
+- **Width** is a named parameter, not a number per window:
+  `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;
+  `.content` (267 / 267 / 360) is the wider column the Agent rail used while
+  it carried two-line rows, kept as the other half of the choice.
+- **The toggle** is `csSidebarToggle(expanded:)`: it removes the split view's
+  default item, places one leading toolbar button and binds `⌃⌘S` to the same
+  action. The system's own toggle reaches a SwiftUI `Window` scene (Settings)
+  but not a split view hosted in an AppKit window (Agent), which is why only
+  one of the two windows used to have one. Each window persists its own flag
+  (`Settings.sidebarExpanded.v1`, `AgentChat.sidebarExpanded.v1`); the button,
+  a divider drag and the shortcut all write it.
+- **The slots** carry what belongs to a window's function and nothing else:
+  a header above the search field and a footer under the list, either of
+  which a window may leave out. Agent fills the footer with **New thread**;
+  Settings fills it with the health line — a coloured status dot and
+  secondary system text that deep-links to the section owning the problem.
+
+Window floors stayed where they were when the rail narrowed: Agent is
+640 × 440 with a 444 pt conversation column beside the 196 pt rail minimum,
+Settings 880 × 620 with its 664 pt detail column.
+
 ### Agent window header
 
 The detail chrome (`AgentChatView.swift`) carries one title — the current
@@ -325,10 +360,11 @@ enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
 miniaturising it, so App Exposé never shows an empty tile; the tray's
 "Open chat", the summon shortcut and the passive voice reveal bring it back.
 
-- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
+- **Left:** the sidebar toggle, then the wordmark, then the thread title
   followed by the turn count, the thread's model and the live turn status.
-  The toggle lives in the detail chrome so it stays reachable while the
-  native sidebar is collapsed.
+  The toggle belongs to the shared sidebar column (see "The sidebar", below),
+  so it stays reachable while the column is collapsed and behaves exactly as
+  it does in Settings.
 - **Right:** exactly two controls. The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the

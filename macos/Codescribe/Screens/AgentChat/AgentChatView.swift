@@ -9,7 +9,7 @@ struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   private let maxPermissions: SettingsViewModel?
   /// Persist only the user's expanded/collapsed choice; the split view owns
-  /// column geometry inside the fixed `AgentSidebarMetrics` bounds.
+  /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
 
@@ -19,13 +19,8 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: columnVisibility) {
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
       ThreadRail(store: store)
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMetrics.minimumWidth,
-          ideal: AgentSidebarMetrics.idealWidth,
-          max: AgentSidebarMetrics.maximumWidth
-        )
     } detail: {
       ThreadDetail(store: store, maxPermissions: maxPermissions)
         // Sized so the expanded columns fit the window floor exactly; the
@@ -33,8 +28,8 @@ struct AgentChatView: View {
         // view makes an opening sidebar slide to half its width and jump.
         .frame(minWidth: AgentWindowMetrics.detailMinWidth)
     }
+    .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
-    .background { AgentSidebarShortcut(toggle: { toggleSidebar() }) }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
     .background(AgentWindowCapabilities(isPinned: isPinned))
@@ -52,40 +47,10 @@ struct AgentChatView: View {
     }
   }
 
-  /// The system sidebar toggle, a divider drag to collapse and ⌃⌘S all write
-  /// through here, so every path persists the same choice.
-  private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-    Binding(
-      get: { sidebarExpanded ? .all : .detailOnly },
-      set: { sidebarExpanded = $0 != .detailOnly }
-    )
-  }
-
-  private func toggleSidebar() {
-    withAnimation {
-      sidebarExpanded.toggle()
-    }
-  }
-}
-
-/// ⌃⌘S without a second visible toggle. The split view's own toolbar toggle
-/// sits in the sidebar column while it is open and on the detail's leading
-/// edge while it is collapsed; it carries no key equivalent, and the
-/// accessory app has no View menu to lend one, so this zero-size button holds
-/// the shortcut only.
-private struct AgentSidebarShortcut: View {
-  let toggle: () -> Void
-
-  var body: some View {
-    Button(action: toggle) {
-      EmptyView()
-    }
-    .buttonStyle(.plain)
-    .keyboardShortcut("s", modifiers: [.command, .control])
-    .frame(width: 0, height: 0)
-    .opacity(0)
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
+  /// The toolbar toggle, a divider drag to collapse and ⌃⌘S all write the
+  /// one persisted flag, so every path keeps the same choice.
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    CSSidebarVisibility.binding(expanded: $sidebarExpanded)
   }
 }
 
@@ -105,10 +70,12 @@ private struct MaxPermissionPresentation: View {
   }
 }
 
-/// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 267) plus a usable detail column stay a single invariant:
-/// The root layout and the AppKit window agree on this floor, including when
-/// SwiftUI recomputes its window constraints after the sidebar collapses.
+/// Desktop-utility window floor for Agent. Named so the shared sidebar
+/// column (`CSSidebarWidth.navigation`, expanded min 196) plus a usable
+/// detail column stay a single invariant: the root layout and the AppKit
+/// window agree on this floor, including when SwiftUI recomputes its window
+/// constraints after the sidebar collapses. The floor itself did not move
+/// when the rail narrowed; the conversation took the points the rail gave up.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
@@ -116,16 +83,7 @@ enum AgentWindowMetrics {
   static let idealHeight: CGFloat = 520
   /// Narrowest conversation column. With the rail at its minimum the window
   /// lands exactly on `minWidth`.
-  static let detailMinWidth: CGFloat = minWidth - AgentSidebarMetrics.minimumWidth
-}
-
-/// Fixed bounds of the native sidebar column. Long thread titles truncate
-/// inside them; they never widen the column. Collapsing removes the whole
-/// column.
-enum AgentSidebarMetrics {
-  static let minimumWidth: CGFloat = 267
-  static let idealWidth: CGFloat = 267
-  static let maximumWidth: CGFloat = 360
+  static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.minimum
 }
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
