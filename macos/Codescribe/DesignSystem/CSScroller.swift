@@ -41,7 +41,12 @@ final class CSScrollerPin {
   }
 
   /// Pins `scrollView` now and keeps it pinned until `detach()`.
+  ///
+  /// SwiftUI calls this again on every update of the surface. Attaching to
+  /// the scroll view already held does nothing: the observer keeps the pin,
+  /// and a fresh write would re-tile the scroll view.
   func attach(to scrollView: NSScrollView) {
+    guard self.scrollView !== scrollView else { return }
     self.scrollView = scrollView
     pin()
     guard styleObserver == nil else { return }
@@ -63,11 +68,15 @@ final class CSScrollerPin {
     scrollView = nil
   }
 
+  /// Writes only what differs. Each scroller property setter re-tiles the
+  /// scroll view, and a re-tile landing right after SwiftUI scrolled a lazy
+  /// list to its newest row threw that position away: switching the overlay
+  /// to an agent with a long history left its latest reply out of view.
   private func pin() {
     guard let scrollView else { return }
-    scrollView.scrollerStyle = .overlay
-    scrollView.autohidesScrollers = true
-    if axes == .verticalOnly {
+    if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
+    if !scrollView.autohidesScrollers { scrollView.autohidesScrollers = true }
+    if axes == .verticalOnly, scrollView.hasHorizontalScroller {
       scrollView.hasHorizontalScroller = false
     }
   }
