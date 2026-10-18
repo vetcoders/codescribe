@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Agents now speak their replies to the Founder as well as writing them, unless playback is muted or someone asks for quiet; a muted speaker means text only, and agents never unmute it. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.
 - The skill now tells each provider how it is woken: Codex runs `cs-bus --watch --until-event` in one `tty` exec cell beside its native queue, Antigravity (agy) runs the same command as a background task whose exit starts a turn, and OMP relies on its plugin's waiter. The entrypoint and the Codex command no longer point Codex at an endless `--watch --bell`, which never ends and so never wakes it.
+- The overlay conversation fades under the header on macOS 26 instead of staying sharp behind the glass, and the header's right end follows the window's corner.
+- One type policy across the app: labels, buttons, statuses and sentences use the system face; JetBrains Mono is kept for times, versions, keyboard shortcuts, code and eyebrows, and SF Mono is no longer used.
+- The overlay is at least 360 pt wide, so the timer never wraps; the agent rows in the narrow overlay share one width.
+- An attachment chip names a pasted picture "Image · size" and a pasted file by the name it was chosen with, instead of the store's hashed file name.
+- An optional key that is not set reads "Not set" in neutral grey; only a missing required key stays a warning.
+- The overlay menu names the Steer box "Wake the agent", and replies no longer carry an "Unsolicited reply" label.
+- The Settings and Agent windows give the sidebar one flat tone of the app palette instead of a desktop-tinted material, and the window header fades into the content in its own tone instead of a glass band with a hard edge.
+- The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 
 ### Fixed
 
@@ -23,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
+- A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
 
 ## [0.17.1] - 2026-10-17
 
