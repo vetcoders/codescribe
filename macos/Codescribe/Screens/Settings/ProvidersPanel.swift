@@ -261,16 +261,18 @@ struct ProviderCard: View {
       } else {
         vendorProviderHeader
       }
-      // Custom hosts are key-optional: an absent key there is neutral, not an error.
+      // Key-optional hosts, and vendors whose account is already connected,
+      // read "Optional": nothing is waiting for that key.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
-        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true,
+        isSet: provider.apiKeySet,
+        optional: !provider.keyRequired || provider.accountSignedIn, embedded: true,
         presentation: isCustom ? .customProvider(endpoint: provider.endpoint) : .standard)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
         Text(error).font(CSFont.ui(11.5)).textSelection(.enabled)
-        SettingsChipButton("Sign out", tint: CSColor.terracotta) {
+        SettingsChipButton("Sign out", tint: Color.secondary) {
           model.signOutAccount(providerId: provider.id)
         }
         .accessibilityLabel("Sign out \(provider.displayName)")
