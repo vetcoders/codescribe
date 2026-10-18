@@ -17,12 +17,17 @@ enum AgentBridgeClient: String, CaseIterable, Codable, Hashable, Identifiable {
     case .codex: return "Codex"
     case .claudeCode: return "Claude Code"
     case .agents:
-      // The path is data and stays verbatim; only the label is interface copy.
-      let label = String(
+      return String(
         localized: "Other agents",
-        comment: "Agent client label; its ~/.agents path follows verbatim")
-      return "\(label) (~/.agents)"
+        comment: "Agent client label; its skill folder is named by skillPathLabel")
     }
+  }
+
+  /// Where this client reads the skill, written with a tilde. Derived from
+  /// `skillDirectory`, so the path keeps one owner, and kept apart from
+  /// `displayName`: a name belongs on the row, a path belongs in the details.
+  var skillPathLabel: String {
+    "~" + skillDirectory(home: URL(fileURLWithPath: "/", isDirectory: true)).path
   }
 
   fileprivate func skillDirectory(home: URL) -> URL {
@@ -45,6 +50,11 @@ struct AgentBridgeInstallationStatus: Equatable {
   let detail: String
   /// Detected clients whose receipt, folder marker, or rendered skill payload do not match.
   let clientsNeedingRepair: Set<AgentBridgeClient>
+  /// Detected clients whose installed skill is the generation this app bundles.
+  /// An installed client missing from this set has an update waiting: either a
+  /// newer bundled payload, or a managed folder its receipt no longer
+  /// describes, which the same Update action re-adopts.
+  let clientsWithCurrentSkill: Set<AgentBridgeClient>
 
   init(
     payloadAvailable: Bool,
@@ -52,7 +62,8 @@ struct AgentBridgeInstallationStatus: Equatable {
     installedClients: [AgentBridgeClient],
     installedPaths: [String],
     detail: String,
-    clientsNeedingRepair: Set<AgentBridgeClient> = []
+    clientsNeedingRepair: Set<AgentBridgeClient> = [],
+    clientsWithCurrentSkill: Set<AgentBridgeClient> = []
   ) {
     self.payloadAvailable = payloadAvailable
     self.bundleVersion = bundleVersion
@@ -60,6 +71,7 @@ struct AgentBridgeInstallationStatus: Equatable {
     self.installedPaths = installedPaths
     self.detail = detail
     self.clientsNeedingRepair = clientsNeedingRepair
+    self.clientsWithCurrentSkill = clientsWithCurrentSkill
   }
 
   static let unavailable = AgentBridgeInstallationStatus(
@@ -260,6 +272,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     var paths: [String] = []
     var details: [String] = []
     var clientsNeedingRepair: Set<AgentBridgeClient> = []
+    var clientsWithCurrentSkill: Set<AgentBridgeClient> = []
     for client in AgentBridgeClient.allCases.sorted(by: { $0.rawValue < $1.rawValue }) {
       let destination = client.skillDirectory(home: homeDirectory)
       let marker = managedMarker(destination: destination, client: client)
@@ -280,6 +293,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         } ?? false
       if !receiptMatchesManagedFolder {
         clientsNeedingRepair.insert(client)
+      } else if let receipt, payloadMatches(receipt: receipt, manifest: manifest) {
+        // The receipt owns the installed generation and the folder agrees with
+        // it, so comparing that generation with the bundled manifest is the
+        // only place an "update waiting" answer can honestly come from.
+        clientsWithCurrentSkill.insert(client)
       }
       let evidence: String
       if marker != nil {
@@ -318,7 +336,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       detail: details.isEmpty
         ? String(localized: "Ready to install after you select an agent client.")
         : details.joined(separator: "\n"),
-      clientsNeedingRepair: clientsNeedingRepair
+      clientsNeedingRepair: clientsNeedingRepair,
+      clientsWithCurrentSkill: clientsWithCurrentSkill
     )
   }
 
