@@ -247,14 +247,16 @@ struct OverlayRowHoverHighlight: ViewModifier {
   }
 }
 
-/// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): an accent
-/// ring on the focused row, and the pointer entering a row moves the focus
-/// there. Hover rides the same tracking region as the row wash, so it answers
-/// while Codescribe is not the active app.
+/// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): the focused
+/// row wears the system accent colour as a tint and a ring, the way a macOS
+/// list marks its selection, and the pointer entering a row moves the focus
+/// there. The palette's thin violet ring alone did not read as a selection on
+/// glass (Maciej, 2026-10-18: "nie ma tam w ogóle koloru akcentu… nie
+/// widzisz, że masz cokolwiek wybrane"). Hover rides the same tracking region
+/// as the row wash, so it answers while Codescribe is not the active app.
 struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
   let focused: Bool
   let shape: RingShape
-  let palette: OverlayAppearancePalette
   let targetID: String?
   let onHover: ((String) -> Void)?
 
@@ -262,12 +264,15 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
     content
       .overlay {
         if focused {
-          shape
-            .strokeBorder(palette.agentAccent.color, lineWidth: 2)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+          ZStack {
+            shape.fill(Color.accentColor.opacity(0.22))
+            shape.strokeBorder(Color.accentColor, lineWidth: 2.5)
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
         }
       }
+      .accessibilityAddTraits(focused ? .isSelected : [])
       .background {
         if let targetID, let onHover {
           OverlayMenuCursorRegion { inside in
@@ -716,7 +721,7 @@ struct OverlayChannelStatusView: View {
           .modifier(
             OverlayGestureFocusRing(
               focused: broadcast.id == gestureFocusID,
-              shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+              shape: RoundedRectangle(cornerRadius: 10),
               targetID: broadcast.id, onHover: onGestureHover)
           )
           .id(broadcast.id)
@@ -885,7 +890,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayGestureFocusRing(
         focused: conversation != nil && conversation?.id == gestureFocusID,
-        shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+        shape: RoundedRectangle(cornerRadius: 10),
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
@@ -1779,7 +1784,7 @@ struct OverlayAgentPillStack: View {
     .modifier(
       OverlayGestureFocusRing(
         focused: entry.conversationID == focusedConversationID, shape: Capsule(),
-        palette: palette, targetID: entry.conversationID, onHover: onHoverConversation)
+        targetID: entry.conversationID, onHover: onHoverConversation)
     )
     .help(
       entry.disconnected
