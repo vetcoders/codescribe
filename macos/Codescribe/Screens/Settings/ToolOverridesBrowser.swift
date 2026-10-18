@@ -18,7 +18,7 @@ struct ToolOverridesBrowser: View {
 
   var body: some View {
     let current = groups.first { $0.server == selectedServer } ?? groups.first
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       ToolSearchField(text: $searchText)
 
       if let current {

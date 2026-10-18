@@ -24,16 +24,16 @@ struct AgentStatusSection: View {
       summaryCard
 
       integrations
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       toolsAndServers
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       installations
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       technicalDetails
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
     }
     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
@@ -50,7 +50,7 @@ struct AgentStatusSection: View {
   private var summaryCard: some View {
     let summary = summaryModel
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Agent status", comment: "Diagnostics section header")
       ) {
         SettingsRefreshButton(axLabel: "Refresh agent readiness") {
@@ -62,7 +62,7 @@ struct AgentStatusSection: View {
         statusLine(tone: summary.tone, text: summary.headline, prominent: true)
         if !summary.facts.isEmpty {
           Text(summary.facts)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 3)
@@ -86,7 +86,7 @@ struct AgentStatusSection: View {
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-summary")
     }
   }
@@ -114,7 +114,7 @@ struct AgentStatusSection: View {
   private var integrations: some View {
     let lines = AgentIntegrationLine.lines(rows: model.agentReadiness.rows)
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Integrations", comment: "Diagnostics section header"))
       listCard {
         if lines.isEmpty {
@@ -137,7 +137,7 @@ struct AgentStatusSection: View {
           }
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-integrations")
     }
   }
@@ -148,18 +148,18 @@ struct AgentStatusSection: View {
     let capabilities = CapabilitySummary(rows: model.capabilityMatrix)
     let servers = McpServerSummary(lines: serverLines)
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Tools and servers", comment: "Diagnostics section header"))
       listCard {
         DisclosureGroup(isExpanded: $showingCapabilityRows) {
           VStack(alignment: .leading, spacing: 8) {
             Text("Native capabilities are served by Codescribe's built-in tools.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
             capabilityMatrixCard
             Text("Tool permissions are managed in the Tools tab.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -183,7 +183,7 @@ struct AgentStatusSection: View {
               serverTable(lines: serverLines)
             }
             Text("Servers are added, tested and removed in the MCP tab.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -198,7 +198,7 @@ struct AgentStatusSection: View {
         .padding(.vertical, 12)
         .accessibilityIdentifier("settings-diagnostics-mcp-servers")
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
   }
 
@@ -206,13 +206,13 @@ struct AgentStatusSection: View {
   private func summaryLabel(title: String, detail: String, tone: CsMcpRowTone) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(title)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       HStack(spacing: 6) {
         CSIconView(icon: tone.statusIcon, size: 10, weight: .semibold, color: tone.dotColor)
           .accessibilityHidden(true)
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -240,7 +240,7 @@ struct AgentStatusSection: View {
     VStack(spacing: 0) {
       if model.capabilityMatrix.isEmpty {
         Text("no capability rows (refresh or start agent substrate)")
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
           .padding(.horizontal, 16)
           .padding(.vertical, 12)
@@ -290,7 +290,7 @@ struct AgentStatusSection: View {
   private var installations: some View {
     let status = model.creatorAgentBridgeStatus
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Detected installations", comment: "Diagnostics section header"))
       listCard {
         if status.installedClients.isEmpty {
@@ -309,7 +309,7 @@ struct AgentStatusSection: View {
           }
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-installations")
     }
   }
@@ -342,7 +342,7 @@ struct AgentStatusSection: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Text(status.detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
         if let launchDetail = model.creatorAgentBridgeLaunchDetail {
@@ -355,7 +355,7 @@ struct AgentStatusSection: View {
         }
         HStack(spacing: 6) {
           Text("Configuration source:")
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
           Text(tilde(model.mcpStatus.configPathDisplay))
             .font(CSFont.mono(10, .medium))
@@ -373,7 +373,7 @@ struct AgentStatusSection: View {
       .padding(.top, 10)
     } label: {
       Text("Technical details")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
     }
     .accessibilityIdentifier("settings-diagnostics-technical-details")
@@ -403,7 +403,7 @@ struct AgentStatusSection: View {
   ) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text(verbatim: name)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -481,7 +481,7 @@ private struct AgentStatusRow: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(width: 190, alignment: .leading)
       Text(row.localizedValue)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
         .lineLimit(3)
         .fixedSize(horizontal: false, vertical: true)
@@ -525,7 +525,7 @@ private struct CapabilityMatrixRow: View {
       VStack(alignment: .leading, spacing: 2) {
         if let qualifier = row.localizedQualifier {
           Text(qualifier)
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)

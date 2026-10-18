@@ -68,7 +68,7 @@ struct LabPanel: View {
 
       recognitionParameters
     }
-    .padding(CSSpace.xl)
+    .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
     .task { await model.refreshAdmission() }
   }

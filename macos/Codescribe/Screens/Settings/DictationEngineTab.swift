@@ -19,9 +19,9 @@ struct DictationEngineTab: View {
           localized: "Last transcription",
           comment: "Engine tab section: read-only rows about the last transcription")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       DictationRuntimeRows(model: model)
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
         .onAppear { model.refreshServingStatus() }
     }
   }

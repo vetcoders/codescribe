@@ -25,7 +25,7 @@ struct AgentLanesTab: View {
         range: 0.5...30,
         step: 0.5
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       .accessibilityIdentifier("agent-bus-speech-pause")
 
       // Mirrors `OverlayState`: armed in Agent mode only, fires after
@@ -49,7 +49,7 @@ struct AgentLanesTab: View {
         .labelsHidden()
         .tint(CSColor.chromeAccent)
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
 
       // Collapsed by default: the editors above answer the everyday question;
       // this is where the endpoints and the settings keys live.
@@ -109,11 +109,11 @@ struct AgentLanesTab: View {
           RoundedRectangle(cornerRadius: CSRadius.composer)
             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         }
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
       } label: {
         SettingsSectionLabel(String(localized: "Active configuration details"))
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       .accessibilityIdentifier("agent-lanes-details")
     }
   }
