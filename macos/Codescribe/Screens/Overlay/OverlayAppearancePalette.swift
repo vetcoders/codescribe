@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// Overlay-only contrast and material roles. They preserve the established
-/// warm paper palette while avoiding the app-wide dark-only `CSColor` surface
-/// tokens. Native glass owns translucency; desktopBackground is the opaque
-/// surface used when Reduce Transparency is enabled.
+/// The overlay's view of `CSPalette`: every role resolved to one opaque value
+/// per appearance. `CSPalette` owns the values — none is restated here — and
+/// the projection exists only because the sheet composites text over glass and
+/// proves its contrast from exact sRGB components, which a dynamic `NSColor`
+/// cannot answer. Native glass owns translucency; desktopBackground is the
+/// opaque surface used when Reduce Transparency is enabled.
 struct OverlayAppearancePalette: Equatable, Sendable {
   let appearance: OverlayAppearance
   let desktopBackground: OverlayColorToken
@@ -18,51 +20,35 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   /// The assistive violet (voice routed to an agent), raised for contrast on
   /// either canvas; the Agents control's hover hue.
   let agentAccent: OverlayColorToken
-  /// A6 uncertain-word text. Distinct from `processingStatus` (engine
-  /// completeness warnings) and from the app-wide `modeProcessing` orange:
-  /// this role means "the engine was unsure of THIS word", nothing else.
+  /// A6 uncertain-word text: the processing orange at label strength. Distinct
+  /// from `processingStatus`, which wears the amber of engine completeness
+  /// warnings; this role means "the engine was unsure of THIS word".
   let uncertainWord: OverlayColorToken
   /// Lexicon marker for `surface_rewritten` words (d5): the dictionary owns
-  /// this surface, so it gets its own steel-blue style, never the
+  /// this surface, so it gets the steel blue of `CSPalette.lexicon`, never the
   /// uncertainty orange.
   let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
-  static let light = OverlayAppearancePalette(
-    appearance: .light,
-    desktopBackground: OverlayColorToken(CSPalette.sheetLightHex),
-    border: OverlayColorToken(0x5F5A52, alpha: 0.20),
-    primaryText: OverlayColorToken(0x1C1B18),
-    bodyText: OverlayColorToken(0x5F5A52),
-    mutedText: OverlayColorToken(0x6E675F),
-    listeningStatus: OverlayColorToken(0x9B4528),
-    processingStatus: OverlayColorToken(0x8A5B00),
-    successStatus: OverlayColorToken(0x4D5E2D),
-    errorStatus: OverlayColorToken(0xA2302B),
-    agentAccent: OverlayColorToken(0x6F3FD8),
-    uncertainWord: OverlayColorToken(0x96450A),
-    lexiconMarker: OverlayColorToken(0x31587A),
-    shadowOpacity: 0.16
-  )
+  static let light = OverlayAppearancePalette(.light)
+  static let dark = OverlayAppearancePalette(.dark)
 
-  /// The sheet colour is owned by `CSPalette.sheet` (one value for the overlay,
-  /// the wizard, the tray menu and every window's content area).
-  static let dark = OverlayAppearancePalette(
-    appearance: .dark,
-    desktopBackground: OverlayColorToken(CSPalette.sheetDarkHex),
-    border: OverlayColorToken(0xF3F0EA, alpha: 0.16),
-    primaryText: OverlayColorToken(0xF3F0EA),
-    bodyText: OverlayColorToken(0xC8C1B8),
-    mutedText: OverlayColorToken(0x918A82),
-    listeningStatus: OverlayColorToken(0xE08A64),
-    processingStatus: OverlayColorToken(0xE2BE5B),
-    successStatus: OverlayColorToken(0xB5C98D),
-    errorStatus: OverlayColorToken(0xFFAAA5),
-    agentAccent: OverlayColorToken(0xC9B7FF),
-    uncertainWord: OverlayColorToken(0xF09A4E),
-    lexiconMarker: OverlayColorToken(0x9FC2E8),
-    shadowOpacity: 0.20
-  )
+  private init(_ appearance: OverlayAppearance) {
+    self.appearance = appearance
+    desktopBackground = OverlayColorToken(CSPalette.sheet, in: appearance)
+    border = OverlayColorToken(CSPalette.panelEdge, in: appearance)
+    primaryText = OverlayColorToken(CSPalette.textHigh, in: appearance)
+    bodyText = OverlayColorToken(CSPalette.textBodyAlt, in: appearance)
+    mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
+    listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
+    processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
+    successStatus = OverlayColorToken(CSPalette.oliveLight, in: appearance)
+    errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
+    agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
+    uncertainWord = OverlayColorToken(CSPalette.modeProcessingLight, in: appearance)
+    lexiconMarker = OverlayColorToken(CSPalette.lexicon, in: appearance)
+    shadowOpacity = appearance == .dark ? 0.20 : 0.16
+  }
 
   static func resolve(_ colorScheme: ColorScheme) -> OverlayAppearancePalette {
     resolve(OverlayAppearance(colorScheme: colorScheme))
