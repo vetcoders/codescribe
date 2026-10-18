@@ -39,7 +39,8 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     XCTAssertTrue(
       sidebar.contains(".allowsHitTesting(false)"),
       "list rows, the search field and footer controls keep every click")
-    XCTAssertFalse(sidebar.contains("NSVisualEffectView"), "no desktop-sampled material")
+    XCTAssertFalse(sidebar.contains("NSViewRepresentable"), "no desktop-sampled material")
+    XCTAssertFalse(sidebar.contains(".material ="), "no desktop-sampled material")
   }
 
   func testSidebarMountsNoVisualEffectView() async {
