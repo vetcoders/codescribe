@@ -9,6 +9,7 @@ import SwiftUI
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var manualSkillClient: AgentBridgeClient?
+  @State private var showingSkillLocations = false
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
@@ -50,7 +51,8 @@ struct CreatorPanel: View {
             onStateChanged: { model.refreshDictationReadiness() }
           )
           if kind != Self.permissionKinds.last {
-            Divider().padding(.leading, 47)
+            // Aligned with the row text: inset + badge + the row's own spacing.
+            Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
           }
         }
       }
@@ -157,40 +159,10 @@ struct CreatorPanel: View {
       // round 4, 2026-10-10).
       VStack(spacing: 0) {
         ForEach(AgentBridgeClient.allCases) { client in
-          let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
-          HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-              Text(client.displayName)
-                .font(SettingsScale.settingName)
-                .foregroundStyle(.primary)
-              if installed {
-                Text(
-                  String(
-                    localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
-                    comment: "Status on an agent client row: the Codescribe skill is installed")
-                )
-                .font(SettingsScale.helper)
-                .foregroundStyle(.secondary)
-              }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button(installed ? "Update skill" : "Install skill") {
-              model.installCreatorAgentBridge(for: client)
-            }
-            .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-            .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
-            if model.creatorAgentBridgeError != nil {
-              Button("Replace manual copy…") { manualSkillClient = client }
-                .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-                .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
-            }
-          }
-          .padding(.horizontal, 15)
-          .padding(.vertical, 8)
-          if client != AgentBridgeClient.allCases.last {
-            Divider().padding(.leading, 15)
-          }
+          agentBridgeRow(client)
+          Divider().padding(.leading, SettingsScale.rowInsetH)
         }
+        skillLocations
       }
       .settingsGroupedInset(padding: 0)
       if !model.creatorAgentBridgeStatus.payloadAvailable {
@@ -209,6 +181,77 @@ struct CreatorPanel: View {
           .textSelection(.enabled)
       }
     }
+  }
+
+  /// One client: its name, whether the installed skill is the one this app
+  /// carries, and the action. "Installed" alone never answered the question
+  /// the Update button raises (Founder review, 2026-10-18), so the row states
+  /// the generation instead.
+  private func agentBridgeRow(_ client: AgentBridgeClient) -> some View {
+    let status = model.creatorAgentBridgeStatus
+    let installed = status.installedClients.contains(client)
+    return HStack(spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(client.displayName)
+          .font(SettingsScale.settingName)
+          .foregroundStyle(.primary)
+        if installed {
+          Text(
+            status.clientsWithCurrentSkill.contains(client)
+              ? String(
+                localized: "creator.agentBridge.clientCurrent", defaultValue: "Up to date",
+                comment: "Status on an agent client row: the installed skill is this app's")
+              : String(
+                localized: "creator.agentBridge.clientOutdated",
+                defaultValue: "Update available",
+                comment: "Status on an agent client row: this app carries a newer skill")
+          )
+          .font(SettingsScale.helper)
+          .foregroundStyle(.secondary)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      Button(installed ? "Update skill" : "Install skill") {
+        model.installCreatorAgentBridge(for: client)
+      }
+      .disabled(!status.payloadAvailable)
+      .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+      if model.creatorAgentBridgeError != nil {
+        Button("Replace manual copy…") { manualSkillClient = client }
+          .disabled(!status.payloadAvailable)
+          .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+      }
+    }
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+  }
+
+  /// The folders the three clients read. A path is detail: the rows above name
+  /// the client, this says where its skill lands (Founder review, 2026-10-18).
+  private var skillLocations: some View {
+    DisclosureGroup(isExpanded: $showingSkillLocations) {
+      VStack(alignment: .leading, spacing: CSSpace.xxs) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          Text(verbatim: "\(client.displayName): \(client.skillPathLabel)")
+            .font(SettingsScale.metaKey)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .padding(.top, CSSpace.xxs)
+    } label: {
+      Text(
+        String(
+          localized: "Skill locations",
+          comment: "Disclosure on the coding-agent card: the folders each client reads")
+      )
+      .font(SettingsScale.settingName)
+      .foregroundStyle(.primary)
+    }
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+    .accessibilityIdentifier("settings-agent-bridge-locations")
   }
 
   // MARK: - Bindings (read VM state, write through the router)
@@ -284,15 +327,19 @@ struct MaxApprovalCards: View {
   var body: some View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if embedded {
-        HStack(spacing: 12) {
-          Text("Max permissions")
-            .font(SettingsScale.settingName)
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: SettingsScale.rowInsetH) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Max permissions")
+              .font(SettingsScale.settingName)
+              .foregroundStyle(.primary)
+            pendingLine
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
           refreshButton
         }
       } else {
         SettingsSectionLabel(String(localized: "Max permissions"))
+        pendingLine
         refreshButton
       }
       ForEach(model.maxToolApprovals) { request in
@@ -313,6 +360,29 @@ struct MaxApprovalCards: View {
       if let error = model.maxApprovalError {
         Text(error).foregroundStyle(CSColor.amber)
       }
+    }
+  }
+
+  /// Whether anything is waiting, next to the heading. The cards below appear
+  /// only when a request exists, so without this line an empty section could
+  /// not be told apart from one that was never checked (Founder review,
+  /// 2026-10-18). A running check is on the button and an unreadable one on
+  /// `maxApprovalError`, so neither state repeats itself here.
+  @ViewBuilder private var pendingLine: some View {
+    if model.maxApprovalError == nil, !model.maxApprovalBusy {
+      Text(
+        model.maxToolApprovals.isEmpty
+          ? String(
+            localized: "max.approvals.none", defaultValue: "No requests waiting",
+            comment: "Line under the Max permissions heading: nothing needs a decision")
+          : String(
+            localized: "max.approvals.waiting",
+            defaultValue: "\(model.maxToolApprovals.count) requests waiting",
+            comment: "Line under the Max permissions heading; the placeholder is a count")
+      )
+      .font(SettingsScale.helper)
+      .foregroundStyle(.secondary)
+      .accessibilityIdentifier("settings-max-approvals-pending")
     }
   }
 
@@ -485,7 +555,7 @@ private struct PermissionChecklistRow: View {
   private var granted: Bool { state.isGranted }
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: SettingsScale.rowInsetH) {
       statusBadge
       // A granted row says it with the badge; the status stays for VoiceOver.
       VStack(alignment: .leading, spacing: 2) {
@@ -531,7 +601,7 @@ private struct PermissionChecklistRow: View {
         }
       }
     }
-    .padding(.horizontal, 15)
+    .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, 7)
   }
 
