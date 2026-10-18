@@ -254,6 +254,8 @@ struct OverlayRowHoverHighlight: ViewModifier {
 /// glass (Maciej, 2026-10-18: "nie ma tam w ogóle koloru akcentu… nie
 /// widzisz, że masz cokolwiek wybrane"). Hover rides the same tracking region
 /// as the row wash, so it answers while Codescribe is not the active app.
+/// Outside the chooser the docked column puts the same mark on the settled
+/// choice, so a choice looks the same while made and once made.
 struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
   let focused: Bool
   let shape: RingShape
@@ -547,6 +549,10 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
+  /// The docked row wearing the accent ring: the chooser's candidate while
+  /// choosing, otherwise the settled choice (Maciej, 2026-10-18: "takie
+  /// wyróżnienie ma być na settled choice na każdym wybranym agencie").
+  private var markedConversationID: String? { gestureFocusID ?? selectedConversationID }
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -732,7 +738,7 @@ struct OverlayChannelStatusView: View {
           )
           .modifier(
             OverlayGestureFocusRing(
-              focused: broadcast.id == gestureFocusID,
+              focused: broadcast.id == markedConversationID,
               shape: RoundedRectangle(cornerRadius: 10),
               targetID: broadcast.id, onHover: onGestureHover)
           )
@@ -955,11 +961,6 @@ struct OverlayChannelStatusView: View {
     )
     .padding(.vertical, 4)
     .padding(.horizontal, 6)
-    .background(
-      selectedConversationID == conversation?.id && conversation != nil
-        ? palette.mutedText.color.opacity(0.10) : .clear,
-      in: RoundedRectangle(cornerRadius: 10)
-    )
     .modifier(
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
@@ -969,7 +970,7 @@ struct OverlayChannelStatusView: View {
     )
     .modifier(
       OverlayGestureFocusRing(
-        focused: conversation != nil && conversation?.id == gestureFocusID,
+        focused: conversation != nil && conversation?.id == markedConversationID,
         shape: RoundedRectangle(cornerRadius: 10),
         targetID: conversation?.id, onHover: onGestureHover)
     )
