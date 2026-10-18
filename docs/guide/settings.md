@@ -602,7 +602,10 @@ dump.
 
 - **Server card** — the name, the configured state as a flag button (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
-  anything), the last handshake, and the Test / Remove actions. Remove only
+  anything), the last handshake, and the Test / Remove actions. All three
+  actions are the one Settings chip, so they share a shape, a label rung and a
+  focus ring with every other flat action in the window; the configured state
+  still reads in colour, on its power glyph and label. Remove only
   asks: an alert names the server and what goes with it (its entry in
   `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
   leaves the configuration as it was, and only "Remove server" removes. "Details"
@@ -621,12 +624,20 @@ dump.
   test result, not a live connection indicator: the Agent starts servers per
   turn. Toggling the flag drops the cached result, so a card never reports a
   configuration that was just changed.
-- **Add server** — a segmented choice between a local process and an HTTP
+- **No servers yet** — the tab opens on two lines: that there are none and
+  that none are required, then what a server would add. MCP is optional, so
+  nothing here is presented as a step and nothing offers to skip one; the
+  **Add server** form below is the only action.
+- **Add server** — an ordinary section title above its card, in the same
+  weight as every other section title in Settings. Inside: a segmented choice
+  between a local process and an HTTP
   connection, then labelled fields: server name, launch command and command
   arguments, or server URL and an optional access token. The token goes to
   the macOS Keychain, never into `mcp.json`. Each field's caption is also its
   accessibility name, so VoiceOver reads "Server name" or "Access token
-  (optional)" rather than the placeholder or the typed text. Add is live as
+  (optional)" rather than the placeholder or the typed text. A long launch
+  command, argument list or URL is not clipped: the field scrolls its own
+  content while you edit, and the whole value is a tooltip away. Add is live as
   soon as anything is typed; the store does the checking. A rejected add
   keeps everything typed and says in plain words what to fix, under the field
   it names and with focus moved there: an unparseable or non-HTTP URL,
