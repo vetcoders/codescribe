@@ -125,35 +125,34 @@ struct OverlayHeaderMenu: View {
     )
     .help("New recordings open with the transcript. Turn off to show only the recording bar.")
     .accessibilityIdentifier("overlay-expanded-by-default")
+    // The chosen interval stays tinted like a hovered item, never a checkmark
+    // (Maciej, 2026-10-19: "niech po prostu trwa na niej podbarwienie jak przy
+    // hoverze"). A plain menu item cannot keep the hover highlight, so the
+    // choices are one palette row whose selection is that tint.
     Menu("Auto fold after…") {
-      ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
-        Button {
-          state.setAutoFoldSeconds(seconds)
-        } label: {
+      Picker(
+        selection: Binding(
+          get: { state.autoFoldSeconds },
+          set: { state.setAutoFoldSeconds($0) })
+      ) {
+        ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
           // Int, not UInt32: the catalog key is "%lld s", a UInt32 would extract "%u s".
-          autoFoldChoice("\(Int(seconds)) s", selected: state.autoFoldSeconds == seconds)
+          Text("\(Int(seconds)) s")
+            .tag(seconds)
+            .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
         }
-        .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
-      }
-      Button {
-        state.setAutoFoldSeconds(0)
+        Text("Never")
+          .tag(UInt32(0))
+          .accessibilityIdentifier("overlay-auto-fold-never")
       } label: {
-        autoFoldChoice("Never", selected: state.autoFoldSeconds == 0)
+        Text("Auto fold after…")
       }
-      .accessibilityIdentifier("overlay-auto-fold-never")
+      .pickerStyle(.palette)
+      .labelsHidden()
     }
   }
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
-
-  @ViewBuilder
-  private func autoFoldChoice(_ title: LocalizedStringKey, selected: Bool) -> some View {
-    if selected {
-      Label(title, systemImage: "checkmark")
-    } else {
-      Text(title)
-    }
-  }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {
     guard !state.freeMotion, state.placementAnchor == anchor else {
